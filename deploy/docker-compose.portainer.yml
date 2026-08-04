@@ -8,6 +8,13 @@
 # deploy) — TD_LIVE_ENABLED stays false and NR credentials aren't wired up. Add them back
 # from deploy/docker-compose.yml once you're ready for live ingestion and have a way to
 # place files on the host.
+#
+# Postgres/Redis/archive are published to the host below for direct testing access — this
+# is a deliberate departure from docs/ARCHITECTURE.md §12 ("only the reverse proxy/web entry
+# point should be public"; internal services stay off the internal `backend` network's
+# public surface otherwise). Fine for a single-operator testing/staging box; put these
+# behind a firewall or VPN rather than a raw public IP, and don't reuse this file as-is for
+# a production deployment without reconsidering that tradeoff.
 
 name: railway-live-maps
 
@@ -97,6 +104,9 @@ services:
       MINIO_ROOT_PASSWORD: ${RAW_ARCHIVE_SECRET_KEY}
     volumes:
       - archive_data:/data
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     networks: [backend]
 
   postgres:
@@ -109,6 +119,8 @@ services:
       TZ: UTC
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test:
         [
@@ -124,6 +136,8 @@ services:
     image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

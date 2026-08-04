@@ -72,8 +72,15 @@ so it deploys without needing host filesystem/SSH access at all.
 3. Run the `migrate` and `ensure-archive-bucket` one-off commands (Portainer's "Console"
    against the `worker` container, or a scheduled/manual task) before the stack serves
    traffic, same as step 3.
-4. Only the `web` service needs a public-facing port/reverse proxy. Postgres, Redis and the
-   archive stay on the internal `backend` network (already enforced by the compose file).
+4. Only `web` needs a reverse proxy/public DNS entry for real public use. Postgres, Redis
+   and the archive (MinIO) are published straight to the host (`POSTGRES_PORT`/
+   `REDIS_PORT`/`MINIO_PORT`/`MINIO_CONSOLE_PORT`, set in Portainer's stack environment —
+   `deploy/.env.example` documents this deployment's actual scheme: `6052`/`6053`/`6054`/
+   `6055`, chosen to sit right after `WEB_PORT=6050`/`API_PORT=6051`) — a deliberate
+   departure from `docs/ARCHITECTURE.md` §12's "only the web entry point should be public"
+   for a single-operator testing/staging box, so you can `psql`/`redis-cli`/hit the MinIO
+   console directly. Put the host behind a firewall or VPN rather than a raw public IP if
+   you rely on this.
 
 **NR credential caveat**: `deploy/docker-compose.portainer.yml` sets `NR_USERNAME`/
 `NR_PASSWORD` as plain environment variables (Portainer's stack environment editor),
@@ -83,6 +90,25 @@ visible via `docker inspect`/the Portainer UI to anyone with stack access) but i
 while `TD_LIVE_ENABLED=false`, since nothing reads them. If you later want the stronger
 file-based secret isolation, `deploy/docker-compose.yml`'s `secrets:` block is the
 template — it needs the two files placed on the host at the stack's checkout path.
+
+## 4a. Testing Milestone 4/5 against the Portainer stack
+
+Once the stack is up and `migrate`/`ensure-archive-bucket` have run, drive the pipeline via
+Portainer's "Console" on the `worker` container (or `docker exec` if you have host access):
+
+```bash
+node dist/index.js replay-fixtures multi-area-smoke
+node dist/index.js project-td
+node dist/index.js publish-map lancaster packages/map-schema/fixtures/lancaster-minimal.json
+```
+
+Then, from your own machine, using the host running the stack and the ports above:
+
+- `curl http://<host>:${API_PORT}/api/v1/td/areas` / `.../api/v1/maps` / `.../api/v1/maps/lancaster/state`
+- `psql postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@<host>:${POSTGRES_PORT}/railway_live_maps`
+  to inspect `berth_current_state`/`berth_occupancy` directly.
+- Open `http://<host>:${MINIO_CONSOLE_PORT}` to browse archived raw frames in MinIO's console.
+- Open `http://<host>:${WEB_PORT}` in a browser for the Lancaster map itself.
 
 ## 5. Enabling live TD ingestion
 

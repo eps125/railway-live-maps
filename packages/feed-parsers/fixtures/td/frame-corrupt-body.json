@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "message-id": "ID:test-fixture-corrupt-1",
+    "destination": "/topic/TD_ALL_SIG_AREA"
+  },
+  "bodyText": "this is not valid JSON at all {{{"
+}

@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "message-id": "ID:test-fixture-zz-s-1",
+    "destination": "/topic/TD_ALL_SIG_AREA"
+  },
+  "bodyText": "[{\"SF_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689620000\",\"address\":\"A1\",\"data\":\"3F\"}}]"
+}

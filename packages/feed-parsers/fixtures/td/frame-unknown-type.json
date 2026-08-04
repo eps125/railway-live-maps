@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "message-id": "ID:test-fixture-unknown-1",
+    "destination": "/topic/TD_ALL_SIG_AREA"
+  },
+  "bodyText": "[{\"XX_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689630000\",\"note\":\"deliberately unrecognized message type\"}}]"
+}

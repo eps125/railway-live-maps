@@ -1,0 +1,10 @@
+{
+  "fixtures": [
+    "frame-zz-c-class-sequence.json",
+    "frame-zy-c-class-sequence.json",
+    "frame-zz-s-class.json",
+    "frame-unknown-type.json",
+    "frame-malformed-child.json",
+    "frame-corrupt-body.json"
+  ]
+}

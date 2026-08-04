@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "message-id": "ID:test-fixture-zz-1",
+    "destination": "/topic/TD_ALL_SIG_AREA"
+  },
+  "bodyText": "[{\"CA_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689600123\",\"from\":\"0123\",\"to\":\"0124\",\"descr\":\"2A16\"}},{\"CC_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689601456\",\"to\":\"0125\",\"descr\":\"2A17\"}},{\"CB_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689602789\",\"from\":\"0124\",\"descr\":\"2A16\"}},{\"CT_MSG\":{\"area_id\":\"ZZ\",\"report_time\":\"1735689603000\"}}]"
+}

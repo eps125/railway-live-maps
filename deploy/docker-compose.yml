@@ -1,0 +1,151 @@
+# Tested Portainer/Docker Compose stack (Milestone 1: foundation only, no railway
+# ingestion logic yet). `image:` targets are used for Portainer's pull-based deploy;
+# `build:` contexts let `docker compose up --build` work directly from this repo for
+# local development. Pin exact image tags/digests before any production deployment.
+
+name: railway-live-maps
+
+services:
+  web:
+    image: ${WEB_IMAGE:-ghcr.io/example/railway-live-maps-web}:${APP_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    networks: [frontend, backend]
+
+  api:
+    image: ${API_IMAGE:-ghcr.io/example/railway-live-maps-api}:${APP_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+      EDITOR_ENABLED: ${EDITOR_ENABLED:-false}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  worker:
+    image: ${WORKER_IMAGE:-ghcr.io/example/railway-live-maps-worker}:${APP_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      CAPTURE_ALL_TD: ${CAPTURE_ALL_TD:-true}
+      PRESTON_MAP_TD_AREA: ${PRESTON_MAP_TD_AREA:-UNCONFIRMED}
+      RAW_ARCHIVE_ENDPOINT: ${RAW_ARCHIVE_ENDPOINT:-http://archive:9000}
+      RAW_ARCHIVE_BUCKET: ${RAW_ARCHIVE_BUCKET:-railway-raw}
+      RAW_ARCHIVE_ACCESS_KEY: ${RAW_ARCHIVE_ACCESS_KEY}
+      RAW_ARCHIVE_SECRET_KEY: ${RAW_ARCHIVE_SECRET_KEY}
+      RAW_ARCHIVE_REGION: ${RAW_ARCHIVE_REGION:-us-east-1}
+      NR_TD_TOPIC: ${NR_TD_TOPIC:-/topic/TD_ALL_SIG_AREA}
+      NR_TRUST_TOPIC: ${NR_TRUST_TOPIC:-/topic/TRAIN_MVT_ALL_TOC}
+      NR_VSTP_TOPIC: ${NR_VSTP_TOPIC:-/topic/VSTP_ALL}
+      # Real credentials are never env vars in plain text here — see deploy/secrets/README.md.
+      # Only set TD_LIVE_ENABLED=true once fixture/integration tests have passed (docs/IMPLEMENTATION_PLAN.md M3).
+      NR_USERNAME_FILE: /run/secrets/nr_username
+      NR_PASSWORD_FILE: /run/secrets/nr_password
+      TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-false}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+    secrets:
+      - nr_username
+      - nr_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      archive:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  archive:
+    # Development default only. Replace with a tested immutable tag/digest.
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${RAW_ARCHIVE_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${RAW_ARCHIVE_SECRET_KEY}
+    volumes:
+      - archive_data:/data
+    networks: [backend]
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-railway_live_maps}
+      POSTGRES_USER: ${POSTGRES_USER:-railway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-railway} -d ${POSTGRES_DB:-railway_live_maps}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+volumes:
+  postgres_data:
+  archive_data:
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+secrets:
+  # Real values live only in these local, gitignored files (deploy/secrets/*.txt) — never
+  # in this Compose file, an env var, or Git. See deploy/secrets/README.md.
+  nr_username:
+    file: ./secrets/nr_username.txt
+  nr_password:
+    file: ./secrets/nr_password.txt

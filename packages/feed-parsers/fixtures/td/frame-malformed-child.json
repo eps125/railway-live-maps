@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "message-id": "ID:test-fixture-malformed-1",
+    "destination": "/topic/TD_ALL_SIG_AREA"
+  },
+  "bodyText": "[{\"CA_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689640000\",\"from\":\"0200\",\"to\":\"0201\",\"descr\":\"3C10\"}},{\"CB_MSG\":{\"area_id\":\"ZZ\",\"time\":\"1735689641000\",\"from\":\"0202\"}}]"
+}

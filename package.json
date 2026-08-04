@@ -1,0 +1,32 @@
+{
+  "name": "railway-live-maps",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Self-hosted nationwide railway data recorder and live signalling-map platform (non-safety-critical).",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "build:libs": "pnpm --filter @railway/domain --filter @railway/database --filter @railway/archive --filter @railway/feed-parsers run build",
+    "typecheck": "pnpm run build:libs && pnpm -r --if-present run typecheck",
+    "test": "pnpm run build:libs && vitest run",
+    "test:integration": "pnpm run build:libs && vitest run -c vitest.integration.config.ts",
+    "build": "pnpm -r --if-present run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.7",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^3.0.4"
+  }
+}

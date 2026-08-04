@@ -1,0 +1,141 @@
+# Pull-only variant of docker-compose.yml for Portainer: no `build:` context, images come
+# straight from GHCR. Use this file (not docker-compose.yml) when deploying via Portainer's
+# "Repository" stack method pointing at this repo, or by pasting it into the Web editor.
+# Pin APP_TAG to a real commit SHA once you trust a build — do not run `latest` long-term
+# in production (docs/ARCHITECTURE.md §8).
+#
+# Deliberately has no Docker-secret file mounts (no host filesystem access required to
+# deploy) — TD_LIVE_ENABLED stays false and NR credentials aren't wired up. Add them back
+# from deploy/docker-compose.yml once you're ready for live ingestion and have a way to
+# place files on the host.
+
+name: railway-live-maps
+
+services:
+  web:
+    image: ${WEB_IMAGE:-ghcr.io/eps125/railway-live-maps-web}:${APP_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    networks: [frontend, backend]
+
+  api:
+    image: ${API_IMAGE:-ghcr.io/eps125/railway-live-maps-api}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+      EDITOR_ENABLED: ${EDITOR_ENABLED:-false}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  worker:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      CAPTURE_ALL_TD: ${CAPTURE_ALL_TD:-true}
+      PRESTON_MAP_TD_AREA: ${PRESTON_MAP_TD_AREA:-UNCONFIRMED}
+      RAW_ARCHIVE_ENDPOINT: ${RAW_ARCHIVE_ENDPOINT:-http://archive:9000}
+      RAW_ARCHIVE_BUCKET: ${RAW_ARCHIVE_BUCKET:-railway-raw}
+      RAW_ARCHIVE_ACCESS_KEY: ${RAW_ARCHIVE_ACCESS_KEY}
+      RAW_ARCHIVE_SECRET_KEY: ${RAW_ARCHIVE_SECRET_KEY}
+      RAW_ARCHIVE_REGION: ${RAW_ARCHIVE_REGION:-us-east-1}
+      NR_TD_TOPIC: ${NR_TD_TOPIC:-/topic/TD_ALL_SIG_AREA}
+      NR_TRUST_TOPIC: ${NR_TRUST_TOPIC:-/topic/TRAIN_MVT_ALL_TOC}
+      NR_VSTP_TOPIC: ${NR_VSTP_TOPIC:-/topic/VSTP_ALL}
+      # Plain env vars rather than Docker-secret file mounts (no host filesystem access
+      # needed to deploy) — set the real values in Portainer's stack environment editor,
+      # never in this file or Git. Weaker than a mounted secret file (visible via `docker
+      # inspect`/the Portainer UI to anyone with stack access) but fine for now: nothing
+      # reads them while TD_LIVE_ENABLED=false.
+      NR_USERNAME: ${NR_USERNAME:-}
+      NR_PASSWORD: ${NR_PASSWORD:-}
+      TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-false}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      archive:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  archive:
+    # Development default only. Replace with a tested immutable tag/digest before relying
+    # on this long-term.
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${RAW_ARCHIVE_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${RAW_ARCHIVE_SECRET_KEY}
+    volumes:
+      - archive_data:/data
+    networks: [backend]
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-railway_live_maps}
+      POSTGRES_USER: ${POSTGRES_USER:-railway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-railway} -d ${POSTGRES_DB:-railway_live_maps}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+volumes:
+  postgres_data:
+  archive_data:
+
+networks:
+  frontend:
+  backend:
+    internal: true

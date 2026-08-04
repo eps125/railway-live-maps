@@ -59,20 +59,30 @@ Rail until step 5.
 
 ## 4. Portainer (remote server)
 
-1. Create a Portainer stack from this Git repository, pointing at
-   `deploy/docker-compose.yml`.
-2. Set the same environment values from step 2 in Portainer's stack environment editor
-   (or point Portainer at an uploaded `.env` file). Put `deploy/secrets/*.txt` on the host
-   at the paths the Compose file's `secrets:` block references, with restricted file
-   permissions — not in the Portainer environment-variables UI (those are visible via
-   `docker inspect` and the Portainer UI to anyone with stack access; a mounted secret file
-   is not).
+Use `deploy/docker-compose.portainer.yml`, not `deploy/docker-compose.yml` — it's a
+pull-only variant (no `build:` context, so Portainer pulls the published GHCR images
+instead of trying to build from source) and has no Docker-secret file-mount requirement,
+so it deploys without needing host filesystem/SSH access at all.
+
+1. Portainer → Stacks → Add stack → **Repository**, pointing at this repo and
+   `deploy/docker-compose.portainer.yml`.
+2. Paste environment values into Portainer's stack environment editor (same values as
+   step 2, plus set `NR_USERNAME`/`NR_PASSWORD` there too if/when you have them — see the
+   caveat below).
 3. Run the `migrate` and `ensure-archive-bucket` one-off commands (Portainer's "Console"
    against the `worker` container, or a scheduled/manual task) before the stack serves
    traffic, same as step 3.
 4. Only the `web` service needs a public-facing port/reverse proxy. Postgres, Redis and the
-   archive stay on the internal `backend` network (already enforced by
-   `deploy/docker-compose.yml`).
+   archive stay on the internal `backend` network (already enforced by the compose file).
+
+**NR credential caveat**: `deploy/docker-compose.portainer.yml` sets `NR_USERNAME`/
+`NR_PASSWORD` as plain environment variables (Portainer's stack environment editor),
+not mounted secret files — deliberately, since creating files on the host isn't always
+practical from Portainer alone. This is weaker than a mounted secret (the values are
+visible via `docker inspect`/the Portainer UI to anyone with stack access) but is fine
+while `TD_LIVE_ENABLED=false`, since nothing reads them. If you later want the stronger
+file-based secret isolation, `deploy/docker-compose.yml`'s `secrets:` block is the
+template — it needs the two files placed on the host at the stack's checkout path.
 
 ## 5. Enabling live TD ingestion
 
@@ -82,7 +92,9 @@ Do **not** set `TD_LIVE_ENABLED=true` until:
    have passed (CI runs both on every build; you can also run them manually against your
    deployed Postgres/archive).
 2. `pnpm run test:integration` passes (CI runs this against real Postgres + MinIO).
-3. `deploy/secrets/nr_username.txt` / `nr_password.txt` exist on the target host.
+3. Real NR credentials are in place — either `deploy/secrets/nr_username.txt`/
+   `nr_password.txt` on the host (`deploy/docker-compose.yml`), or `NR_USERNAME`/
+   `NR_PASSWORD` set in the Portainer stack environment (`deploy/docker-compose.portainer.yml`).
 
 Then set `TD_LIVE_ENABLED=true` in `deploy/.env` (or the Portainer stack environment) and
 redeploy the `worker` service. It will connect to the real Network Rail TD feed and start

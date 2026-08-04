@@ -101,6 +101,12 @@ jobs:
           node apps/worker/dist/index.js replay-fixtures multi-area-smoke
           node apps/worker/dist/index.js replay-fixtures redelivery-smoke
 
+      - name: TD projection smoke test (project-td over the replayed fixtures)
+        run: node apps/worker/dist/index.js project-td
+
+      - name: Publish the Lancaster test map (Milestone 5 smoke test)
+        run: node apps/worker/dist/index.js publish-map lancaster packages/map-schema/fixtures/lancaster-minimal.json
+
       - name: Build Docker images
         run: |
           docker build -f apps/api/Dockerfile -t railway-live-maps-api:ci .

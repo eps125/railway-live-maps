@@ -13,3 +13,16 @@ export {
   type TdCClassMessageType,
 } from "./tdMessageClass.js";
 export type { SourceLineage } from "./lineage.js";
+export {
+  applyCA,
+  applyCB,
+  applyCC,
+  type OpenOccupancySnapshot,
+  type BerthEffect,
+  type BerthReducerResult,
+  type ApplyCAInput,
+  type ApplyCBInput,
+  type ApplyCCInput,
+} from "./td/berthReducer.js";
+export { TD_NORMALIZATION_VERSION } from "./td/normalizationVersion.js";
+export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION } from "./td/projectionVersion.js";

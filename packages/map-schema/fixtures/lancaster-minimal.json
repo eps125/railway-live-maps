@@ -1,0 +1,224 @@
+{
+  "$comment": "Hand-authored minimal Lancaster test document (docs/IMPLEMENTATION_PLAN.md Milestone 5). tdArea values 'PX' (Preston) and 'CL' (Carlisle) are OWNER-ASSERTED, NOT YET VERIFIED against live captured TD messages per CLAUDE.md 'Confirm before hardcoding' and docs/IMPLEMENTATION_PLAN.md Milestone 0. Do not treat these as confirmed until checked against real traffic.",
+  "schemaVersion": 1,
+  "map": {
+    "id": "lancaster",
+    "name": "Lancaster",
+    "canvas": { "width": 2000, "height": 800, "gridSize": 10 },
+    "timezone": "Europe/London"
+  },
+  "layers": [
+    { "id": "layer-track", "name": "Track", "order": 0 },
+    { "id": "layer-berths", "name": "Berths", "order": 1 },
+    { "id": "layer-signals", "name": "Signals", "order": 2 },
+    { "id": "layer-labels", "name": "Labels", "order": 3 }
+  ],
+  "elements": [
+    {
+      "id": "track-up-main",
+      "layerId": "layer-track",
+      "type": "trackPath",
+      "points": [
+        { "x": 100, "y": 300 },
+        { "x": 1900, "y": 300 }
+      ],
+      "direction": "up",
+      "topologyEdgeId": "edge-up-main"
+    },
+    {
+      "id": "track-down-main",
+      "layerId": "layer-track",
+      "type": "trackPath",
+      "points": [
+        { "x": 100, "y": 340 },
+        { "x": 1900, "y": 340 }
+      ],
+      "direction": "down",
+      "topologyEdgeId": "edge-down-main"
+    },
+    {
+      "id": "platform-1",
+      "layerId": "layer-track",
+      "type": "platform",
+      "points": [
+        { "x": 700, "y": 280 },
+        { "x": 1100, "y": 280 }
+      ],
+      "number": "1",
+      "name": "Lancaster Platform 1",
+      "tiploc": "LANCSTR"
+    },
+    {
+      "id": "berth-1",
+      "layerId": "layer-berths",
+      "type": "berth",
+      "x": 200,
+      "y": 280,
+      "width": 60,
+      "height": 24,
+      "displayName": "Berth 1",
+      "bindingId": "bind-berth-1",
+      "trackElementId": "track-up-main"
+    },
+    {
+      "id": "berth-2",
+      "layerId": "layer-berths",
+      "type": "berth",
+      "x": 600,
+      "y": 280,
+      "width": 60,
+      "height": 24,
+      "displayName": "Berth 2",
+      "bindingId": "bind-berth-2",
+      "trackElementId": "track-up-main"
+    },
+    {
+      "id": "berth-3",
+      "layerId": "layer-berths",
+      "type": "berth",
+      "x": 1000,
+      "y": 280,
+      "width": 60,
+      "height": 24,
+      "displayName": "Berth 3",
+      "bindingId": "bind-berth-3",
+      "trackElementId": "track-up-main"
+    },
+    {
+      "id": "berth-4",
+      "layerId": "layer-berths",
+      "type": "berth",
+      "x": 1400,
+      "y": 320,
+      "width": 60,
+      "height": 24,
+      "displayName": "Berth 4",
+      "bindingId": "bind-berth-4",
+      "trackElementId": "track-down-main"
+    },
+    {
+      "id": "berth-5",
+      "layerId": "layer-berths",
+      "type": "berth",
+      "x": 1750,
+      "y": 320,
+      "width": 60,
+      "height": 24,
+      "displayName": "Berth 5",
+      "bindingId": "bind-berth-5",
+      "trackElementId": "track-down-main"
+    },
+    {
+      "id": "signal-1",
+      "layerId": "layer-signals",
+      "type": "signal",
+      "x": 550,
+      "y": 300,
+      "orientation": 0,
+      "label": "L123",
+      "symbolStyle": "signal-blank",
+      "trackElementId": "track-up-main"
+    },
+    {
+      "id": "signal-2",
+      "layerId": "layer-signals",
+      "type": "signal",
+      "x": 1350,
+      "y": 340,
+      "orientation": 180,
+      "label": "L456",
+      "symbolStyle": "signal-blank",
+      "trackElementId": "track-down-main"
+    },
+    {
+      "id": "label-station",
+      "layerId": "layer-labels",
+      "type": "label",
+      "x": 850,
+      "y": 250,
+      "text": "Lancaster",
+      "align": "center",
+      "fontSize": 16
+    },
+    {
+      "id": "boundary-north",
+      "layerId": "layer-track",
+      "type": "boundary",
+      "x": 50,
+      "y": 320,
+      "name": "Towards Carnforth / Oxenholme",
+      "direction": "up"
+    },
+    {
+      "id": "boundary-south",
+      "layerId": "layer-track",
+      "type": "boundary",
+      "x": 1950,
+      "y": 320,
+      "name": "Towards Preston",
+      "direction": "down"
+    }
+  ],
+  "topology": {
+    "nodes": [
+      { "id": "node-up-start", "x": 100, "y": 300 },
+      { "id": "node-up-end", "x": 1900, "y": 300 },
+      { "id": "node-down-start", "x": 100, "y": 340 },
+      { "id": "node-down-end", "x": 1900, "y": 340 }
+    ],
+    "edges": [
+      {
+        "id": "edge-up-main",
+        "fromNodeId": "node-up-start",
+        "toNodeId": "node-up-end",
+        "trackElementId": "track-up-main"
+      },
+      {
+        "id": "edge-down-main",
+        "fromNodeId": "node-down-start",
+        "toNodeId": "node-down-end",
+        "trackElementId": "track-down-main"
+      }
+    ]
+  },
+  "bindings": [
+    {
+      "id": "bind-berth-1",
+      "elementId": "berth-1",
+      "type": "tdBerth",
+      "tdArea": "CL",
+      "berth": "0410"
+    },
+    {
+      "id": "bind-berth-2",
+      "elementId": "berth-2",
+      "type": "tdBerth",
+      "tdArea": "PX",
+      "berth": "0512"
+    },
+    {
+      "id": "bind-berth-3",
+      "elementId": "berth-3",
+      "type": "tdBerth",
+      "tdArea": "PX",
+      "berth": "0518"
+    },
+    {
+      "id": "bind-berth-4",
+      "elementId": "berth-4",
+      "type": "tdBerth",
+      "tdArea": "PX",
+      "berth": "0611"
+    },
+    {
+      "id": "bind-berth-5",
+      "elementId": "berth-5",
+      "type": "tdBerth",
+      "tdArea": "CL",
+      "berth": "0703"
+    }
+  ],
+  "editorMetadata": {
+    "authoringNote": "Minimal hand-authored fixture proving the canonical model end-to-end (Milestone 5). Not a complete Preston/Carlisle-area map. Berth codes are illustrative placeholders, not verified against live TD messages."
+  }
+}

@@ -1,4 +1,8 @@
-import type { Pool } from "pg";
+/** Structural subset of `pg`'s `Pool`/`PoolClient` — lets callers pass either, so a transactional
+ * caller (e.g. the projector) can advance the checkpoint on the same client as its other writes. */
+export interface Queryable {
+  query<T>(text: string, values?: unknown[]): Promise<{ rows: T[] }>;
+}
 
 export interface Checkpoint {
   projectionDefinitionId: string;
@@ -29,7 +33,7 @@ function toCheckpoint(row: CheckpointRow): Checkpoint {
  * twice is idempotent (config_hash is refreshed, id is stable).
  */
 export async function getOrCreateProjectionDefinition(
-  pool: Pool,
+  pool: Queryable,
   name: string,
   codeVersion: number,
   configHash: string,
@@ -49,7 +53,10 @@ export async function getOrCreateProjectionDefinition(
 }
 
 /** Idempotent: creates a zeroed checkpoint row for this projection definition if none exists. */
-export async function ensureCheckpoint(pool: Pool, projectionDefinitionId: string): Promise<void> {
+export async function ensureCheckpoint(
+  pool: Queryable,
+  projectionDefinitionId: string,
+): Promise<void> {
   await pool.query(
     `insert into projection_checkpoint (projection_definition_id)
      values ($1)
@@ -59,7 +66,7 @@ export async function ensureCheckpoint(pool: Pool, projectionDefinitionId: strin
 }
 
 export async function getCheckpoint(
-  pool: Pool,
+  pool: Queryable,
   projectionDefinitionId: string,
 ): Promise<Checkpoint | undefined> {
   const result = await pool.query<CheckpointRow>(
@@ -72,7 +79,7 @@ export async function getCheckpoint(
 }
 
 export async function advanceCheckpoint(
-  pool: Pool,
+  pool: Queryable,
   projectionDefinitionId: string,
   lastIngestionSequence: string,
 ): Promise<void> {
@@ -81,5 +88,20 @@ export async function advanceCheckpoint(
      set last_ingestion_sequence = $2, last_completed_at = now(), error_state = null, updated_at = now()
      where projection_definition_id = $1`,
     [projectionDefinitionId, lastIngestionSequence],
+  );
+}
+
+/** Rewinds a projection's checkpoint back to zero so the next run reprocesses from the start —
+ * the "rebuild" half of the projector checkpoint/rebuild command (docs/IMPLEMENTATION_PLAN.md
+ * Milestone 4). Callers are responsible for clearing that projection's own output rows first. */
+export async function resetCheckpoint(
+  pool: Queryable,
+  projectionDefinitionId: string,
+): Promise<void> {
+  await pool.query(
+    `update projection_checkpoint
+     set last_ingestion_sequence = 0, last_completed_at = null, error_state = null, updated_at = now()
+     where projection_definition_id = $1`,
+    [projectionDefinitionId],
   );
 }

@@ -1,0 +1,21 @@
+export {
+  MAP_SCHEMA_VERSION,
+  MapDocumentSchema,
+  MapElementSchema,
+  MapBindingSchema,
+  type MapDocument,
+  type MapElement,
+  type TrackPathElement,
+  type BerthElement,
+  type SignalElement,
+  type PlatformElement,
+  type LabelElement,
+  type BoundaryElement,
+  type MapBinding,
+  type TdBerthBinding,
+  type TdSBitBinding,
+  type TopologyNode,
+  type TopologyEdge,
+} from "./document.js";
+export { validateMapDocument, type ValidationIssue, type ValidationResult } from "./validate.js";
+export { compileMapDocument, type CompiledMapBundle } from "./compiler.js";

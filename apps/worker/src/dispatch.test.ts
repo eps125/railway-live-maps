@@ -13,6 +13,8 @@ describe("parseCommand", () => {
     "ensure-partitions",
     "reconcile-archive",
     "replay-fixtures",
+    "project-td",
+    "publish-map",
     "ingest-td",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);

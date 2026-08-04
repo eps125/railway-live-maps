@@ -6,6 +6,8 @@ import { runMigrate } from "./commands/migrate.js";
 import { runEnsurePartitions } from "./commands/ensurePartitions.js";
 import { runReconcileArchive } from "./commands/reconcileArchive.js";
 import { runReplayFixtures } from "./commands/replayFixtures.js";
+import { runProjectTdCommand } from "./commands/projectTd.js";
+import { runPublishMap } from "./commands/publishMap.js";
 import { runIngestTd } from "./commands/ingestTd.js";
 import { runServe } from "./serve.js";
 
@@ -28,6 +30,10 @@ async function main(): Promise<void> {
       return runReconcileArchive(config, argvRest);
     case "replay-fixtures":
       return runReplayFixtures(config, argvRest);
+    case "project-td":
+      return runProjectTdCommand(config, argvRest);
+    case "publish-map":
+      return runPublishMap(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
       return;

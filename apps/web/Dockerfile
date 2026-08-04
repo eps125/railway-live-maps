@@ -10,12 +10,15 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/archive/package.json packages/archive/package.json
+COPY packages/map-schema/package.json packages/map-schema/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 COPY tsconfig.base.json ./
+COPY packages/map-schema packages/map-schema
 COPY apps/web apps/web
-RUN pnpm --filter @railway/web run build
+RUN pnpm --filter @railway/map-schema run build \
+  && pnpm --filter @railway/web run build
 
 FROM nginx:1.27-alpine AS runtime
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf

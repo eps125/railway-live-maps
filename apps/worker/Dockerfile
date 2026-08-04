@@ -12,6 +12,7 @@ COPY packages/domain/package.json packages/domain/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/archive/package.json packages/archive/package.json
 COPY packages/feed-parsers/package.json packages/feed-parsers/package.json
+COPY packages/map-schema/package.json packages/map-schema/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
@@ -20,11 +21,13 @@ COPY packages/domain packages/domain
 COPY packages/database packages/database
 COPY packages/archive packages/archive
 COPY packages/feed-parsers packages/feed-parsers
+COPY packages/map-schema packages/map-schema
 COPY apps/worker apps/worker
 RUN pnpm --filter @railway/domain run build \
   && pnpm --filter @railway/database run build \
   && pnpm --filter @railway/archive run build \
   && pnpm --filter @railway/feed-parsers run build \
+  && pnpm --filter @railway/map-schema run build \
   && pnpm --filter @railway/worker run build
 
 FROM base AS runtime
@@ -40,6 +43,9 @@ COPY --from=build /repo/packages/archive/dist packages/archive/dist
 COPY --from=build /repo/packages/feed-parsers/package.json packages/feed-parsers/package.json
 COPY --from=build /repo/packages/feed-parsers/dist packages/feed-parsers/dist
 COPY --from=build /repo/packages/feed-parsers/fixtures packages/feed-parsers/fixtures
+COPY --from=build /repo/packages/map-schema/package.json packages/map-schema/package.json
+COPY --from=build /repo/packages/map-schema/dist packages/map-schema/dist
+COPY --from=build /repo/packages/map-schema/fixtures packages/map-schema/fixtures
 COPY --from=build /repo/apps/worker/package.json apps/worker/package.json
 COPY --from=build /repo/apps/worker/dist apps/worker/dist
 COPY --from=build /repo/apps/worker/fixtures apps/worker/fixtures

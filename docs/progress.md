@@ -105,17 +105,24 @@ session's verification — safe to drop, not referenced by anything else.
   (which `feed_frame`'s unique constraint already solves) and needs real throughput-aware
   design, not a guess.
 
-## GitHub / Docker / CI-CD
+## GitHub / Docker / CI-CD / Portainer: complete and deployed (2026-08-04)
 
-- `.github/workflows/ci.yml`: `build-and-test` job (lint, format check, typecheck, unit
-  tests, build, MinIO + Postgres + Redis service containers, migrate, ensure-archive-bucket,
-  connectivity check, `test:integration`, fixture replay smoke, Docker image builds); a
-  `publish` job (push to `main` only) builds and pushes `ghcr.io/<owner>/<repo>-{api,worker,web}`
-  using the built-in `GITHUB_TOKEN`.
-- **Not yet done**: the repo has not been pushed to GitHub — that needs the owner to create
-  the actual repository (no `gh` CLI in this sandbox) and give the go-ahead to push, per
-  the safety rules on publishing. `docs/DEPLOYMENT.md` has the full runbook once that
-  happens.
+- Repo pushed to `https://github.com/eps125/railway-live-maps` (`main`). CI green on both
+  jobs: `build-and-test` (lint, format check, typecheck, unit tests, build, MinIO/Postgres/
+  Redis service containers, migrate, ensure-archive-bucket, connectivity check,
+  `test:integration`, fixture replay smoke, Docker image builds) and `publish` (pushes
+  `ghcr.io/eps125/railway-live-maps-{api,worker,web}`, `GITHUB_TOKEN`-authenticated). GHCR
+  packages set to public.
+- **Deployed to Portainer** using `deploy/docker-compose.portainer.yml` (pull-only variant,
+  no `build:` context, no Docker-secret file mounts — `NR_USERNAME`/`NR_PASSWORD` are plain
+  env vars there instead, left empty; see the caveat in `docs/DEPLOYMENT.md` §4 about that
+  being weaker than a mounted secret, acceptable only while `TD_LIVE_ENABLED=false`).
+  `WEB_PORT=6050`/`API_PORT=6051` (host had something already on 8080). `deploy/.env`
+  (gitignored, not in Git) holds the actual generated secrets used — regenerate/rotate
+  before treating this as anything beyond a dev/staging deploy.
+- Not yet run against the live deployment: `migrate`/`ensure-archive-bucket` one-off
+  commands, `/health/ready` check. Confirm these before assuming the stack is fully working
+  end-to-end, not just "container started."
 
 ### Known limitations (unchanged from M1, plus)
 
@@ -130,9 +137,23 @@ session's verification — safe to drop, not referenced by anything else.
 
 ## Next smallest task
 
-Milestone 4 (`docs/IMPLEMENTATION_PLAN.md`): nationwide TD projections and history —
-CA/CB/CC/CT reducers actually populating `berth_current_state`/`berth_occupancy` for every
-observed area, mismatch/anomaly recording, S-Class current-state storage, area/berth
-discovery and history REST endpoints, projector checkpoint/rebuild command (the
-`projection_checkpoint` framework from M2 finally gets a caller). Start in plan mode per
-`docs/CLAUDE_WORKFLOW.md`.
+Owner's stated plan: Milestones 4 and 5 next, in a new session.
+
+- **Milestone 4** (`docs/IMPLEMENTATION_PLAN.md`): nationwide TD projections and history —
+  CA/CB/CC/CT reducers actually populating `berth_current_state`/`berth_occupancy` for every
+  observed area, mismatch/anomaly recording, S-Class current-state storage, area/berth
+  discovery and history REST endpoints, projector checkpoint/rebuild command (the
+  `projection_checkpoint` framework from M2 finally gets a caller).
+- **Milestone 5**: versioned canonical map schema/validator, one hand-authored minimal
+  Lancaster test document, published map tables/compiler, SVG renderer with pan/zoom and
+  berth click target, REST map definition/state endpoint. Lancaster signals render blank
+  (no usable S-Class data for Preston/Lancaster — CLAUDE.md non-negotiable #8). No visual
+  editor yet (that's M11) — prove the canonical model first.
+
+Before either: the actual Preston TD `area_id` is still `UNCONFIRMED`
+(`PRESTON_MAP_TD_AREA` env var) — needed for Lancaster map bindings specifically, not for
+nationwide ingestion (which is unconditional). Confirming it needs either real captured TD
+messages or the `docs/wiki.openraildata.com` "List of Train Describers" reference.
+
+Start each milestone in plan mode per `docs/CLAUDE_WORKFLOW.md` — read `CLAUDE.md` +
+`docs/IMPLEMENTATION_PLAN.md` + the milestone-relevant doc, plan first, then implement.

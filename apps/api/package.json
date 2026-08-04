@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@railway/database": "workspace:*",
+    "@railway/domain": "workspace:*",
+    "@railway/map-schema": "workspace:*",
     "fastify": "^5.2.1",
     "ioredis": "^5.4.2",
     "pg": "^8.13.1",

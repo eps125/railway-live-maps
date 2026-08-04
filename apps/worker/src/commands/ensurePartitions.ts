@@ -1,8 +1,14 @@
 import { createPool, ensureMonthlyPartitions } from "@railway/database";
 import type { Config } from "../config.js";
 
-/** The three tables partitioned per docs/DATA_MODEL.md §11 that need ongoing month top-up. */
-const PARTITIONED_TABLES = ["raw_feed_event", "td_berth_event", "td_s_event"] as const;
+/** The tables partitioned per docs/DATA_MODEL.md §11 that need ongoing month top-up. */
+const PARTITIONED_TABLES = [
+  "raw_feed_event",
+  "td_berth_event",
+  "td_s_event",
+  "berth_occupancy",
+  "td_s_bit_transition",
+] as const;
 
 /** Shared by the standalone `ensure-partitions` command and `migrate` (which tops up
  * partitions right after applying migrations, so every release stays ahead of the default

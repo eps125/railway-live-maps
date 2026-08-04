@@ -1,0 +1,1 @@
+export const TD_NORMALIZATION_VERSION = 1;

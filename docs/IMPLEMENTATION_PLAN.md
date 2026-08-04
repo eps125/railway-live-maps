@@ -68,6 +68,13 @@ Acceptance must prove that messages from multiple areas are retained and an unkn
 
 Acceptance fixtures include normal step, cancel, interpose overwrite, empty source, destination overwrite, duplicate delivery, equal timestamp ordering, month partition boundary and restart/replay.
 
+**Status: implemented.** Migration `0008_td_projection_state.sql`; pure reducers in
+`packages/domain/src/td/berthReducer.ts`; orchestrator in `apps/worker/src/td/projector.ts`
+(`project-td [--rebuild]` command) with integration tests in `projector.integration.test.ts`
+covering every acceptance scenario above; REST endpoints in `apps/api/src/routes/td.ts`. Known
+limitation: S-Class bit decoding (`td_s_bit_transition`) is created but left unpopulated — there
+is no verified S-Class decode spec/fixture yet (see Milestone 0), only raw storage.
+
 ## Milestone 5 — canonical map schema and basic Lancaster renderer
 
 - Versioned map schema/validator.
@@ -79,6 +86,16 @@ Acceptance fixtures include normal step, cancel, interpose overwrite, empty sour
 - Lancaster TD area identifier comes from verified map configuration, not ingestion filtering.
 
 No visual editor yet; prove the canonical model first.
+
+**Status: implemented.** New `packages/map-schema` package (`document.ts`/`validate.ts`/
+`compiler.ts`); migration `0009_map_tables.sql` (`map`/`map_version`, DB-enforced no-overlap via
+a `btree_gist` exclusion constraint); `publish-map` worker command; REST endpoints in
+`apps/api/src/routes/maps.ts`; SVG renderer in `apps/web/src/map/`. The one hand-authored test
+document is `packages/map-schema/fixtures/lancaster-minimal.json`. Known limitations: its `PX`
+(Preston) and `CL` (Carlisle) berth bindings are **owner-asserted, not yet verified against live
+captured TD messages** — confirm before treating them as real bindings (see "Confirm before
+hardcoding" in CLAUDE.md and Milestone 0); `/maps/{slug}/state` only serves current live state,
+point-in-time playback is Milestone 10; `map_binding_index`/drafts/snapshots are Milestone 6/11/12.
 
 ## Milestone 6 — live WebSocket
 

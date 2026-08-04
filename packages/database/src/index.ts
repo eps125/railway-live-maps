@@ -18,5 +18,7 @@ export {
   ensureCheckpoint,
   getCheckpoint,
   advanceCheckpoint,
+  resetCheckpoint,
   type Checkpoint,
+  type Queryable,
 } from "./checkpoint.js";

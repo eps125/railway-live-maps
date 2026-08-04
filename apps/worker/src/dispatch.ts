@@ -5,6 +5,8 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "ensure-partitions",
   "reconcile-archive",
   "replay-fixtures",
+  "project-td",
+  "publish-map",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

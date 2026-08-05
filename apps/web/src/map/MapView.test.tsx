@@ -92,4 +92,29 @@ describe("MapView", () => {
 
     expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
+
+  it("recovers once a definition that was 404 at first load gets published", async () => {
+    // Reproduces the real bug: the page loads before `publish-map` runs (definition 404s),
+    // then the map gets published while the tab is still open — the definition fetch must
+    // retry and the page must recover, not stay stuck on the first error forever. Uses real
+    // timers (not fake) because @testing-library's findBy*/waitFor polling needs them.
+    let definitionCalls = 0;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/definition")) {
+        definitionCalls += 1;
+        return definitionCalls === 1
+          ? Promise.resolve({ ok: false, status: 404 } as Response)
+          : Promise.resolve(jsonResponse(definition));
+      }
+      if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MapView slug="lancaster" />);
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(await screen.findByText("2A16", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  }, 10_000);
 });

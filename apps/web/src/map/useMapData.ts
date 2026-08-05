@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { MapDefinitionResponse, MapStateResponse } from "./types.js";
 
 const STATE_POLL_INTERVAL_MS = 5000;
+const DEFINITION_RETRY_INTERVAL_MS = 5000;
 
 export interface UseMapDataResult {
   definition: MapDefinitionResponse | null;
@@ -28,7 +29,11 @@ export function useMapData(slug: string): UseMapDataResult {
           throw new Error(`Failed to load map definition (${response.status})`);
         }
         const body = (await response.json()) as MapDefinitionResponse;
-        if (!cancelled) setDefinition(body);
+        if (cancelled) return;
+        setDefinition(body);
+        setError(null);
+        // A published map's compiled bundle for "now" is stable — stop retrying once it loads.
+        clearInterval(retryTimer);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load map definition");
@@ -39,8 +44,12 @@ export function useMapData(slug: string): UseMapDataResult {
     }
 
     void loadDefinition();
+    // Not published yet (or a transient failure) when this page loaded is a normal race, not a
+    // permanent state — keep retrying rather than getting stuck on the first failure forever.
+    const retryTimer = setInterval(() => void loadDefinition(), DEFINITION_RETRY_INTERVAL_MS);
     return () => {
       cancelled = true;
+      clearInterval(retryTimer);
     };
   }, [slug]);
 
@@ -54,7 +63,9 @@ export function useMapData(slug: string): UseMapDataResult {
           throw new Error(`Failed to load map state (${response.status})`);
         }
         const body = (await response.json()) as MapStateResponse;
-        if (!cancelled) setState(body);
+        if (cancelled) return;
+        setState(body);
+        setError(null);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load map state");

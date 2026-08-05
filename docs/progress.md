@@ -135,25 +135,55 @@ session's verification — safe to drop, not referenced by anything else.
   broker (by design — gated off, and there's nothing to connect to here). Verify it for
   real before ever setting `TD_LIVE_ENABLED=true`.
 
+## Milestones 4 and 5 — nationwide TD projections and canonical map schema/renderer: complete (2026-08-05)
+
+- **Milestone 4**: CA/CB/CC pure reducers (`packages/domain/src/td/berthReducer.ts`), a
+  checkpointed projector (`apps/worker/src/td/projector.ts`, `project-td [--rebuild]` command)
+  populating `berth_current_state`/`berth_occupancy`/`td_projection_anomaly`/
+  `td_s_current_state` nationwide, and REST discovery/history endpoints
+  (`apps/api/src/routes/td.ts`). Integration tests cover every named acceptance scenario
+  (normal step, cancel, interpose overwrite, empty source, destination overwrite, duplicate
+  delivery, equal-timestamp ordering, month partition boundary, restart/replay). Known
+  limitation: `td_s_bit_transition` exists but is unpopulated — no verified S-Class decode
+  spec/fixture yet.
+- **Milestone 5**: canonical map JSON schema/validator/compiler (`packages/map-schema`), a
+  `publish-map` CLI, map definition/state REST endpoints (`apps/api/src/routes/maps.ts`), and
+  a pan/zoom SVG renderer (`apps/web/src/map/`), proven against one hand-authored Lancaster
+  fixture. Known limitations: the fixture's `PX`/`CL` TD area bindings are owner-asserted, not
+  yet verified against live captured messages; `/state` only serves current live state
+  (point-in-time playback is M10); `map_binding_index`/drafts/snapshots are M6/M11/M12.
+- Deployed and live-tested against the owner's Portainer instance
+  (`deploy/docker-compose.portainer.yml`, ports 6050-6055). Two real bugs found and fixed
+  during that testing, not caught by unit/integration tests: the three app Dockerfiles didn't
+  copy/build the new `@railway/domain`/`@railway/map-schema` workspace deps (fixed); the map
+  page's `definition` fetch had no retry, so a page loaded before `publish-map` ran got stuck
+  showing a stale 404 forever even after the map was published (fixed, with a regression
+  test) — this also surfaced that `apps/web`'s test setup never ran RTL's cleanup between
+  tests (`vitest.config.ts` doesn't set `test.globals`), now fixed in `setupTests.ts`.
+
 ## Next smallest task
 
-Owner's stated plan: Milestones 4 and 5 next, in a new session.
+Owner's decision (2026-08-05): reprioritized the milestone order — see "Execution order" at
+the top of `docs/IMPLEMENTATION_PLAN.md`. M11 (visual editor MVP) and M12 (editor publishing
+workflow) were moved ahead of M7–M10, since both only depend on M4/M5 (already done), not on
+schedule/TRUST/resolver/playback data — the goal is to stop hand-authoring map JSON and using
+the `publish-map` CLI as soon as possible. Actual order: **M6 → M11 → M12 → M7 → M8 → M9 →
+M10 → M13**.
 
-- **Milestone 4** (`docs/IMPLEMENTATION_PLAN.md`): nationwide TD projections and history —
-  CA/CB/CC/CT reducers actually populating `berth_current_state`/`berth_occupancy` for every
-  observed area, mismatch/anomaly recording, S-Class current-state storage, area/berth
-  discovery and history REST endpoints, projector checkpoint/rebuild command (the
-  `projection_checkpoint` framework from M2 finally gets a caller).
-- **Milestone 5**: versioned canonical map schema/validator, one hand-authored minimal
-  Lancaster test document, published map tables/compiler, SVG renderer with pan/zoom and
-  berth click target, REST map definition/state endpoint. Lancaster signals render blank
-  (no usable S-Class data for Preston/Lancaster — CLAUDE.md non-negotiable #8). No visual
-  editor yet (that's M11) — prove the canonical model first.
+- **Milestone 6** (next): live WebSocket — snapshot + sequenced delta protocol, optional Redis
+  pub/sub adapter, map-specific filtering after nationwide projection, browser gap
+  detection/resync, live/stale banner, reconnect behavior. Replaces the current 5-second REST
+  poll in `apps/web/src/map/useMapData.ts`.
+- Then **Milestone 11**: Konva editor canvas, drawing/binding tools, bindings to any observed
+  nationwide TD area/berth, undo/redo, draft autosave/JSON import-export, validation panel.
+- Then **Milestone 12**: draft revisions/optimistic locking, validation gates, immutable
+  publish with effective date, version diff — the "historical" test mode is the one piece
+  that wants M10 (playback); stub or defer just that part.
 
-Before either: the actual Preston TD `area_id` is still `UNCONFIRMED`
-(`PRESTON_MAP_TD_AREA` env var) — needed for Lancaster map bindings specifically, not for
-nationwide ingestion (which is unconditional). Confirming it needs either real captured TD
-messages or the `docs/wiki.openraildata.com` "List of Train Describers" reference.
+Still open regardless of order: the actual Preston/Carlisle TD `area_id`s used in
+`packages/map-schema/fixtures/lancaster-minimal.json` (`PX`/`CL`) are owner-asserted, not
+verified against real captured TD messages — confirm before treating any Lancaster binding as
+real (CLAUDE.md "Confirm before hardcoding", Milestone 0).
 
 Start each milestone in plan mode per `docs/CLAUDE_WORKFLOW.md` — read `CLAUDE.md` +
 `docs/IMPLEMENTATION_PLAN.md` + the milestone-relevant doc, plan first, then implement.

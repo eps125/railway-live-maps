@@ -2,6 +2,21 @@
 
 Do not ask Claude to build the entire product in one task. Complete and verify one milestone before moving on.
 
+## Execution order
+
+Milestone numbers below are stable labels (referenced by code comments throughout the repo,
+e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{slug}/state`'s
+"Milestone 10" 501 message) — not a mandated sequence. Actual implementation order:
+
+**0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 → 10 → 13 → Later milestones**
+
+M11 (visual editor MVP) and M12 (editor publishing workflow) were moved ahead of M7–M10:
+both only depend on M4 (nationwide observed TD area/berth discovery) and M5 (canonical map
+schema/compiler) — already done — not on schedule/TRUST/resolver/playback data, so moving
+them up lets maps be authored and published through the editor instead of hand-edited JSON
+plus the `publish-map` CLI. M12's "historical" test mode is the one piece that wants M10
+(playback) — stub or defer just that part until M10 actually lands.
+
 ## Milestone 0 — decisions, subscriptions and fixtures
 
 Deliverables:

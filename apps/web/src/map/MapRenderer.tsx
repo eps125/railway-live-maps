@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
 
@@ -44,6 +44,7 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
   const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
     null,
   );
+  const svgRef = useRef<SVGSVGElement>(null);
 
   const elementIdToBinding = useMemo(() => {
     const map = new Map<string, string>();
@@ -55,17 +56,29 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
 
   const elements = Object.values(bundle.elementsById);
 
-  function onWheel(event: React.WheelEvent<SVGSVGElement>): void {
-    event.preventDefault();
-    const scale = event.deltaY > 0 ? 1.1 : 0.9;
-    setViewBox((current) => {
-      const newWidth = Math.max(current.width * scale, MIN_ZOOM_WIDTH);
-      const newHeight = Math.max(current.height * scale, MIN_ZOOM_WIDTH);
-      const cx = current.x + current.width / 2;
-      const cy = current.y + current.height / 2;
-      return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
-    });
-  }
+  // React attaches its synthetic onWheel listener as passive at the root, so
+  // event.preventDefault() there is silently ignored (and Chrome logs a warning on every
+  // tick) — attach a real, non-passive listener directly on the element instead so zooming
+  // the map actually stops the page from scrolling underneath it.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    function onWheel(event: WheelEvent): void {
+      event.preventDefault();
+      const scale = event.deltaY > 0 ? 1.1 : 0.9;
+      setViewBox((current) => {
+        const newWidth = Math.max(current.width * scale, MIN_ZOOM_WIDTH);
+        const newHeight = Math.max(current.height * scale, MIN_ZOOM_WIDTH);
+        const cx = current.x + current.width / 2;
+        const cy = current.y + current.height / 2;
+        return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
+      });
+    }
+
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, []);
 
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>): void {
     setDrag({ startX: event.clientX, startY: event.clientY, origin: viewBox });
@@ -91,13 +104,13 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
   return (
     <div style={{ position: "relative" }}>
       <svg
+        ref={svgRef}
         role="img"
         aria-label={`${bundle.mapName} schematic map`}
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
         width="100%"
         height="600"
         style={{ background: "#0d1117", cursor: drag ? "grabbing" : "grab", touchAction: "none" }}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

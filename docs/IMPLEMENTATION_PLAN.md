@@ -17,6 +17,10 @@ them up lets maps be authored and published through the editor instead of hand-e
 plus the `publish-map` CLI. M12's "historical" test mode is the one piece that wants M10
 (playback) — stub or defer just that part until M10 actually lands.
 
+M14 (renderer visual polish/theming) is intentionally not placed in the chain above: it's
+purely visual, blocks nothing, and is waiting on the owner to pick a style direction (see its
+section below) before it should start — slot it in wherever makes sense once that happens.
+
 ## Milestone 0 — decisions, subscriptions and fixtures
 
 Deliverables:
@@ -204,6 +208,35 @@ Done when Lancaster can be created, edited and published with no frontend source
 - Log rotation and storage monitoring.
 - Multi-day soak test using captured nationwide feed volume.
 - Non-safety-critical notices and licence attribution.
+
+## Milestone 14 — public renderer visual polish and theming
+
+Owner reviewed reference examples (2026-08-05) of two quite different professional signalling-panel
+aesthetics — a modern flat/dark control-room look (colour-coded berths, crisp "set route" vs
+unset track highlighting) and a retro monochrome CRT mimic-panel look (pure black background,
+green-on-black track/text) — and asked to pencil this in as a future milestone rather than pick a
+direction yet. Do not start this milestone until the owner has chosen a direction; open questions
+to resolve first:
+
+- Visual style direction: modern flat/dark panel, retro monochrome CRT, or a deliberate blend.
+- Track rendering: junction/points glyphs, directional arrow ticks, "set" vs "unset" route
+  highlighting (relevant mainly for the modern-panel direction).
+- Berth box colour semantics beyond today's binary occupied/vacant (candidates raised: colour by
+  TD area — relevant now that Lancaster spans both `PX` and `CL` — or something else entirely).
+- Station/area label typography and layout conventions.
+
+Deliverables once a direction is chosen:
+
+- A style-tokens/theme file (colours, stroke widths, fonts, symbol glyphs as a single editable
+  source) so visual tweaks don't require touching `MapRenderer.tsx`'s component logic — the first
+  step toward "easily edit assets for continual improvement," independent of whether M11's editor
+  UI exposes it yet.
+- Reworked track/junction/signal/berth rendering to match the chosen direction.
+- Once M11 (visual editor) exists: expose the relevant theme/asset choices through the editor UI
+  rather than requiring a code change for every tweak.
+
+Purely visual/UX — not a blocker for any other milestone, safe to defer indefinitely. Reference
+inspiration only, per CLAUDE.md non-negotiable #14 (no scraping Vail Data/Traksy/OpenTrainTimes).
 
 ## Later milestones
 

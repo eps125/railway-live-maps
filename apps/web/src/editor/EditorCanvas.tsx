@@ -238,6 +238,27 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     });
   }
 
+  /** Per-endpoint drag handle for a selected trackPath/platform — the only way to lengthen,
+   * shorten or re-angle a track segment (there's no Transformer-style resize for points-based
+   * elements). Rewrites just the dragged point in place and pushes the whole array through
+   * `setProperty`, so undo/redo gets a single step per drag rather than one per pointer move. */
+  function handlePointDragEnd(
+    e: Konva.KonvaEventObject<DragEvent>,
+    elementId: string,
+    pointIndex: number,
+    points: Array<{ x: number; y: number }>,
+  ): void {
+    const newX = snap(e.target.x(), gridSize);
+    const newY = snap(e.target.y(), gridSize);
+    e.target.position({ x: points[pointIndex]!.x, y: points[pointIndex]!.y });
+    if (newX === points[pointIndex]!.x && newY === points[pointIndex]!.y) return;
+    const newPoints = points.map((p, i) => (i === pointIndex ? { x: newX, y: newY } : p));
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setProperty", elementId, property: "points", value: newPoints },
+    });
+  }
+
   function handleTransformEnd(elementId: string): void {
     const node = nodeRefs.current.get(elementId);
     const element = doc.elements.find((el) => el.id === elementId);
@@ -312,31 +333,69 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
 
                 if (element.type === "trackPath") {
                   return (
-                    <Line
-                      key={element.id}
-                      ref={setRef}
-                      points={flattenPoints(element.points)}
-                      stroke={selected ? "#58a6ff" : "#5f6b7a"}
-                      strokeWidth={selected ? 3 : 2}
-                      draggable={draggable}
-                      onClick={(e) => handleElementClick(e, element.id)}
-                      onDragEnd={(e) => handlePathDragEnd(e, element.id)}
-                    />
+                    <Group key={element.id}>
+                      <Line
+                        ref={setRef}
+                        points={flattenPoints(element.points)}
+                        stroke={selected ? "#58a6ff" : "#5f6b7a"}
+                        strokeWidth={selected ? 3 : 2}
+                        hitStrokeWidth={16}
+                        draggable={draggable}
+                        onClick={(e) => handleElementClick(e, element.id)}
+                        onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                      />
+                      {selected && draggable
+                        ? element.points.map((point, index) => (
+                            <Circle
+                              key={index}
+                              x={point.x}
+                              y={point.y}
+                              radius={5}
+                              fill="#0d1117"
+                              stroke="#58a6ff"
+                              strokeWidth={2}
+                              draggable
+                              onDragEnd={(e) =>
+                                handlePointDragEnd(e, element.id, index, element.points)
+                              }
+                            />
+                          ))
+                        : null}
+                    </Group>
                   );
                 }
                 if (element.type === "platform") {
                   return (
-                    <Line
-                      key={element.id}
-                      ref={setRef}
-                      points={flattenPoints(element.points)}
-                      stroke={selected ? "#58a6ff" : "#3d4a5c"}
-                      strokeWidth={selected ? 8 : 6}
-                      lineCap="round"
-                      draggable={draggable}
-                      onClick={(e) => handleElementClick(e, element.id)}
-                      onDragEnd={(e) => handlePathDragEnd(e, element.id)}
-                    />
+                    <Group key={element.id}>
+                      <Line
+                        ref={setRef}
+                        points={flattenPoints(element.points)}
+                        stroke={selected ? "#58a6ff" : "#3d4a5c"}
+                        strokeWidth={selected ? 8 : 6}
+                        hitStrokeWidth={16}
+                        lineCap="round"
+                        draggable={draggable}
+                        onClick={(e) => handleElementClick(e, element.id)}
+                        onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                      />
+                      {selected && draggable
+                        ? element.points.map((point, index) => (
+                            <Circle
+                              key={index}
+                              x={point.x}
+                              y={point.y}
+                              radius={5}
+                              fill="#0d1117"
+                              stroke="#58a6ff"
+                              strokeWidth={2}
+                              draggable
+                              onDragEnd={(e) =>
+                                handlePointDragEnd(e, element.id, index, element.points)
+                              }
+                            />
+                          ))
+                        : null}
+                    </Group>
                   );
                 }
                 if (element.type === "berth") {

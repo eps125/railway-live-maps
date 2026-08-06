@@ -52,6 +52,54 @@ function NumberField({ label, value, onCommit }: NumberFieldProps): JSX.Element 
   );
 }
 
+function IdField({
+  elementId,
+  existingIds,
+  onCommit,
+}: {
+  elementId: string;
+  existingIds: string[];
+  onCommit: (newId: string) => void;
+}): JSX.Element {
+  const [local, setLocal] = useState(elementId);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setLocal(elementId);
+    setError(null);
+  }, [elementId]);
+
+  function commit(): void {
+    const trimmed = local.trim();
+    if (trimmed === elementId) return;
+    if (!trimmed) {
+      setError("Element ID can't be empty");
+      setLocal(elementId);
+      return;
+    }
+    if (existingIds.includes(trimmed)) {
+      setError(`"${trimmed}" is already in use`);
+      setLocal(elementId);
+      return;
+    }
+    setError(null);
+    onCommit(trimmed);
+  }
+
+  return (
+    <label className="field">
+      Element ID
+      <input
+        type="text"
+        className="mono"
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={commit}
+      />
+      {error ? <span className="badge badge--danger">{error}</span> : null}
+    </label>
+  );
+}
+
 function BindingFields({
   elementId,
   binding,
@@ -161,13 +209,24 @@ export function PropertyPanel(): JSX.Element {
     });
   }
 
+  const existingIds = doc.elements.filter((el) => el.id !== elementId).map((el) => el.id);
+
   return (
     <aside aria-label="Properties" className="panel-card">
       <h3>Properties</h3>
       <p className="field-row">
         <span className="badge">{element.type}</span>
-        <span className="mono">{element.id}</span>
       </p>
+      <IdField
+        elementId={elementId}
+        existingIds={existingIds}
+        onCommit={(newId) =>
+          dispatch({
+            type: "dispatchCommand",
+            command: { type: "renameElement", elementId, newId },
+          })
+        }
+      />
 
       {element.type === "berth" && (
         <>

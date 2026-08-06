@@ -89,7 +89,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-    networks: [backend]
+    # `egress` (not `internal`-only): TD/VSTP/TRUST ingestion and the download-* commands need
+    # to reach publicdatafeeds.networkrail.co.uk — `backend`-only leaves DNS unresolvable
+    # entirely (see deploy/docker-compose.portainer.yml's fuller explanation).
+    networks: [backend, egress]
 
   archive:
     # Development default only. Replace with a tested immutable tag/digest.
@@ -143,6 +146,10 @@ networks:
   frontend:
   backend:
     internal: true
+  # Outbound-only path to the real internet for `worker` (TD/VSTP/TRUST ingestion and the
+  # download-* commands reach Network Rail's public endpoints). Not `internal`, but nothing is
+  # published on it either — it grants egress, not any new inbound surface.
+  egress:
 
 secrets:
   # Real values live only in these local, gitignored files (deploy/secrets/*.txt) — never

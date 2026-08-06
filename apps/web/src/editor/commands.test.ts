@@ -179,6 +179,45 @@ describe("applyCommand", () => {
     expect(berth).toMatchObject({ bindingId: undefined });
   });
 
+  it("renameElement changes the id and cascades to the binding and any trackElementId references, inverse renames back", () => {
+    const doc = baseDoc();
+    doc.elements = doc.elements.map((element) =>
+      element.id === "berth-1" ? { ...element, trackElementId: "track-1" } : element,
+    );
+    doc.topology = {
+      ...doc.topology,
+      edges: [{ id: "e1", fromNodeId: "n1", toNodeId: "n2", trackElementId: "track-1" }],
+    };
+
+    const applied = expectRoundTrip(doc, {
+      type: "renameElement",
+      elementId: "track-1",
+      newId: "track-up-main",
+    });
+    expect(applied.elements.map((e) => e.id)).not.toContain("track-1");
+    expect(applied.elements.map((e) => e.id)).toContain("track-up-main");
+    const berth = applied.elements.find((e) => e.id === "berth-1")! as { trackElementId?: string };
+    expect(berth.trackElementId).toBe("track-up-main");
+    expect(applied.topology.edges[0]).toMatchObject({ trackElementId: "track-up-main" });
+  });
+
+  it("renameElement updates bindings.elementId to follow the renamed element", () => {
+    const doc = baseDoc();
+    const applied = expectRoundTrip(doc, {
+      type: "renameElement",
+      elementId: "berth-1",
+      newId: "berth-la01",
+    });
+    expect(applied.bindings[0]).toMatchObject({ elementId: "berth-la01" });
+  });
+
+  it("renameElement refuses to collide with an existing element id", () => {
+    const doc = baseDoc();
+    expect(() =>
+      applyCommand(doc, { type: "renameElement", elementId: "berth-1", newId: "track-1" }),
+    ).toThrow(/already exists/);
+  });
+
   it("connectTopology adds an edge, inverse (disconnectTopology) removes it exactly", () => {
     const doc = baseDoc();
     const edge = { id: "e1", fromNodeId: "n1", toNodeId: "n2", trackElementId: "track-1" };

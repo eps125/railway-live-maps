@@ -88,8 +88,6 @@ export function Toolbar({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      const meta = e.ctrlKey || e.metaKey;
-      if (!meta) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -97,6 +95,18 @@ export function Toolbar({
       ) {
         return;
       }
+
+      if ((e.key === "Delete" || e.key === "Backspace") && state.selection.length > 0) {
+        e.preventDefault();
+        dispatch({
+          type: "dispatchCommand",
+          command: { type: "deleteElements", elementIds: state.selection },
+        });
+        return;
+      }
+
+      const meta = e.ctrlKey || e.metaKey;
+      if (!meta) return;
       if (e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         dispatch({ type: "undo" });
@@ -186,6 +196,19 @@ export function Toolbar({
         </button>
         <button type="button" className="btn" disabled={!clipboard} onClick={pasteClipboard}>
           Paste
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={state.selection.length === 0}
+          onClick={() =>
+            dispatch({
+              type: "dispatchCommand",
+              command: { type: "deleteElements", elementIds: state.selection },
+            })
+          }
+        >
+          Delete
         </button>
         <button
           type="button"

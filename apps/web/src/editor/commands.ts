@@ -17,6 +17,7 @@ export type EditorCommand =
   | { type: "moveElements"; elementIds: string[]; dx: number; dy: number }
   | { type: "resizeElement"; elementId: string; width: number; height: number }
   | { type: "setProperty"; elementId: string; property: string; value: unknown }
+  | { type: "renameElement"; elementId: string; newId: string }
   | { type: "setBinding"; elementId: string; binding: MapBinding | null }
   | { type: "connectTopology"; edge: TopologyEdge }
   | { type: "disconnectTopology"; edgeId: string }
@@ -144,6 +145,48 @@ function applySetProperty(
   };
 }
 
+/** Element IDs are referenced from three other places in the document: `bindings.elementId`,
+ * `trackElementId` on berth/signal elements and topology edges (an optional pointer to a
+ * trackPath), and the element's own `id`. Renaming has to update all of them atomically or a
+ * binding/track-link would silently point at nothing. */
+function applyRenameElement(
+  doc: MapDocument,
+  elementId: string,
+  newId: string,
+): ApplyCommandResult {
+  if (elementId === newId) {
+    return { doc, inverse: { type: "renameElement", elementId: newId, newId: elementId } };
+  }
+  const target = doc.elements.find((element) => element.id === elementId);
+  if (!target) {
+    throw new Error(`renameElement: element "${elementId}" not found`);
+  }
+  if (doc.elements.some((element) => element.id === newId)) {
+    throw new Error(`renameElement: an element with id "${newId}" already exists`);
+  }
+
+  const elements = doc.elements.map((element) => {
+    const withNewId = element.id === elementId ? { ...element, id: newId } : element;
+    if ("trackElementId" in withNewId && withNewId.trackElementId === elementId) {
+      return { ...withNewId, trackElementId: newId };
+    }
+    return withNewId;
+  });
+
+  const bindings = doc.bindings.map((binding) =>
+    binding.elementId === elementId ? { ...binding, elementId: newId } : binding,
+  );
+
+  const edges = doc.topology.edges.map((edge) =>
+    edge.trackElementId === elementId ? { ...edge, trackElementId: newId } : edge,
+  );
+
+  return {
+    doc: { ...doc, elements, bindings, topology: { ...doc.topology, edges } },
+    inverse: { type: "renameElement", elementId: newId, newId: elementId },
+  };
+}
+
 function applySetBinding(
   doc: MapDocument,
   elementId: string,
@@ -244,6 +287,8 @@ export function applyCommand(doc: MapDocument, command: EditorCommand): ApplyCom
       return applyResizeElement(doc, command.elementId, command.width, command.height);
     case "setProperty":
       return applySetProperty(doc, command.elementId, command.property, command.value);
+    case "renameElement":
+      return applyRenameElement(doc, command.elementId, command.newId);
     case "setBinding":
       return applySetBinding(doc, command.elementId, command.binding);
     case "connectTopology":

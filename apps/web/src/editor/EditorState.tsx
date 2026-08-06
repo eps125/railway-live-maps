@@ -39,7 +39,13 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "dispatchCommand": {
       const { doc, inverse } = applyCommand(state.document, action.command);
-      return { ...state, document: doc, past: [...state.past, inverse], future: [], dirty: true };
+      let selection = state.selection;
+      const command = action.command;
+      if (command.type === "renameElement") {
+        const { elementId, newId } = command;
+        selection = state.selection.map((id) => (id === elementId ? newId : id));
+      }
+      return { ...state, document: doc, selection, past: [...state.past, inverse], future: [], dirty: true };
     }
     case "undo": {
       const lastInverse = state.past.at(-1);

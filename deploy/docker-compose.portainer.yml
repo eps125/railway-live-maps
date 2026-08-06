@@ -67,6 +67,11 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-production}
+      # Internal container listen port — NOT the same thing as API_PORT below (which is only
+      # the host-side publish mapping, hardcoded to forward to container port 3000). Leave
+      # PORT at 3000: apps/web/nginx.conf's `proxy_pass http://api:3000` is hardcoded to that
+      # value, so changing PORT here breaks the web->api proxy with a 502, even though the
+      # api container itself comes up healthy.
       PORT: ${PORT:-3000}
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}

@@ -26,9 +26,9 @@ export function LayersPanel(): JSX.Element {
   }
 
   return (
-    <section aria-label="Layers">
+    <section aria-label="Layers" className="panel-card">
       <h3>Layers</h3>
-      <ul>
+      <ul className="layer-list">
         {sorted.map((layer, index) => (
           <li key={layer.id}>
             <label>
@@ -47,8 +47,8 @@ export function LayersPanel(): JSX.Element {
                   })
                 }
               />
-              {layer.name}
             </label>
+            <span className="layer-list__name">{layer.name}</span>
             <label>
               <input
                 type="checkbox"
@@ -67,16 +67,24 @@ export function LayersPanel(): JSX.Element {
               />
               Locked
             </label>
-            <button type="button" disabled={index === 0} onClick={() => swap(layer.id, -1)}>
-              ↑
-            </button>
-            <button
-              type="button"
-              disabled={index === sorted.length - 1}
-              onClick={() => swap(layer.id, 1)}
-            >
-              ↓
-            </button>
+            <div className="layer-list__reorder">
+              <button
+                type="button"
+                className="btn"
+                disabled={index === 0}
+                onClick={() => swap(layer.id, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={index === sorted.length - 1}
+                onClick={() => swap(layer.id, 1)}
+              >
+                ↓
+              </button>
+            </div>
           </li>
         ))}
       </ul>

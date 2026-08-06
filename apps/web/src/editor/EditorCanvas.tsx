@@ -21,9 +21,9 @@ function flattenPoints(points: Array<{ x: number; y: number }>): number[] {
 function signalFill(symbolStyle: string): string {
   // Editor-only preview convention for the symbolStyle token itself (an editable document
   // field, not a computed aspect) — matches CLAUDE.md #9's blank/on/off vocabulary exactly.
-  if (symbolStyle === "signal-on") return "#c0392b";
-  if (symbolStyle === "signal-off") return "#27ae60";
-  return "#95a5a6";
+  if (symbolStyle === "signal-on") return "#f85149";
+  if (symbolStyle === "signal-off") return "#3fb950";
+  return "#5f6b7a";
 }
 
 function nextElementId(): string {
@@ -267,12 +267,12 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   const { width: canvasWidth, height: canvasHeight } = doc.map.canvas;
   for (let x = 0; x <= canvasWidth; x += gridSize) {
     gridLines.push(
-      <Line key={`gx-${x}`} points={[x, 0, x, canvasHeight]} stroke="#e6e6e6" strokeWidth={1} />,
+      <Line key={`gx-${x}`} points={[x, 0, x, canvasHeight]} stroke="#1c2430" strokeWidth={1} />,
     );
   }
   for (let y = 0; y <= canvasHeight; y += gridSize) {
     gridLines.push(
-      <Line key={`gy-${y}`} points={[0, y, canvasWidth, y]} stroke="#e6e6e6" strokeWidth={1} />,
+      <Line key={`gy-${y}`} points={[0, y, canvasWidth, y]} stroke="#1c2430" strokeWidth={1} />,
     );
   }
 
@@ -293,7 +293,10 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
       onDragEnd={handleStageDragEnd}
       onClick={handleStageClick}
     >
-      <Layer listening={false}>{gridLines}</Layer>
+      <Layer listening={false}>
+        <Rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="#0d1117" />
+        {gridLines}
+      </Layer>
       <Layer>
         {sortedVisibleLayers.map((layer) => (
           <Group key={layer.id}>
@@ -313,7 +316,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                       key={element.id}
                       ref={setRef}
                       points={flattenPoints(element.points)}
-                      stroke={selected ? "#2563eb" : "#333"}
+                      stroke={selected ? "#58a6ff" : "#5f6b7a"}
                       strokeWidth={selected ? 3 : 2}
                       draggable={draggable}
                       onClick={(e) => handleElementClick(e, element.id)}
@@ -327,7 +330,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                       key={element.id}
                       ref={setRef}
                       points={flattenPoints(element.points)}
-                      stroke={selected ? "#2563eb" : "#999"}
+                      stroke={selected ? "#58a6ff" : "#3d4a5c"}
                       strokeWidth={selected ? 8 : 6}
                       lineCap="round"
                       draggable={draggable}
@@ -353,9 +356,10 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                       <Rect
                         width={element.width}
                         height={element.height}
-                        fill={occupied ? "#fef3c7" : selected ? "#dbeafe" : "#f5f5f5"}
-                        stroke={selected ? "#2563eb" : "#333"}
+                        fill={occupied ? "#d29922" : selected ? "#233044" : "#161d27"}
+                        stroke={selected ? "#58a6ff" : "#2d3644"}
                         strokeWidth={selected ? 2 : 1}
+                        cornerRadius={2}
                       />
                       <Text
                         text={overlay ? (overlay.description ?? "") : element.displayName}
@@ -364,6 +368,8 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                         align={element.textAlign}
                         verticalAlign="middle"
                         fontSize={element.fontSize}
+                        fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
+                        fill={occupied ? "#04101f" : "#e6edf3"}
                       />
                     </Group>
                   );
@@ -382,10 +388,12 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                       <Circle
                         radius={8}
                         fill={signalFill(element.symbolStyle)}
-                        stroke={selected ? "#2563eb" : "#333"}
+                        stroke={selected ? "#58a6ff" : "#2d3644"}
                         strokeWidth={selected ? 2 : 1}
                       />
-                      {element.label ? <Text text={element.label} y={12} fontSize={10} /> : null}
+                      {element.label ? (
+                        <Text text={element.label} y={12} fontSize={10} fill="#8b96a5" />
+                      ) : null}
                     </Group>
                   );
                 }
@@ -399,7 +407,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                       text={element.text}
                       fontSize={element.fontSize}
                       align={element.align}
-                      fill={selected ? "#2563eb" : "#111"}
+                      fill={selected ? "#58a6ff" : "#c9d3de"}
                       draggable={draggable}
                       onClick={(e) => handleElementClick(e, element.id)}
                       onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
@@ -417,8 +425,8 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     onClick={(e) => handleElementClick(e, element.id)}
                     onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
                   >
-                    <Circle radius={6} fill="#f59e0b" stroke={selected ? "#2563eb" : "#333"} />
-                    <Text text={element.name} y={9} fontSize={10} />
+                    <Circle radius={6} fill="#f59e0b" stroke={selected ? "#58a6ff" : "#2d3644"} />
+                    <Text text={element.name} y={9} fontSize={10} fill="#8b96a5" />
                   </Group>
                 );
               })}

@@ -16,9 +16,9 @@ interface ViewBox {
 }
 
 const SIGNAL_COLORS: Record<SignalState["state"], string> = {
-  blank: "#9aa0a6",
-  on: "#c0392b",
-  off: "#2e7d32",
+  blank: "#5f6b7a",
+  on: "#f85149",
+  off: "#3fb950",
 };
 
 const PADDING = 40;
@@ -102,7 +102,7 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
   const selectedBinding = selectedElementId ? elementIdToBinding.get(selectedElementId) : undefined;
 
   return (
-    <div style={{ position: "relative" }}>
+    <div className="map-frame">
       <svg
         ref={svgRef}
         role="img"
@@ -123,7 +123,7 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
                 key={element.id}
                 points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="none"
-                stroke="#5f6b7a"
+                stroke="#3d4a5c"
                 strokeWidth={3}
               />
             );
@@ -134,7 +134,7 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
                 key={element.id}
                 points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="none"
-                stroke="#3a4552"
+                stroke="#232c38"
                 strokeWidth={10}
                 strokeLinecap="round"
               />
@@ -153,17 +153,20 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
                   y={element.y}
                   width={element.width}
                   height={element.height}
-                  fill={berthState?.description ? "#1f6feb" : "#161b22"}
-                  stroke="#c9d1d9"
+                  fill={berthState?.description ? "#388bfd" : "#161d27"}
+                  stroke={berthState?.description ? "#58a6ff" : "#2d3644"}
                   strokeWidth={1}
+                  rx={2}
                 />
                 <text
                   x={element.x + element.width / 2}
                   y={element.y + element.height / 2}
                   textAnchor="middle"
                   dominantBaseline="middle"
+                  fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
                   fontSize={element.fontSize}
-                  fill="#f0f6fc"
+                  fill={berthState?.description ? "#04101f" : "#8b96a5"}
+                  fontWeight={berthState?.description ? 700 : 400}
                 >
                   {berthState?.description ?? ""}
                 </text>
@@ -218,25 +221,15 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
       </svg>
 
       {selectedElementId ? (
-        <div
-          role="status"
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            background: "#161b22",
-            color: "#f0f6fc",
-            padding: "8px 12px",
-            borderRadius: 4,
-            fontSize: 13,
-          }}
-        >
-          <div>Berth: {selectedElementId}</div>
-          <div>TD binding: {selectedBinding ?? "unbound"}</div>
-          <div>Description: {selectedBerthState?.description ?? "(empty)"}</div>
-          <div style={{ opacity: 0.7, marginTop: 4 }}>
-            Full run details arrive in a later milestone.
-          </div>
+        <div role="status" className="map-inspector">
+          <div className="map-inspector__title">{selectedElementId}</div>
+          <dl>
+            <dt>TD binding</dt>
+            <dd>{selectedBinding ?? "unbound"}</dd>
+            <dt>Description</dt>
+            <dd>{selectedBerthState?.description ?? "(empty)"}</dd>
+          </dl>
+          <div className="map-inspector__note">Full run details arrive in a later milestone.</div>
         </div>
       ) : null}
     </div>

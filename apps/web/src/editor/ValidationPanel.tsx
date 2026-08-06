@@ -45,44 +45,53 @@ export function ValidationPanel({ slug }: { slug: string }): JSX.Element {
   }
 
   return (
-    <section aria-label="Validation">
+    <section aria-label="Validation" className="panel-card">
       <h3>Validation</h3>
-      <button type="button" onClick={() => void runValidation()} disabled={loading}>
+      <button type="button" className="btn" onClick={() => void runValidation()} disabled={loading}>
         {loading ? "Validating…" : "Validate"}
       </button>
       {result ? (
         <div>
-          <p>
-            {result.valid
-              ? "No publication-blocking errors."
-              : `${result.errors.length} blocking error(s).`}
+          <p style={{ marginTop: "0.6rem" }}>
+            {result.valid ? (
+              <span className="badge badge--success">No blocking errors</span>
+            ) : (
+              <span className="badge badge--danger">{result.errors.length} blocking error(s)</span>
+            )}
           </p>
           {result.errors.length > 0 ? (
-            <ul>
+            <ul className="issue-list issue-list--errors">
               {result.errors.map((issue, index) => (
                 <li key={`${issue.code}-${index}`}>
-                  [{issue.code}] {issue.message}
+                  <code>{issue.code}</code> {issue.message}
                 </li>
               ))}
             </ul>
           ) : null}
           {result.warnings.length > 0 ? (
             <>
-              <p>{result.warnings.length} warning(s):</p>
-              <ul>
+              <p className="badge badge--warning">{result.warnings.length} warning(s)</p>
+              <ul className="issue-list issue-list--warnings">
                 {result.warnings.map((issue, index) => (
                   <li key={`${issue.code}-${index}`}>
-                    [{issue.code}] {issue.message}
+                    <code>{issue.code}</code> {issue.message}
                   </li>
                 ))}
               </ul>
             </>
           ) : null}
           {result.info ? (
-            <ul>
-              <li>Bound berths: {result.info.boundBerthCount}</li>
-              <li>Unbound berths: {result.info.unboundBerthCount}</li>
-              <li>Observed binding coverage: {result.info.observedBerthBindingPercentage}%</li>
+            <ul className="info-list">
+              <li>
+                Bound berths: <strong>{result.info.boundBerthCount}</strong>
+              </li>
+              <li>
+                Unbound berths: <strong>{result.info.unboundBerthCount}</strong>
+              </li>
+              <li>
+                Observed binding coverage:{" "}
+                <strong>{result.info.observedBerthBindingPercentage}%</strong>
+              </li>
             </ul>
           ) : null}
         </div>

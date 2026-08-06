@@ -18,11 +18,12 @@ export function ToolPalette(): JSX.Element {
   const dispatch = useEditorDispatch();
 
   return (
-    <nav aria-label="Editor tools">
+    <nav aria-label="Editor tools" className="tool-palette">
       {TOOLS.map((tool) => (
         <button
           key={tool.mode}
           type="button"
+          className="tool-palette__button"
           aria-pressed={toolMode === tool.mode}
           onClick={() => dispatch({ type: "setToolMode", mode: tool.mode })}
         >

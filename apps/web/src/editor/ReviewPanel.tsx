@@ -102,13 +102,13 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
   }
 
   return (
-    <section aria-label="Review and publish">
+    <section aria-label="Review and publish" className="panel-card">
       <h3>Review</h3>
-      <button type="button" onClick={() => void loadDiff()}>
+      <button type="button" className="btn" onClick={() => void loadDiff()}>
         Compare with published version
       </button>
       {diff ? (
-        <ul>
+        <ul className="diff-summary">
           {diffSummary("Elements", diff.elements)}
           {diffSummary("Bindings", diff.bindings)}
           {diffSummary("Layers", diff.layers)}
@@ -117,7 +117,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
 
       <fieldset>
         <legend>Publish</legend>
-        <label>
+        <label className="field">
           Effective from
           <input
             type="datetime-local"
@@ -125,7 +125,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
             onChange={(e) => setEffectiveFrom(e.target.value)}
           />
         </label>
-        <label>
+        <label className="field">
           Published by
           <input
             value={publishedBy}
@@ -135,6 +135,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         </label>
         <button
           type="button"
+          className="btn btn--primary"
           onClick={() => void publish()}
           disabled={outcome.status === "publishing"}
         >
@@ -143,29 +144,33 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
       </fieldset>
 
       {outcome.status === "published" ? (
-        <p>
+        <p className="publish-result publish-result--success">
           Published version {outcome.versionNumber}, effective from {outcome.effectiveFrom}.
         </p>
       ) : null}
       {outcome.status === "validationFailed" ? (
-        <div role="alert">
+        <div role="alert" className="publish-result publish-result--error">
           <p>Cannot publish — validation errors:</p>
-          <ul>
+          <ul className="issue-list issue-list--errors">
             {outcome.errors.map((err, index) => (
               <li key={`${err.code}-${index}`}>
-                [{err.code}] {err.message}
+                <code>{err.code}</code> {err.message}
               </li>
             ))}
           </ul>
         </div>
       ) : null}
       {outcome.status === "conflict" ? (
-        <p role="alert">
+        <p role="alert" className="publish-result publish-result--error">
           The draft changed since you last saved (server is at revision{" "}
           {outcome.currentRevision ?? "?"}) — reload before publishing.
         </p>
       ) : null}
-      {outcome.status === "error" ? <p role="alert">{outcome.message}</p> : null}
+      {outcome.status === "error" ? (
+        <p role="alert" className="publish-result publish-result--error">
+          {outcome.message}
+        </p>
+      ) : null}
     </section>
   );
 }

@@ -45,10 +45,14 @@ export function EditorApp({ slug }: EditorAppProps): JSX.Element {
   }, [slug]);
 
   if (error) {
-    return <p role="alert">{error}</p>;
+    return (
+      <p role="alert" className="app-error">
+        {error}
+      </p>
+    );
   }
   if (!draft) {
-    return <p>Loading editor…</p>;
+    return <p className="app-loading">Loading editor…</p>;
   }
 
   return (

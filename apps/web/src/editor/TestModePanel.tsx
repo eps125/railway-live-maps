@@ -136,9 +136,9 @@ export function useTestModePanel(slug: string): TestModePanelResult {
         : undefined;
 
   const panel = (
-    <section aria-label="Test mode">
+    <section aria-label="Test mode" className="panel-card">
       <h3>Test mode</h3>
-      <label>
+      <label className="field">
         Mode
         <select
           value={mode}
@@ -164,35 +164,37 @@ export function useTestModePanel(slug: string): TestModePanelResult {
       {mode === "simulated" ? (
         <fieldset>
           <legend>Simulate a berth step</legend>
-          <label>
+          <label className="field">
             From area
             <input value={simFromArea} onChange={(e) => setSimFromArea(e.target.value)} />
           </label>
-          <label>
+          <label className="field">
             From berth
             <input value={simFromBerth} onChange={(e) => setSimFromBerth(e.target.value)} />
           </label>
-          <label>
+          <label className="field">
             To area
             <input value={simToArea} onChange={(e) => setSimToArea(e.target.value)} />
           </label>
-          <label>
+          <label className="field">
             To berth
             <input value={simToBerth} onChange={(e) => setSimToBerth(e.target.value)} />
           </label>
-          <label>
+          <label className="field">
             Description
             <input value={simDescription} onChange={(e) => setSimDescription(e.target.value)} />
           </label>
-          <button type="button" onClick={() => simulate("CA")}>
-            Simulate CA (step)
-          </button>
-          <button type="button" onClick={() => simulate("CB")}>
-            Simulate CB (cancel)
-          </button>
-          <button type="button" onClick={() => simulate("CC")}>
-            Simulate CC (interpose)
-          </button>
+          <div className="btn-group">
+            <button type="button" className="btn" onClick={() => simulate("CA")}>
+              Simulate CA (step)
+            </button>
+            <button type="button" className="btn" onClick={() => simulate("CB")}>
+              Simulate CB (cancel)
+            </button>
+            <button type="button" className="btn" onClick={() => simulate("CC")}>
+              Simulate CC (interpose)
+            </button>
+          </div>
         </fieldset>
       ) : null}
     </section>

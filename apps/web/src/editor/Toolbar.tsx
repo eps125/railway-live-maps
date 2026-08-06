@@ -147,51 +147,81 @@ export function Toolbar({
   }
 
   return (
-    <div role="toolbar" aria-label="Editor toolbar">
-      <button
-        type="button"
-        disabled={state.past.length === 0}
-        onClick={() => dispatch({ type: "undo" })}
-      >
-        Undo
-      </button>
-      <button
-        type="button"
-        disabled={state.future.length === 0}
-        onClick={() => dispatch({ type: "redo" })}
-      >
-        Redo
-      </button>
-      <button type="button" disabled={state.selection.length === 0} onClick={copySelection}>
-        Copy
-      </button>
-      <button type="button" disabled={state.selection.length === 0} onClick={cutSelection}>
-        Cut
-      </button>
-      <button type="button" disabled={!clipboard} onClick={pasteClipboard}>
-        Paste
-      </button>
-      <button type="button" disabled={state.selection.length === 0} onClick={duplicateSelection}>
-        Duplicate
-      </button>
-      <button type="button" onClick={exportJson}>
-        Export JSON
-      </button>
-      <button type="button" onClick={() => fileInputRef.current?.click()}>
-        Import JSON
-      </button>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/json"
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) importJson(file);
-          e.target.value = "";
-        }}
-      />
-      {state.dirty ? <span>Unsaved changes</span> : <span>Saved</span>}
+    <div role="toolbar" aria-label="Editor toolbar" className="editor-toolbar">
+      <div className="btn-group">
+        <button
+          type="button"
+          className="btn"
+          disabled={state.past.length === 0}
+          onClick={() => dispatch({ type: "undo" })}
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={state.future.length === 0}
+          onClick={() => dispatch({ type: "redo" })}
+        >
+          Redo
+        </button>
+      </div>
+      <div className="editor-toolbar__divider" />
+      <div className="btn-group">
+        <button
+          type="button"
+          className="btn"
+          disabled={state.selection.length === 0}
+          onClick={copySelection}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={state.selection.length === 0}
+          onClick={cutSelection}
+        >
+          Cut
+        </button>
+        <button type="button" className="btn" disabled={!clipboard} onClick={pasteClipboard}>
+          Paste
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={state.selection.length === 0}
+          onClick={duplicateSelection}
+        >
+          Duplicate
+        </button>
+      </div>
+      <div className="editor-toolbar__divider" />
+      <div className="btn-group">
+        <button type="button" className="btn" onClick={exportJson}>
+          Export JSON
+        </button>
+        <button type="button" className="btn" onClick={() => fileInputRef.current?.click()}>
+          Import JSON
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) importJson(file);
+            e.target.value = "";
+          }}
+        />
+      </div>
+      <div style={{ flex: 1 }} />
+      {state.dirty ? (
+        <span className="badge badge--warning">Unsaved changes</span>
+      ) : (
+        <span className="badge badge--success">Saved</span>
+      )}
     </div>
   );
 }

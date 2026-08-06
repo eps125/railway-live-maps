@@ -34,41 +34,62 @@ export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps)
   const draftSync = useDraftSync(slug, initialRevision);
   const testMode = useTestModePanel(slug);
 
+  const syncModifier =
+    draftSync.status === "conflict" || draftSync.status === "error"
+      ? draftSync.status
+      : draftSync.status === "saved"
+        ? "saved"
+        : "idle";
+
   return (
-    <section aria-label="Map editor">
-      <h2>Editing &quot;{slug}&quot;</h2>
-      <Toolbar onImportError={setImportError} />
-      <div role="status" aria-live="polite">
-        {SYNC_STATUS_TEXT[draftSync.status]}
-        {draftSync.status === "conflict" ? (
-          <>
-            {" "}
-            (server is at revision {draftSync.conflictRevision ?? "?"}){" "}
-            <button type="button" onClick={draftSync.reloadFromServer}>
-              Reload from server
+    <section aria-label="Map editor" className="editor-page">
+      <div className="editor-header">
+        <div className="editor-header__title">
+          <h2>Editing &quot;{slug}&quot;</h2>
+          <div role="status" aria-live="polite" className={`sync-status sync-status--${syncModifier}`}>
+            {SYNC_STATUS_TEXT[draftSync.status]}
+            {draftSync.status === "conflict" ? (
+              <>
+                {" "}
+                (server is at revision {draftSync.conflictRevision ?? "?"}){" "}
+                <button type="button" className="btn" onClick={draftSync.reloadFromServer}>
+                  Reload from server
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        <nav aria-label="Editor view mode" className="view-tabs">
+          {(["design", "test", "review"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className="view-tabs__button"
+              aria-pressed={viewMode === mode}
+              onClick={() => setViewMode(mode)}
+            >
+              {mode[0]!.toUpperCase() + mode.slice(1)}
             </button>
-          </>
-        ) : null}
+          ))}
+        </nav>
       </div>
-      {importError ? <p role="alert">{importError}</p> : null}
 
-      <nav aria-label="Editor view mode">
-        {(["design", "test", "review"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            aria-pressed={viewMode === mode}
-            onClick={() => setViewMode(mode)}
-          >
-            {mode[0]!.toUpperCase() + mode.slice(1)}
-          </button>
-        ))}
-      </nav>
+      <Toolbar onImportError={setImportError} />
+      {importError ? (
+        <p role="alert" className="editor-import-error">
+          {importError}
+        </p>
+      ) : null}
 
-      <div style={{ display: "flex", gap: "1rem" }}>
-        <ToolPalette />
-        <EditorCanvas previewState={viewMode === "test" ? testMode.previewState : undefined} />
-        <div>
+      <div className="editor-body">
+        <div className="editor-sidebar">
+          <ToolPalette />
+        </div>
+        <div className="editor-canvas-frame">
+          <EditorCanvas previewState={viewMode === "test" ? testMode.previewState : undefined} />
+        </div>
+        <div className="editor-panels">
           {viewMode === "design" ? (
             <>
               <PropertyPanel />

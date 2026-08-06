@@ -19,20 +19,31 @@ export function LiveStatusBanner({
   qualityStatus,
 }: LiveStatusBannerProps): JSX.Element {
   let text: string;
+  let modifier: string;
   if (qualityStatus === "ok") {
     text = "Live";
+    modifier = "ok";
   } else if (qualityStatus === "stale") {
     text = "Data may be stale";
+    modifier = "stale";
   } else if (connectionStatus === "reconnecting") {
     text = "Reconnecting…";
+    modifier = "connecting";
   } else if (connectionStatus === "connecting") {
     text = "Connecting…";
+    modifier = "connecting";
   } else {
     text = "Live data status unknown";
+    modifier = "unknown";
   }
 
   return (
-    <div role="status" aria-live="polite">
+    <div
+      role="status"
+      aria-live="polite"
+      className={`status-banner status-banner--${modifier}`}
+    >
+      <span className="status-banner__dot" aria-hidden="true" />
       {text}
     </div>
   );

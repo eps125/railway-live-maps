@@ -13,7 +13,7 @@ function TextField({ label, value, onCommit }: TextFieldProps): JSX.Element {
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
   return (
-    <label>
+    <label className="field">
       {label}
       <input
         type="text"
@@ -37,7 +37,7 @@ function NumberField({ label, value, onCommit }: NumberFieldProps): JSX.Element 
   const [local, setLocal] = useState(String(value));
   useEffect(() => setLocal(String(value)), [value]);
   return (
-    <label>
+    <label className="field">
       {label}
       <input
         type="number"
@@ -83,7 +83,7 @@ function BindingFields({
   return (
     <fieldset>
       <legend>TD binding</legend>
-      <label>
+      <label className="field">
         TD area
         <input
           list="observed-td-areas"
@@ -98,7 +98,7 @@ function BindingFields({
           ))}
         </datalist>
       </label>
-      <label>
+      <label className="field">
         Berth
         <input
           list="observed-berths"
@@ -114,6 +114,7 @@ function BindingFields({
       {binding ? (
         <button
           type="button"
+          className="btn"
           onClick={() =>
             dispatch({
               type: "dispatchCommand",
@@ -137,8 +138,11 @@ export function PropertyPanel(): JSX.Element {
 
   if (selection.length !== 1) {
     return (
-      <aside aria-label="Properties">
-        <p>{selection.length === 0 ? "No selection." : `${selection.length} elements selected.`}</p>
+      <aside aria-label="Properties" className="panel-card">
+        <h3>Properties</h3>
+        <p className="panel-card--empty">
+          {selection.length === 0 ? "No selection." : `${selection.length} elements selected.`}
+        </p>
       </aside>
     );
   }
@@ -146,7 +150,7 @@ export function PropertyPanel(): JSX.Element {
   const elementId = selection[0]!;
   const element = doc.elements.find((el) => el.id === elementId);
   if (!element) {
-    return <aside aria-label="Properties" />;
+    return <aside aria-label="Properties" className="panel-card" />;
   }
   const binding = doc.bindings.find((b) => b.elementId === elementId);
 
@@ -158,9 +162,12 @@ export function PropertyPanel(): JSX.Element {
   }
 
   return (
-    <aside aria-label="Properties">
-      <h3>{element.type}</h3>
-      <p>ID: {element.id}</p>
+    <aside aria-label="Properties" className="panel-card">
+      <h3>Properties</h3>
+      <p className="field-row">
+        <span className="badge">{element.type}</span>
+        <span className="mono">{element.id}</span>
+      </p>
 
       {element.type === "berth" && (
         <>
@@ -190,7 +197,7 @@ export function PropertyPanel(): JSX.Element {
           />
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
-          <label>
+          <label className="field">
             Symbol style
             <select
               value={element.symbolStyle}
@@ -250,6 +257,8 @@ export function PropertyPanel(): JSX.Element {
 
       <button
         type="button"
+        className="btn"
+        style={{ marginTop: "0.4rem" }}
         onClick={() =>
           dispatch({
             type: "dispatchCommand",

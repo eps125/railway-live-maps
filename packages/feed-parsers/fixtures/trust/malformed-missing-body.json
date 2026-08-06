@@ -1,0 +1,12 @@
+[
+  {
+    "header": {
+      "msg_type": "0001",
+      "source_dev_id": "",
+      "user_id": "",
+      "original_data_source": "TRUST",
+      "msg_queue_timestamp": "1786000000000",
+      "source_system_id": "TRUST"
+    }
+  }
+]

@@ -161,24 +161,128 @@ session's verification — safe to drop, not referenced by anything else.
   test) — this also surfaced that `apps/web`'s test setup never ran RTL's cleanup between
   tests (`vitest.config.ts` doesn't set `test.globals`), now fixed in `setupTests.ts`.
 
+## Milestone 6 — live WebSocket: complete (2026-08-05)
+
+- New `packages/protocol` workspace package (`liveWsMessages.ts`): WS message types/zod
+  schemas shared by api/worker/web, matching `docs/API_CONTRACT.md` §2 exactly (`snapshot`,
+  `berth.updated`, `berth.cleared`, `quality.updated`, `heartbeat`, `resync.required`, plus a
+  stub `run.resolution.updated` not emitted until M9).
+- Migration `0010_map_binding_index.sql`: two partial unique indexes (one per binding type —
+  the real invariant, not an all-columns unique) plus lookup indexes for the live-delta hot
+  path. Populated automatically by `publish-map` going forward; a new idempotent
+  `backfill-map-bindings` command handles versions published before this migration existed
+  (both share `apps/worker/src/mapBindingIndex.ts`).
+- `GET /api/v1/maps/{slug}/live` (`apps/api/src/routes/liveMap.ts`, `@fastify/websocket`):
+  sends a snapshot (shared snapshot-building logic with `/state` via the new
+  `apps/api/src/lib/liveState.ts`/`mapVersion.ts`, extracted out of `routes/maps.ts` without
+  changing its behavior — its existing test suite passed unmodified), then forwards deltas
+  from a `LiveDeltaSource`. Sends `resync.required` and closes if the published map version
+  changes mid-connection.
+- Two delta-source implementations: default `pollingDeltaSource.ts` (polls
+  `berth_current_state` joined through `map_binding_index`, no extra infrastructure) and
+  optional `redisDeltaSource.ts` (`LIVE_WS_REDIS_PUBSUB_ENABLED=true`), fed by a new worker
+  command `project-map-deltas` (`apps/worker/src/mapProjector/`) — a second, independently
+  checkpointed projector reading `td_berth_event` and publishing to `railway:live:{slug}`.
+- Web: `useLiveMapSocket.ts` hook (snapshot+delta application, exponential-backoff reconnect,
+  discards/reconnects on a sequence regression) and `LiveStatusBanner.tsx`; `useMapData.ts`
+  now sources state from the live socket whenever connected, falling back to the Milestone 5
+  REST `/state` poll otherwise.
+- Acceptance proven directly: `apps/api/src/live/pollingDeltaSource.integration.test.ts`
+  replays a multi-area scenario and confirms a published map's delta stream emits only its own
+  bound area/berth while an unrelated area's `berth_current_state` row stays present and
+  untouched — the literal "done when" bullet. 33 integration tests, 119 unit tests, full
+  workspace typecheck/lint/format all pass.
+- Known limitation: no Redis server in this sandbox (mirrors the existing no-MinIO situation),
+  so the Redis path's true network round trip isn't exercised here — proven instead via a
+  capturing fake publisher and a fake subscriber sharing the same message shape. Confirm the
+  real round trip against a live Redis before setting `LIVE_WS_REDIS_PUBSUB_ENABLED=true` in
+  any real deployment.
+
+## Milestones 11 and 12 — visual editor MVP + editor test/publishing workflow: complete (2026-08-06)
+
+See `docs/IMPLEMENTATION_PLAN.md`'s M11/M12 "Status: implemented" notes for the full
+file-by-file summary. Highlights: `packages/map-publish` (shared publish transaction, used by
+both the `publish-map` CLI and the new editor publish route); migration `0011_map_draft.sql`
+(`map_draft`/`map_draft_revision`); a Konva-based editor canvas at `apps/web/src/editor/`
+(command-model undo/redo, all six element tools, property/layers/validation panels, Design/
+Test/Review modes); `apps/api/src/routes/editor/` (draft CRUD with optimistic locking,
+three-tier validation, diff, binding diagnostics, live test-mode state, publish — all gated
+behind `EDITOR_ENABLED`, non-existent as routes when disabled). 53 integration tests + 136 unit
+tests pass; full workspace typecheck/lint/format clean.
+
+**Manually verified end-to-end in a real browser** (Vite dev server + API, `EDITOR_ENABLED=true`,
+against a throwaway local Postgres): published the real `lancaster-minimal.json` fixture via
+the CLI, opened `/editor`, confirmed the draft seeded correctly (4 layers, 5 berths), ran
+Validate (5 correct "never observed" warnings, 0 blocking errors), ran Review's diff (0 changes
+against the just-seeded draft), and clicked Publish — confirmed via `GET
+/api/v1/maps/lancaster/definition` that a new immutable `map_version` was created, and that the
+public `/` route immediately rendered it. No console errors. Known limitation: this session's
+browser pane couldn't composite screenshots or take pixel-coordinate clicks, so the Konva
+canvas's own pointer gestures (click-to-place, drag-to-move, corner-resize) were exercised only
+by the test suite (including a `vitest-canvas-mock` Konva-in-jsdom smoke test), not visually —
+re-verify those specific gestures in a real browser session before treating the canvas UX as
+polished.
+
+## Milestone 7 — complete schedule/reference and VSTP import: complete (2026-08-06)
+
+See `docs/IMPLEMENTATION_PLAN.md`'s M7 "Status: implemented" note for the full file-by-file
+summary. Highlights: the TD broker connection/recorder were generalized into
+`apps/worker/src/shared/` so VSTP (and later TRUST) reuse the exact archive-before-ack
+sequence instead of a second copy. Migrations `0012_source_file_import.sql`,
+`0013_schedule_tables.sql`, `0014_reference_tables.sql` (the latter edited in place, before
+being committed, to add a natural-key unique index for SMART's idempotent reimport).
+`packages/feed-parsers` gained VSTP (XML, `fast-xml-parser`), SCHEDULE (streaming JSONL),
+CORPUS/SMART (single-document JSON) parsers — all fixture sets are constructed from public
+documentation, not captured real extracts, flagged consistently in code/docs. VSTP
+Create/Overwrite/Delete transactions project directly into `schedule`/`schedule_location`
+(incremental, no staging needed). The SCHEDULE full-extract importer uses the
+staging-table + single-swap-transaction pattern the docs specify — chunked staging inserts,
+then one transaction that atomically replaces every `source='SCHEDULE'` row; a missing
+header/trailer record is treated as a truncated file and fails the import rather than
+partially applying it. CORPUS/SMART importers are simpler upsert-in-place. STP precedence
+(`C` > `O` > `N` > `P`, explicit `ambiguous` outcome on same-precedence ties) is exposed via
+the new `GET /api/v1/schedule/{trainUid}?date=` route, documented in `docs/API_CONTRACT.md`.
+Download commands (`download-schedule`/`download-corpus`/`download-smart`,
+`SCHEDULE_DOWNLOAD_ENABLED`) and `ingest-vstp`/`project-vstp` (`VSTP_LIVE_ENABLED`) exist and
+are credential-gated but untested against live Network Rail endpoints in this environment —
+proven via fixture replay and the file-path `import-*` commands instead. 78 integration tests
+
+- 158 unit tests pass; full workspace typecheck/lint/format clean. During this milestone, two
+  pre-existing latent bugs surfaced by a full clean verification pass were also fixed: an
+  `exactOptionalPropertyTypes` violation in the editor's `EditorCanvas` prop type, and a
+  TD/VSTP STOMP-connection-wrapper type-variance error (both wrappers now cast at the `start()`
+  call site, justified by the shared connection's fixed-`feedName` runtime guarantee).
+
+## Milestone 8 — nationwide TRUST runs and activation linkage: complete (2026-08-06)
+
+See `docs/IMPLEMENTATION_PLAN.md`'s M8 "Status: implemented" note for the full file-by-file
+summary. Highlights: migration `0015_train_run_tables.sql` (`train_run` uuid-keyed,
+`train_run_event` partitioned, `run_schedule_link`); TRUST is the third STOMP feed and reuses
+the Milestone 7 shared broker connection/recorder unchanged. `packages/domain/src/trust/
+runReducer.ts` is a pure effects-based reducer covering all 8 TRUST message types, mirroring
+`td/berthReducer.ts`'s style — Activation creates, Movement/Change of Origin/Change of
+Location only touch `last_event_at` (defensive no-op if no run matches yet, never fabricates
+one), Cancellation/Reinstatement toggle `cancelled`/`activated`, Change of Identity supersedes
+the old run and creates a new one under the revised identity without rewriting history, and
+Unidentified Train creates a minimal unlinked run. `serviceDate.ts` computes the UK traffic
+day using a documented-assumption 03:00 Europe/London boundary. Schedule-link resolution runs
+immediately at activation via the Milestone 7 `resolveStpPrecedence` resolver, plus a
+deferred-relink pass every `project-trust` run that re-attempts every non-`matched`
+`run_schedule_link` row in place (added `activation_train_uid` to that table specifically so
+the re-attempt doesn't need the original activation event). New `GET /api/v1/runs/{runId}` /
+`GET /api/v1/runs/{runId}/schedule` routes, documented in `docs/API_CONTRACT.md`
+(`resolverEvidence` stays `null` until Milestone 9). 91 integration tests + 189 unit tests
+pass; full workspace typecheck/lint/format clean. Known limitation: a message that arrives
+before its Activation (a plausible out-of-order broker delivery scenario) is permanently
+skipped from `train_run_event` — nationwide retention is unaffected (the raw message stays in
+`raw_feed_event` regardless), but there's no later-arriving-activation backfill/retry
+mechanism in this MVP pass.
+
 ## Next smallest task
 
-Owner's decision (2026-08-05): reprioritized the milestone order — see "Execution order" at
-the top of `docs/IMPLEMENTATION_PLAN.md`. M11 (visual editor MVP) and M12 (editor publishing
-workflow) were moved ahead of M7–M10, since both only depend on M4/M5 (already done), not on
-schedule/TRUST/resolver/playback data — the goal is to stop hand-authoring map JSON and using
-the `publish-map` CLI as soon as possible. Actual order: **M6 → M11 → M12 → M7 → M8 → M9 →
-M10 → M13**.
-
-- **Milestone 6** (next): live WebSocket — snapshot + sequenced delta protocol, optional Redis
-  pub/sub adapter, map-specific filtering after nationwide projection, browser gap
-  detection/resync, live/stale banner, reconnect behavior. Replaces the current 5-second REST
-  poll in `apps/web/src/map/useMapData.ts`.
-- Then **Milestone 11**: Konva editor canvas, drawing/binding tools, bindings to any observed
-  nationwide TD area/berth, undo/redo, draft autosave/JSON import-export, validation panel.
-- Then **Milestone 12**: draft revisions/optimistic locking, validation gates, immutable
-  publish with effective date, version diff — the "historical" test mode is the one piece
-  that wants M10 (playback); stub or defer just that part.
+Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):
+**M6 → M11 → M12 → M7 → M8 → M9 → M10 → M13**. M6, M11, M12, M7 and M8 are done (above); next
+up: **Milestone 9** (berth-to-run resolver and popup).
 
 Still open regardless of order: the actual Preston/Carlisle TD `area_id`s used in
 `packages/map-schema/fixtures/lancaster-minimal.json` (`PX`/`CL`) are owner-asserted, not

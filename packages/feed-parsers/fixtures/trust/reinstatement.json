@@ -1,0 +1,26 @@
+[
+  {
+    "header": {
+      "msg_type": "0006",
+      "source_dev_id": "",
+      "user_id": "",
+      "original_data_source": "TRUST",
+      "msg_queue_timestamp": "1786000700000",
+      "source_system_id": "TRUST"
+    },
+    "body": {
+      "train_info": {
+        "train_service_code": "22222000",
+        "orig_loc_stanox": "22334",
+        "toc_id": "NT",
+        "dep_timestamp": "1786000760000",
+        "division_code": "70",
+        "loc_stanox": "22334",
+        "train_id": "2A1612AA26",
+        "train_file_address": null,
+        "orig_loc_timestamp": ""
+      },
+      "reinstatement_timestamp": "1786000700000"
+    }
+  }
+]

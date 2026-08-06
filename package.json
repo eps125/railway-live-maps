@@ -11,7 +11,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "build:libs": "pnpm --filter @railway/domain --filter @railway/database --filter @railway/archive --filter @railway/feed-parsers --filter @railway/map-schema run build",
+    "build:libs": "pnpm --filter @railway/domain --filter @railway/database --filter @railway/archive --filter @railway/feed-parsers --filter @railway/map-schema --filter @railway/protocol --filter @railway/map-publish run build",
     "typecheck": "pnpm run build:libs && pnpm -r --if-present run typecheck",
     "test": "pnpm run build:libs && vitest run",
     "test:integration": "pnpm run build:libs && vitest run -c vitest.integration.config.ts",

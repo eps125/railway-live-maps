@@ -71,6 +71,8 @@ services:
       NR_USERNAME_FILE: /run/secrets/nr_username
       NR_PASSWORD_FILE: /run/secrets/nr_password
       TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-false}
+      VSTP_LIVE_ENABLED: ${VSTP_LIVE_ENABLED:-false}
+      TRUST_LIVE_ENABLED: ${TRUST_LIVE_ENABLED:-false}
       DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
     secrets:
       - nr_username

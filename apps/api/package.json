@@ -11,9 +11,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.0.2",
     "@railway/database": "workspace:*",
     "@railway/domain": "workspace:*",
+    "@railway/map-publish": "workspace:*",
     "@railway/map-schema": "workspace:*",
+    "@railway/protocol": "workspace:*",
     "fastify": "^5.2.1",
     "ioredis": "^5.4.2",
     "pg": "^8.13.1",

@@ -7,12 +7,28 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "replay-fixtures",
   "project-td",
   "publish-map",
+  "backfill-map-bindings",
+  "project-map-deltas",
+  "project-vstp",
+  "import-schedule",
+  "download-schedule",
+  "import-corpus",
+  "download-corpus",
+  "import-smart",
+  "download-smart",
+  "project-trust",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 
-/** Long-running worker roles. "serve" is the default (no argv) idle daemon; "ingest-td"
- * is the live TD feed connector — refuses to start unless TD_LIVE_ENABLED=true. */
-export const LONG_RUNNING_ROLE_NAMES = ["serve", "ingest-td"] as const;
+/** Long-running worker roles. "serve" is the default (no argv) idle daemon; "ingest-td"/
+ * "ingest-vstp"/"ingest-trust" are the live feed connectors — each refuses to start unless its
+ * own `*_LIVE_ENABLED` flag is true. */
+export const LONG_RUNNING_ROLE_NAMES = [
+  "serve",
+  "ingest-td",
+  "ingest-vstp",
+  "ingest-trust",
+] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];
 
 export type CommandName = OneShotCommandName | LongRunningRoleName;

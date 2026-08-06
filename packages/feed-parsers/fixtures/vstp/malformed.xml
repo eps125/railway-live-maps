@@ -1,0 +1,5 @@
+<VSTPCIFMsgV1>
+  <schedule classification="unknown" timestamp="1786000300">
+    <transaction_type>Create
+  </schedule>
+<!-- Deliberately truncated / unclosed tags to exercise the malformed-XML path. -->

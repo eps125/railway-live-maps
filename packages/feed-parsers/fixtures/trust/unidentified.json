@@ -1,0 +1,18 @@
+[
+  {
+    "header": {
+      "msg_type": "0005",
+      "source_dev_id": "",
+      "user_id": "",
+      "original_data_source": "TRUST",
+      "msg_queue_timestamp": "1786001500000",
+      "source_system_id": "TRUST"
+    },
+    "body": {
+      "train_id": "UNKNOWNXXX",
+      "reporting_stanox": "11223",
+      "actual_timestamp": "1786001500000",
+      "reason_code": "NO REPORT"
+    }
+  }
+]

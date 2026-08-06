@@ -1,0 +1,20 @@
+{
+  "TIPLOCDATA": [
+    {
+      "TIPLOC": "LANCSTR",
+      "NLC": "123456",
+      "NLCDESC": "LANCASTER",
+      "STANOX": "11223",
+      "CRS": "LAN",
+      "NLCDESC16": "LANCASTER"
+    },
+    {
+      "TIPLOC": "PRST",
+      "NLC": "654321",
+      "NLCDESC": "PRESTON",
+      "STANOX": "22334",
+      "CRS": "PRE",
+      "NLCDESC16": "PRESTON"
+    }
+  ]
+}

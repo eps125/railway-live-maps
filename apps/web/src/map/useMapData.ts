@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MapDefinitionResponse, MapStateResponse } from "./types.js";
+import { useLiveMapSocket, type LiveConnectionStatus } from "./useLiveMapSocket.js";
 
 const STATE_POLL_INTERVAL_MS = 5000;
 const DEFINITION_RETRY_INTERVAL_MS = 5000;
@@ -9,15 +10,19 @@ export interface UseMapDataResult {
   state: MapStateResponse | null;
   error: string | null;
   loading: boolean;
+  connectionStatus: LiveConnectionStatus;
 }
 
-/** Fetches the map definition once and polls state on an interval — a true live push over
- * WebSocket is Milestone 6; this is the MVP data source for the Milestone 5 "basic renderer". */
+/** Fetches the map definition once (structure/bindings, which only change on republish) and
+ * sources live berth/signal/quality state from the WebSocket (Milestone 6) whenever it's
+ * connected, falling back to the Milestone 5 REST `/state` poll otherwise — on initial connect,
+ * on a socket drop, and while reconnecting. */
 export function useMapData(slug: string): UseMapDataResult {
   const [definition, setDefinition] = useState<MapDefinitionResponse | null>(null);
-  const [state, setState] = useState<MapStateResponse | null>(null);
+  const [restState, setRestState] = useState<MapStateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const live = useLiveMapSocket(slug);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +58,11 @@ export function useMapData(slug: string): UseMapDataResult {
     };
   }, [slug]);
 
+  // REST state polling is the fallback path — paused whenever the live socket is actually
+  // delivering state, resumed the moment it isn't (initial connect, drop, reconnect backoff).
   useEffect(() => {
+    if (live.connectionStatus === "live") return;
+
     let cancelled = false;
 
     async function loadState(): Promise<void> {
@@ -64,7 +73,7 @@ export function useMapData(slug: string): UseMapDataResult {
         }
         const body = (await response.json()) as MapStateResponse;
         if (cancelled) return;
-        setState(body);
+        setRestState(body);
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -79,7 +88,21 @@ export function useMapData(slug: string): UseMapDataResult {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [slug]);
+  }, [slug, live.connectionStatus]);
 
-  return { definition, state, error, loading };
+  const state: MapStateResponse | null =
+    live.connectionStatus === "live" && live.berths
+      ? {
+          mapSlug: slug,
+          mapVersion: restState?.mapVersion ?? definition?.mapVersion ?? 0,
+          asOf: new Date().toISOString(),
+          sourceSequence: live.sequence ?? 0,
+          mode: "live",
+          quality: live.quality ?? { status: "unknown", gaps: [] },
+          berths: live.berths,
+          signals: live.signals ?? {},
+        }
+      : restState;
+
+  return { definition, state, error, loading, connectionStatus: live.connectionStatus };
 }

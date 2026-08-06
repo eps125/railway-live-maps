@@ -1,0 +1,32 @@
+[
+  {
+    "header": {
+      "msg_type": "0001",
+      "source_dev_id": "",
+      "user_id": "",
+      "original_data_source": "TRUST",
+      "msg_queue_timestamp": "1786000000000",
+      "source_system_id": "TRUST"
+    },
+    "body": {
+      "schedule_source": "C",
+      "train_file_address": null,
+      "schedule_end_date": "2026-12-31",
+      "train_id": "2A1612AA26",
+      "tp_origin_timestamp": "2026-08-10",
+      "creation_timestamp": "1786000000000",
+      "tp_origin_stanox": "22334",
+      "origin_dep_timestamp": "1786000060000",
+      "train_service_code": "22222000",
+      "toc_id": "NT",
+      "d1266_record_number": "001",
+      "train_call_type": "AUTOMATIC",
+      "train_call_mode": "NORMAL",
+      "schedule_type": "P",
+      "sched_origin_stanox": "22334",
+      "train_uid": "ZZ54321",
+      "schedule_wtt_id": "2A16",
+      "schedule_start_date": "2026-01-01"
+    }
+  }
+]

@@ -1,0 +1,43 @@
+[
+  {
+    "header": {
+      "msg_type": "0003",
+      "source_dev_id": "",
+      "user_id": "",
+      "original_data_source": "TRUST",
+      "msg_queue_timestamp": "1786000600000",
+      "source_system_id": "TRUST"
+    },
+    "body": {
+      "event_type": "ARRIVAL",
+      "gbtt_timestamp": "1786000600000",
+      "original_loc_stanox": "",
+      "planned_timestamp": "1786000600000",
+      "timetable_variation": "0",
+      "original_loc_timestamp": "",
+      "current_train_id": "2A1612AA26",
+      "delay_monitoring_point": "true",
+      "next_report_run_time": "5",
+      "reporting_stanox": "11223",
+      "actual_timestamp": "1786000600000",
+      "correction_ind": "false",
+      "event_source": "AUTOMATIC",
+      "train_file_address": null,
+      "platform": "1",
+      "division_code": "70",
+      "train_terminated": "false",
+      "train_id": "2A1612AA26",
+      "offroute_ind": "false",
+      "variation_status": "ON TIME",
+      "train_service_code": "22222000",
+      "toc_id": "NT",
+      "loc_stanox": "11223",
+      "auto_expected": "true",
+      "direction_ind": "UP",
+      "route": "0",
+      "planned_event_type": "ARRIVAL",
+      "next_report_stanox": "11224",
+      "line_ind": ""
+    }
+  }
+]

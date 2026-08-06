@@ -8,7 +8,19 @@ import { runReconcileArchive } from "./commands/reconcileArchive.js";
 import { runReplayFixtures } from "./commands/replayFixtures.js";
 import { runProjectTdCommand } from "./commands/projectTd.js";
 import { runPublishMap } from "./commands/publishMap.js";
+import { runBackfillMapBindings } from "./commands/backfillMapBindings.js";
+import { runProjectMapDeltasCommand } from "./commands/projectMapDeltas.js";
 import { runIngestTd } from "./commands/ingestTd.js";
+import { runIngestVstp } from "./commands/ingestVstp.js";
+import { runProjectVstpCommand } from "./commands/projectVstp.js";
+import { runImportScheduleCommand } from "./commands/importSchedule.js";
+import { runDownloadSchedule } from "./commands/downloadSchedule.js";
+import { runImportCorpusCommand } from "./commands/importCorpus.js";
+import { runDownloadCorpus } from "./commands/downloadCorpus.js";
+import { runImportSmartCommand } from "./commands/importSmart.js";
+import { runDownloadSmart } from "./commands/downloadSmart.js";
+import { runIngestTrust } from "./commands/ingestTrust.js";
+import { runProjectTrustCommand } from "./commands/projectTrust.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -34,8 +46,34 @@ async function main(): Promise<void> {
       return runProjectTdCommand(config, argvRest);
     case "publish-map":
       return runPublishMap(config, argvRest);
+    case "backfill-map-bindings":
+      return runBackfillMapBindings(config);
+    case "project-map-deltas":
+      return runProjectMapDeltasCommand(config);
+    case "project-vstp":
+      return runProjectVstpCommand(config, argvRest);
+    case "import-schedule":
+      return runImportScheduleCommand(config, argvRest);
+    case "download-schedule":
+      return runDownloadSchedule(config);
+    case "import-corpus":
+      return runImportCorpusCommand(config, argvRest);
+    case "download-corpus":
+      return runDownloadCorpus(config);
+    case "import-smart":
+      return runImportSmartCommand(config, argvRest);
+    case "download-smart":
+      return runDownloadSmart(config);
+    case "project-trust":
+      return runProjectTrustCommand(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
+      return;
+    case "ingest-vstp":
+      await runIngestVstp(config);
+      return;
+    case "ingest-trust":
+      await runIngestTrust(config);
       return;
     case "serve":
       await runServe(config);

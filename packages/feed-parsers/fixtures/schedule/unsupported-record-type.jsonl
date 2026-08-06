@@ -1,0 +1,3 @@
+{"JsonTimetableV1":{"classification":"full","timestamp":1786000000,"owner":"Network Rail","Sequence":1}}
+{"SomeFutureRecordTypeV2":{"note":"a hypothetical future SCHEDULE record type this parser has never seen"}}
+{"EOF":true}

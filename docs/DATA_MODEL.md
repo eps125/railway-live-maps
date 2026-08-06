@@ -296,7 +296,11 @@ TIPLOC, STANOX, CRS, NLC, UIC, names and geography with source/version.
 
 ### `smart_berth_step`
 
-Retain complete permitted SMART fields and source version. Use as evidence, not proof that every relationship is complete.
+Retain complete permitted SMART fields and source version. Use as evidence, not proof that every relationship is complete. No natural key exists on the wire, so a dedicated unique index (`td_area`, `from_berth`, `to_berth`, `event_type`, coalesced for nullable fields) makes reimport idempotent.
+
+### `import_unhandled_record`
+
+File-based ingestion has no per-message ack to hang lineage off the way STOMP frames do (`raw_feed_event`'s per-child `parse_status` serves that role there) — this table is the equivalent for SCHEDULE/CORPUS/SMART file imports: every record type outside an importer's modeled scope (e.g. `AssociationV1`/`TiplocV1` lines inside a SCHEDULE extract) and every malformed line is retained here with `source_file_import_id`/`record_type`/`seq_no_in_file`/`raw_json`, never silently discarded (CLAUDE.md rule 18).
 
 ## 7. Nationwide train-run model
 
@@ -363,15 +367,30 @@ Map/corridor evidence improves a decision but never controls whether a run or ev
 
 ### `map_draft`
 
+**Implemented (Milestone 11/12):** migration `0011_map_draft.sql`.
+
 - canonical document JSON
 - revision number
 - updated by/at
 - base published version
 
+One row per map `slug` (no multi-user collaborative editing — `docs/PROJECT_SPEC.md` §10's
+explicit MVP exclusion). `slug` is unique and independent of `map`/`map_id` (nullable, set
+once the draft is first published) so a draft can exist before the map has ever been
+published. `GET /api/v1/editor/maps/{slug}/draft` seeds a fresh draft on first access — from
+the currently published version's canonical document if one exists, otherwise a blank
+scaffold.
+
 ### `map_draft_revision`
+
+**Implemented (Milestone 11/12):** migration `0011_map_draft.sql`.
 
 - immutable draft snapshots or command batches
 - author/time/comment
+
+One row inserted per successful `PUT .../draft` save. `docs/PROJECT_SPEC.md` §9 requires at
+least 90 days of draft revision history; automatic pruning after that window is not
+implemented yet (Milestone 13 operational-hardening concern).
 
 ### `map_version`
 
@@ -386,13 +405,20 @@ Map/corridor evidence improves a decision but never controls whether a run or ev
 
 ### `map_binding_index`
 
-Generated at publication:
+**Implemented (Milestone 6):** migration `0010_map_binding_index.sql`. Generated at
+publication:
 
 - map version
 - element ID
 - binding type
 - TD area
 - berth/address/bit as relevant
+
+Two partial unique indexes enforce the real invariant per binding type — one element bound to
+one TD berth source, or one S-bit source, per published map version — rather than a single
+all-columns unique. Populated automatically by the `publish-map` worker command; versions
+published before this migration existed were backfilled once via the idempotent
+`backfill-map-bindings` command.
 
 ### `map_state_snapshot`
 

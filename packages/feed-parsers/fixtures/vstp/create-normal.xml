@@ -1,0 +1,40 @@
+<!--
+  Constructed from the publicly documented VSTP wire format (docs/REFERENCES.md's VSTP wiki
+  link), NOT a captured real Network Rail message — no sanitized VSTP fixture exists yet (see
+  docs/IMPLEMENTATION_PLAN.md Milestone 0's fixture gap). Confirm field names/shape against a
+  real capture before treating this as verified. Uses a synthetic ZZ train_uid, deliberately
+  not a real headcode/UID.
+-->
+<VSTPCIFMsgV1>
+  <schedule classification="unknown" timestamp="1786000000">
+    <transaction_type>Create</transaction_type>
+    <CIF_bs>
+      <transaction_type>Create</transaction_type>
+      <atoc_code>XC</atoc_code>
+      <applicable_timetable>Y</applicable_timetable>
+      <schedule_days_runs>1111100</schedule_days_runs>
+      <schedule_end_date>2026-09-01</schedule_end_date>
+      <CIF_stp_indicator>N</CIF_stp_indicator>
+      <signalling_id>5Z01</signalling_id>
+      <CIF_train_uid>ZZ12345</CIF_train_uid>
+      <schedule_start_date>2026-08-10</schedule_start_date>
+      <train_status>P</train_status>
+    </CIF_bs>
+    <schedule_segment>
+      <schedule_location>
+        <location_type>OR</location_type>
+        <tiploc_code>PRST</tiploc_code>
+        <departure>1200</departure>
+        <public_departure>1200</public_departure>
+        <platform>4</platform>
+      </schedule_location>
+      <schedule_location>
+        <location_type>TI</location_type>
+        <tiploc_code>LANCSTR</tiploc_code>
+        <arrival>1230</arrival>
+        <public_arrival>1230</public_arrival>
+        <platform>1</platform>
+      </schedule_location>
+    </schedule_segment>
+  </schedule>
+</VSTPCIFMsgV1>

@@ -1,0 +1,22 @@
+{
+  "BERTHDATA": [
+    {
+      "AREAID": "ZZ",
+      "FROMBERTH": "0001",
+      "TOBERTH": "0002",
+      "STANOX": "11223",
+      "PLATFORM": "1",
+      "EVENT": "BERTH_STEP",
+      "ROUTE": "UP MAIN"
+    },
+    {
+      "AREAID": "ZZ",
+      "FROMBERTH": "0002",
+      "TOBERTH": "",
+      "STANOX": "11223",
+      "PLATFORM": "1",
+      "EVENT": "BERTH_CANCEL",
+      "ROUTE": ""
+    }
+  ]
+}

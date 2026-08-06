@@ -51,13 +51,44 @@ Occupancy intervals with resolution summary and playback link data.
 
 Occurrences across all retained TD areas.
 
-### `GET /api/v1/runs/{runId}`
+### `GET /api/v1/runs/{runId}` (implemented Milestone 8)
 
-Run identity, activation, latest status, resolver evidence and links.
+Run identity, activation, latest status, resolver evidence and links. `resolverEvidence` is
+always `null` until Milestone 9 (the berth-run resolver) lands — present now so the response
+shape doesn't change later. 404 with `error.code: "RUN_NOT_FOUND"` for an unknown `runId`.
 
-### `GET /api/v1/runs/{runId}/schedule`
+```json
+{
+  "runId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "trustTrainId": "2A1612AA26",
+  "signallingId": "2A16",
+  "serviceDate": "2026-08-10",
+  "scheduleId": "42",
+  "activatedAt": "2026-08-10T10:00:00.000Z",
+  "originDepartureAt": "2026-08-10T10:01:00.000Z",
+  "callType": "AUTOMATIC",
+  "callMode": "NORMAL",
+  "operatorCode": "NT",
+  "serviceCode": "22222000",
+  "lifecycleState": "activated",
+  "supersededByTrainRunId": null,
+  "lastEventAt": "2026-08-10T10:15:00.000Z",
+  "scheduleLink": {
+    "matchOutcome": "matched",
+    "scheduleId": "42",
+    "resolvedAt": "2026-08-10T10:00:00.000Z"
+  },
+  "resolverEvidence": null
+}
+```
 
-Ordered schedule locations.
+### `GET /api/v1/runs/{runId}/schedule` (implemented Milestone 8)
+
+Ordered schedule locations for the run's linked schedule (same location shape as
+`GET /api/v1/schedule/{trainUid}`'s `locations` array). 404 with `error.code: "RUN_NOT_FOUND"`
+for an unknown `runId`; 404 with `error.code: "RUN_SCHEDULE_NOT_LINKED"` when the run exists
+but has no matched schedule (activation resolver outcome was `ambiguous`/`unmatched`, or the
+run has no activation at all — e.g. an Unidentified Train run).
 
 ### `GET /api/v1/status`
 
@@ -74,6 +105,73 @@ List observed berth identifiers and basic activity statistics for map-authoring 
 ### `GET /api/v1/td/areas/{area}/s-class/events?from=&to=&after=&limit=`
 
 Protected/diagnostic endpoint for retained S-Class source events. Lancaster may return data absence while other areas remain available. Apply strict range limits.
+
+### `GET /api/v1/schedule/{trainUid}?date=YYYY-MM-DD` (added Milestone 7)
+
+Resolves the STP-effective schedule for a `train_uid` on a given traffic day, via
+`packages/domain`'s `resolveStpPrecedence` (`C` > `O` > `N` > `P`). `date` is required. Per
+CLAUDE.md rule 7, the response's top-level `outcome` is always exactly one of `matched`,
+`ambiguous` or `unmatched` — never silently resolved.
+
+`matched` (200):
+
+```json
+{
+  "outcome": "matched",
+  "schedule": {
+    "trainUid": "1S97",
+    "scheduleStartDate": "2026-01-01",
+    "scheduleEndDate": "2026-12-31",
+    "stpIndicator": "P",
+    "daysRunsBitmask": "1111100",
+    "signallingId": "2A16",
+    "operatorCode": "NT",
+    "trainServiceCode": "22222000",
+    "trainCategory": null,
+    "trainStatus": "P",
+    "powerType": "EMU",
+    "originTiploc": "PRST",
+    "destinationTiploc": "LANCSTR",
+    "source": "SCHEDULE"
+  },
+  "locations": [
+    {
+      "seqNo": 1,
+      "locationType": "origin",
+      "tiploc": "PRST",
+      "departurePublic": "1000",
+      "...": "..."
+    },
+    {
+      "seqNo": 2,
+      "locationType": "destination",
+      "tiploc": "LANCSTR",
+      "arrivalPublic": "1030",
+      "...": "..."
+    }
+  ]
+}
+```
+
+`ambiguous` (200 — two or more same-precedence candidates both cover the date, never picked
+arbitrarily):
+
+```json
+{
+  "outcome": "ambiguous",
+  "candidates": [{ "trainUid": "1S97", "stpIndicator": "P", "...": "..." }]
+}
+```
+
+`unmatched` (404 — no candidate's date range/days-runs bitmask covers `date`):
+
+```json
+{ "outcome": "unmatched" }
+```
+
+A `train_uid` never seen at all is a plain 404 with the standard error envelope
+(`error.code: "SCHEDULE_NOT_FOUND"`), distinct from a seen-but-not-running-that-day
+`unmatched` result.
 
 ## 2. Live WebSocket
 

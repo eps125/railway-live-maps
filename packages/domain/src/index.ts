@@ -26,3 +26,50 @@ export {
 } from "./td/berthReducer.js";
 export { TD_NORMALIZATION_VERSION } from "./td/normalizationVersion.js";
 export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION } from "./td/projectionVersion.js";
+export {
+  MAP_DELTA_PROJECTION_NAME,
+  MAP_DELTA_PROJECTION_VERSION,
+} from "./mapDelta/projectionVersion.js";
+export {
+  VSTP_NORMALIZATION_VERSION,
+  VSTP_PROJECTION_NAME,
+  VSTP_PROJECTION_VERSION,
+} from "./vstp/vstpNormalizationVersion.js";
+export {
+  selectEffectiveSchedule,
+  type ScheduleCandidate,
+  type StpPrecedenceResult,
+} from "./schedule/resolveStpPrecedence.js";
+export {
+  mapToScheduleRow,
+  type ScheduleSourceRecord,
+  type ScheduleSourceLocation,
+  type ScheduleRowValues,
+  type ScheduleLocationRowValues,
+  type ScheduleLocationType,
+  type MappedSchedule,
+} from "./schedule/mapToScheduleRow.js";
+export {
+  applyActivation,
+  applyMovement,
+  applyCancellation,
+  applyReinstatement,
+  applyChangeOfOrigin,
+  applyChangeOfLocation,
+  applyChangeOfIdentity,
+  applyUnidentified,
+  type TrainRunLifecycleState,
+  type TrainRunSnapshot,
+  type TrustRunEffect,
+  type TrustReducerResult,
+  type ApplyActivationInput,
+  type RunLookupInput,
+  type ApplyChangeOfIdentityInput,
+  type ApplyUnidentifiedInput,
+} from "./trust/runReducer.js";
+export { computeServiceDate } from "./trust/serviceDate.js";
+export {
+  TRUST_NORMALIZATION_VERSION,
+  TRUST_PROJECTION_NAME,
+  TRUST_PROJECTION_VERSION,
+} from "./trust/trustNormalizationVersion.js";

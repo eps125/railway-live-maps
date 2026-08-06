@@ -1,0 +1,4 @@
+{"JsonTimetableV1":{"classification":"full","timestamp":1786000000,"owner":"Network Rail","Sequence":1}}
+{"JsonScheduleV1":{"transaction_type":"Create","CIF_train_uid":"ZZ11111","schedule_start_date":"2026-01-05","schedule_end_date":"2026-12-31","CIF_stp_indicator":"P","schedule_days_runs":"1111100"}}
+{this line is not valid JSON at all
+{"EOF":true}

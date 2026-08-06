@@ -24,7 +24,53 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
+  NR_VSTP_TOPIC: z.string().default("/topic/VSTP_ALL"),
+  // Same credential-gated discipline as TD_LIVE_ENABLED — see docs/IMPLEMENTATION_PLAN.md
+  // Milestone 7's "live enablement checkpoint": only flip on after fixture replay + the
+  // integration suite pass.
+  VSTP_LIVE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  NR_TRUST_TOPIC: z.string().default("/topic/TRAIN_MVT_ALL_TOC"),
+  // Same credential-gated discipline, per Milestone 8's "live enablement checkpoint".
+  TRUST_LIVE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  // Download endpoints are constructed from docs/REFERENCES.md's publicly documented URL
+  // patterns, not verified against the live NR file service — confirm before relying on the
+  // defaults for a real download-* run.
+  NR_SCHEDULE_DOWNLOAD_URL: z
+    .string()
+    .default(
+      "https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CIF_ALL_FULL_DAILY",
+    ),
+  NR_CORPUS_DOWNLOAD_URL: z
+    .string()
+    .default(
+      "https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS",
+    ),
+  NR_SMART_DOWNLOAD_URL: z
+    .string()
+    .default(
+      "https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART",
+    ),
+  // Off by default, same discipline as TD/VSTP_LIVE_ENABLED: only the file-path `import-*`
+  // commands are exercised until this is explicitly turned on.
+  SCHEDULE_DOWNLOAD_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
   PARTITION_MONTHS_AHEAD: z.coerce.number().int().positive().default(3),
+  // Milestone 6: gates the optional `project-map-deltas` Redis pub/sub publisher. Must match
+  // apps/api/src/config.ts's flag of the same name — if only the API side is on, it subscribes
+  // to a channel nothing publishes to (falls back to nothing, since polling stays the source
+  // of correctness regardless); if only the worker side is on, publishes go nowhere.
+  LIVE_WS_REDIS_PUBSUB_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
 });
 
 export interface Config extends z.infer<typeof baseSchema> {
@@ -41,8 +87,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const base = result.data;
 
-  const NR_USERNAME = readSecret(env, "NR_USERNAME", { required: base.TD_LIVE_ENABLED });
-  const NR_PASSWORD = readSecret(env, "NR_PASSWORD", { required: base.TD_LIVE_ENABLED });
+  const nrCredentialsRequired =
+    base.TD_LIVE_ENABLED ||
+    base.VSTP_LIVE_ENABLED ||
+    base.TRUST_LIVE_ENABLED ||
+    base.SCHEDULE_DOWNLOAD_ENABLED;
+  const NR_USERNAME = readSecret(env, "NR_USERNAME", { required: nrCredentialsRequired });
+  const NR_PASSWORD = readSecret(env, "NR_PASSWORD", { required: nrCredentialsRequired });
 
   return { ...base, NR_USERNAME, NR_PASSWORD };
 }

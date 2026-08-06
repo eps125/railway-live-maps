@@ -127,6 +127,37 @@ point-in-time playback is Milestone 10; `map_binding_index`/drafts/snapshots are
 
 Done when nationwide fixture replay updates Lancaster only for its published bindings, without discarding other-area events.
 
+**Status: implemented.** New `packages/protocol` package (`liveWsMessages.ts`) holds the
+shared WS wire-format types/zod schemas, matching `docs/API_CONTRACT.md` §2 exactly. New
+`map_binding_index` table (migration `0010_map_binding_index.sql`, two partial unique
+indexes — one per binding type — plus lookup indexes), populated automatically by
+`publish-map` going forward and backfilled once for pre-existing versions by the new
+`backfill-map-bindings` command (both share `apps/worker/src/mapBindingIndex.ts`'s
+`insertMapBindingIndexRows`). `GET /api/v1/maps/{slug}/live`
+(`apps/api/src/routes/liveMap.ts`) sends a snapshot (shared with `/state` via
+`apps/api/src/lib/liveState.ts`'s `computeLiveState`) then forwards deltas from a
+`LiveDeltaSource`; sends `resync.required` and closes if the map's published version changes
+mid-connection. Two delta-source implementations: the default
+`pollingDeltaSource.ts` (polls `berth_current_state` joined through `map_binding_index`, no
+extra infrastructure) and the optional `redisDeltaSource.ts`
+(`LIVE_WS_REDIS_PUBSUB_ENABLED=true`), fed by a new worker daemon-style one-shot command
+`project-map-deltas` (`apps/worker/src/mapProjector/`) — a second, independently checkpointed
+projector reading `td_berth_event` and publishing to `railway:live:{slug}` on Redis. Web:
+`useLiveMapSocket.ts` hook (snapshot+delta application, exponential-backoff reconnect,
+sequence-regression detection) and `LiveStatusBanner.tsx`; `useMapData.ts` now sources
+berth/signal/quality state from the live socket whenever connected, falling back to the
+Milestone 5 REST `/state` poll otherwise (initial connect, drop, reconnect backoff). The
+literal "done" acceptance scenario is proven directly in
+`apps/api/src/live/pollingDeltaSource.integration.test.ts`: a multi-area scenario shows the
+delta stream for a published map emits only its own bound area/berth while an unrelated
+area's `berth_current_state` row remains present and untouched in the database. Known
+limitation: the Redis pub/sub path's true network round trip isn't exercised in this sandbox
+(no Redis server available here, mirroring the existing no-MinIO situation) — proven instead
+via a capturing fake publisher (`mapProjector/projector.integration.test.ts`) and a fake
+subscriber (`apps/api/src/live/redisDeltaSource.test.ts`) that both use the exact same message
+shape; confirm the real round trip against a live Redis before enabling
+`LIVE_WS_REDIS_PUBSUB_ENABLED` in any real deployment.
+
 ## Milestone 7 — complete schedule/reference and VSTP import
 
 - Archive complete source files before import.
@@ -139,6 +170,42 @@ Done when nationwide fixture replay updates Lancaster only for its published bin
 
 Test STP precedence, natural keys, complete-file checksums and restart/reimport behavior.
 
+**Status: implemented.** Migrations `0012_source_file_import.sql` (tracks every downloaded/
+imported file, `unique(source_kind, checksum_sha256)` recognizes a byte-identical reimport),
+`0013_schedule_tables.sql` (`schedule`/`schedule_location`, natural key
+`(train_uid, schedule_start_date, schedule_end_date, stp_indicator, source)`, plus `unlogged`
+staging twins for the full-file swap), `0014_reference_tables.sql` (`location_reference`,
+`smart_berth_step` — with a `smart_berth_step_natural_key_idx` added for reimport idempotency,
+since SMART has no natural key on the wire — and `import_unhandled_record`, the catch-all
+lineage table for record types outside any importer's modeled scope). VSTP is genuinely XML
+(`fast-xml-parser`, `packages/feed-parsers/src/vstp/parseVstpFrame.ts`); SCHEDULE/CORPUS/SMART
+full extracts are JSON (JSONL for SCHEDULE, single-document for CORPUS/SMART) — all four
+fixture sets (`packages/feed-parsers/fixtures/{vstp,schedule,reference}/`) are **constructed
+from the publicly documented wire formats, not captured real extracts** (same M0 fixture-gap
+caveat as the rest of this milestone; confirm field names against a real capture before
+treating them as verified). `apps/worker/src/vstp/projector.ts` upserts `schedule`/
+`schedule_location` directly (VSTP is incremental: Create/Overwrite upsert by natural key,
+Delete removes the matching row — no staging/swap needed). `apps/worker/src/schedule/
+scheduleImporter.ts` implements the staging-table + single-swap-transaction pattern per
+`docs/DATA_MODEL.md`: chunked staging-table inserts, then one final transaction that replaces
+every `source='SCHEDULE'` row and flips `source_file_import.is_active` — "readers never see a
+half-imported file." A missing header or trailer record is treated as a truncated file and
+fails the whole import rather than partially applying it. `corpusImporter.ts`/
+`smartImporter.ts` are simpler (smaller datasets): upsert-by-natural-key in place, no staging.
+`packages/domain/src/schedule/resolveStpPrecedence.ts` implements `C` > `O` > `N` > `P`
+precedence with an explicit `ambiguous` outcome for same-precedence ties (CLAUDE.md rule 7:
+never hide ambiguity) — exposed via the new `GET /api/v1/schedule/{trainUid}?date=` route
+(`apps/api/src/routes/schedule.ts`, documented in `docs/API_CONTRACT.md`). The shared
+TD/VSTP/TRUST broker connection and archive-before-ack recorder were generalized in this
+milestone (`apps/worker/src/shared/`) so TRUST (Milestone 8) doesn't need a third copy.
+Download commands (`download-schedule`/`download-corpus`/`download-smart`) exist but are
+gated behind `SCHEDULE_DOWNLOAD_ENABLED` (default false) and untested against the live NR
+endpoints in this environment — only the file-path `import-*` commands are exercised by the
+integration suite. `ingest-vstp`/`project-vstp` are similarly gated behind
+`VSTP_LIVE_ENABLED`. Known limitation: `location_reference` upserts never remove a TIPLOC
+absent from a newer CORPUS extract (an intentional "upsert in place, no delete-and-swap"
+design choice for this smaller dataset, not an oversight).
+
 ## Milestone 8 — nationwide TRUST runs and activation linkage
 
 - TRUST parser for supported message types.
@@ -149,6 +216,46 @@ Test STP precedence, natural keys, complete-file checksums and restart/reimport 
 - Latest report projection and nationwide run query.
 
 Done when fixtures for unrelated regions and Lancaster are both retained and correctly linked without rewriting history.
+
+**Status: implemented.** Migration `0015_train_run_tables.sql` (renumbered from the plan's
+original "0014" — 0011/0012–0014 were inserted ahead of it by the reprioritized M11/M12/M7
+execution order): `train_run` (uuid PK, `unique(trust_train_id, service_date)`),
+`train_run_event` (partitioned by `raw_event_normalized_at_utc`, composite FK to
+`raw_feed_event`, added to `ensurePartitions.ts`'s `PARTITIONED_TABLES`), `run_schedule_link`
+(one row per run, `match_outcome` reusing the exact `matched`/`ambiguous`/`unmatched`
+vocabulary Milestone 9's resolver will also use). TRUST is the third STOMP feed, so it reuses
+the shared broker connection/recorder generalized in Milestone 7 — no further refactor needed.
+`packages/feed-parsers/src/trust/parseTrustFrame.ts` classifies on `header.msg_type` (all 8
+supported types + unsupported/malformed, same never-zero-children triad as TD/VSTP); its wire
+shape is constructed from public documentation, not a captured real message (same caveat as
+the rest of this project — see the fixtures under `packages/feed-parsers/fixtures/trust/`).
+`packages/domain/src/trust/runReducer.ts` is a pure effects-based reducer (mirrors
+`td/berthReducer.ts`): Activation creates a run (idempotent on redelivery); Movement/Change of
+Origin/Change of Location only advance `last_event_at`, and are a defensive no-op when no
+matching run exists rather than fabricating one; Cancellation/Reinstatement toggle
+`cancelled`/`activated` (no separate `reinstated` state — the Reinstatement is its own
+`train_run_event` row, so nothing is lost); Change of Identity supersedes the old run
+(`superseded_by_train_run_id`) and creates a new run under the revised identity, never
+rewriting history in place; Unidentified Train creates a minimal run with no schedule link.
+`packages/domain/src/trust/serviceDate.ts` computes the UK traffic day — **the exact boundary
+hour (03:00 Europe/London) is a documented assumption, not verified against the real wiki
+page**, same caveat style as the S-Class-decode gap. Schedule-link resolution
+(`apps/worker/src/trust/projector.ts`) is deliberately not a reducer effect (it needs a DB
+round trip against `schedule`): activation resolution runs immediately via
+`resolveStpPrecedence`, and a **deferred-relink pass** re-attempts every non-`matched`
+`run_schedule_link` row at the end of every `project-trust` run — `run_schedule_link` retains
+`activation_train_uid` specifically so this re-resolution doesn't need to re-parse the original
+activation event, and always updates the existing row in place, never re-inserts. New route
+`GET /api/v1/runs/{runId}` / `GET /api/v1/runs/{runId}/schedule`
+(`apps/api/src/routes/runs.ts`), documented in `docs/API_CONTRACT.md`; `resolverEvidence` is
+always `null` until Milestone 9. `ingest-trust`/`project-trust` are gated behind
+`TRUST_LIVE_ENABLED`, untested against a live broker in this environment — proven via fixture
+replay and the integration suite instead. Known limitation: a Movement/Cancellation/
+Reinstatement/Change of Origin/Change of Location message that arrives before its Activation
+(a plausible out-of-order broker delivery scenario) is permanently skipped from
+`train_run_event` — the raw message itself is still fully retained in `raw_feed_event`
+regardless (nationwide retention is never affected), but there is no later-arriving-activation
+backfill/retry mechanism in this MVP pass.
 
 ## Milestone 9 — berth-to-run resolver and popup
 
@@ -185,6 +292,22 @@ Acceptance: repeated requests for the same time/version produce the same state a
 
 Editor uses the same schema and reducers as the public renderer.
 
+**Status: implemented.** `apps/web/src/editor/`: `commands.ts` (pure command model —
+`addElement`/`deleteElements`/`moveElements`/`resizeElement`/`setProperty`/`setBinding`/
+`connectTopology`/`disconnectTopology`/`reorderLayer`/`setLayerProperty`, each producing its
+own exact inverse, mirroring `packages/domain/src/td/berthReducer.ts`'s pure-effect style),
+`EditorState.tsx` (`useReducer` + Context: document/selection/undo-redo history/tool mode/
+viewport), `EditorCanvas.tsx` (Konva Stage/Layer/Transformer — grid, pan, wheel-zoom,
+snap-to-grid placement for all six element types, click/shift-click selection, drag-to-move,
+berth resize), `ToolPalette.tsx`, `PropertyPanel.tsx` (+ `useBindingAutocomplete.ts` against
+the existing nationwide `/api/v1/td/areas` endpoints), `LayersPanel.tsx`,
+`ValidationPanel.tsx`, `Toolbar.tsx` (undo/redo/copy/cut/paste/duplicate + JSON import/export,
+with keyboard shortcuts). A minimal hand-rolled `useRoute()` router (`/` public map vs.
+`/editor`) replaces the previous single-page `App.tsx`. Known limitations (deliberately scoped
+out, see the implementation plan's own scope-decision note): align/distribute, 45°-constrained/
+magnetic track drawing, grouping/templates, a keyboard-shortcut help overlay, a locked
+reference-image layer, and multi-point polyline drawing beyond a default two-point segment.
+
 ## Milestone 12 — editor test and publishing workflow
 
 - Simulated/live/historical test modes.
@@ -196,6 +319,47 @@ Editor uses the same schema and reducers as the public renderer.
 - Version diff/review.
 
 Done when Lancaster can be created, edited and published with no frontend source edit.
+
+**Status: implemented and verified end-to-end in a real browser** (2026-08-06). New workspace
+package `packages/map-publish` (extracted from the Milestone 5 `publish-map` CLI's inline
+transaction body — `publishMapVersion`/`insertMapBindingIndexRows`) is now the single shared
+publish implementation both the CLI and the editor's `POST /api/v1/editor/maps/{slug}/publish`
+route call. Migration `0011_map_draft.sql`: `map_draft` (one draft per slug, seeded from the
+currently published version's canonical document on first access, or a blank scaffold if none
+exists yet) and `map_draft_revision` (immutable per-save snapshots, `docs/PROJECT_SPEC.md` §9's
+90-day retention requirement — automatic pruning is deferred to Milestone 13). New
+`apps/api/src/routes/editor/` (registered only when `EDITOR_ENABLED=true` — routes don't exist
+at all when false, matching `docs/ARCHITECTURE.md` §12): `drafts.ts` (`GET`/`PUT .../draft`
+with `expectedRevision` optimistic locking → `409` with the current revision on conflict,
+`GET .../revisions`), `validate.ts` (three-tier validation — blocking/warning/info — via
+`apps/api/src/editor/validateWithContext.ts`, which adds the two DB-dependent checks
+`packages/map-schema/src/validate.ts`'s own docstring named as out of scope for that pure
+package: adjacent-map-slug existence and "ever observed in nationwide data" binding warnings),
+`publish.ts` (re-checks the optimistic lock under a row lock, re-validates server-side, then
+calls `publishMapVersion` — publication-blocking is enforced by the server, not only the
+editor UI), `diff.ts` (structural element/binding/layer diff, defaulting to "current draft vs.
+currently published version"), `bindingDiagnostics.ts`, `state.ts` (live test-mode state
+compiled from the draft's own bindings on the fly, since a draft has no `map_version_id`/
+`map_binding_index` row yet; historical is explicitly deferred to Milestone 10, 501-stubbed the
+same way `routes/maps.ts`'s `/state` already is). Web: `useDraftSync.ts` (debounced autosave,
+surfaces a `409` as a distinct "someone/something changed this draft" state rather than
+silently overwriting), `TestModePanel.tsx` (simulated mode reuses the exact
+`applyCA`/`applyCB`/`applyCC` pure functions from `packages/domain` per
+`docs/MAP_EDITOR_SPEC.md` §10's "the preview must use the same reducers... as the public
+application"; live mode polls the new state endpoint), `ReviewPanel.tsx` (diff view,
+effective-date picker, publish button surfacing conflict/validation-failure/success states).
+Verified manually end-to-end in a real browser (Vite dev server + API with
+`EDITOR_ENABLED=true`): the editor seeded its draft from the real published
+`packages/map-schema/fixtures/lancaster-minimal.json` content (4 layers, 5 berths), Validate
+correctly surfaced 5 "never observed" warnings with zero blocking errors, Review's diff showed
+zero changes against the just-seeded draft, and Publish created a new immutable `map_version`
+(confirmed via `GET /api/v1/maps/lancaster/definition` returning the new version) that the
+public `/` route immediately rendered. Known limitation: this session's browser pane couldn't
+composite screenshots/pixel-coordinate clicks, so the Konva canvas's own pointer interactions
+(placing an element by clicking, dragging to move, corner-resize) were proven only via the 53
+integration + 136 unit tests (including a Konva-in-jsdom smoke-mount test via
+`vitest-canvas-mock`), not visually in a live browser — re-verify those specific gestures
+visually before treating the canvas UX itself as polished.
 
 ## Milestone 13 — operational hardening
 

@@ -1,24 +1,17 @@
 import type { InboundFrame } from "../recorder.js";
+import type {
+  BrokerFrameHandle,
+  BrokerConnectionOptions,
+  BrokerConnectionState,
+  BrokerConnection,
+} from "../../shared/connection/brokerConnection.js";
 
-export interface TdFrameHandle {
-  frame: InboundFrame;
-  ack(): Promise<void>;
-  nack(): Promise<void>;
-}
-
-export interface TdConnectionOptions {
-  onFrame: (handle: TdFrameHandle) => Promise<void>;
-  /** Returns the new feed_connection_session id — every implementation records one. */
-  onSessionStart: (session: { clientId: string; connectedAt: Date }) => Promise<string>;
-  onSessionEnd: (info: { sessionId: string; disconnectReason: string; at: Date }) => Promise<void>;
-  onError?: (error: Error) => void;
-}
-
-export type TdConnectionState =
-  "idle" | "connecting" | "connected" | "reconnecting" | "auth-failed" | "stopped";
-
-export interface TdConnection {
-  readonly state: TdConnectionState;
-  start(options: TdConnectionOptions): Promise<void>;
-  stop(): Promise<void>;
-}
+/**
+ * Milestone 7: generalized into `apps/worker/src/shared/connection/brokerConnection.ts` (VSTP/
+ * TRUST reuse it too). These TD-specific aliases keep every existing import
+ * (`fixtureReplayConnection.ts`, `stomp/stompConnection.ts`, `commands/ingestTd.ts`) unchanged.
+ */
+export type TdFrameHandle = BrokerFrameHandle<InboundFrame>;
+export type TdConnectionOptions = BrokerConnectionOptions<InboundFrame>;
+export type TdConnectionState = BrokerConnectionState;
+export type TdConnection = BrokerConnection<InboundFrame>;

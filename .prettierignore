@@ -2,3 +2,9 @@ node_modules/
 dist/
 coverage/
 pnpm-lock.yaml
+
+# Deliberately syntactically-invalid JSON fixtures (parser malformed-input test cases) —
+# prettier can't format invalid JSON, and these must stay exactly as broken as their
+# corresponding test expects.
+packages/feed-parsers/fixtures/reference/corpus-malformed.json
+packages/feed-parsers/fixtures/reference/smart-malformed.json

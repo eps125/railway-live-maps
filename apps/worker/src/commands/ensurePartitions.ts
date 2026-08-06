@@ -8,6 +8,7 @@ const PARTITIONED_TABLES = [
   "td_s_event",
   "berth_occupancy",
   "td_s_bit_transition",
+  "train_run_event",
 ] as const;
 
 /** Shared by the standalone `ensure-partitions` command and `migrate` (which tops up

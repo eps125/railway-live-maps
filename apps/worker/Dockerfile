@@ -13,6 +13,8 @@ COPY packages/database/package.json packages/database/package.json
 COPY packages/archive/package.json packages/archive/package.json
 COPY packages/feed-parsers/package.json packages/feed-parsers/package.json
 COPY packages/map-schema/package.json packages/map-schema/package.json
+COPY packages/protocol/package.json packages/protocol/package.json
+COPY packages/map-publish/package.json packages/map-publish/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
@@ -22,12 +24,16 @@ COPY packages/database packages/database
 COPY packages/archive packages/archive
 COPY packages/feed-parsers packages/feed-parsers
 COPY packages/map-schema packages/map-schema
+COPY packages/protocol packages/protocol
+COPY packages/map-publish packages/map-publish
 COPY apps/worker apps/worker
 RUN pnpm --filter @railway/domain run build \
   && pnpm --filter @railway/database run build \
   && pnpm --filter @railway/archive run build \
   && pnpm --filter @railway/feed-parsers run build \
   && pnpm --filter @railway/map-schema run build \
+  && pnpm --filter @railway/protocol run build \
+  && pnpm --filter @railway/map-publish run build \
   && pnpm --filter @railway/worker run build
 
 FROM base AS runtime
@@ -46,6 +52,10 @@ COPY --from=build /repo/packages/feed-parsers/fixtures packages/feed-parsers/fix
 COPY --from=build /repo/packages/map-schema/package.json packages/map-schema/package.json
 COPY --from=build /repo/packages/map-schema/dist packages/map-schema/dist
 COPY --from=build /repo/packages/map-schema/fixtures packages/map-schema/fixtures
+COPY --from=build /repo/packages/protocol/package.json packages/protocol/package.json
+COPY --from=build /repo/packages/protocol/dist packages/protocol/dist
+COPY --from=build /repo/packages/map-publish/package.json packages/map-publish/package.json
+COPY --from=build /repo/packages/map-publish/dist packages/map-publish/dist
 COPY --from=build /repo/apps/worker/package.json apps/worker/package.json
 COPY --from=build /repo/apps/worker/dist apps/worker/dist
 COPY --from=build /repo/apps/worker/fixtures apps/worker/fixtures

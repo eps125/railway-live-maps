@@ -1,7 +1,6 @@
 # Deployment runbook
 
-Milestone 1's Docker foundation plus Milestone 2/3's event store and TD recorder are in
-place. This is the practical path from "code in this repo" to "running stack" — see
+This is the practical path from "code in this repo" to "running stack" — see
 `docs/ARCHITECTURE.md` §8 for the design intent behind it.
 
 ## 1. GitHub repository and image publishing
@@ -87,9 +86,27 @@ so it deploys without needing host filesystem/SSH access at all.
 not mounted secret files — deliberately, since creating files on the host isn't always
 practical from Portainer alone. This is weaker than a mounted secret (the values are
 visible via `docker inspect`/the Portainer UI to anyone with stack access) but is fine
-while `TD_LIVE_ENABLED=false`, since nothing reads them. If you later want the stronger
-file-based secret isolation, `deploy/docker-compose.yml`'s `secrets:` block is the
-template — it needs the two files placed on the host at the stack's checkout path.
+while every `*_LIVE_ENABLED` flag stays `false`, since nothing reads them. If you later
+want the stronger file-based secret isolation, `deploy/docker-compose.yml`'s `secrets:`
+block is the template — it needs the two files placed on the host at the stack's
+checkout path.
+
+**Live feed services**: `deploy/docker-compose.portainer.yml` runs four always-on services
+beyond the idle `worker`:
+
+- `ingest-td` / `ingest-vstp` / `ingest-trust` — each connects to its own live Network Rail
+  STOMP feed only when its own `TD_LIVE_ENABLED`/`VSTP_LIVE_ENABLED`/`TRUST_LIVE_ENABLED` flag
+  is `true`; otherwise it idles (`sleep infinity`) rather than crash-looping, so leaving the
+  defaults alone is a safe no-op. Flip one flag and redeploy — the other two feeds are
+  unaffected.
+- `projector` — re-runs the one-shot `project-td`/`project-vstp`/`project-trust` commands
+  every 30 seconds, since there's no built-in scheduler yet. Without this, raw captured events
+  would sit in `raw_feed_event` and never become queryable current-state/history. Safe to
+  leave running even with every feed disabled (each command just finds an empty backlog).
+
+None of these four report healthy/unhealthy the way `api`/`web`/`worker` do — their
+Docker `HEALTHCHECK` is disabled in the compose file, since the image's baked-in check
+only makes sense for the idle `serve` role. Use their logs to confirm they're behaving.
 
 ## 4a. Testing Milestone 4/5 against the Portainer stack
 
@@ -110,24 +127,35 @@ Then, from your own machine, using the host running the stack and the ports abov
 - Open `http://<host>:${MINIO_CONSOLE_PORT}` to browse archived raw frames in MinIO's console.
 - Open `http://<host>:${WEB_PORT}` in a browser for the Lancaster map itself.
 
-## 5. Enabling live TD ingestion
+## 5. Enabling live ingestion (TD / VSTP / TRUST)
 
-Do **not** set `TD_LIVE_ENABLED=true` until:
+Do **not** set `TD_LIVE_ENABLED`/`VSTP_LIVE_ENABLED`/`TRUST_LIVE_ENABLED` to `true` for a
+feed until:
 
-1. `worker replay-fixtures multi-area-smoke` and `worker replay-fixtures redelivery-smoke`
-   have passed (CI runs both on every build; you can also run them manually against your
-   deployed Postgres/archive).
-2. `pnpm run test:integration` passes (CI runs this against real Postgres + MinIO).
+1. `pnpm run test:integration` passes (CI runs this against real Postgres + MinIO) — it
+   covers all three feeds' recorder/projector fixture-replay behavior.
+2. `worker replay-fixtures multi-area-smoke` and `worker replay-fixtures redelivery-smoke`
+   have passed for TD specifically (CI runs both on every build).
 3. Real NR credentials are in place — either `deploy/secrets/nr_username.txt`/
    `nr_password.txt` on the host (`deploy/docker-compose.yml`), or `NR_USERNAME`/
    `NR_PASSWORD` set in the Portainer stack environment (`deploy/docker-compose.portainer.yml`).
+   One username/password pair covers all three feeds — Network Rail doesn't separate
+   credentials per feed.
 
-Then set `TD_LIVE_ENABLED=true` in `deploy/.env` (or the Portainer stack environment) and
-redeploy the `worker` service. It will connect to the real Network Rail TD feed and start
-durably recording every subscribed TD area — not just Preston/Lancaster
-(`docs/PROJECT_SPEC.md` §4). Watch the worker logs for the initial `TD session started`
-line and `feed_connection_session`/`feed_frame` row growth in Postgres to confirm it's
-working.
+Then, on the Portainer stack, set the relevant flag(s) — `TD_LIVE_ENABLED`, `VSTP_LIVE_ENABLED`,
+`TRUST_LIVE_ENABLED` — to `true` in the stack environment and redeploy. Each flag
+independently controls its own `ingest-{td,vstp,trust}` service (§4 above); you don't have
+to enable all three at once. Watch that service's own logs for the initial
+`<feed> session started` line and `feed_connection_session`/`feed_frame` row growth in
+Postgres to confirm it's working. It will durably record every subscribed area/message
+nationwide, not filtered to Preston/Lancaster (`docs/PROJECT_SPEC.md` §4).
+
+Every VSTP/TRUST wire-format field name in this codebase is constructed from public
+documentation, not verified against a captured real message (`docs/IMPLEMENTATION_PLAN.md`'s
+M7/M8 status notes) — if real traffic shows up with `parse_status = 'unsupported'` or
+`'malformed'` in bulk (`select event_type, parse_status, count(*) from raw_feed_event where
+feed_name = '...' group by 1, 2`), that's the signal to compare a sample against the parser
+and adjust it. Nothing is ever silently dropped, so this is always diagnosable from the DB.
 
 ## 6. Ongoing operations
 

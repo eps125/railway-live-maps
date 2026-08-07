@@ -1,4 +1,4 @@
-import { connect as tlsConnect, type TLSSocket } from "node:tls";
+import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import type { FeedName } from "@railway/domain";
 import { encodeFrame, StompFrameDecoder } from "./frame.js";
@@ -36,13 +36,19 @@ function sleep(ms: number): Promise<void> {
  * `StompTdConnection` (same NR broker, different topic/`feedName` per feed) so VSTP/TRUST
  * reuse the exact same hand-rolled STOMP 1.2 client instead of each reimplementing connect/
  * reconnect/ack. `StompTdConnection` is now a thin wrapper fixing `feedName: "TD"`. Only ever
- * constructed when the relevant `*_LIVE_ENABLED` flag is true — untested against a live broker
- * in this environment; verify with fixture replay and the integration suite first, per
- * docs/IMPLEMENTATION_PLAN.md M3, before ever enabling any of these in a real deployment.
+ * constructed when the relevant `*_LIVE_ENABLED` flag is true.
+ *
+ * Plain TCP, not TLS: despite port 61618 looking like it should be TLS-secured, Network Rail's
+ * broker speaks plain STOMP on it — confirmed both by the official reference clients (e.g.
+ * openraildata/td-trust-example-python3, which never calls stomp.py's `set_ssl`) and by hand:
+ * a raw plaintext CONNECT frame gets a real STOMP ERROR response back immediately. Wrapping
+ * this connection in TLS (the original implementation's bug) sends a TLS ClientHello to a
+ * server that only understands plaintext STOMP frames — neither side ever gets a response it
+ * understands, so the connection hangs forever rather than failing with a clear error.
  */
 export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
   state: BrokerConnectionState = "idle";
-  private socket: TLSSocket | null = null;
+  private socket: Socket | null = null;
   private stopped = false;
   private attempt = 0;
 
@@ -89,14 +95,14 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
         finish(
           new Error(
             `STOMP connect to ${this.config.host}:${this.config.port} timed out after ` +
-              `${connectTimeoutMs}ms — TCP/TLS handshake or broker CONNECTED response never ` +
+              `${connectTimeoutMs}ms — TCP connect or broker CONNECTED response never ` +
               "completed (commonly a firewall silently dropping the port rather than refusing it)",
           ),
         );
         socket.destroy();
       }, connectTimeoutMs);
 
-      const socket = tlsConnect({ host: this.config.host, port: this.config.port }, () => {
+      const socket = netConnect({ host: this.config.host, port: this.config.port }, () => {
         socket.write(
           encodeFrame({
             command: "CONNECT",
@@ -144,7 +150,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
   private async handleChunk(
     decoder: StompFrameDecoder,
     chunk: Buffer,
-    socket: TLSSocket,
+    socket: Socket,
     options: BrokerConnectionOptions<InboundBrokerFrame>,
     clientId: string,
     session: {

@@ -28,7 +28,7 @@ const { connectMock, getLastSocket } = vi.hoisted(() => {
   return { connectMock, getLastSocket: () => lastSocket };
 });
 
-vi.mock("node:tls", () => ({ connect: connectMock }));
+vi.mock("node:net", () => ({ connect: connectMock }));
 
 const { StompConnection } = await import("./stompConnection.js");
 

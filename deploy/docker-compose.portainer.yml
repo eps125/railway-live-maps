@@ -56,6 +56,11 @@ x-worker-env: &worker-env
   VSTP_LIVE_ENABLED: ${VSTP_LIVE_ENABLED:-false}
   TRUST_LIVE_ENABLED: ${TRUST_LIVE_ENABLED:-false}
   DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+  # Must match the `api` service's own copy of this flag below — see the map-deltas service
+  # and docs/ARCHITECTURE.md's Milestone 6 note. On: the WebSocket layer gets pushed deltas
+  # over Redis pub/sub instead of polling Postgres, which is what actually makes the map feel
+  # live rather than merely "polls a bit faster."
+  LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
 
 services:
   web:
@@ -83,6 +88,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
       EDITOR_ENABLED: ${EDITOR_ENABLED:-false}
+      # Must match the worker-side copy of this flag (x-worker-env above) — if only one side
+      # has it on, deltas either never get published or never get subscribed to.
+      LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
     ports:
       - "${API_PORT:-3000}:3000"
     depends_on:
@@ -198,10 +206,13 @@ services:
     # See ingest-td above: needs real internet access to reach Network Rail.
     networks: [backend, egress]
 
-  # Re-runs the one-shot project-td/project-vstp/project-trust commands every 30s so ingested
-  # raw events actually become queryable current-state/history without manual intervention.
-  # Harmless to leave running even with every *_LIVE_ENABLED flag false — each project-*
-  # command just finds an empty backlog and returns immediately.
+  # Re-runs the one-shot project-td/project-vstp/project-trust commands in a tight loop so
+  # ingested raw events actually become queryable current-state/history without manual
+  # intervention. Each project-* command is checkpointed and incremental (a single indexed
+  # query against its own checkpoint), so an idle backlog returns instantly — this loop's
+  # sleep is one of the two things that set the map's actual end-to-end update latency (the
+  # other is map-deltas below). Harmless to leave running even with every *_LIVE_ENABLED flag
+  # false.
   projector:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped
@@ -214,10 +225,43 @@ services:
           node dist/index.js project-td
           node dist/index.js project-vstp
           node dist/index.js project-trust
-          sleep 30
+          sleep 1
         done
     depends_on:
       postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks: [backend]
+
+  # Publishes real-time berth deltas to Redis (railway:live:{slug} channels) the instant
+  # project-td writes new td_berth_event rows, which apps/api's redisDeltaSource then pushes
+  # straight to connected WebSocket clients — no polling on the delivery side at all. Only
+  # runs when LIVE_WS_REDIS_PUBSUB_ENABLED=true (matches the api service's own copy of the
+  # flag); idles otherwise, same pattern as the ingest-* services. This is what makes the
+  # public map feel genuinely live rather than "polls a bit faster" — without it, the
+  # WebSocket layer still works, just by polling Postgres every ~1s as a fallback.
+  map-deltas:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment: *worker-env
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$LIVE_WS_REDIS_PUBSUB_ENABLED" = "true" ]; then
+          while true; do
+            node dist/index.js project-map-deltas
+            sleep 1
+          done
+        else
+          echo "map-deltas: LIVE_WS_REDIS_PUBSUB_ENABLED is not true, idling"
+          exec sleep infinity
+        fi
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       disable: true

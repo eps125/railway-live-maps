@@ -26,6 +26,7 @@ This pack is the authoritative planning context for building a self-hosted Briti
 - `docs/progress.md` — operational memory: what's built, what was verified and how, next smallest task.
 - `docs/adr/0001-nationwide-capture-map-independent.md` — accepted scope decision separating nationwide ingestion from first-map coverage.
 - `deploy/docker-compose.yml` — tested Portainer/Docker Compose stack. Pin exact image tags/digests before production use.
+- `deploy/docker-compose.portainer.yml` — pull-only variant for Portainer's "Repository" stack deploy method (no build context, images come from GHCR).
 - `deploy/.env.example` — non-secret configuration template.
 - `deploy/secrets/README.md` — where real Network Rail credentials go (never in Git or chat).
 

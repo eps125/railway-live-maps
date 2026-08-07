@@ -46,7 +46,11 @@ export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps)
       <div className="editor-header">
         <div className="editor-header__title">
           <h2>Editing &quot;{slug}&quot;</h2>
-          <div role="status" aria-live="polite" className={`sync-status sync-status--${syncModifier}`}>
+          <div
+            role="status"
+            aria-live="polite"
+            className={`sync-status sync-status--${syncModifier}`}
+          >
             {SYNC_STATUS_TEXT[draftSync.status]}
             {draftSync.status === "conflict" ? (
               <>

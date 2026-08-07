@@ -38,11 +38,7 @@ export function LiveStatusBanner({
   }
 
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={`status-banner status-banner--${modifier}`}
-    >
+    <div role="status" aria-live="polite" className={`status-banner status-banner--${modifier}`}>
       <span className="status-banner__dot" aria-hidden="true" />
       {text}
     </div>

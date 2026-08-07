@@ -45,7 +45,14 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         const { elementId, newId } = command;
         selection = state.selection.map((id) => (id === elementId ? newId : id));
       }
-      return { ...state, document: doc, selection, past: [...state.past, inverse], future: [], dirty: true };
+      return {
+        ...state,
+        document: doc,
+        selection,
+        past: [...state.past, inverse],
+        future: [],
+        dirty: true,
+      };
     }
     case "undo": {
       const lastInverse = state.past.at(-1);

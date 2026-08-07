@@ -173,6 +173,40 @@ A `train_uid` never seen at all is a plain 404 with the standard error envelope
 (`error.code: "SCHEDULE_NOT_FOUND"`), distinct from a seen-but-not-running-that-day
 `unmatched` result.
 
+### `GET /api/v1/vstp/schedules?atocCode=&before=&limit=` (added Milestone 7)
+
+Nationwide VSTP discovery/diagnostics, mirroring what `GET /api/v1/td/areas` gives TD: browse
+everything captured (`schedule` rows with `source = 'VSTP'`) rather than needing an already-known
+`train_uid`. Ordered most-recent-first; `before` (an opaque `id` cursor from the previous
+response's `nextCursor`) pages backward in time — the reverse of the `after`-based cursors used
+elsewhere in this API. `atocCode` filters to a single operator (NR's own CIF/VSTP field name for
+what this API otherwise calls `operatorCode`, e.g. on the schedule endpoint above — same value).
+
+```json
+{
+  "schedules": [
+    {
+      "id": "1042",
+      "trainUid": "Z12345",
+      "scheduleStartDate": "2026-08-07",
+      "scheduleEndDate": "2026-08-07",
+      "stpIndicator": "N",
+      "daysRunsBitmask": "1111100",
+      "signallingId": "1A23",
+      "operatorCode": "GW",
+      "trainServiceCode": "12345600",
+      "trainCategory": "XX",
+      "trainStatus": "P",
+      "powerType": "EMU",
+      "originTiploc": "PADTON",
+      "destinationTiploc": "BRSTLTM",
+      "createdAt": "2026-08-07T12:00:00.000Z"
+    }
+  ],
+  "nextCursor": "1041"
+}
+```
+
 ## 2. Live WebSocket
 
 Endpoint:

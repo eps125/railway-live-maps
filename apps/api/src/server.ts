@@ -7,6 +7,7 @@ import { registerHealthRoutes } from "./routes/health.js";
 import { registerTdRoutes } from "./routes/td.js";
 import { registerMapRoutes } from "./routes/maps.js";
 import { registerScheduleRoutes } from "./routes/schedule.js";
+import { registerVstpRoutes } from "./routes/vstp.js";
 import { registerRunRoutes } from "./routes/runs.js";
 import { registerLiveMapRoutes } from "./routes/liveMap.js";
 import { registerEditorRoutes } from "./routes/editor/index.js";
@@ -30,6 +31,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await registerTdRoutes(app, { pool });
   await registerMapRoutes(app, { pool });
   await registerScheduleRoutes(app, { pool });
+  await registerVstpRoutes(app, { pool });
   await registerRunRoutes(app, { pool });
 
   // Milestone 6: polling is the default delta source (no extra infrastructure required). When

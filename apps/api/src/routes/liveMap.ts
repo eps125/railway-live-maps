@@ -5,6 +5,7 @@ import {
   type SnapshotMessage,
   type HeartbeatMessage,
   type ResyncRequiredMessage,
+  type LiveDeltaMessage,
 } from "@railway/protocol";
 import { currentVersionForSlug } from "../lib/mapVersion.js";
 import { computeLiveState } from "../lib/liveState.js";
@@ -43,12 +44,40 @@ export async function registerLiveMapRoutes(
         return;
       }
 
+      // Subscribe before computing the snapshot, not after: computeLiveState's query and
+      // socket.send() both take real time, and a delta published during that window (e.g. the
+      // berth.cleared that immediately follows the occupied state the snapshot just read) would
+      // otherwise never reach this socket at all — subscribe() only registers the listener for
+      // *future* deltas. That's exactly what leaves a berth showing occupied forever: the
+      // client has no periodic resync (docs/API_CONTRACT.md §2 makes gap-healing the server's
+      // job here), so a silently dropped berth.cleared is never corrected until something else
+      // happens to touch that same berth. Buffer everything that arrives before the snapshot's
+      // sourceSequence is known, then replay only what it doesn't already reflect.
+      let lastSentSequence = 0;
+      let buffering = true;
+      const buffered: LiveDeltaMessage[] = [];
+
+      const forward = (message: LiveDeltaMessage): void => {
+        lastSentSequence = message.sequence;
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify(message));
+        }
+      };
+
+      const unsubscribe = deltaSource.subscribe(version.id, version.slug, (message) => {
+        if (buffering) {
+          buffered.push(message);
+          return;
+        }
+        forward(message);
+      });
+
       const { sourceSequence, berths, signals, quality } = await computeLiveState(
         pool,
         version.compiled_runtime_bundle,
         now,
       );
-      let lastSentSequence = sourceSequence;
+      lastSentSequence = sourceSequence;
 
       const snapshot: SnapshotMessage = {
         type: "snapshot",
@@ -58,12 +87,15 @@ export async function registerLiveMapRoutes(
       };
       socket.send(JSON.stringify(snapshot));
 
-      const unsubscribe = deltaSource.subscribe(version.id, version.slug, (message) => {
-        lastSentSequence = message.sequence;
-        if (socket.readyState === socket.OPEN) {
-          socket.send(JSON.stringify(message));
+      // Flip synchronously (no await between here and the loop) so no delta arriving from here
+      // on is missed or reordered relative to the buffer drain.
+      buffering = false;
+      for (const message of buffered) {
+        if (message.sequence > sourceSequence) {
+          forward(message);
         }
-      });
+      }
+      buffered.length = 0;
 
       const heartbeatTimer = setInterval(() => {
         if (socket.readyState !== socket.OPEN) return;

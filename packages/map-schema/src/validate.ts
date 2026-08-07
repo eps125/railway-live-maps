@@ -68,9 +68,17 @@ export function validateMapDocument(json: unknown): ValidationResult {
   }
 
   const bindingsById = new Map(doc.bindings.map((binding) => [binding.id, binding]));
+  // `doc.bindings` (matched by `binding.elementId`) is what the compiler actually reads to
+  // build the published berthBindingIndex (see compiler.ts) — it never looks at
+  // `element.bindingId`. That field is a redundant back-reference kept in sync by the editor's
+  // setBinding command, but nothing prevents it drifting stale (a past editor bug did exactly
+  // this), so it must not be treated as authoritative here — doing so previously let a berth
+  // with a real, working binding still get flagged as unbound.
+  const bindingsByElementId = new Map(doc.bindings.map((binding) => [binding.elementId, binding]));
   for (const element of doc.elements) {
     if (element.type !== "berth") continue;
-    if (!element.bindingId) {
+    const binding = bindingsByElementId.get(element.id);
+    if (!binding) {
       errors.push({
         code: "missing_berth_binding",
         message: `Berth element "${element.id}" has no binding`,
@@ -78,13 +86,12 @@ export function validateMapDocument(json: unknown): ValidationResult {
       });
       continue;
     }
-    const binding = bindingsById.get(element.bindingId);
-    if (!binding || binding.type !== "tdBerth") {
+    if (binding.type !== "tdBerth") {
       errors.push({
         code: "invalid_berth_binding",
-        message: `Berth element "${element.id}" references a missing or non-tdBerth binding`,
+        message: `Berth element "${element.id}" references a non-tdBerth binding`,
         elementId: element.id,
-        bindingId: element.bindingId,
+        bindingId: binding.id,
       });
     }
   }

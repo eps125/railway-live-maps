@@ -83,7 +83,7 @@ describe("validateMapDocument", () => {
     expect(result.errors.some((e) => e.code === "missing_berth_binding")).toBe(true);
   });
 
-  it("flags a berth element whose binding id doesn't resolve", () => {
+  it("flags a berth element whose matching binding resolves to the wrong type", () => {
     const doc = baseDoc({
       elements: [
         {
@@ -95,12 +95,50 @@ describe("validateMapDocument", () => {
           width: 10,
           height: 10,
           displayName: "1008",
-          bindingId: "does-not-exist",
+          bindingId: "bind-1",
+        },
+      ],
+      bindings: [
+        {
+          id: "bind-1",
+          elementId: "berth-1",
+          type: "tdSBit",
+          tdArea: "PX",
+          address: "A",
+          bit: 0,
+          activeMeans: "on",
         },
       ],
     });
     const result = validateMapDocument(doc);
     expect(result.errors.some((e) => e.code === "invalid_berth_binding")).toBe(true);
+  });
+
+  it("treats doc.bindings (matched by elementId) as authoritative even when element.bindingId is stale or unset", () => {
+    // The compiler builds the published berth-binding index from binding.elementId alone
+    // (packages/map-schema/src/compiler.ts) — it never reads element.bindingId. A real editor
+    // bug once left element.bindingId out of sync with doc.bindings, which made this exact,
+    // genuinely-bound berth get flagged as "missing_berth_binding".
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "berth-1",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "1008",
+          // No bindingId set on the element at all.
+        },
+      ],
+      bindings: [
+        { id: "bind-1", elementId: "berth-1", type: "tdBerth", tdArea: "PX", berth: "1008" },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.valid).toBe(true);
   });
 
   it("accepts a valid berth binding", () => {

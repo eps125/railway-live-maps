@@ -297,14 +297,18 @@ button {
   margin-bottom: 0.4rem;
 }
 
+/* Zero horizontal padding so fields inside a fieldset (e.g. PropertyPanel's "TD binding"
+ * group) line up flush with sibling fields that sit directly in the panel, instead of being
+ * visibly indented relative to them. */
 fieldset {
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
-  padding: 0.75rem;
+  padding: 0.65rem 0 0.1rem;
   margin: 0 0 0.75rem;
 }
 
 legend {
+  margin-left: 0.35rem;
   padding: 0 0.35rem;
   font-size: 0.72rem;
   font-weight: 600;

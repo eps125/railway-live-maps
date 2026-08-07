@@ -96,9 +96,12 @@ export async function validateDraftInContext(
     elementCounts[element.type] = (elementCounts[element.type] ?? 0) + 1;
   }
   const berthElements = doc.elements.filter((element) => element.type === "berth");
-  const boundBerthCount = berthElements.filter(
-    (element) => "bindingId" in element && element.bindingId,
-  ).length;
+  // `doc.bindings` (matched by elementId) is authoritative, same as `validateMapDocument` and
+  // the compiler — `element.bindingId` is a redundant back-reference that can drift stale.
+  // Using it here previously produced the confusing "0 bound berths" alongside a
+  // binding_never_observed warning for a binding that actually was attached to this element.
+  const boundElementIds = new Set(doc.bindings.map((binding) => binding.elementId));
+  const boundBerthCount = berthElements.filter((element) => boundElementIds.has(element.id)).length;
   const unboundBerthCount = berthElements.length - boundBerthCount;
 
   return {

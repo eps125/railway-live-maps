@@ -102,3 +102,77 @@ describe("StompConnection connect timeout", () => {
     await connection.stop();
   });
 });
+
+describe("StompConnection heartbeat", () => {
+  it("sends periodic heartbeat frames once connected, even with no incoming messages", async () => {
+    // Regression test: the CONNECT frame advertises a heart-beat interval, but nothing
+    // actually sent one — ACK frames happened to mask this on busy feeds (TD), but a quiet
+    // feed (VSTP; TRUST/TD overnight) can go longer than the promised interval between ACKs,
+    // and Network Rail's broker then closes the connection thinking the client vanished
+    // (AMQ229014: "Did not receive data ... within the connection TTL").
+    vi.useFakeTimers();
+    const connection = new StompConnection({
+      feedName: "VSTP",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      heartbeatMs: 1000, // -> heartbeat send interval of max(1000, floor(1000*0.8)) = 1000ms
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const writesBeforeHeartbeats = socket.write.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3000); // three heartbeat intervals
+
+    const heartbeatWrites = socket.write.mock.calls
+      .slice(writesBeforeHeartbeats)
+      .filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.toString("utf8") === "\n");
+    expect(heartbeatWrites).toHaveLength(3);
+
+    await connection.stop();
+  });
+
+  it("stops sending heartbeats once the connection closes", async () => {
+    vi.useFakeTimers();
+    const connection = new StompConnection({
+      feedName: "VSTP",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      heartbeatMs: 1000,
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    socket.emit("close");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const writesAfterClose = socket.write.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(socket.write.mock.calls.length).toBe(writesAfterClose);
+
+    await connection.stop();
+  });
+});

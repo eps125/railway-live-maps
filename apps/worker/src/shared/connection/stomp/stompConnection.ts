@@ -82,11 +82,20 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       const connectTimeoutMs = this.config.connectTimeoutMs ?? 20_000;
       let sessionId: string | null = null;
       let settled = false;
+      let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+      const stopHeartbeat = (): void => {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = undefined;
+        }
+      };
 
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(connectTimer);
+        stopHeartbeat();
         if (error) reject(error);
         else resolve();
       };
@@ -126,7 +135,21 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             sessionId = id;
           },
           onFatalError: finish,
-          onConnected: () => clearTimeout(connectTimer),
+          onConnected: () => {
+            clearTimeout(connectTimer);
+            // STOMP 1.2 heartbeat: a lone LF on the wire. The CONNECT frame above promised
+            // `heartbeatMs` via the heart-beat header, but nothing was actually sending one —
+            // ACK frames happened to cover for it on busy feeds (TD), but a quiet one (VSTP,
+            // TRUST overnight, TD itself outside busy areas) can go longer than the promised
+            // interval between ACKs, and Network Rail's broker then concludes the client has
+            // disappeared and closes the connection ("AMQ229014: Did not receive data ...
+            // within the connection TTL"). Send somewhat faster than promised (80%) for
+            // jitter/processing-delay margin.
+            const sendIntervalMs = Math.max(1000, Math.floor(heartbeatMs * 0.8));
+            heartbeatTimer = setInterval(() => {
+              if (!socket.destroyed) socket.write(Buffer.from("\n"));
+            }, sendIntervalMs);
+          },
         });
       });
 

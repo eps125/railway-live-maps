@@ -109,11 +109,29 @@ function BindingFields({
 }): JSX.Element {
   const dispatch = useEditorDispatch();
   const areas = useObservedAreas();
-  const currentArea = binding?.type === "tdBerth" ? binding.tdArea : null;
-  const berths = useObservedBerths(currentArea);
+  const initialArea = binding?.type === "tdBerth" ? binding.tdArea : "";
+  const initialBerth = binding?.type === "tdBerth" ? binding.berth : "";
+
+  // Both fields are controlled and share this local state — `defaultValue`-based uncontrolled
+  // inputs here previously (a) never reset when switching to a different element, so the
+  // previously-selected berth's binding stayed visible/editable after selecting an unbound one,
+  // and (b) committed each field independently on its own blur, reading the *other* field's
+  // still-uncommitted value from `binding` — which is empty for a brand-new element, so filling
+  // in area then berth (or vice versa) always fell back to an empty counterpart and silently
+  // no-opped both times. Keying local state on `elementId` and committing both fields together
+  // fixes both.
+  const [localArea, setLocalArea] = useState(initialArea);
+  const [localBerth, setLocalBerth] = useState(initialBerth);
+  useEffect(() => {
+    setLocalArea(initialArea);
+    setLocalBerth(initialBerth);
+  }, [elementId, initialArea, initialBerth]);
+
+  const berths = useObservedBerths(localArea || null);
 
   function commitBinding(tdArea: string, berth: string): void {
     if (!tdArea || !berth) return;
+    if (tdArea === initialArea && berth === initialBerth) return;
     const newBinding: MapBinding = {
       id: binding?.id ?? `bind-${elementId}`,
       elementId,
@@ -135,10 +153,9 @@ function BindingFields({
         TD area
         <input
           list="observed-td-areas"
-          defaultValue={currentArea ?? ""}
-          onBlur={(e) =>
-            commitBinding(e.target.value, binding?.type === "tdBerth" ? binding.berth : "")
-          }
+          value={localArea}
+          onChange={(e) => setLocalArea(e.target.value)}
+          onBlur={() => commitBinding(localArea, localBerth)}
         />
         <datalist id="observed-td-areas">
           {areas.map((area) => (
@@ -150,8 +167,9 @@ function BindingFields({
         Berth
         <input
           list="observed-berths"
-          defaultValue={binding?.type === "tdBerth" ? binding.berth : ""}
-          onBlur={(e) => commitBinding(currentArea ?? "", e.target.value)}
+          value={localBerth}
+          onChange={(e) => setLocalBerth(e.target.value)}
+          onBlur={() => commitBinding(localArea, localBerth)}
         />
         <datalist id="observed-berths">
           {berths.map((berth) => (

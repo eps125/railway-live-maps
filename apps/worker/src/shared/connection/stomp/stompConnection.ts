@@ -19,6 +19,12 @@ export interface StompConnectionConfig {
   username: string;
   password: string;
   heartbeatMs?: number;
+  /** Bounds only the initial handshake (TCP/TLS connect through the broker's CONNECTED
+   * response), not a healthy connection's subsequent lifetime. Without this, a connection
+   * attempt that's silently dropped (e.g. a firewall blackholing the port rather than actively
+   * refusing it) hangs the returned promise forever with nothing ever logged — indistinguishable
+   * from a slow-but-working connection. Defaults to 20s. */
+  connectTimeoutMs?: number;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -67,15 +73,28 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       const decoder = new StompFrameDecoder();
       const clientId = `railway-live-maps-${randomUUID()}`;
       const heartbeatMs = this.config.heartbeatMs ?? 15_000;
+      const connectTimeoutMs = this.config.connectTimeoutMs ?? 20_000;
       let sessionId: string | null = null;
       let settled = false;
 
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
+        clearTimeout(connectTimer);
         if (error) reject(error);
         else resolve();
       };
+
+      const connectTimer = setTimeout(() => {
+        finish(
+          new Error(
+            `STOMP connect to ${this.config.host}:${this.config.port} timed out after ` +
+              `${connectTimeoutMs}ms — TCP/TLS handshake or broker CONNECTED response never ` +
+              "completed (commonly a firewall silently dropping the port rather than refusing it)",
+          ),
+        );
+        socket.destroy();
+      }, connectTimeoutMs);
 
       const socket = tlsConnect({ host: this.config.host, port: this.config.port }, () => {
         socket.write(
@@ -101,6 +120,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             sessionId = id;
           },
           onFatalError: finish,
+          onConnected: () => clearTimeout(connectTimer),
         });
       });
 
@@ -131,6 +151,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       getSessionId: () => string | null;
       setSessionId: (id: string) => void;
       onFatalError: (error?: Error) => void;
+      onConnected: () => void;
     },
   ): Promise<void> {
     for (const frame of decoder.push(chunk)) {
@@ -138,6 +159,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
 
       if (frame.command === "CONNECTED") {
         this.state = "connected";
+        session.onConnected();
         const sessionId = await options.onSessionStart({ clientId, connectedAt: new Date() });
         session.setSessionId(sessionId);
         socket.write(

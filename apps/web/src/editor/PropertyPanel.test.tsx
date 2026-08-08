@@ -19,6 +19,7 @@ function baseDoc(): MapDocument {
       {
         id: "berth-a",
         layerId: "l",
+        zIndex: 0,
         type: "berth",
         x: 0,
         y: 0,
@@ -32,6 +33,7 @@ function baseDoc(): MapDocument {
       {
         id: "berth-b",
         layerId: "l",
+        zIndex: 0,
         type: "berth",
         x: 50,
         y: 0,

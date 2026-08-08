@@ -41,6 +41,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
         {
           id: "berth-1",
           layerId: "l1",
+          zIndex: 0,
           type: "berth",
           x: 0,
           y: 0,
@@ -83,6 +84,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
         {
           id: "berth-1",
           layerId: "l1",
+          zIndex: 0,
           type: "berth",
           x: 0,
           y: 0,

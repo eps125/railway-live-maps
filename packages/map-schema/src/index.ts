@@ -5,6 +5,7 @@ export {
   MapBindingSchema,
   type MapDocument,
   type MapElement,
+  type Layer,
   type TrackPathElement,
   type BerthElement,
   type SignalElement,
@@ -18,4 +19,9 @@ export {
   type TopologyEdge,
 } from "./document.js";
 export { validateMapDocument, type ValidationIssue, type ValidationResult } from "./validate.js";
-export { compileMapDocument, type CompiledMapBundle } from "./compiler.js";
+export {
+  compileMapDocument,
+  sortElementsForPaint,
+  Z_INDEX_LAYER_BAND,
+  type CompiledMapBundle,
+} from "./compiler.js";

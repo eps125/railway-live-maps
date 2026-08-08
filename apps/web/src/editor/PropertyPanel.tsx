@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { MapBinding } from "@railway/map-schema";
+import { Z_INDEX_LAYER_BAND, type MapBinding } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
 import { useObservedAreas, useObservedBerths } from "./useBindingAutocomplete.js";
 
@@ -245,6 +245,37 @@ export function PropertyPanel(): JSX.Element {
           })
         }
       />
+
+      <div className="field-row">
+        <NumberField
+          label="Z-index"
+          value={element.zIndex}
+          onCommit={(v) => setProp("zIndex", Math.round(v))}
+        />
+        <div className="btn-group">
+          <button
+            type="button"
+            className="btn"
+            aria-label="Decrease Z-index"
+            onClick={() => setProp("zIndex", element.zIndex - 1)}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="btn"
+            aria-label="Increase Z-index"
+            onClick={() => setProp("zIndex", element.zIndex + 1)}
+          >
+            +
+          </button>
+        </div>
+      </div>
+      <p className="field-hint">
+        0 = this layer&apos;s default position (tracks &lt; berths &lt; signals &lt; everything
+        else). ± nudges reorder within the layer; a value ±{Z_INDEX_LAYER_BAND.toLocaleString()} or
+        more deliberately overrides the layer order (e.g. sinks a signal below a berth).
+      </p>
 
       {element.type === "berth" && (
         <>

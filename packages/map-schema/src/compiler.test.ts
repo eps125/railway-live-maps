@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MapDocumentSchema } from "./document.js";
-import { compileMapDocument } from "./compiler.js";
+import { MapDocumentSchema, type Layer, type MapElement } from "./document.js";
+import { compileMapDocument, sortElementsForPaint, Z_INDEX_LAYER_BAND } from "./compiler.js";
 
 const doc = MapDocumentSchema.parse({
   schemaVersion: 1,
@@ -87,5 +87,100 @@ describe("compileMapDocument", () => {
   it("strips editorMetadata from the compiled bundle", () => {
     const bundle = compileMapDocument(doc);
     expect(bundle).not.toHaveProperty("editorMetadata");
+  });
+
+  it("elementsById iterates in paint order (layer order, not document array order)", () => {
+    // doc declares elements track-1, berth-1, signal-1, boundary-1, but all four share layer l1
+    // — add a second doc with elements deliberately out of layer order to prove the compiler
+    // reorders rather than trusting document array order.
+    const outOfOrderDoc = MapDocumentSchema.parse({
+      ...doc,
+      layers: [
+        { id: "signals", name: "Signals", order: 2 },
+        { id: "track", name: "Track", order: 0 },
+      ],
+      elements: [
+        { id: "sig", layerId: "signals", type: "signal", x: 0, y: 0 },
+        {
+          id: "trk",
+          layerId: "track",
+          type: "trackPath",
+          points: [
+            { x: 0, y: 0 },
+            { x: 1, y: 1 },
+          ],
+        },
+      ],
+    });
+    const bundle = compileMapDocument(outOfOrderDoc);
+    expect(Object.keys(bundle.elementsById)).toEqual(["trk", "sig"]);
+  });
+});
+
+describe("sortElementsForPaint", () => {
+  const layers: Layer[] = [
+    { id: "track", name: "Track", order: 0, visible: true, locked: false },
+    { id: "berths", name: "Berths", order: 1, visible: true, locked: false },
+    { id: "signals", name: "Signals", order: 2, visible: true, locked: false },
+    { id: "labels", name: "Labels", order: 3, visible: true, locked: false },
+  ];
+
+  function el(id: string, layerId: string, zIndex = 0): MapElement {
+    return {
+      id,
+      layerId,
+      zIndex,
+      type: "label",
+      x: 0,
+      y: 0,
+      text: id,
+      align: "left",
+      fontSize: 12,
+    };
+  }
+
+  it("defaults to layer order: tracks < berths < signals < everything else", () => {
+    const elements = [
+      el("label", "labels"),
+      el("signal", "signals"),
+      el("berth", "berths"),
+      el("track", "track"),
+    ];
+    const sorted = sortElementsForPaint(elements, layers).map((e) => e.id);
+    expect(sorted).toEqual(["track", "berth", "signal", "label"]);
+  });
+
+  it("a small zIndex nudge reorders within the same layer only", () => {
+    const elements = [
+      el("berth-a", "berths"),
+      el("berth-b", "berths", -1),
+      el("signal", "signals"),
+    ];
+    const sorted = sortElementsForPaint(elements, layers).map((e) => e.id);
+    // berth-b (zIndex -1) moves before berth-a within the berths layer, but neither crosses into
+    // the track layer below or the signals layer above.
+    expect(sorted).toEqual(["berth-b", "berth-a", "signal"]);
+  });
+
+  it("a zIndex large enough to exceed the layer band deliberately overrides layer order", () => {
+    // The user's stated need: sink a specific signal below a specific berth, even though signals
+    // (order 2) are above berths (order 1) by default.
+    const elements = [el("berth", "berths"), el("signal-sunk", "signals", -Z_INDEX_LAYER_BAND - 1)];
+    const sorted = sortElementsForPaint(elements, layers).map((e) => e.id);
+    expect(sorted).toEqual(["signal-sunk", "berth"]);
+  });
+
+  it("ties (equal effective order) keep document array order — stable sort", () => {
+    const elements = [el("first", "track"), el("second", "track")];
+    expect(sortElementsForPaint(elements, layers).map((e) => e.id)).toEqual(["first", "second"]);
+    expect(sortElementsForPaint([...elements].reverse(), layers).map((e) => e.id)).toEqual([
+      "second",
+      "first",
+    ]);
+  });
+
+  it("an element referencing an unknown layerId sorts last", () => {
+    const elements = [el("label", "labels"), el("orphan", "does-not-exist")];
+    expect(sortElementsForPaint(elements, layers).map((e) => e.id)).toEqual(["label", "orphan"]);
   });
 });

@@ -19,6 +19,7 @@ function baseDoc(): MapDocument {
       {
         id: "berth-1",
         layerId: "l1",
+        zIndex: 0,
         type: "berth",
         x: 10,
         y: 20,
@@ -32,6 +33,7 @@ function baseDoc(): MapDocument {
       {
         id: "track-1",
         layerId: "l1",
+        zIndex: 0,
         type: "trackPath",
         points: [
           { x: 0, y: 0 },
@@ -67,8 +69,9 @@ function byId<T extends { id: string }>(items: T[]): T[] {
 /** Applies the command, then applies the returned inverse, and asserts the round trip restores
  * the exact same set of elements/bindings/layers/topology — order-independent for
  * elements/bindings, since `deleteElements`'s inverse (`addElement`) appends rather than
- * reinserting at the original array index; a documented MVP simplification (array position
- * within a layer isn't currently a modeled z-order signal, layers themselves are). */
+ * reinserting at the original array index. Harmless for z-order: paint order is driven by
+ * layer order + each element's explicit `zIndex`, never by array position (see
+ * sortElementsForPaint in packages/map-schema). */
 function expectRoundTrip(doc: MapDocument, command: EditorCommand): MapDocument {
   const { doc: applied, inverse } = applyCommand(doc, command);
   const { doc: restored } = applyCommand(applied, inverse);
@@ -85,6 +88,7 @@ describe("applyCommand", () => {
     const newElement = {
       id: "label-1",
       layerId: "l2",
+      zIndex: 0,
       type: "label" as const,
       x: 5,
       y: 5,

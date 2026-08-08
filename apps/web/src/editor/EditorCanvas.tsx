@@ -1,11 +1,15 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Line, Rect, Text, Circle, Group, Transformer } from "react-konva";
 import Konva from "konva";
-import type { MapElement } from "@railway/map-schema";
+import { sortElementsForPaint, type MapElement } from "@railway/map-schema";
 import { useEditorState, useEditorDispatch, type ToolMode } from "./EditorState.js";
 
-const CANVAS_VIEW_WIDTH = 900;
-const CANVAS_VIEW_HEIGHT = 600;
+// Fallback only, used for the first paint before ResizeObserver reports the real size of
+// `.editor-canvas-frame` (apps/web/src/styles.css) — the stage itself always tracks that
+// container's actual size, not a fixed constant, so it fills whatever space the surrounding
+// layout gives it instead of sitting in a corner of it.
+const FALLBACK_CANVAS_VIEW_WIDTH = 900;
+const FALLBACK_CANVAS_VIEW_HEIGHT = 600;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
 const WHEEL_ZOOM_FACTOR = 1.05;
@@ -41,6 +45,7 @@ function defaultElementForTool(
       return {
         id,
         layerId,
+        zIndex: 0,
         type: "berth",
         x: point.x,
         y: point.y,
@@ -54,6 +59,7 @@ function defaultElementForTool(
       return {
         id,
         layerId,
+        zIndex: 0,
         type: "signal",
         x: point.x,
         y: point.y,
@@ -64,6 +70,7 @@ function defaultElementForTool(
       return {
         id,
         layerId,
+        zIndex: 0,
         type: "label",
         x: point.x,
         y: point.y,
@@ -72,11 +79,12 @@ function defaultElementForTool(
         fontSize: 12,
       };
     case "boundary":
-      return { id, layerId, type: "boundary", x: point.x, y: point.y, name: "Boundary" };
+      return { id, layerId, zIndex: 0, type: "boundary", x: point.x, y: point.y, name: "Boundary" };
     case "trackPath":
       return {
         id,
         layerId,
+        zIndex: 0,
         type: "trackPath",
         points: [
           { x: point.x, y: point.y },
@@ -87,6 +95,7 @@ function defaultElementForTool(
       return {
         id,
         layerId,
+        zIndex: 0,
         type: "platform",
         points: [
           { x: point.x, y: point.y },
@@ -124,6 +133,28 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   const dispatch = useEditorDispatch();
   const transformerRef = useRef<Konva.Transformer>(null);
   const nodeRefs = useRef(new Map<string, Konva.Node>());
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({
+    width: FALLBACK_CANVAS_VIEW_WIDTH,
+    height: FALLBACK_CANVAS_VIEW_HEIGHT,
+  });
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      // Konva stages render nothing useful at 0×0 (e.g. mid-layout-shift) — keep the last good
+      // size rather than collapsing the canvas.
+      if (width > 0 && height > 0) {
+        setStageSize({ width, height });
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   const { document: doc, selection, toolMode, viewport } = state;
   const gridSize = doc.map.canvas.gridSize;
@@ -297,210 +328,218 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     );
   }
 
-  const sortedVisibleLayers = [...doc.layers]
-    .filter((l) => l.visible)
-    .sort((a, b) => a.order - b.order);
+  // A single flat, globally-ordered list — not one Konva Group per layer — because zIndex is a
+  // full override on top of the default layer stacking (e.g. sinking a signal below a berth on
+  // a different layer), and Konva always paints an earlier Group's children before a later
+  // Group's regardless of any per-element key, so per-layer Groups can't express a cross-layer
+  // override. sortElementsForPaint (packages/map-schema) is the single shared source of truth
+  // for this ordering, also used by the compiler for the published bundle the public renderer
+  // consumes — see docs there for the layer-order/zIndex band math.
+  const layersById = new Map(doc.layers.map((layer) => [layer.id, layer]));
+  const paintOrderedElements = sortElementsForPaint(
+    doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
+    doc.layers,
+  );
 
   return (
-    <Stage
-      width={CANVAS_VIEW_WIDTH}
-      height={CANVAS_VIEW_HEIGHT}
-      x={viewport.x}
-      y={viewport.y}
-      scaleX={viewport.scale}
-      scaleY={viewport.scale}
-      draggable={toolMode === "select"}
-      onWheel={handleWheel}
-      onDragEnd={handleStageDragEnd}
-      onClick={handleStageClick}
-    >
-      <Layer listening={false}>
-        <Rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="#0d1117" />
-        {gridLines}
-      </Layer>
-      <Layer>
-        {sortedVisibleLayers.map((layer) => (
-          <Group key={layer.id}>
-            {doc.elements
-              .filter((element) => element.layerId === layer.id)
-              .map((element) => {
-                const selected = selection.includes(element.id);
-                const draggable = toolMode === "select" && !layer.locked;
-                const setRef = (node: Konva.Node | null): void => {
-                  if (node) nodeRefs.current.set(element.id, node);
-                  else nodeRefs.current.delete(element.id);
-                };
+    <div ref={containerRef} className="editor-canvas-measure">
+      <Stage
+        width={stageSize.width}
+        height={stageSize.height}
+        x={viewport.x}
+        y={viewport.y}
+        scaleX={viewport.scale}
+        scaleY={viewport.scale}
+        draggable={toolMode === "select"}
+        onWheel={handleWheel}
+        onDragEnd={handleStageDragEnd}
+        onClick={handleStageClick}
+      >
+        <Layer listening={false}>
+          <Rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="#0d1117" />
+          {gridLines}
+        </Layer>
+        <Layer>
+          {paintOrderedElements.map((element) => {
+            const layer = layersById.get(element.layerId)!;
+            const selected = selection.includes(element.id);
+            const draggable = toolMode === "select" && !layer.locked;
+            const setRef = (node: Konva.Node | null): void => {
+              if (node) nodeRefs.current.set(element.id, node);
+              else nodeRefs.current.delete(element.id);
+            };
 
-                if (element.type === "trackPath") {
-                  return (
-                    <Group key={element.id}>
-                      <Line
-                        ref={setRef}
-                        points={flattenPoints(element.points)}
-                        stroke={selected ? "#58a6ff" : "#5f6b7a"}
-                        strokeWidth={selected ? 3 : 2}
-                        hitStrokeWidth={16}
-                        draggable={draggable}
-                        onClick={(e) => handleElementClick(e, element.id)}
-                        onDragEnd={(e) => handlePathDragEnd(e, element.id)}
-                      />
-                      {selected && draggable
-                        ? element.points.map((point, index) => (
-                            <Circle
-                              key={index}
-                              x={point.x}
-                              y={point.y}
-                              radius={5}
-                              fill="#0d1117"
-                              stroke="#58a6ff"
-                              strokeWidth={2}
-                              draggable
-                              onDragEnd={(e) =>
-                                handlePointDragEnd(e, element.id, index, element.points)
-                              }
-                            />
-                          ))
-                        : null}
-                    </Group>
-                  );
-                }
-                if (element.type === "platform") {
-                  return (
-                    <Group key={element.id}>
-                      <Line
-                        ref={setRef}
-                        points={flattenPoints(element.points)}
-                        stroke={selected ? "#58a6ff" : "#3d4a5c"}
-                        strokeWidth={selected ? 8 : 6}
-                        hitStrokeWidth={16}
-                        lineCap="round"
-                        draggable={draggable}
-                        onClick={(e) => handleElementClick(e, element.id)}
-                        onDragEnd={(e) => handlePathDragEnd(e, element.id)}
-                      />
-                      {selected && draggable
-                        ? element.points.map((point, index) => (
-                            <Circle
-                              key={index}
-                              x={point.x}
-                              y={point.y}
-                              radius={5}
-                              fill="#0d1117"
-                              stroke="#58a6ff"
-                              strokeWidth={2}
-                              draggable
-                              onDragEnd={(e) =>
-                                handlePointDragEnd(e, element.id, index, element.points)
-                              }
-                            />
-                          ))
-                        : null}
-                    </Group>
-                  );
-                }
-                if (element.type === "berth") {
-                  const overlay = previewState?.[element.id];
-                  const occupied = overlay !== undefined && overlay.description !== null;
-                  return (
-                    <Group
-                      key={element.id}
-                      ref={setRef}
-                      x={element.x}
-                      y={element.y}
-                      draggable={draggable}
-                      onClick={(e) => handleElementClick(e, element.id)}
-                      onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
-                      onTransformEnd={() => handleTransformEnd(element.id)}
-                    >
-                      <Rect
-                        width={element.width}
-                        height={element.height}
-                        fill={occupied ? "#d29922" : selected ? "#233044" : "#161d27"}
-                        stroke={selected ? "#58a6ff" : "#2d3644"}
-                        strokeWidth={selected ? 2 : 1}
-                        cornerRadius={2}
-                      />
-                      <Text
-                        text={overlay ? (overlay.description ?? "") : element.displayName}
-                        width={element.width}
-                        height={element.height}
-                        align={element.textAlign}
-                        verticalAlign="middle"
-                        fontSize={element.fontSize}
-                        fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
-                        fill={occupied ? "#04101f" : "#e6edf3"}
-                      />
-                    </Group>
-                  );
-                }
-                if (element.type === "signal") {
-                  return (
-                    <Group
-                      key={element.id}
-                      ref={setRef}
-                      x={element.x}
-                      y={element.y}
-                      draggable={draggable}
-                      onClick={(e) => handleElementClick(e, element.id)}
-                      onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
-                    >
-                      <Circle
-                        radius={8}
-                        fill={signalFill(element.symbolStyle)}
-                        stroke={selected ? "#58a6ff" : "#2d3644"}
-                        strokeWidth={selected ? 2 : 1}
-                      />
-                      {element.label ? (
-                        <Text text={element.label} y={12} fontSize={10} fill="#8b96a5" />
-                      ) : null}
-                    </Group>
-                  );
-                }
-                if (element.type === "label") {
-                  return (
-                    <Text
-                      key={element.id}
-                      ref={setRef}
-                      x={element.x}
-                      y={element.y}
-                      text={element.text}
-                      fontSize={element.fontSize}
-                      align={element.align}
-                      fill={selected ? "#58a6ff" : "#c9d3de"}
-                      draggable={draggable}
-                      onClick={(e) => handleElementClick(e, element.id)}
-                      onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
-                    />
-                  );
-                }
-                // boundary
-                return (
-                  <Group
-                    key={element.id}
+            if (element.type === "trackPath") {
+              return (
+                <Group key={element.id}>
+                  <Line
                     ref={setRef}
-                    x={element.x}
-                    y={element.y}
+                    points={flattenPoints(element.points)}
+                    stroke={selected ? "#58a6ff" : "#5f6b7a"}
+                    strokeWidth={selected ? 3 : 2}
+                    hitStrokeWidth={16}
                     draggable={draggable}
                     onClick={(e) => handleElementClick(e, element.id)}
-                    onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
-                  >
-                    <Circle radius={6} fill="#f59e0b" stroke={selected ? "#58a6ff" : "#2d3644"} />
-                    <Text text={element.name} y={9} fontSize={10} fill="#8b96a5" />
-                  </Group>
-                );
-              })}
-          </Group>
-        ))}
-        {selectedBerthId ? (
-          <Transformer
-            ref={transformerRef}
-            nodes={
-              nodeRefs.current.has(selectedBerthId) ? [nodeRefs.current.get(selectedBerthId)!] : []
+                    onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                  />
+                  {selected && draggable
+                    ? element.points.map((point, index) => (
+                        <Circle
+                          key={index}
+                          x={point.x}
+                          y={point.y}
+                          radius={5}
+                          fill="#0d1117"
+                          stroke="#58a6ff"
+                          strokeWidth={2}
+                          draggable
+                          onDragEnd={(e) =>
+                            handlePointDragEnd(e, element.id, index, element.points)
+                          }
+                        />
+                      ))
+                    : null}
+                </Group>
+              );
             }
-            rotateEnabled={false}
-          />
-        ) : null}
-      </Layer>
-    </Stage>
+            if (element.type === "platform") {
+              return (
+                <Group key={element.id}>
+                  <Line
+                    ref={setRef}
+                    points={flattenPoints(element.points)}
+                    stroke={selected ? "#58a6ff" : "#3d4a5c"}
+                    strokeWidth={selected ? 8 : 6}
+                    hitStrokeWidth={16}
+                    lineCap="round"
+                    draggable={draggable}
+                    onClick={(e) => handleElementClick(e, element.id)}
+                    onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                  />
+                  {selected && draggable
+                    ? element.points.map((point, index) => (
+                        <Circle
+                          key={index}
+                          x={point.x}
+                          y={point.y}
+                          radius={5}
+                          fill="#0d1117"
+                          stroke="#58a6ff"
+                          strokeWidth={2}
+                          draggable
+                          onDragEnd={(e) =>
+                            handlePointDragEnd(e, element.id, index, element.points)
+                          }
+                        />
+                      ))
+                    : null}
+                </Group>
+              );
+            }
+            if (element.type === "berth") {
+              const overlay = previewState?.[element.id];
+              const occupied = overlay !== undefined && overlay.description !== null;
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                  onTransformEnd={() => handleTransformEnd(element.id)}
+                >
+                  <Rect
+                    width={element.width}
+                    height={element.height}
+                    fill={occupied ? "#d29922" : selected ? "#233044" : "#161d27"}
+                    stroke={selected ? "#58a6ff" : "#2d3644"}
+                    strokeWidth={selected ? 2 : 1}
+                    cornerRadius={2}
+                  />
+                  <Text
+                    text={overlay ? (overlay.description ?? "") : element.displayName}
+                    width={element.width}
+                    height={element.height}
+                    align={element.textAlign}
+                    verticalAlign="middle"
+                    fontSize={element.fontSize}
+                    fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
+                    fill={occupied ? "#04101f" : "#e6edf3"}
+                  />
+                </Group>
+              );
+            }
+            if (element.type === "signal") {
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                >
+                  <Circle
+                    radius={8}
+                    fill={signalFill(element.symbolStyle)}
+                    stroke={selected ? "#58a6ff" : "#2d3644"}
+                    strokeWidth={selected ? 2 : 1}
+                  />
+                  {element.label ? (
+                    <Text text={element.label} y={12} fontSize={10} fill="#8b96a5" />
+                  ) : null}
+                </Group>
+              );
+            }
+            if (element.type === "label") {
+              return (
+                <Text
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  text={element.text}
+                  fontSize={element.fontSize}
+                  align={element.align}
+                  fill={selected ? "#58a6ff" : "#c9d3de"}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                />
+              );
+            }
+            // boundary
+            return (
+              <Group
+                key={element.id}
+                ref={setRef}
+                x={element.x}
+                y={element.y}
+                draggable={draggable}
+                onClick={(e) => handleElementClick(e, element.id)}
+                onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+              >
+                <Circle radius={6} fill="#f59e0b" stroke={selected ? "#58a6ff" : "#2d3644"} />
+                <Text text={element.name} y={9} fontSize={10} fill="#8b96a5" />
+              </Group>
+            );
+          })}
+          {selectedBerthId ? (
+            <Transformer
+              ref={transformerRef}
+              nodes={
+                nodeRefs.current.has(selectedBerthId)
+                  ? [nodeRefs.current.get(selectedBerthId)!]
+                  : []
+              }
+              rotateEnabled={false}
+            />
+          ) : null}
+        </Layer>
+      </Stage>
+    </div>
   );
 }

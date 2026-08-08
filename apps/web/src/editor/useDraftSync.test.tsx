@@ -38,6 +38,7 @@ function makeElement(id: string) {
   return {
     id,
     layerId: "l",
+    zIndex: 0,
     type: "label" as const,
     x: 0,
     y: 0,

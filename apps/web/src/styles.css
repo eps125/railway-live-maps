@@ -635,14 +635,22 @@ legend {
 .editor-canvas-frame {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  overflow: auto;
+  overflow: hidden;
   background: var(--color-bg-inset);
   box-shadow: var(--shadow-panel);
   display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
+}
+
+/* Measured by EditorCanvas.tsx's ResizeObserver and used to size the Konva Stage — stretches to
+ * fill .editor-canvas-frame exactly (rather than the stage sitting at a fixed 900x600 in the
+ * frame's top-left corner) so the canvas always fills the space the layout actually gives it. */
+.editor-canvas-measure {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
 .editor-panels {
@@ -672,6 +680,12 @@ legend {
 .panel-card--empty {
   color: var(--color-text-faint);
   font-size: 0.8rem;
+}
+
+.field-hint {
+  color: var(--color-text-faint);
+  font-size: 0.75rem;
+  margin: -0.3rem 0 0.6rem;
 }
 
 .layer-list {

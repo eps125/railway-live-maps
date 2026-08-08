@@ -30,6 +30,14 @@ const LayerSchema = z.object({
 const BaseElementSchema = z.object({
   id: z.string().min(1),
   layerId: z.string().min(1),
+  /** Paint order override. Defaults to 0, which means "use this element's layer's default
+   * position" — with every element left at 0, the default stacking is exactly layer order
+   * (tracks < berths < signals < everything else, per each layer's `order`). A small nudge (the
+   * editor's +/- buttons move this by 1) reorders an element relative to others on the *same*
+   * layer without escaping it. A large enough value is a deliberate full override that can cross
+   * layer boundaries entirely (e.g. sinking a specific signal below a specific berth) — see
+   * `sortElementsForPaint` in compiler.ts for the layer-order/zIndex combination this drives. */
+  zIndex: z.number().int().default(0),
 });
 
 /** A schematic polyline. Visual line crossings do not imply connected track — logical
@@ -154,6 +162,7 @@ export const MapDocumentSchema = z.object({
 });
 
 export type MapDocument = z.infer<typeof MapDocumentSchema>;
+export type Layer = z.infer<typeof LayerSchema>;
 export type MapElement = z.infer<typeof MapElementSchema>;
 export type TrackPathElement = z.infer<typeof TrackPathElementSchema>;
 export type BerthElement = z.infer<typeof BerthElementSchema>;

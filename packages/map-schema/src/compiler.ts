@@ -1,4 +1,4 @@
-import type { BoundaryElement, MapDocument, MapElement } from "./document.js";
+import type { BoundaryElement, Layer, MapDocument, MapElement } from "./document.js";
 
 export interface CompiledMapBundle {
   schemaVersion: number;
@@ -20,6 +20,38 @@ export interface CompiledMapBundle {
     adjacentMapSlug: string | undefined;
     direction: string | undefined;
   }>;
+}
+
+/**
+ * Paint order: each layer occupies its own reserved "band" of z-space (`Layer.order *
+ * Z_INDEX_LAYER_BAND`), and an element's `zIndex` is added directly on top of its own layer's
+ * band before the whole thing is sorted as one flat number. With every element left at the
+ * default `zIndex: 0`, this reduces to pure layer order — docs/MAP_EDITOR_SPEC.md's default
+ * stacking (tracks < berths < signals < everything else). A small `zIndex` (the editor's +/-
+ * buttons move it by 1) just reorders within the element's own band, i.e. relative to other
+ * elements on the same layer. A `zIndex` large enough to exceed the band width is a deliberate
+ * full override: it's added to the *global* number, so it can push an element clear across a
+ * layer boundary on purpose (e.g. a specific signal set to sink below a specific berth). Document
+ * array order is the final tiebreak. Shared by the compiler (for the published bundle the public
+ * renderer consumes) and the editor canvas (for the live in-progress document), so both agree on
+ * stacking without duplicating the sort. An element referencing an unknown layerId sorts last
+ * rather than crashing or silently landing at the bottom.
+ */
+export const Z_INDEX_LAYER_BAND = 1_000_000;
+
+export function sortElementsForPaint(elements: MapElement[], layers: Layer[]): MapElement[] {
+  const layerOrderById = new Map(layers.map((layer) => [layer.id, layer.order]));
+
+  function paintKey(element: MapElement): number {
+    const layerOrder = layerOrderById.get(element.layerId);
+    if (layerOrder === undefined) return Number.POSITIVE_INFINITY;
+    return layerOrder * Z_INDEX_LAYER_BAND + element.zIndex;
+  }
+
+  return elements
+    .map((element, index) => ({ element, index, key: paintKey(element) }))
+    .sort((a, b) => (a.key !== b.key ? a.key - b.key : a.index - b.index))
+    .map(({ element }) => element);
 }
 
 function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["boundingBox"] {
@@ -56,7 +88,7 @@ function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["bounding
  */
 export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   const elementsById: Record<string, MapElement> = {};
-  for (const element of doc.elements) {
+  for (const element of sortElementsForPaint(doc.elements, doc.layers)) {
     elementsById[element.id] = element;
   }
 

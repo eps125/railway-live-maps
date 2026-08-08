@@ -19,6 +19,7 @@ const definition: MapDefinitionResponse = {
       "berth-1": {
         id: "berth-1",
         layerId: "l1",
+        zIndex: 0,
         type: "berth",
         x: 10,
         y: 10,
@@ -31,6 +32,7 @@ const definition: MapDefinitionResponse = {
       "signal-1": {
         id: "signal-1",
         layerId: "l1",
+        zIndex: 0,
         type: "signal",
         x: 60,
         y: 20,

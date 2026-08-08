@@ -63,6 +63,11 @@ export interface RecordBrokerFrameResult {
   parsedChildCount: number;
   unsupportedChildCount: number;
   failedChildCount: number;
+  /** The latest `normalizedEventAtUtc` among this frame's children (null for an
+   * already-recorded/redelivered frame, or a frame with no children) — lets a caller measure
+   * end-to-end lag (wall clock minus this) without a second query. See
+   * `apps/worker/src/shared/ingestStats.ts`, which is what actually logs it. */
+  newestNormalizedEventAtUtc: string | null;
 }
 
 interface UpsertArchiveObjectInput {
@@ -172,6 +177,7 @@ export async function recordBrokerFrame(
         parsedChildCount: 0,
         unsupportedChildCount: 0,
         failedChildCount: 0,
+        newestNormalizedEventAtUtc: null,
       };
     }
 
@@ -244,6 +250,13 @@ export async function recordBrokerFrame(
 
     await client.query("commit");
 
+    let newestNormalizedEventAtUtc: string | null = null;
+    for (const child of parsed.children) {
+      if (!newestNormalizedEventAtUtc || child.normalizedEventAtUtc > newestNormalizedEventAtUtc) {
+        newestNormalizedEventAtUtc = child.normalizedEventAtUtc;
+      }
+    }
+
     return {
       frameId,
       alreadyRecorded: false,
@@ -251,6 +264,7 @@ export async function recordBrokerFrame(
       parsedChildCount: parsedCount,
       unsupportedChildCount: unsupportedCount,
       failedChildCount: failedCount,
+      newestNormalizedEventAtUtc,
     };
   } catch (error) {
     await client.query("rollback");

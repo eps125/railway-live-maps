@@ -3,6 +3,7 @@ import { createArchiveClient } from "@railway/archive";
 import type { Config } from "../config.js";
 import { StompTdConnection } from "../td/connection/stomp/stompConnection.js";
 import { recordFrame, markFrameAcked } from "../td/recorder.js";
+import { createIngestStatsLogger } from "../shared/ingestStats.js";
 
 const NR_TD_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_TD_PORT = 61618;
@@ -40,6 +41,8 @@ export async function runIngestTd(config: Config): Promise<never> {
     password: config.NR_PASSWORD,
   });
 
+  const stats = createIngestStatsLogger("TD");
+
   await connection.start({
     onSessionStart: async (session) => {
       const result = await pool.query<{ id: string }>(
@@ -67,6 +70,7 @@ export async function runIngestTd(config: Config): Promise<never> {
       });
       await markFrameAcked(pool, result.frameId);
       await handle.ack();
+      stats.record(handle.frame.receivedAt, result.newestNormalizedEventAtUtc);
     },
     onError: (error) => {
       console.error("TD connection error:", error);

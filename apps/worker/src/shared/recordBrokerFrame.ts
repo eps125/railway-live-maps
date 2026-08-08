@@ -1,5 +1,5 @@
 import { sha256Hex, computeArchiveObjectKey, putImmutableObject } from "@railway/archive";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
 import type { FeedName } from "@railway/domain";
 
@@ -68,6 +68,82 @@ export interface RecordBrokerFrameResult {
    * end-to-end lag (wall clock minus this) without a second query. See
    * `apps/worker/src/shared/ingestStats.ts`, which is what actually logs it. */
   newestNormalizedEventAtUtc: string | null;
+}
+
+const RAW_FEED_EVENT_COLUMNS = [
+  "frame_id",
+  "child_index",
+  "feed_name",
+  "event_type",
+  "message_class",
+  "td_area",
+  "raw_event_json",
+  "raw_source_timestamp_ms",
+  "raw_source_timestamp_text",
+  "normalized_event_at_utc",
+  "received_at_utc",
+  "timestamp_correction_code",
+  "timestamp_correction_details",
+  "semantic_hash",
+  "parse_status",
+  "parse_error_code",
+  "parse_version",
+];
+
+/** Caps how many rows go into one INSERT statement — defensive only (17 columns x 500 rows is
+ * 8,500 params, well under Postgres's 65,535-param limit), not expected to matter for a single
+ * broker frame's realistic child count. */
+const MAX_ROWS_PER_INSERT = 500;
+
+/** One multi-row INSERT per (up to MAX_ROWS_PER_INSERT) children instead of one INSERT per
+ * child — a busy TD frame can bundle dozens of children, and sequential awaited round-trips per
+ * child was the dominant cost of processing a frame (measured live: ~1.9s average per frame,
+ * which a ~1.5 frames/sec arrival rate can never keep pace with — the exact cause of a live,
+ * continuously growing ingestion backlog). Same transaction as the caller, so still all-or-
+ * nothing on failure — batching changes round-trip count, not atomicity. */
+async function insertRawFeedEventRows(
+  client: PoolClient,
+  frameId: string,
+  frame: InboundBrokerFrame,
+  children: ParsedChild[],
+): Promise<void> {
+  for (let start = 0; start < children.length; start += MAX_ROWS_PER_INSERT) {
+    const batch = children.slice(start, start + MAX_ROWS_PER_INSERT);
+    const columnCount = RAW_FEED_EVENT_COLUMNS.length;
+    const valuesClauses: string[] = [];
+    const params: unknown[] = [];
+
+    batch.forEach((child, rowIndex) => {
+      const base = rowIndex * columnCount;
+      const placeholders = Array.from({ length: columnCount }, (_, i) => `$${base + i + 1}`);
+      valuesClauses.push(`(${placeholders.join(",")})`);
+      params.push(
+        frameId,
+        child.childIndex,
+        frame.feedName,
+        child.eventType,
+        child.messageClass,
+        child.tdArea,
+        JSON.stringify(child.rawEventJson),
+        child.rawSourceTimestampMs,
+        child.rawSourceTimestampText,
+        child.normalizedEventAtUtc,
+        frame.receivedAt,
+        child.timestampCorrectionCode,
+        child.timestampCorrectionDetails,
+        child.semanticHash,
+        child.parseStatus,
+        child.parseErrorCode,
+        child.parseVersion,
+      );
+    });
+
+    await client.query(
+      `insert into raw_feed_event (${RAW_FEED_EVENT_COLUMNS.join(", ")})
+       values ${valuesClauses.join(",")}`,
+      params,
+    );
+  }
 }
 
 interface UpsertArchiveObjectInput {
@@ -191,40 +267,13 @@ export async function recordBrokerFrame(
     let parsedCount = 0;
     let unsupportedCount = 0;
     let failedCount = 0;
-
     for (const child of parsed.children) {
-      await client.query(
-        `insert into raw_feed_event (
-           frame_id, child_index, feed_name, event_type, message_class, td_area, raw_event_json,
-           raw_source_timestamp_ms, raw_source_timestamp_text, normalized_event_at_utc, received_at_utc,
-           timestamp_correction_code, timestamp_correction_details, semantic_hash, parse_status,
-           parse_error_code, parse_version
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-        [
-          frameId,
-          child.childIndex,
-          frame.feedName,
-          child.eventType,
-          child.messageClass,
-          child.tdArea,
-          JSON.stringify(child.rawEventJson),
-          child.rawSourceTimestampMs,
-          child.rawSourceTimestampText,
-          child.normalizedEventAtUtc,
-          frame.receivedAt,
-          child.timestampCorrectionCode,
-          child.timestampCorrectionDetails,
-          child.semanticHash,
-          child.parseStatus,
-          child.parseErrorCode,
-          child.parseVersion,
-        ],
-      );
-
       if (child.parseStatus === "parsed") parsedCount += 1;
       else if (child.parseStatus === "unsupported") unsupportedCount += 1;
       else failedCount += 1;
     }
+
+    await insertRawFeedEventRows(client, frameId, frame, parsed.children);
 
     const frameParseStatus =
       failedCount === parsed.children.length

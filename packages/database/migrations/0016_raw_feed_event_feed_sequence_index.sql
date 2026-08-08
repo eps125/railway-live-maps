@@ -1,0 +1,19 @@
+-- project-td/project-vstp/project-trust (apps/worker/src/{td,vstp,trust}/projector.ts) all run
+-- the identical batch-fetch shape every ~1s forever: `where feed_name = $1 and ingestion_sequence
+-- > $2 order by ingestion_sequence limit $3`. Nothing indexed feed_name at all — only a BRIN on
+-- ingestion_sequence alone (narrows which physical blocks to look at, doesn't filter rows by
+-- feed_name) and a btree on (td_area, event_type). Live-measured impact: with TRUST_LIVE_ENABLED
+-- off, project-trust's checkpoint sits frozen while TD/VSTP volume pushes the shared
+-- ingestion_sequence past it — so every single invocation scans the entire growing gap (millions
+-- of rows) just to confirm there's nothing new for a feed that isn't even running, every second,
+-- forever, on the same Postgres instance TD/VSTP ingestion is trying to write to. TD/VSTP's own
+-- identical query shape pays a smaller version of the same cost.
+--
+-- Plain (non-concurrent) CREATE INDEX: packages/database/src/migrate.ts wraps every migration
+-- in a transaction, and CREATE INDEX CONCURRENTLY cannot run inside one. Creating it on the
+-- partitioned parent (not ONLY) recursively builds a matching index on every existing partition,
+-- briefly taking a lock per partition while it does — acceptable for this table's current size
+-- (a handful of partitions, low millions of rows); revisit with the CONCURRENTLY-per-partition +
+-- ATTACH PARTITION dance if this table grows enough that a blocking build becomes a real
+-- ingestion stall.
+create index raw_feed_event_feed_seq_btree on raw_feed_event (feed_name, ingestion_sequence);

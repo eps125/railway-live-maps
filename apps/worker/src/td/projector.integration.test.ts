@@ -3,7 +3,12 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { createPool, ensureMonthlyPartitions } from "@railway/database";
 import { recordFrame, markFrameAcked, type InboundFrame } from "./recorder.js";
-import { runProjectTd, TD_PROJECTION_VERSION } from "./projector.js";
+import {
+  runProjectTd,
+  TD_PROJECTION_VERSION,
+  TD_PROJECTION_NAME,
+  advisoryLockKey,
+} from "./projector.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -287,5 +292,39 @@ describe("runProjectTd (integration)", () => {
     expect((await currentState(area, "0900"))?.description).toBe("IIII");
     const history = await occupancyHistory(area, "0900");
     expect(history).toHaveLength(1);
+  });
+
+  it("skips instead of racing when another run already holds the advisory lock", async () => {
+    // Reproduces the scenario that leaves a closeOccupancy silently unapplied: two concurrent
+    // runProjectTd calls (e.g. the continuous projector loop overlapping a container restart, or
+    // a manual console command) would otherwise both read the same checkpoint and race over the
+    // same batch. This proves the lock makes that impossible — a second run backs off cleanly
+    // instead of interleaving.
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([cc(area, "0950", "LOCK", t)], new Date(t));
+
+    const lockKey = advisoryLockKey(TD_PROJECTION_NAME);
+    const lockHolder = await pool.connect();
+    try {
+      const acquired = await lockHolder.query<{ locked: boolean }>(
+        "select pg_try_advisory_lock($1) as locked",
+        [lockKey],
+      );
+      expect(acquired.rows[0]?.locked).toBe(true);
+
+      const summary = await runProjectTd(pool);
+      expect(summary.skippedLockContention).toBe(true);
+      expect(summary.batches).toBe(0);
+      expect(await currentState(area, "0950")).toBeUndefined();
+    } finally {
+      await lockHolder.query("select pg_advisory_unlock($1)", [lockKey]);
+      lockHolder.release();
+    }
+
+    // Once released, a normal run proceeds exactly as usual.
+    const summary = await runProjectTd(pool);
+    expect(summary.skippedLockContention).toBe(false);
+    expect((await currentState(area, "0950"))?.description).toBe("LOCK");
   });
 });

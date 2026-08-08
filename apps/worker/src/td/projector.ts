@@ -37,7 +37,21 @@ export interface ProjectTdSummary {
   heartbeats: number;
   sEvents: number;
   anomalies: number;
+  /** True when this invocation did nothing because another runProjectTd was already in
+   * progress (see the advisory lock note on runProjectTd below) — not an error, just "try
+   * again next tick." */
+  skippedLockContention: boolean;
 }
+
+const EMPTY_SUMMARY: ProjectTdSummary = {
+  batches: 0,
+  processedEvents: 0,
+  projectedBerthEvents: 0,
+  heartbeats: 0,
+  sEvents: 0,
+  anomalies: 0,
+  skippedLockContention: false,
+};
 
 interface RawTdRow {
   id: string;
@@ -54,6 +68,13 @@ function computeConfigHash(): string {
   return createHash("sha256")
     .update(`td-projection-v${TD_PROJECTION_VERSION}-norm-v${TD_NORMALIZATION_VERSION}`)
     .digest("hex");
+}
+
+/** Postgres advisory lock keys are signed 64-bit integers — any well-distributed 64 bits works,
+ * so this just takes the first 8 bytes of a hash of a fixed name rather than picking an
+ * arbitrary literal that'd be easy to accidentally collide with some other lock elsewhere. */
+export function advisoryLockKey(name: string): bigint {
+  return createHash("sha256").update(`td-projector-lock:${name}`).digest().readBigInt64BE(0);
 }
 
 async function clearProjectionRows(pool: Pool, projectionVersion: number): Promise<void> {
@@ -431,84 +452,104 @@ async function projectSClassRow(
  * not `event_at` — which is what makes equal-timestamp events deterministic. Each batch commits
  * in one transaction together with its checkpoint advance, so a crash mid-run only ever loses an
  * uncommitted batch, never produces partial/duplicate projection state.
+ *
+ * Holds a Postgres advisory lock for its entire run (released even on error/crash — it's tied to
+ * the session, not explicitly tracked state). `getCheckpoint`/`advanceCheckpoint` have no locking
+ * of their own: two concurrent runs (the continuous `projector` service's loop racing a manual
+ * `project-td` console command, for example) would both read the same checkpoint and both fetch
+ * the same batch before either commits. Each event is individually idempotent
+ * (`on conflict (raw_event_id, event_at) do nothing`), so no event is ever double-applied — but a
+ * `closeOccupancy` effect is only emitted when the reducer sees a non-null `fromOpen` snapshot,
+ * and two interleaved transactions can each read the *other's* not-yet-committed prior effect,
+ * so one of them computes against stale state and silently emits no closing effect at all. That
+ * leaves a berth showing occupied forever, with no error anywhere to indicate it happened. The
+ * lock makes that interleaving impossible: a second concurrent invocation fails to acquire it and
+ * returns immediately rather than racing.
  */
 export async function runProjectTd(
   pool: Pool,
   options: ProjectTdOptions = {},
 ): Promise<ProjectTdSummary> {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
-
-  const definitionId = await getOrCreateProjectionDefinition(
-    pool,
-    TD_PROJECTION_NAME,
-    TD_PROJECTION_VERSION,
-    computeConfigHash(),
-  );
-  await ensureCheckpoint(pool, definitionId);
-
-  if (options.rebuild) {
-    await clearProjectionRows(pool, TD_PROJECTION_VERSION);
-    await resetCheckpoint(pool, definitionId);
-  }
-
-  const summary: ProjectTdSummary = {
-    batches: 0,
-    processedEvents: 0,
-    projectedBerthEvents: 0,
-    heartbeats: 0,
-    sEvents: 0,
-    anomalies: 0,
-  };
-
-  for (;;) {
-    const checkpoint = await getCheckpoint(pool, definitionId);
-    const lastSequence = checkpoint?.lastIngestionSequence ?? "0";
-
-    const batch = await pool.query<RawTdRow>(
-      `select id, normalized_event_at_utc, ingestion_sequence, event_type, message_class, td_area,
-              raw_event_json, parse_status
-       from raw_feed_event
-       where feed_name = 'TD' and ingestion_sequence > $1
-       order by ingestion_sequence
-       limit $2`,
-      [lastSequence, batchSize],
+  const lockKey = advisoryLockKey(TD_PROJECTION_NAME);
+  const lockClient = await pool.connect();
+  try {
+    const lockResult = await lockClient.query<{ locked: boolean }>(
+      "select pg_try_advisory_lock($1) as locked",
+      [lockKey],
     );
-    if (batch.rows.length === 0) {
-      break;
+    if (!lockResult.rows[0]?.locked) {
+      return { ...EMPTY_SUMMARY, skippedLockContention: true };
     }
-    summary.batches += 1;
 
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      let maxSequence = BigInt(lastSequence);
+    const definitionId = await getOrCreateProjectionDefinition(
+      pool,
+      TD_PROJECTION_NAME,
+      TD_PROJECTION_VERSION,
+      computeConfigHash(),
+    );
+    await ensureCheckpoint(pool, definitionId);
 
-      for (const row of batch.rows) {
-        summary.processedEvents += 1;
-        const rowSequence = BigInt(row.ingestion_sequence);
-        if (rowSequence > maxSequence) {
-          maxSequence = rowSequence;
-        }
+    if (options.rebuild) {
+      await clearProjectionRows(pool, TD_PROJECTION_VERSION);
+      await resetCheckpoint(pool, definitionId);
+    }
 
-        if (row.parse_status !== "parsed") {
-          continue;
-        }
-        if (row.message_class === "C") {
-          await projectCClassRow(client, row, summary);
-        } else if (row.message_class === "S") {
-          await projectSClassRow(client, row, summary);
-        }
+    const summary: ProjectTdSummary = { ...EMPTY_SUMMARY };
+
+    for (;;) {
+      const checkpoint = await getCheckpoint(pool, definitionId);
+      const lastSequence = checkpoint?.lastIngestionSequence ?? "0";
+
+      const batch = await pool.query<RawTdRow>(
+        `select id, normalized_event_at_utc, ingestion_sequence, event_type, message_class, td_area,
+                raw_event_json, parse_status
+         from raw_feed_event
+         where feed_name = 'TD' and ingestion_sequence > $1
+         order by ingestion_sequence
+         limit $2`,
+        [lastSequence, batchSize],
+      );
+      if (batch.rows.length === 0) {
+        break;
       }
+      summary.batches += 1;
 
-      await advanceCheckpoint(client, definitionId, maxSequence.toString());
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        let maxSequence = BigInt(lastSequence);
+
+        for (const row of batch.rows) {
+          summary.processedEvents += 1;
+          const rowSequence = BigInt(row.ingestion_sequence);
+          if (rowSequence > maxSequence) {
+            maxSequence = rowSequence;
+          }
+
+          if (row.parse_status !== "parsed") {
+            continue;
+          }
+          if (row.message_class === "C") {
+            await projectCClassRow(client, row, summary);
+          } else if (row.message_class === "S") {
+            await projectSClassRow(client, row, summary);
+          }
+        }
+
+        await advanceCheckpoint(client, definitionId, maxSequence.toString());
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     }
-  }
 
-  return summary;
+    return summary;
+  } finally {
+    await lockClient.query("select pg_advisory_unlock($1)", [lockKey]).catch(() => {});
+    lockClient.release();
+  }
 }

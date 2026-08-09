@@ -113,6 +113,26 @@ describe("runProjectVstp (integration)", () => {
     expect(await locationCount(overwritten!.id)).toBe(2);
   });
 
+  it("Update upserts the matching schedule row exactly like Overwrite would (real, undocumented transaction type)", async () => {
+    await recordFixture("update-normal.json");
+    await runProjectVstp(pool);
+
+    const rows = await schedulesFor(TRAIN_UID);
+    const updated = rows.find((r) => r.stp_indicator === "N");
+    expect(updated).toMatchObject({ origin_tiploc: "PRST", destination_tiploc: "LANCSTR" });
+    expect(await locationCount(updated!.id)).toBe(2);
+
+    // Confirms this actually re-applied the schedule (not a no-op) — update-normal.json's
+    // origin departure time (1208) differs from create-normal.json's (1200) for the same
+    // train_uid/dates/stp_indicator "N".
+    const location = await pool.query<{ departure_public: string | null }>(
+      `select departure_public from schedule_location
+       where schedule_id = $1 and location_type = 'origin'`,
+      [updated!.id],
+    );
+    expect(location.rows[0]?.departure_public).toBe("1208");
+  });
+
   it("Delete removes the matching schedule row without touching other STP indicators", async () => {
     await recordFixture("delete-normal.json");
     await runProjectVstp(pool);

@@ -1,5 +1,16 @@
 {
   "VSTPCIFMsgV1": {
+    "owner": "Network Rail",
+    "Sender": {
+      "userID": "#TEST0001",
+      "component": "TEST",
+      "sessionID": "T000003",
+      "application": "TEST",
+      "organisation": "Network Rail"
+    },
+    "timestamp": "1785974600000",
+    "originMsgId": "2026-08-06T00:03:20-00:00@vstp.networkrail.co.uk",
+    "classification": "industry",
     "schedule": {
       "transaction_type": "Delete",
       "schedule_start_date": "2026-08-10",

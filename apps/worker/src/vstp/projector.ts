@@ -142,8 +142,10 @@ function extractScheduleSourceRecord(rawEventJson: unknown): ScheduleSourceRecor
       typeof schedule.schedule_days_runs === "string" ? schedule.schedule_days_runs : null,
     signallingId:
       typeof firstSegment?.signalling_id === "string" ? firstSegment.signalling_id : null,
-    // No operator/ATOC field has been observed on the wire yet (may live in the sibling `Sender`
-    // object this parser hasn't seen the contents of) — left null rather than guessing.
+    // Confirmed absent, not just unobserved: the sibling `Sender` object (message provenance —
+    // userID/component/sessionID/application/organisation) is who *sent* the VSTP message, not
+    // the train's operating company, and no other field anywhere in a real captured message
+    // carries an ATOC/operator code.
     operatorCode: null,
     trainServiceCode:
       typeof firstSegment?.CIF_train_service_code === "string"
@@ -312,6 +314,7 @@ export async function runProjectVstp(
           row.parse_status !== "parsed" ||
           (row.event_type !== "vstp.create" &&
             row.event_type !== "vstp.overwrite" &&
+            row.event_type !== "vstp.update" &&
             row.event_type !== "vstp.delete")
         ) {
           continue;
@@ -327,6 +330,9 @@ export async function runProjectVstp(
           const didDelete = await applyDelete(client, record);
           if (didDelete) summary.deleted += 1;
         } else {
+          // "Update" (a real, undocumented transaction type — see parseVstpFrame.ts's doc
+          // comment) carries a complete schedule payload just like Create/Overwrite, so it's
+          // applied identically: a full-schedule upsert, not a partial patch.
           await applyCreateOrOverwrite(client, record);
           summary.applied += 1;
         }

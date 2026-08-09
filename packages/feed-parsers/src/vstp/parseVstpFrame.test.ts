@@ -39,6 +39,14 @@ describe("parseVstpFrame", () => {
     expect(result.children[0]).toMatchObject({ eventType: "vstp.delete", parseStatus: "parsed" });
   });
 
+  it("parses an Update transaction (a real, undocumented fourth transaction type)", async () => {
+    const body = await loadBody("update-normal.json");
+    const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
+
+    expect(result.children).toHaveLength(1);
+    expect(result.children[0]).toMatchObject({ eventType: "vstp.update", parseStatus: "parsed" });
+  });
+
   it("retains an unrecognized root key as unsupported, never dropped", async () => {
     const body = await loadBody("unsupported-root-element.json");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
@@ -76,5 +84,16 @@ describe("parseVstpFrame", () => {
     };
     expect(parsedJson.VSTPCIFMsgV1.schedule.CIF_train_uid).toBe("ZZ12345");
     expect(Array.isArray(parsedJson.VSTPCIFMsgV1.schedule.schedule_segment)).toBe(true);
+  });
+
+  it("extracts the real message-level timestamp field instead of falling back to receivedAt", async () => {
+    const body = await loadBody("create-normal.json");
+    const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
+    const child = result.children[0]!;
+
+    // create-normal.json's timestamp is "1785974400000" (epoch ms) -> 2026-08-06T00:00:00.000Z.
+    expect(child.rawSourceTimestampMs).toBe(1785974400000);
+    expect(child.normalizedEventAtUtc).toBe("2026-08-06T00:00:00.000Z");
+    expect(child.timestampCorrectionCode).toBe("none");
   });
 });

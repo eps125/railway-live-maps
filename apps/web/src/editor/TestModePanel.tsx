@@ -38,22 +38,30 @@ export function useTestModePanel(slug: string): TestModePanelResult {
   const [simToArea, setSimToArea] = useState("");
   const [simToBerth, setSimToBerth] = useState("");
   const [simDescription, setSimDescription] = useState("");
+  const [clearingKey, setClearingKey] = useState<string | null>(null);
+  const [clearReason, setClearReason] = useState("");
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const tdBerthBindings = doc.bindings.filter((b): b is TdBerthBinding => b.type === "tdBerth");
   const bindingByKey = new Map(tdBerthBindings.map((b) => [`${b.tdArea}|${b.berth}`, b]));
+
+  async function pollLiveState(): Promise<void> {
+    try {
+      const response = await fetch(`/api/v1/editor/state/${encodeURIComponent(slug)}`);
+      if (!response.ok) return;
+      const body = (await response.json()) as { berths: Record<string, PreviewEntry> };
+      setLiveState(body.berths);
+    } catch {
+      // Best-effort preview — a transient failure just leaves the last-known state showing.
+    }
+  }
 
   useEffect(() => {
     if (mode !== "live") return;
     let cancelled = false;
     async function poll(): Promise<void> {
-      try {
-        const response = await fetch(`/api/v1/editor/state/${encodeURIComponent(slug)}`);
-        if (!response.ok || cancelled) return;
-        const body = (await response.json()) as { berths: Record<string, PreviewEntry> };
-        if (!cancelled) setLiveState(body.berths);
-      } catch {
-        // Best-effort preview — a transient failure just leaves the last-known state showing.
-      }
+      if (!cancelled) await pollLiveState();
     }
     void poll();
     const interval = setInterval(() => void poll(), LIVE_POLL_INTERVAL_MS);
@@ -62,6 +70,43 @@ export function useTestModePanel(slug: string): TestModePanelResult {
       clearInterval(interval);
     };
   }, [mode, slug]);
+
+  /** Live-only override for a berth stuck showing a stale description (most likely after a feed
+   * connection gap silently dropped its real step/clear event) — docs/API_CONTRACT.md §4's
+   * `POST /api/v1/editor/berths/{tdArea}/{berth}/clear`. Requires a reason (recorded server-side
+   * in `operator_berth_action` for audit) and re-polls immediately so the list reflects the
+   * clear without waiting for the next tick. */
+  async function submitClear(tdArea: string, berth: string): Promise<void> {
+    if (!clearReason.trim()) {
+      setClearError("A reason is required");
+      return;
+    }
+    setClearing(true);
+    setClearError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/editor/berths/${encodeURIComponent(tdArea)}/${encodeURIComponent(berth)}/clear`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: clearReason.trim() }),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        throw new Error(body?.error?.message ?? `Failed to clear berth (${response.status})`);
+      }
+      setClearingKey(null);
+      setClearReason("");
+      await pollLiveState();
+    } catch (error) {
+      setClearError(error instanceof Error ? error.message : "Failed to clear berth");
+    } finally {
+      setClearing(false);
+    }
+  }
 
   function simulate(kind: "CA" | "CB" | "CC"): void {
     const fromKey = simFromArea && simFromBerth ? `${simFromArea}|${simFromBerth}` : null;
@@ -160,6 +205,78 @@ export function useTestModePanel(slug: string): TestModePanelResult {
       </label>
 
       {historicalNotice ? <p>{historicalNotice}</p> : null}
+
+      {mode === "live" ? (
+        <fieldset>
+          <legend>Occupied berths</legend>
+          {tdBerthBindings.length === 0 ? (
+            <p>No TD berth bindings on this map.</p>
+          ) : (
+            <ul className="berth-clear-list">
+              {tdBerthBindings.map((binding) => {
+                const key = `${binding.tdArea}|${binding.berth}`;
+                const entry = liveState?.[binding.elementId];
+                if (!entry?.description) return null;
+                const isClearing = clearingKey === key;
+                return (
+                  <li key={key}>
+                    <span>
+                      {binding.tdArea} {binding.berth}: <strong>{entry.description}</strong>
+                    </span>
+                    {isClearing ? (
+                      <span className="btn-group">
+                        <input
+                          value={clearReason}
+                          placeholder="Reason (required)"
+                          onChange={(e) => setClearReason(e.target.value)}
+                          disabled={clearing}
+                        />
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={clearing}
+                          onClick={() => void submitClear(binding.tdArea, binding.berth)}
+                        >
+                          Confirm clear
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={clearing}
+                          onClick={() => {
+                            setClearingKey(null);
+                            setClearReason("");
+                            setClearError(null);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          setClearingKey(key);
+                          setClearReason("");
+                          setClearError(null);
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {clearError ? (
+            <p role="alert" className="app-error">
+              {clearError}
+            </p>
+          ) : null}
+        </fieldset>
+      ) : null}
 
       {mode === "simulated" ? (
         <fieldset>

@@ -272,6 +272,13 @@ Protected/private.
 - `GET /api/v1/editor/maps/{slug}/diff?fromVersion=&toRevision=`
 - `GET /api/v1/editor/bindings/td/{area}/{berth}/diagnostics`
 - `GET /api/v1/editor/state/{slug}?at=`
+- `POST /api/v1/editor/berths/{tdArea}/{berth}/clear` with body `{ "reason": string }` (added
+  post-Milestone-12): manually clears a berth stuck showing a stale description, most likely
+  after a feed connection gap silently dropped its real step/clear event. A live-only override of
+  `berth_current_state`/`berth_occupancy` — recorded in `operator_berth_action` for audit, but
+  **not** replayed by `project-td --rebuild` (current state stays a pure derived projection of
+  `raw_feed_event` per CLAUDE.md rule 3). Returns `{ tdArea, berth, cleared, previousDescription }`
+  — `cleared: false` when the berth was already clear (not an error, idempotent).
 
 Draft writes include `expectedRevision`; conflicting updates return `409` with current revision.
 

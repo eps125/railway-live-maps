@@ -70,6 +70,59 @@ function Select({ id }: { id: string }): null {
   return null;
 }
 
+function SelectMultiple({ ids }: { ids: string[] }): null {
+  const dispatch = useEditorDispatch();
+  useEffect(() => dispatch({ type: "setSelection", ids }), [dispatch, ids]);
+  return null;
+}
+
+function docWithLayers(): MapDocument {
+  return {
+    schemaVersion: 1,
+    map: {
+      id: "m",
+      name: "m",
+      canvas: { width: 200, height: 200, gridSize: 10 },
+      timezone: "Europe/London",
+    },
+    layers: [
+      { id: "layer-track", name: "Track", visible: true, locked: false, order: 0 },
+      { id: "layer-berths", name: "Berths", visible: true, locked: false, order: 1 },
+    ],
+    elements: [
+      {
+        id: "berth-a",
+        layerId: "layer-track",
+        zIndex: 0,
+        type: "berth",
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 20,
+        textAlign: "center",
+        fontSize: 12,
+        displayName: "Berth A",
+      },
+      {
+        id: "berth-b",
+        layerId: "layer-track",
+        zIndex: 0,
+        type: "berth",
+        x: 50,
+        y: 0,
+        width: 40,
+        height: 20,
+        textAlign: "center",
+        fontSize: 12,
+        displayName: "Berth B",
+      },
+    ],
+    topology: { nodes: [], edges: [] },
+    bindings: [],
+    editorMetadata: {},
+  };
+}
+
 function renderPanel(initialDocument: MapDocument, selectedId: string) {
   return render(
     <EditorStateProvider initialDocument={initialDocument}>
@@ -139,5 +192,59 @@ describe("PropertyPanel BindingFields", () => {
     expect(await screen.findByText("Clear binding")).toBeInTheDocument();
     expect(areaInput).toHaveValue("PX");
     expect(berthInput).toHaveValue("0186");
+  });
+});
+
+describe("PropertyPanel layer reassignment", () => {
+  it("shows the selected element's current layer and moves it when changed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ areas: [] }))),
+    );
+
+    render(
+      <EditorStateProvider initialDocument={docWithLayers()}>
+        <Select id="berth-a" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    const layerSelect = await screen.findByLabelText("Layer");
+    expect(layerSelect).toHaveValue("layer-track");
+
+    fireEvent.change(layerSelect, { target: { value: "layer-berths" } });
+    expect(layerSelect).toHaveValue("layer-berths");
+  });
+
+  it("moves every selected element to the chosen layer in one action", async () => {
+    // Regression test: a real hand-authored map ended up with ~50 elements stuck on the wrong
+    // layer (EditorCanvas.tsx's defaultElementForTool bug), and one-at-a-time reassignment would
+    // have been painfully slow — this bulk action is how it's meant to be fixed instead.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ areas: [] }))),
+    );
+
+    const { rerender } = render(
+      <EditorStateProvider initialDocument={docWithLayers()}>
+        <SelectMultiple ids={["berth-a", "berth-b"]} />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    expect(await screen.findByText("2 elements selected.")).toBeInTheDocument();
+    const moveSelect = screen.getByLabelText("Move to layer");
+    fireEvent.change(moveSelect, { target: { value: "layer-berths" } });
+
+    // Same EditorStateProvider tree position, so its dispatched changes persist — switch to
+    // selecting berth-b alone to inspect the bulk move actually reached both elements.
+    rerender(
+      <EditorStateProvider initialDocument={docWithLayers()}>
+        <Select id="berth-b" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    expect(await screen.findByLabelText("Layer")).toHaveValue("layer-berths");
   });
 });

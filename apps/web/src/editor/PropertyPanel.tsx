@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Z_INDEX_LAYER_BAND, type MapBinding } from "@railway/map-schema";
+import { Z_INDEX_LAYER_BAND, type MapBinding, type MapDocument } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
 import { useObservedAreas, useObservedBerths } from "./useBindingAutocomplete.js";
 
@@ -195,20 +195,76 @@ function BindingFields({
   );
 }
 
+/** A layer dropdown reused by both the single-element and multi-selection views — sorted by
+ * `order` so it reads top-to-bottom in actual paint order, not document/creation order. */
+function LayerSelect({
+  layers,
+  value,
+  placeholder,
+  onChange,
+}: {
+  layers: MapDocument["layers"];
+  value: string;
+  placeholder?: string;
+  onChange: (layerId: string) => void;
+}): JSX.Element {
+  const sorted = [...layers].sort((a, b) => a.order - b.order);
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {placeholder ? (
+        <option value="" disabled>
+          {placeholder}
+        </option>
+      ) : null}
+      {sorted.map((layer) => (
+        <option key={layer.id} value={layer.id}>
+          {layer.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 /** docs/MAP_EDITOR_SPEC.md §6: "Right properties/binding/validation panel." Shows editable
- * fields for exactly one selected element; deliberately shows nothing actionable for
- * zero/multi-selection (bulk property editing isn't in this pass's scope). */
+ * fields for exactly one selected element. Multi-selection gets one bulk action — reassign every
+ * selected element to a single layer — added specifically to recover from the real production
+ * bug where every tool defaulted new elements to the document's first layer regardless of type
+ * (see EditorCanvas.tsx's defaultLayerIdForTool): a hand-authored map ended up with ~50 elements
+ * needing their layer corrected, which one-at-a-time editing would make painfully slow. Other
+ * bulk property editing stays out of scope for this pass, same as before. */
 export function PropertyPanel(): JSX.Element {
   const { document: doc, selection } = useEditorState();
   const dispatch = useEditorDispatch();
 
   if (selection.length !== 1) {
+    if (selection.length === 0) {
+      return (
+        <aside aria-label="Properties" className="panel-card">
+          <h3>Properties</h3>
+          <p className="panel-card--empty">No selection.</p>
+        </aside>
+      );
+    }
     return (
       <aside aria-label="Properties" className="panel-card">
         <h3>Properties</h3>
-        <p className="panel-card--empty">
-          {selection.length === 0 ? "No selection." : `${selection.length} elements selected.`}
-        </p>
+        <p className="panel-card--empty">{selection.length} elements selected.</p>
+        <label className="field">
+          Move to layer
+          <LayerSelect
+            layers={doc.layers}
+            value=""
+            placeholder="Choose a layer…"
+            onChange={(layerId) => {
+              for (const elementId of selection) {
+                dispatch({
+                  type: "dispatchCommand",
+                  command: { type: "setProperty", elementId, property: "layerId", value: layerId },
+                });
+              }
+            }}
+          />
+        </label>
       </aside>
     );
   }
@@ -235,6 +291,14 @@ export function PropertyPanel(): JSX.Element {
       <p className="field-row">
         <span className="badge">{element.type}</span>
       </p>
+      <label className="field">
+        Layer
+        <LayerSelect
+          layers={doc.layers}
+          value={element.layerId}
+          onChange={(layerId) => setProp("layerId", layerId)}
+        />
+      </label>
       <IdField
         elementId={elementId}
         existingIds={existingIds}

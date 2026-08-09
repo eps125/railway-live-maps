@@ -17,6 +17,8 @@ describe("parseCommand", () => {
     "publish-map",
     "backfill-map-bindings",
     "project-map-deltas",
+    "project-vstp",
+    "reparse-vstp-archive",
     "ingest-td",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);

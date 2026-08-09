@@ -13,6 +13,7 @@ import { runProjectMapDeltasCommand } from "./commands/projectMapDeltas.js";
 import { runIngestTd } from "./commands/ingestTd.js";
 import { runIngestVstp } from "./commands/ingestVstp.js";
 import { runProjectVstpCommand } from "./commands/projectVstp.js";
+import { runReparseVstpArchive } from "./commands/reparseVstpArchive.js";
 import { runImportScheduleCommand } from "./commands/importSchedule.js";
 import { runDownloadSchedule } from "./commands/downloadSchedule.js";
 import { runImportCorpusCommand } from "./commands/importCorpus.js";
@@ -52,6 +53,8 @@ async function main(): Promise<void> {
       return runProjectMapDeltasCommand(config);
     case "project-vstp":
       return runProjectVstpCommand(config, argvRest);
+    case "reparse-vstp-archive":
+      return runReparseVstpArchive(config, argvRest);
     case "import-schedule":
       return runImportScheduleCommand(config, argvRest);
     case "download-schedule":

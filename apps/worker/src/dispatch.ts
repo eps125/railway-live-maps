@@ -10,6 +10,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "backfill-map-bindings",
   "project-map-deltas",
   "project-vstp",
+  "reparse-vstp-archive",
   "import-schedule",
   "download-schedule",
   "import-corpus",

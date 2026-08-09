@@ -241,4 +241,39 @@ describe("runProjectResolver (integration)", () => {
     const row = await resolution(occupancyId);
     expect(row).toMatchObject({ status: "matched", selected_train_run_id: runId });
   });
+
+  it("resolves many distinct occupancies correctly in one batched run without cross-contaminating candidates", async () => {
+    // Regression test for a real production incident: the original implementation issued up to
+    // 4 sequential queries per occupancy, which effectively hung against the real nationwide
+    // berth_occupancy backlog. The fix batches all reads for the whole batch into a handful of
+    // queries (see fetchBatchCandidateData) — this test proves that batching doesn't leak one
+    // occupancy's candidates into another's result just because they're fetched together.
+    const areaA = uniqueArea();
+    const areaB = uniqueArea();
+    const signallingA = uniqueSignallingId();
+    const signallingB = uniqueSignallingId();
+
+    const occupancyA = await seedOccupancy(areaA, "0010", signallingA, ENTERED_AT, null);
+    const occupancyB = await seedOccupancy(areaB, "0020", signallingB, ENTERED_AT, null);
+    const occupancyC = await seedOccupancy(areaA, "0011", uniqueSignallingId(), ENTERED_AT, null);
+
+    const scheduleA = await seedSchedule();
+    await seedScheduleLocation(scheduleA, "55555");
+    await seedSmartBerthStep(areaA, "0010", "55555");
+    const runA = await seedTrainRun(signallingA, SERVICE_DATE, ACTIVATED_AT, scheduleA);
+    await seedRunScheduleLink(runA, "matched", scheduleA);
+
+    // areaB's candidate deliberately has no evidence at all beyond the bare signalling match
+    // (no activated_at means temporal plausibility can't apply either, per resolveBerthRun.ts).
+    await seedTrainRun(signallingB, SERVICE_DATE, null, null);
+
+    await runProjectResolver(pool);
+
+    expect(await resolution(occupancyA)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runA,
+    });
+    expect((await resolution(occupancyB))?.status).toBe("unmatched");
+    expect((await resolution(occupancyC))?.status).toBe("unmatched");
+  });
 });

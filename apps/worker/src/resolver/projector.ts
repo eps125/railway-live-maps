@@ -87,54 +87,127 @@ async function clearProjectionRows(pool: Pool): Promise<void> {
   }
 }
 
+interface TrainRunCandidateRow {
+  id: string;
+  scheduleId: string | null;
+  activatedAt: Date | null;
+}
+
+/** Everything `resolveOne` needs to score every occupancy in the current batch, fetched with a
+ * small, fixed number of queries regardless of batch size — see the module doc comment for why
+ * this replaced a per-occupancy query loop. */
+interface BatchCandidateData {
+  /** Key: `${signallingId}|${serviceDate}`. */
+  trainRunsByKey: Map<string, TrainRunCandidateRow[]>;
+  /** train_run ids whose activation has a matched schedule link. */
+  linkedRunIds: Set<string>;
+  /** Key: `${tdArea}|${berthCode}`. */
+  smartStanoxesByAreaBerth: Map<string, Set<string>>;
+  /** Key: schedule id. */
+  scheduleStanoxes: Map<string, Set<string>>;
+}
+
 /**
  * Candidate generation (docs/DATA_MODEL.md §8 evidence #1: exact signalling identity for the
  * occupancy's service date, never a run whose identity was superseded) plus the evidence signals
  * this MVP pass scores (#2 schedule-linked, #3 temporal plausibility via activated_at, #5 SMART/
  * STANOX correlation — see resolveBerthRun.ts's own doc comment for the full evidence-coverage
  * note, including #4/#6/#7's documented deferral).
+ *
+ * Fetches for the **whole batch at once** — a fixed 4 queries regardless of how many occupancies
+ * are in it, using the same `join (select unnest(...) ...) wanted` pattern
+ * `apps/api/src/lib/liveState.ts`'s `computeLiveState` already established for this. A prior
+ * version queried per-occupancy (up to 4 sequential round trips each), which was fine against
+ * fixture-sized test data but effectively hung in production against the real nationwide
+ * `berth_occupancy` backlog — hundreds of thousands of round trips on the very first run.
  */
-async function fetchCandidates(
+async function fetchBatchCandidateData(
   client: PoolClient,
-  tdArea: string,
-  berthCode: string,
-  description: string,
-  serviceDate: string,
-  enteredAt: Date,
-): Promise<RunCandidate[]> {
-  const runs = await client.query<{
-    id: string;
-    schedule_id: string | null;
-    activated_at: Date | null;
-  }>(
-    `select id, schedule_id, activated_at
-     from train_run
-     where signalling_id = $1 and service_date = $2 and lifecycle_state != 'superseded'`,
-    [description, serviceDate],
-  );
-  if (runs.rows.length === 0) return [];
+  occupancies: Array<{ row: OccupancyRow; serviceDate: string }>,
+): Promise<BatchCandidateData> {
+  const signallingIds: string[] = [];
+  const serviceDates: string[] = [];
+  const seenPairs = new Set<string>();
+  for (const { row, serviceDate } of occupancies) {
+    const pairKey = `${row.description}|${serviceDate}`;
+    if (seenPairs.has(pairKey)) continue;
+    seenPairs.add(pairKey);
+    signallingIds.push(row.description);
+    serviceDates.push(serviceDate);
+  }
 
-  const runIds = runs.rows.map((row) => row.id);
-  const linkResult = await client.query<{ train_run_id: string; match_outcome: string }>(
-    `select train_run_id, match_outcome from run_schedule_link where train_run_id = any($1::uuid[])`,
-    [runIds],
-  );
-  const linkedRunIds = new Set(
-    linkResult.rows.filter((row) => row.match_outcome === "matched").map((row) => row.train_run_id),
-  );
+  const runs =
+    signallingIds.length > 0
+      ? await client.query<{
+          id: string;
+          schedule_id: string | null;
+          activated_at: Date | null;
+          signalling_id: string;
+          service_date: string;
+        }>(
+          `select tr.id, tr.schedule_id, tr.activated_at, tr.signalling_id, tr.service_date::text as service_date
+           from train_run tr
+           join (select unnest($1::text[]) as signalling_id, unnest($2::date[]) as service_date) wanted
+             on wanted.signalling_id = tr.signalling_id and wanted.service_date = tr.service_date
+           where tr.lifecycle_state != 'superseded'`,
+          [signallingIds, serviceDates],
+        )
+      : { rows: [] };
 
-  const smartResult = await client.query<{ stanox: string }>(
-    `select distinct stanox from smart_berth_step
-     where td_area = $1 and to_berth = $2 and stanox is not null`,
-    [tdArea, berthCode],
-  );
-  const smartStanoxes = new Set(smartResult.rows.map((row) => row.stanox));
+  const trainRunsByKey = new Map<string, TrainRunCandidateRow[]>();
+  for (const run of runs.rows) {
+    const key = `${run.signalling_id}|${run.service_date}`;
+    const list = trainRunsByKey.get(key) ?? [];
+    list.push({ id: run.id, scheduleId: run.schedule_id, activatedAt: run.activated_at });
+    trainRunsByKey.set(key, list);
+  }
 
-  const scheduleIds = runs.rows
-    .map((row) => row.schedule_id)
-    .filter((id): id is string => id !== null);
+  const runIds = runs.rows.map((run) => run.id);
+  const linkResult =
+    runIds.length > 0
+      ? await client.query<{ train_run_id: string }>(
+          `select train_run_id from run_schedule_link
+           where train_run_id = any($1::uuid[]) and match_outcome = 'matched'`,
+          [runIds],
+        )
+      : { rows: [] };
+  const linkedRunIds = new Set(linkResult.rows.map((row) => row.train_run_id));
+
+  const tdAreas: string[] = [];
+  const berthCodes: string[] = [];
+  const seenAreaBerths = new Set<string>();
+  for (const { row } of occupancies) {
+    const key = `${row.td_area}|${row.berth_code}`;
+    if (seenAreaBerths.has(key)) continue;
+    seenAreaBerths.add(key);
+    tdAreas.push(row.td_area);
+    berthCodes.push(row.berth_code);
+  }
+
+  const smartResult =
+    tdAreas.length > 0
+      ? await client.query<{ td_area: string; to_berth: string; stanox: string }>(
+          `select sbs.td_area, sbs.to_berth, sbs.stanox
+           from smart_berth_step sbs
+           join (select unnest($1::text[]) as td_area, unnest($2::text[]) as to_berth) wanted
+             on wanted.td_area = sbs.td_area and wanted.to_berth = sbs.to_berth
+           where sbs.stanox is not null`,
+          [tdAreas, berthCodes],
+        )
+      : { rows: [] };
+  const smartStanoxesByAreaBerth = new Map<string, Set<string>>();
+  for (const row of smartResult.rows) {
+    const key = `${row.td_area}|${row.to_berth}`;
+    const set = smartStanoxesByAreaBerth.get(key) ?? new Set<string>();
+    set.add(row.stanox);
+    smartStanoxesByAreaBerth.set(key, set);
+  }
+
+  const scheduleIds = [
+    ...new Set(runs.rows.map((run) => run.schedule_id).filter((id): id is string => id !== null)),
+  ];
   const scheduleStanoxes = new Map<string, Set<string>>();
-  if (scheduleIds.length > 0 && smartStanoxes.size > 0) {
+  if (scheduleIds.length > 0) {
     const locations = await client.query<{ schedule_id: string; stanox: string }>(
       `select schedule_id, stanox from schedule_location
        where schedule_id = any($1::bigint[]) and stanox is not null`,
@@ -147,19 +220,34 @@ async function fetchCandidates(
     }
   }
 
-  return runs.rows.map((run) => {
+  return { trainRunsByKey, linkedRunIds, smartStanoxesByAreaBerth, scheduleStanoxes };
+}
+
+function buildCandidates(
+  occupancy: OccupancyRow,
+  serviceDate: string,
+  data: BatchCandidateData,
+): RunCandidate[] {
+  const runs = data.trainRunsByKey.get(`${occupancy.description}|${serviceDate}`) ?? [];
+  const smartStanoxes =
+    data.smartStanoxesByAreaBerth.get(`${occupancy.td_area}|${occupancy.berth_code}`) ??
+    new Set<string>();
+
+  return runs.map((run) => {
     const temporallyPlausible =
-      run.activated_at !== null &&
-      enteredAt.getTime() >= run.activated_at.getTime() &&
-      enteredAt.getTime() - run.activated_at.getTime() <= MAX_JOURNEY_MS;
-    const candidateStanoxes = run.schedule_id ? scheduleStanoxes.get(run.schedule_id) : undefined;
+      run.activatedAt !== null &&
+      occupancy.entered_at.getTime() >= run.activatedAt.getTime() &&
+      occupancy.entered_at.getTime() - run.activatedAt.getTime() <= MAX_JOURNEY_MS;
+    const candidateStanoxes = run.scheduleId
+      ? data.scheduleStanoxes.get(run.scheduleId)
+      : undefined;
     const smartStanoxMatch =
       candidateStanoxes !== undefined &&
       [...smartStanoxes].some((stanox) => candidateStanoxes.has(stanox));
 
     return {
       trainRunId: run.id,
-      hasMatchedSchedule: linkedRunIds.has(run.id),
+      hasMatchedSchedule: data.linkedRunIds.has(run.id),
       temporallyPlausible,
       smartStanoxMatch,
     };
@@ -169,16 +257,10 @@ async function fetchCandidates(
 async function resolveOne(
   client: PoolClient,
   occupancy: OccupancyRow,
+  serviceDate: string,
+  data: BatchCandidateData,
 ): Promise<"matched" | "ambiguous" | "unmatched"> {
-  const serviceDate = computeServiceDate(occupancy.entered_at.toISOString());
-  const candidates = await fetchCandidates(
-    client,
-    occupancy.td_area,
-    occupancy.berth_code,
-    occupancy.description,
-    serviceDate,
-    occupancy.entered_at,
-  );
+  const candidates = buildCandidates(occupancy, serviceDate, data);
   const result = resolveBerthRun(candidates);
   const selectedRunId = result.status === "matched" ? result.selectedTrainRunId : null;
   const confidence = result.status === "matched" ? result.confidence : null;
@@ -209,6 +291,25 @@ async function resolveOne(
   );
 
   return result.status;
+}
+
+/** Resolves every occupancy in `rows` against one shared `fetchBatchCandidateData` call. */
+async function resolveBatch(
+  client: PoolClient,
+  rows: OccupancyRow[],
+  summary: ProjectResolverSummary,
+  countAs: "newlyResolved" | "retried",
+): Promise<void> {
+  const withServiceDates = rows.map((row) => ({
+    row,
+    serviceDate: computeServiceDate(row.entered_at.toISOString()),
+  }));
+  const data = await fetchBatchCandidateData(client, withServiceDates);
+  for (const { row, serviceDate } of withServiceDates) {
+    const status = await resolveOne(client, row, serviceDate, data);
+    summary[countAs] += 1;
+    summary[status] += 1;
+  }
 }
 
 /**
@@ -265,14 +366,11 @@ export async function runProjectResolver(
     const client = await pool.connect();
     try {
       await client.query("begin");
-      let maxId = BigInt(lastId);
-      for (const row of batch.rows) {
+      const maxId = batch.rows.reduce((max, row) => {
         const rowId = BigInt(row.id);
-        if (rowId > maxId) maxId = rowId;
-        const status = await resolveOne(client, row);
-        summary.newlyResolved += 1;
-        summary[status] += 1;
-      }
+        return rowId > max ? rowId : max;
+      }, BigInt(lastId));
+      await resolveBatch(client, batch.rows, summary, "newlyResolved");
       await advanceCheckpoint(client, definitionId, maxId.toString());
       await client.query("commit");
     } catch (error) {
@@ -297,11 +395,7 @@ export async function runProjectResolver(
        limit $3`,
       [TD_PROJECTION_VERSION, retryCutoff, batchSize],
     );
-    for (const row of stale.rows) {
-      const status = await resolveOne(retryClient, row);
-      summary.retried += 1;
-      summary[status] += 1;
-    }
+    await resolveBatch(retryClient, stale.rows, summary, "retried");
     await retryClient.query("commit");
   } catch (error) {
     await retryClient.query("rollback");

@@ -243,6 +243,21 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
   async stop(): Promise<void> {
     this.stopped = true;
     this.state = "stopped";
-    this.socket?.end();
+    const socket = this.socket;
+    if (socket && !socket.destroyed) {
+      // A bare TCP close (this method's entire previous behavior) never tells the broker the
+      // STOMP session itself is over — it just eventually notices the peer is gone, on its own
+      // schedule. Observed in production: that schedule can be long enough that every
+      // reconnect attempt in the meantime (even with a brand new client-id — NR's broker keys
+      // the conflict off the login, not the client-id) gets rejected with "AMQ339009: Exception
+      // getting session" until the stale session finally expires broker-side, sometimes many
+      // minutes later. Sending a real STOMP DISCONNECT first — and giving the broker a brief
+      // window to process it before the socket actually closes — makes the broker release the
+      // session immediately instead. This matters most on every ordinary container
+      // restart/redeploy (SIGTERM), which is the common case that reaches this method.
+      socket.write(encodeFrame({ command: "DISCONNECT", headers: {}, body: Buffer.alloc(0) }));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    socket?.end();
   }
 }

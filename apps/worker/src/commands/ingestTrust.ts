@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { StompTrustConnection } from "../trust/connection/stomp/stompConnection.js";
 import { recordTrustFrame, markTrustFrameAcked } from "../trust/recorder.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
+import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
 
 const NR_TRUST_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_TRUST_PORT = 61618;
@@ -79,5 +80,5 @@ export async function runIngestTrust(config: Config): Promise<never> {
     },
   });
 
-  return new Promise<never>(() => {});
+  return runUntilShutdownSignal(() => connection.stop());
 }

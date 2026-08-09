@@ -2,6 +2,15 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeFrame } from "./frame.js";
 
+/** `stop()` now waits (via a real timer) for the broker to process a DISCONNECT frame before
+ * closing the socket — under `vi.useFakeTimers()` that wait never resolves on its own, so every
+ * call site in this file needs to advance timers alongside it rather than just `await`ing it. */
+async function stopAndAdvance(connection: { stop: () => Promise<void> }): Promise<void> {
+  const stopping = connection.stop();
+  await vi.advanceTimersByTimeAsync(500);
+  await stopping;
+}
+
 /**
  * Regression coverage for a real production incident: `connectOnce` previously had no
  * timeout at all, so a connection attempt that was silently dropped (a firewall blackholing
@@ -68,7 +77,7 @@ describe("StompConnection connect timeout", () => {
     expect(error.message).toMatch(/timed out/i);
     expect(getLastSocket()?.destroy).toHaveBeenCalled();
 
-    await connection.stop();
+    await stopAndAdvance(connection);
   });
 
   it("does not kill a connection that receives CONNECTED before the timeout elapses", async () => {
@@ -99,7 +108,7 @@ describe("StompConnection connect timeout", () => {
     expect(options.onError).not.toHaveBeenCalled();
     expect(getLastSocket()?.destroy).not.toHaveBeenCalled();
 
-    await connection.stop();
+    await stopAndAdvance(connection);
   });
 });
 
@@ -140,7 +149,7 @@ describe("StompConnection heartbeat", () => {
       .filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.toString("utf8") === "\n");
     expect(heartbeatWrites).toHaveLength(3);
 
-    await connection.stop();
+    await stopAndAdvance(connection);
   });
 
   it("stops sending heartbeats once the connection closes", async () => {
@@ -173,6 +182,48 @@ describe("StompConnection heartbeat", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(socket.write.mock.calls.length).toBe(writesAfterClose);
 
-    await connection.stop();
+    await stopAndAdvance(connection);
+  });
+});
+
+describe("StompConnection stop", () => {
+  it("sends a STOMP DISCONNECT frame and waits before closing the socket", async () => {
+    // Regression test for a real production incident: closing the raw TCP socket without ever
+    // sending DISCONNECT left Network Rail's broker treating the session as still alive for far
+    // longer than this client's own reconnect backoff, so every reconnect attempt (even with a
+    // brand new client-id) was rejected with "AMQ339009: Exception getting session" until the
+    // stale session eventually expired broker-side.
+    vi.useFakeTimers();
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const stopping = connection.stop();
+    const disconnectSent = socket.write.mock.calls.some(
+      ([chunk]) => Buffer.isBuffer(chunk) && chunk.toString("utf8").startsWith("DISCONNECT\n"),
+    );
+    expect(disconnectSent).toBe(true);
+    // The socket must not be closed immediately — the broker needs a moment to process DISCONNECT.
+    expect(socket.end).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+    await stopping;
+    expect(socket.end).toHaveBeenCalledTimes(1);
   });
 });

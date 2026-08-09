@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { StompVstpConnection } from "../vstp/connection/stomp/stompConnection.js";
 import { recordVstpFrame, markVstpFrameAcked } from "../vstp/recorder.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
+import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
 
 const NR_VSTP_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_VSTP_PORT = 61618;
@@ -79,5 +80,5 @@ export async function runIngestVstp(config: Config): Promise<never> {
     },
   });
 
-  return new Promise<never>(() => {});
+  return runUntilShutdownSignal(() => connection.stop());
 }

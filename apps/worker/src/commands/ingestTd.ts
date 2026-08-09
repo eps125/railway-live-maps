@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { StompTdConnection } from "../td/connection/stomp/stompConnection.js";
 import { recordFrame, markFrameAcked } from "../td/recorder.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
+import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
 
 const NR_TD_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_TD_PORT = 61618;
@@ -77,5 +78,5 @@ export async function runIngestTd(config: Config): Promise<never> {
     },
   });
 
-  return new Promise<never>(() => {});
+  return runUntilShutdownSignal(() => connection.stop());
 }

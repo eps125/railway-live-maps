@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Line, Rect, Text, Circle, Group, Transformer } from "react-konva";
 import Konva from "konva";
-import { sortElementsForPaint, type MapElement } from "@railway/map-schema";
+import { sortElementsForPaint, type Layer as MapLayer, type MapElement } from "@railway/map-schema";
 import { useEditorState, useEditorDispatch, type ToolMode } from "./EditorState.js";
 
 // Fallback only, used for the first paint before ResizeObserver reports the real size of
@@ -32,6 +32,29 @@ function signalFill(symbolStyle: string): string {
 
 function nextElementId(): string {
   return `el-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Element type -> a name pattern for the layer it conventionally belongs on. There's no formal
+// "kind" on Layer (docs/MAP_EDITOR_SPEC.md leaves layers freeform/user-named), only the
+// tracks-under-berths-under-signals-under-everything-else convention sortElementsForPaint's own
+// doc comment describes — matched against here by name so a newly-placed element lands on the
+// layer a human would expect instead of always the very first layer in the document regardless
+// of tool. Real-world regression: a hand-authored map ended up with every berth/signal/label on
+// its "Track" layer (doc.layers[0]) because this lookup didn't exist yet, making paint order
+// between tracks and berths effectively arbitrary (whichever was added to the document later won).
+const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
+  berth: /berth/i,
+  signal: /signal/i,
+  label: /label/i,
+  trackPath: /track/i,
+  platform: /track/i,
+  boundary: /track/i,
+};
+
+export function defaultLayerIdForTool(tool: ToolMode, layers: MapLayer[]): string | undefined {
+  const hint = TOOL_LAYER_NAME_HINT[tool];
+  const matched = hint ? layers.find((layer) => hint.test(layer.name)) : undefined;
+  return (matched ?? layers[0])?.id;
 }
 
 function defaultElementForTool(
@@ -210,7 +233,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     if (!clickedOnEmpty) return;
 
     const point = toWorldPoint(stage);
-    const layerId = doc.layers[0]?.id;
+    const layerId = defaultLayerIdForTool(toolMode, doc.layers);
     if (!layerId) return;
     const element = defaultElementForTool(toolMode, layerId, {
       x: snap(point.x, gridSize),

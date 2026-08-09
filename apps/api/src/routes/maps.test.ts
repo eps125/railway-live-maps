@@ -47,7 +47,7 @@ describe("map routes", () => {
     const pool = fakePool((text) => {
       if (text.includes("from map_version mv")) return { rows: [mapVersionRow()] };
       if (text.includes("from td_heartbeat")) {
-        return { rows: [{ last_heartbeat_at: new Date() }] };
+        return { rows: [{ last_activity_at: new Date() }] };
       }
       throw new Error(`unexpected query: ${text}`);
     });

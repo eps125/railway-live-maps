@@ -52,17 +52,28 @@ export function tdAreasFromBundle(bundle: CompiledMapBundle): string[] {
   return [...areas];
 }
 
+/**
+ * Confirmed in production (2026-08-09): NR's `CT` heartbeat message is not a reliable per-area
+ * "still alive" ping — two genuinely busy areas (Preston `PX`, Carlisle `CL`) went 4-5+ hours
+ * without one while `td_berth_event` for the same two areas stayed seconds-fresh the entire
+ * time (real CA/CB/CC step traffic never stopped). Relying on `td_heartbeat` alone made the
+ * live-status banner permanently claim "stale" for a map that was, in fact, live — so real berth
+ * activity counts as freshness evidence too, not just the dedicated heartbeat message type.
+ */
 export async function liveDataStatus(
   pool: Pool,
   tdAreas: string[],
   now: Date,
 ): Promise<"ok" | "stale" | "unknown"> {
   if (tdAreas.length === 0) return "unknown";
-  const result = await pool.query<{ last_heartbeat_at: Date }>(
-    `select max(event_at) as last_heartbeat_at from td_heartbeat where td_area = any($1::text[])`,
+  const result = await pool.query<{ last_activity_at: Date | null }>(
+    `select greatest(
+       (select max(event_at) from td_heartbeat where td_area = any($1::text[])),
+       (select max(event_at) from td_berth_event where td_area = any($1::text[]))
+     ) as last_activity_at`,
     [tdAreas],
   );
-  const lastHeartbeatAt = result.rows[0]?.last_heartbeat_at;
-  if (!lastHeartbeatAt) return "unknown";
-  return now.getTime() - lastHeartbeatAt.getTime() <= FRESHNESS_THRESHOLD_MS ? "ok" : "stale";
+  const lastActivityAt = result.rows[0]?.last_activity_at;
+  if (!lastActivityAt) return "unknown";
+  return now.getTime() - lastActivityAt.getTime() <= FRESHNESS_THRESHOLD_MS ? "ok" : "stale";
 }

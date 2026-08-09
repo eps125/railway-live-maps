@@ -276,4 +276,31 @@ describe("runProjectResolver (integration)", () => {
     expect((await resolution(occupancyB))?.status).toBe("unmatched");
     expect((await resolution(occupancyC))?.status).toBe("unmatched");
   });
+
+  it("caps work per invocation and resumes the rest on the next call, reporting moreBacklogRemains", async () => {
+    // Regression test for the real production incident: the very first run against an
+    // already-large nationwide backlog needs to make bounded, visible progress per invocation
+    // (so the Portainer projector loop's other commands aren't starved indefinitely) rather than
+    // draining the entire backlog silently in one call.
+    const area = uniqueArea();
+    const occupancyIds = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        seedOccupancy(area, `010${i}`, uniqueSignallingId(), ENTERED_AT, null),
+      ),
+    );
+
+    const first = await runProjectResolver(pool, { batchSize: 2, maxBatchesPerRun: 2 });
+    expect(first.newlyResolved).toBe(4);
+    expect(first.moreBacklogRemains).toBe(true);
+
+    const resolvedAfterFirst = await Promise.all(occupancyIds.map((id) => resolution(id)));
+    expect(resolvedAfterFirst.filter((row) => row !== undefined)).toHaveLength(4);
+
+    const second = await runProjectResolver(pool, { batchSize: 2, maxBatchesPerRun: 2 });
+    expect(second.newlyResolved).toBe(1);
+    expect(second.moreBacklogRemains).toBe(false);
+
+    const resolvedAfterSecond = await Promise.all(occupancyIds.map((id) => resolution(id)));
+    expect(resolvedAfterSecond.every((row) => row !== undefined)).toBe(true);
+  });
 });

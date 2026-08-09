@@ -19,6 +19,16 @@ export { RESOLVER_VERSION };
 export const RESOLVER_PROJECTION_NAME = "berth-run-resolver";
 
 const DEFAULT_BATCH_SIZE = 200;
+/** Caps how much of a large backlog one invocation processes before returning. Without this, the
+ * very first run after deploying this projector against an already-large nationwide
+ * `berth_occupancy` history (every TD area, since go-live) would work through the entire backlog
+ * in one call — the Portainer `projector` service's loop invokes this command fresh every cycle
+ * and doesn't print anything until the call returns, so a long first run looks indistinguishable
+ * from a hang, and blocks project-td/project-vstp/project-trust (the lines after it in that loop)
+ * from running the whole time. Capping batches per invocation means each loop cycle makes bounded,
+ * visible progress (a `project-resolver complete: {...}` line every ~1s) instead of one silent
+ * multi-minute-or-longer call — the backlog just takes several cycles to fully drain instead of one. */
+const MAX_BATCHES_PER_RUN = 25;
 /** How far apart resolution attempts must be for a still-open, not-yet-matched occupancy to be
  * retried — mirrors TRUST's own deferred-relink pass (a later-arriving activation can turn an
  * unmatched/ambiguous outcome into a matched one), bounded to open occupancies only so a
@@ -35,6 +45,9 @@ const MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
 
 export interface ProjectResolverOptions {
   batchSize?: number;
+  /** Overrides MAX_BATCHES_PER_RUN — exposed mainly so tests can prove the cap/resume behavior
+   * without seeding thousands of rows. */
+  maxBatchesPerRun?: number;
   /** Clears every berth_run_resolution row and the denormalized berth_occupancy columns, then
    * reprocesses every occupancy from scratch. */
   rebuild?: boolean;
@@ -46,6 +59,9 @@ export interface ProjectResolverSummary {
   matched: number;
   ambiguous: number;
   unmatched: number;
+  /** True when this invocation stopped at MAX_BATCHES_PER_RUN with more backlog still waiting —
+   * not an error, just "the next cycle will keep draining it." */
+  moreBacklogRemains: boolean;
 }
 
 const EMPTY_SUMMARY: ProjectResolverSummary = {
@@ -54,6 +70,7 @@ const EMPTY_SUMMARY: ProjectResolverSummary = {
   matched: 0,
   ambiguous: 0,
   unmatched: 0,
+  moreBacklogRemains: false,
 };
 
 interface OccupancyRow {
@@ -334,6 +351,7 @@ export async function runProjectResolver(
   options: ProjectResolverOptions = {},
 ): Promise<ProjectResolverSummary> {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  const maxBatchesPerRun = options.maxBatchesPerRun ?? MAX_BATCHES_PER_RUN;
   const definitionId = await getOrCreateProjectionDefinition(
     pool,
     RESOLVER_PROJECTION_NAME,
@@ -349,7 +367,7 @@ export async function runProjectResolver(
 
   const summary: ProjectResolverSummary = { ...EMPTY_SUMMARY };
 
-  for (;;) {
+  for (let batchesProcessed = 0; batchesProcessed < maxBatchesPerRun; batchesProcessed++) {
     const checkpoint = await getCheckpoint(pool, definitionId);
     const lastId = checkpoint?.lastIngestionSequence ?? "0";
 
@@ -378,6 +396,10 @@ export async function runProjectResolver(
       throw error;
     } finally {
       client.release();
+    }
+
+    if (batch.rows.length === batchSize && batchesProcessed === maxBatchesPerRun - 1) {
+      summary.moreBacklogRemains = true;
     }
   }
 

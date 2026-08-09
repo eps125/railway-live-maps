@@ -329,18 +329,43 @@ interface ExtractedIdentity {
   serviceCode?: string | null;
 }
 
+/**
+ * Fixed in production (2026-08-09): `signallingId` was read from the activation body's
+ * `schedule_wtt_id` field, which this project's own fixture assumed was a plain 4-character TD
+ * headcode (packages/feed-parsers/fixtures/trust/activation.json's wire shape was "constructed
+ * from public documentation, not a captured real message" — exactly the gap that caveat warns
+ * about). The real field turned out to be 5 characters with an unconfirmed trailing character,
+ * so `train_run.signalling_id` never matched a real `berth_occupancy.description` (always
+ * exactly 4 characters) — every resolver candidate lookup silently found nothing.
+ *
+ * Per Network Rail's documented `train_id` format — `AABBBBCDEE`: `AA` = first two digits of the
+ * origin STANOX, `BBBB` = the signalling ID/headcode used across the data feeds, `C` = TSPEED,
+ * `D` = Call Code, `EE` = day of month originated — `train_id` (always exactly 10 characters,
+ * already the authoritative identity field used everywhere else) is a reliable, documented
+ * source for the headcode. Deriving it from there instead removes the dependency on
+ * `schedule_wtt_id`'s unconfirmed exact shape entirely.
+ *
+ * Every `train_run.signalling_id` stored before this fix is wrong; run `project-trust --rebuild`
+ * after deploying this, then `project-resolver --rebuild` to re-attempt matching.
+ */
+function headcodeFromTrainId(trainId: string | null): string | null {
+  return trainId && trainId.length === 10 ? trainId.slice(2, 6) : null;
+}
+
 function extractIdentity(eventType: string, body: Record<string, unknown>): ExtractedIdentity {
   switch (eventType) {
-    case "activation":
+    case "activation": {
+      const trustTrainId = str(body.train_id);
       return {
-        trustTrainId: str(body.train_id),
+        trustTrainId,
         trainUid: str(body.train_uid),
-        signallingId: str(body.schedule_wtt_id),
+        signallingId: headcodeFromTrainId(trustTrainId),
         callType: str(body.train_call_type),
         callMode: str(body.train_call_mode),
         operatorCode: str(body.toc_id),
         serviceCode: str(body.train_service_code),
       };
+    }
     case "movement":
       return { trustTrainId: str(body.train_id) ?? str(body.current_train_id) };
     case "unidentified":

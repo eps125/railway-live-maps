@@ -90,7 +90,10 @@ function activationBody(
         schedule_type: "P",
         sched_origin_stanox: "22334",
         train_uid: trainUid,
-        schedule_wtt_id: "2A16",
+        // 5 characters, not 4 — matches the real production shape confirmed 2026-08-09 (see
+        // headcodeFromWttId's doc comment). Proves the projector truncates to the real headcode
+        // rather than storing this raw, which would never match a berth_occupancy.description.
+        schedule_wtt_id: "2A16X",
         schedule_start_date: "2026-01-01",
       },
     },
@@ -121,12 +124,13 @@ interface RunRow {
   service_date: string;
   schedule_id: string | null;
   superseded_by_train_run_id: string | null;
+  signalling_id: string | null;
 }
 
 async function runFor(trustTrainId: string): Promise<RunRow | undefined> {
   const result = await pool.query<RunRow>(
     `select id, lifecycle_state, service_date::text as service_date, schedule_id,
-            superseded_by_train_run_id
+            superseded_by_train_run_id, signalling_id
      from train_run where trust_train_id = $1`,
     [trustTrainId],
   );
@@ -186,6 +190,11 @@ describe("runProjectTrust (integration)", () => {
     const run = await runFor(TRAIN_ID);
     expect(run).toMatchObject({ lifecycle_state: "activated" });
     expect(run!.schedule_id).not.toBeNull();
+    // Regression test for a real production incident: signalling_id must come from train_id's
+    // documented AABBBBCDEE format (chars 3-6, the BBBB headcode segment), not schedule_wtt_id
+    // (whose real-world width didn't match this project's fixture assumption — see
+    // headcodeFromTrainId's doc comment). TRAIN_ID "2A1612AA26" -> AA="2A" BBBB="1612" ...
+    expect(run!.signalling_id).toBe("1612");
 
     const link = await linkFor(run!.id);
     expect(link).toMatchObject({ match_outcome: "matched" });

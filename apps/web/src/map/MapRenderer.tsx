@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CompiledMapBundle } from "@railway/map-schema";
+import { sortElementsForPaint, type CompiledMapBundle } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
 
 export interface MapRendererProps {
@@ -54,7 +54,28 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
     return map;
   }, [bundle]);
 
-  const elements = Object.values(bundle.elementsById);
+  // Paint order and layer visibility must match the editor canvas exactly (CLAUDE.md rule 13:
+  // public renderer and editor preview share the same domain model/state semantics) —
+  // `elementsById` is a Record, and relying on its own key-insertion order to already reflect
+  // sortElementsForPaint's result is exactly the kind of implicit assumption that's easy to
+  // silently break, so paint order is computed explicitly here via the same shared function
+  // EditorCanvas.tsx uses. A layer with no explicit `visible: false` (including one this bundle
+  // doesn't list at all) still renders — unlike the editor's stricter default, an unknown/absent
+  // layer here should never hide real published content.
+  const layersById = useMemo(
+    () => new Map(bundle.layers.map((layer) => [layer.id, layer])),
+    [bundle],
+  );
+  const elements = useMemo(
+    () =>
+      sortElementsForPaint(
+        Object.values(bundle.elementsById).filter(
+          (element) => layersById.get(element.layerId)?.visible !== false,
+        ),
+        bundle.layers,
+      ),
+    [bundle, layersById],
+  );
 
   // React attaches its synthetic onWheel listener as passive at the root, so
   // event.preventDefault() there is silently ignored (and Chrome logs a warning on every

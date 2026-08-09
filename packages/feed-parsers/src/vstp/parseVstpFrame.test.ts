@@ -13,7 +13,7 @@ async function loadBody(name: string): Promise<Buffer> {
 
 describe("parseVstpFrame", () => {
   it("parses a Create transaction", async () => {
-    const body = await loadBody("create-normal.xml");
+    const body = await loadBody("create-normal.json");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
 
     expect(result.children).toHaveLength(1);
@@ -21,7 +21,7 @@ describe("parseVstpFrame", () => {
   });
 
   it("parses an Overwrite transaction", async () => {
-    const body = await loadBody("overwrite-normal.xml");
+    const body = await loadBody("overwrite-normal.json");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
 
     expect(result.children).toHaveLength(1);
@@ -32,15 +32,15 @@ describe("parseVstpFrame", () => {
   });
 
   it("parses a Delete transaction", async () => {
-    const body = await loadBody("delete-normal.xml");
+    const body = await loadBody("delete-normal.json");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
 
     expect(result.children).toHaveLength(1);
     expect(result.children[0]).toMatchObject({ eventType: "vstp.delete", parseStatus: "parsed" });
   });
 
-  it("retains an unrecognized root element as unsupported, never dropped", async () => {
-    const body = await loadBody("unsupported-root-element.xml");
+  it("retains an unrecognized root key as unsupported, never dropped", async () => {
+    const body = await loadBody("unsupported-root-element.json");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
 
     expect(result.children).toHaveLength(1);
@@ -49,19 +49,32 @@ describe("parseVstpFrame", () => {
   });
 
   it("a totally malformed body still yields exactly one synthetic malformed child, never zero", async () => {
-    const body = await loadBody("malformed.xml");
+    const body = await loadBody("malformed.json");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
 
     expect(result.children).toHaveLength(1);
     expect(result.children[0]?.parseStatus).toBe("malformed");
-    expect(result.children[0]?.parseErrorCode).toBe("invalid_xml");
+    expect(result.children[0]?.parseErrorCode).toBe("invalid_json");
   });
 
   it("transparently decompresses a gzip-compressed body", async () => {
-    const body = await loadBody("gzip-normal.xml.gz");
+    const body = await loadBody("gzip-normal.json.gz");
     const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
 
     expect(result.children).toHaveLength(1);
     expect(result.children[0]).toMatchObject({ eventType: "vstp.create", parseStatus: "parsed" });
+  });
+
+  it("captures a real-shaped payload's fields correctly (no CIF_bs wrapper, segment-nested train details)", async () => {
+    const body = await loadBody("create-normal.json");
+    const result = parseVstpFrame(body, { receivedAt: RECEIVED_AT });
+    const child = result.children[0]!;
+
+    expect(child.parseStatus).toBe("parsed");
+    const parsedJson = child.rawEventJson as {
+      VSTPCIFMsgV1: { schedule: { CIF_train_uid: string; schedule_segment: unknown[] } };
+    };
+    expect(parsedJson.VSTPCIFMsgV1.schedule.CIF_train_uid).toBe("ZZ12345");
+    expect(Array.isArray(parsedJson.VSTPCIFMsgV1.schedule.schedule_segment)).toBe(true);
   });
 });

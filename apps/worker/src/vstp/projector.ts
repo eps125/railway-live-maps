@@ -57,11 +57,12 @@ async function clearProjectionRows(pool: Pool): Promise<void> {
 }
 
 /**
- * Adapts the raw VSTP XML-derived JSON (see `parseVstpFrame.ts`'s doc comment: root
- * `VSTPCIFMsgV1.schedule`, constructed from public documentation, not a captured real message)
- * into the source-agnostic `ScheduleSourceRecord` shape `mapToScheduleRow` expects. Returns
- * `null` when a required field is missing/unrecognized — the raw event itself is still retained
- * untouched in `raw_feed_event`, only its projection into `schedule` is skipped.
+ * Adapts the raw VSTP JSON (see `parseVstpFrame.ts`'s doc comment for the confirmed-real shape:
+ * root `VSTPCIFMsgV1.schedule`, fields directly on `schedule` — no `CIF_bs` wrapper, that was
+ * part of an earlier unverified XML-based guess) into the source-agnostic `ScheduleSourceRecord`
+ * shape `mapToScheduleRow` expects. Returns `null` when a required field is missing/unrecognized
+ * — the raw event itself is still retained untouched in `raw_feed_event`, only its projection
+ * into `schedule` is skipped.
  */
 function extractScheduleSourceRecord(rawEventJson: unknown): ScheduleSourceRecord | null {
   const root = rawEventJson as Record<string, unknown>;
@@ -69,13 +70,10 @@ function extractScheduleSourceRecord(rawEventJson: unknown): ScheduleSourceRecor
   const schedule = msg?.schedule as Record<string, unknown> | undefined;
   if (!schedule) return null;
 
-  const cifBs = schedule.CIF_bs as Record<string, unknown> | undefined;
-  if (!cifBs) return null;
-
-  const trainUid = cifBs.CIF_train_uid;
-  const scheduleStartDate = cifBs.schedule_start_date;
-  const scheduleEndDate = cifBs.schedule_end_date;
-  const stpIndicator = cifBs.CIF_stp_indicator;
+  const trainUid = schedule.CIF_train_uid;
+  const scheduleStartDate = schedule.schedule_start_date;
+  const scheduleEndDate = schedule.schedule_end_date;
+  const stpIndicator = schedule.CIF_stp_indicator;
   if (
     typeof trainUid !== "string" ||
     typeof scheduleStartDate !== "string" ||
@@ -86,37 +84,76 @@ function extractScheduleSourceRecord(rawEventJson: unknown): ScheduleSourceRecor
     return null;
   }
 
-  const segment = schedule.schedule_segment as Record<string, unknown> | undefined;
-  const rawLocations = segment?.schedule_location;
-  // fast-xml-parser only produces an array when 2+ sibling elements are present — a single
-  // <schedule_location> parses as a bare object, so it's normalized to a one-element array here.
-  const locationList: Record<string, unknown>[] = Array.isArray(rawLocations)
-    ? (rawLocations as Record<string, unknown>[])
-    : rawLocations
-      ? [rawLocations as Record<string, unknown>]
+  // schedule_segment is an array on the wire (one element in the real message this was built
+  // from, but not assumed to always be exactly one) — signalling_id/service code/category/power
+  // type live one level down inside each segment, not on `schedule` itself. Locations are
+  // flattened across every segment in order, tolerant of more than one.
+  const rawSegments = schedule.schedule_segment;
+  const segmentList: Record<string, unknown>[] = Array.isArray(rawSegments)
+    ? (rawSegments as Record<string, unknown>[])
+    : rawSegments
+      ? [rawSegments as Record<string, unknown>]
       : [];
+  const firstSegment = segmentList[0];
 
-  const locations: ScheduleSourceLocation[] = locationList.map((loc) => ({
-    locationType: String(loc.location_type ?? ""),
-    tiploc: String(loc.tiploc_code ?? ""),
-    arrivalPublic: typeof loc.public_arrival === "string" ? loc.public_arrival : null,
-    arrivalWorking: typeof loc.arrival === "string" ? loc.arrival : null,
-    departurePublic: typeof loc.public_departure === "string" ? loc.public_departure : null,
-    departureWorking: typeof loc.departure === "string" ? loc.departure : null,
-    passPublic: typeof loc.public_pass === "string" ? loc.public_pass : null,
-    passWorking: typeof loc.pass === "string" ? loc.pass : null,
-    platform: typeof loc.platform === "string" ? loc.platform : null,
-  }));
+  const locations: ScheduleSourceLocation[] = segmentList.flatMap((seg) => {
+    const rawLocations = seg.schedule_location;
+    const locationList: Record<string, unknown>[] = Array.isArray(rawLocations)
+      ? (rawLocations as Record<string, unknown>[])
+      : rawLocations
+        ? [rawLocations as Record<string, unknown>]
+        : [];
+
+    return locationList.map((loc) => {
+      const locationObj = loc.location as Record<string, unknown> | undefined;
+      const tiplocObj = locationObj?.tiploc as Record<string, unknown> | undefined;
+      const tiploc = typeof tiplocObj?.tiploc_id === "string" ? tiplocObj.tiploc_id : "";
+      const activityText = typeof loc.CIF_activity === "string" ? loc.CIF_activity : null;
+
+      return {
+        // No location-type code (e.g. LO/LI/LT) has been observed on the wire — mapToScheduleRow
+        // (packages/domain) already falls back to first/last position when it doesn't recognize
+        // one, so an empty string here is honest rather than guessing a code never actually seen.
+        locationType: "",
+        tiploc,
+        arrivalPublic: typeof loc.public_arrival_time === "string" ? loc.public_arrival_time : null,
+        arrivalWorking:
+          typeof loc.scheduled_arrival_time === "string" ? loc.scheduled_arrival_time : null,
+        departurePublic:
+          typeof loc.public_departure_time === "string" ? loc.public_departure_time : null,
+        departureWorking:
+          typeof loc.scheduled_departure_time === "string" ? loc.scheduled_departure_time : null,
+        passWorking: typeof loc.scheduled_pass_time === "string" ? loc.scheduled_pass_time : null,
+        platform: typeof loc.CIF_platform === "string" ? loc.CIF_platform : null,
+        path: typeof loc.CIF_path === "string" ? loc.CIF_path : null,
+        line: typeof loc.CIF_line === "string" ? loc.CIF_line : null,
+        activityCodes: activityText ? (activityText.match(/.{1,2}/g) ?? []) : [],
+        rawActivityText: activityText,
+      };
+    });
+  });
 
   return {
     trainUid,
     scheduleStartDate,
     scheduleEndDate,
     stpIndicator: stpIndicator as ScheduleSourceRecord["stpIndicator"],
-    daysRunsBitmask: typeof cifBs.schedule_days_runs === "string" ? cifBs.schedule_days_runs : null,
-    signallingId: typeof cifBs.signalling_id === "string" ? cifBs.signalling_id : null,
-    operatorCode: typeof cifBs.atoc_code === "string" ? cifBs.atoc_code : null,
-    trainStatus: typeof cifBs.train_status === "string" ? cifBs.train_status : null,
+    daysRunsBitmask:
+      typeof schedule.schedule_days_runs === "string" ? schedule.schedule_days_runs : null,
+    signallingId:
+      typeof firstSegment?.signalling_id === "string" ? firstSegment.signalling_id : null,
+    // No operator/ATOC field has been observed on the wire yet (may live in the sibling `Sender`
+    // object this parser hasn't seen the contents of) — left null rather than guessing.
+    operatorCode: null,
+    trainServiceCode:
+      typeof firstSegment?.CIF_train_service_code === "string"
+        ? firstSegment.CIF_train_service_code
+        : null,
+    trainCategory:
+      typeof firstSegment?.CIF_train_category === "string" ? firstSegment.CIF_train_category : null,
+    trainStatus: typeof schedule.train_status === "string" ? schedule.train_status : null,
+    powerType:
+      typeof firstSegment?.CIF_power_type === "string" ? firstSegment.CIF_power_type : null,
     locations,
     source: "VSTP",
     rawSourceJson: rawEventJson,

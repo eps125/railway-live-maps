@@ -1,17 +1,35 @@
 import { gunzipSync } from "node:zlib";
-import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { normalizeTimestamp } from "../td/normalizeTimestamp.js";
 import { computeSemanticHash } from "../td/semanticHash.js";
 import { VSTP_PARSER_VERSION } from "./vstpParserVersion.js";
 
 /**
- * VSTP (docs/REFERENCES.md: https://wiki.openraildata.com/index.php/VSTP) is XML, unlike TD's
- * JSON — the wire shape below (`VSTPCIFMsgV1` root, `schedule`/`CIF_bs` element names,
- * `transaction_type` of Create/Overwrite/Delete) is constructed from the publicly documented
- * format, not a captured real message (per the M0 fixture gap noted in
- * docs/IMPLEMENTATION_PLAN.md — no sanitized VSTP capture exists yet). Flagged here and in the
- * fixtures directory the same way M5's PX/CL binding note flags an unverified assumption:
- * confirm against a real capture before treating field names/shapes as exact.
+ * VSTP (docs/REFERENCES.md: https://wiki.openraildata.com/index.php/VSTP) is JSON on the wire,
+ * same as TD — confirmed against a real captured message. An earlier version of this parser
+ * assumed an XML shape built from public documentation alone and was never verified: every real
+ * message failed XML validation and was silently retained as "malformed" (parse_error_code
+ * "invalid_xml") instead of ever reaching the schedule projector, so live VSTP data has never
+ * actually produced a queryable schedule.
+ *
+ * Confirmed real shape: root key `VSTPCIFMsgV1` -> `schedule`, with `transaction_type`,
+ * `CIF_train_uid`, `schedule_start_date`, `schedule_end_date`, `CIF_stp_indicator`,
+ * `schedule_days_runs`, `train_status`, `applicable_timetable` all sitting directly on
+ * `schedule` — there is no `CIF_bs` wrapper (that nesting was part of the unverified XML guess).
+ * `signalling_id`, `CIF_train_service_code`, `CIF_train_category`, `CIF_timing_load`,
+ * `CIF_speed`, `CIF_power_type` sit one level down, inside `schedule.schedule_segment[]`
+ * (an array). Each `schedule_location` nests as `location.tiploc.tiploc_id` (not a flat
+ * `tiploc_code`), and carries `scheduled_arrival_time`/`scheduled_departure_time`/
+ * `scheduled_pass_time`, `public_arrival_time`/`public_departure_time`, `CIF_platform`,
+ * `CIF_path`, `CIF_line`, `CIF_activity` — no explicit location-type code was observed (the
+ * captured sample's origin/terminus rows are distinguishable only by `CIF_activity` "TB"/"TF" or
+ * by position); `mapToScheduleRow` (packages/domain) already falls back to first/last position
+ * when it doesn't recognize a location-type code, so the projector passes an empty string rather
+ * than guessing a code that hasn't actually been observed on the wire.
+ *
+ * This is still built from a single real Create message, not an exhaustive sample — Overwrite/
+ * Delete transactions and whatever the sibling `Sender` key carries haven't been directly
+ * observed. Confirm further against real captures as they're seen rather than extending this
+ * from assumption again.
  */
 export type VstpParseStatus = "parsed" | "unsupported" | "malformed";
 export type VstpTransactionType = "Create" | "Overwrite" | "Delete";
@@ -44,7 +62,11 @@ export interface ParseVstpFrameOptions {
   receivedAt: Date;
 }
 
-const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+// Bodies that fail to parse are retained with only a bounded snippet, not the full text —
+// unbounded arbitrary input isn't something to persist wholesale into a jsonb column forever.
+// The complete original bytes are still available regardless, in the archived raw frame
+// (docs/ARCHITECTURE.md's archive-before-ack sequence) — this snippet is diagnostic only.
+const MALFORMED_SNIPPET_LENGTH = 2000;
 
 function isGzip(buffer: Buffer): boolean {
   return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
@@ -129,50 +151,32 @@ export function parseVstpFrame(body: Buffer, options: ParseVstpFrameOptions): Pa
     };
   }
 
-  // fast-xml-parser's own .parse() is lenient by design and won't reliably throw on malformed
-  // input, so validity is checked explicitly first — this is what actually catches truncated/
-  // unclosed-tag bodies rather than silently producing a partial/wrong tree.
-  const validation = XMLValidator.validate(text);
-  if (validation !== true) {
-    return {
-      children: [
-        makeSyntheticMalformed("invalid_xml", options.receivedAt, {
-          note: "body was not valid XML",
-          validationError: validation.err,
-          textSnippet: text.slice(0, 2000),
-        }),
-      ],
-    };
-  }
-
   let parsed: unknown;
   try {
-    parsed = xmlParser.parse(text) as unknown;
+    parsed = JSON.parse(text) as unknown;
   } catch {
     return {
       children: [
-        makeSyntheticMalformed("invalid_xml", options.receivedAt, {
-          note: "body was not valid XML",
-          textSnippet: text.slice(0, 2000),
+        makeSyntheticMalformed("invalid_json", options.receivedAt, {
+          note: "body was not valid JSON",
+          textSnippet: text.slice(0, MALFORMED_SNIPPET_LENGTH),
         }),
       ],
     };
   }
 
-  if (typeof parsed !== "object" || parsed === null) {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return {
       children: [
         makeSyntheticMalformed("not_an_object", options.receivedAt, {
-          note: "parsed XML was not an object",
+          note: "parsed JSON was not an object",
           value: parsed,
         }),
       ],
     };
   }
 
-  const rootKeys = Object.keys(parsed as Record<string, unknown>).filter(
-    (key) => !key.startsWith("?"),
-  );
+  const rootKeys = Object.keys(parsed as Record<string, unknown>);
   if (rootKeys.length !== 1) {
     return {
       children: [
@@ -185,8 +189,8 @@ export function parseVstpFrame(body: Buffer, options: ParseVstpFrameOptions): Pa
   const root = (parsed as Record<string, unknown>)[rootKey];
 
   if (rootKey !== "VSTPCIFMsgV1") {
-    // Structurally fine XML, semantically unrecognized root element: retained, never dropped —
-    // same rule TD's classifier applies to an unrecognized wrapper key.
+    // Structurally fine JSON, semantically unrecognized root key: retained, never dropped — same
+    // rule TD's classifier applies to an unrecognized wrapper key.
     return {
       children: [
         buildResult({
@@ -215,14 +219,7 @@ export function parseVstpFrame(body: Buffer, options: ParseVstpFrameOptions): Pa
     };
   }
 
-  const cifBs = schedule.CIF_bs as Record<string, unknown> | undefined;
-  const transactionType = schedule.transaction_type ?? cifBs?.transaction_type;
-  const rawTimestampText =
-    typeof schedule["@_timestamp"] === "string" || typeof schedule["@_timestamp"] === "number"
-      ? String(schedule["@_timestamp"])
-      : null;
-
-  const eventType = transactionEventType(transactionType);
+  const eventType = transactionEventType(schedule.transaction_type);
   const parseStatus: VstpParseStatus = eventType.startsWith("vstp.unknown:")
     ? "unsupported"
     : "parsed";
@@ -235,7 +232,9 @@ export function parseVstpFrame(body: Buffer, options: ParseVstpFrameOptions): Pa
         parseStatus,
         parseErrorCode: null,
         receivedAt: options.receivedAt,
-        rawTimestampText,
+        // No message-level timestamp field has been observed in a real capture — falls back to
+        // receivedAt via normalizeTimestamp, same as any source lacking one.
+        rawTimestampText: null,
       }),
     ],
   };

@@ -8,3 +8,4 @@ pnpm-lock.yaml
 # corresponding test expects.
 packages/feed-parsers/fixtures/reference/corpus-malformed.json
 packages/feed-parsers/fixtures/reference/smart-malformed.json
+packages/feed-parsers/fixtures/vstp/malformed.json

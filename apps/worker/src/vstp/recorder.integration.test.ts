@@ -59,7 +59,7 @@ describe("recordVstpFrame (integration)", () => {
   });
 
   it("records a Create transaction with a single parsed child", async () => {
-    const frame = await loadFixtureFrame("create-normal.xml");
+    const frame = await loadFixtureFrame("create-normal.json");
     const result = await recordVstpFrame(frame, { pool, archiveClient, archiveBucket: bucket });
     createdFrameIds.push(result.frameId);
 
@@ -75,7 +75,7 @@ describe("recordVstpFrame (integration)", () => {
   });
 
   it("retains an unsupported root element rather than dropping it", async () => {
-    const frame = await loadFixtureFrame("unsupported-root-element.xml");
+    const frame = await loadFixtureFrame("unsupported-root-element.json");
     const result = await recordVstpFrame(frame, { pool, archiveClient, archiveBucket: bucket });
     createdFrameIds.push(result.frameId);
 
@@ -84,7 +84,7 @@ describe("recordVstpFrame (integration)", () => {
   });
 
   it("retains a malformed body as a synthetic malformed child rather than dropping it", async () => {
-    const frame = await loadFixtureFrame("malformed.xml");
+    const frame = await loadFixtureFrame("malformed.json");
     const result = await recordVstpFrame(frame, { pool, archiveClient, archiveBucket: bucket });
     createdFrameIds.push(result.frameId);
 
@@ -93,7 +93,7 @@ describe("recordVstpFrame (integration)", () => {
   });
 
   it("is idempotent under exact-byte redelivery: the second call is a safe no-op", async () => {
-    const frame = await loadFixtureFrame("delete-normal.xml");
+    const frame = await loadFixtureFrame("delete-normal.json");
     const first = await recordVstpFrame(frame, { pool, archiveClient, archiveBucket: bucket });
     createdFrameIds.push(first.frameId);
     const second = await recordVstpFrame(frame, { pool, archiveClient, archiveBucket: bucket });
@@ -104,7 +104,7 @@ describe("recordVstpFrame (integration)", () => {
   });
 
   it("survives a crash-before-redelivery scenario: record after ack is still idempotent", async () => {
-    const frame = await loadFixtureFrame("overwrite-normal.xml");
+    const frame = await loadFixtureFrame("overwrite-normal.json");
     const result = await recordVstpFrame(frame, { pool, archiveClient, archiveBucket: bucket });
     createdFrameIds.push(result.frameId);
     await markVstpFrameAcked(pool, result.frameId);

@@ -1,0 +1,46 @@
+{
+  "VSTPCIFMsgV1": {
+    "schedule": {
+      "schedule_segment": [
+        {
+          "schedule_location": [
+            {
+              "location": { "tiploc": { "tiploc_id": "PRST" } },
+              "scheduled_pass_time": " ",
+              "scheduled_departure_time": "120500",
+              "scheduled_arrival_time": " ",
+              "public_departure_time": "1205",
+              "public_arrival_time": " ",
+              "CIF_platform": "4",
+              "CIF_activity": "TB"
+            },
+            {
+              "location": { "tiploc": { "tiploc_id": "LANCSTR" } },
+              "scheduled_pass_time": " ",
+              "scheduled_departure_time": " ",
+              "scheduled_arrival_time": "123500",
+              "public_departure_time": " ",
+              "public_arrival_time": "1235",
+              "CIF_platform": "1",
+              "CIF_activity": "TF"
+            }
+          ],
+          "signalling_id": "5Z01",
+          "CIF_train_service_code": "21890002",
+          "CIF_train_category": "EE",
+          "CIF_timing_load": "755",
+          "CIF_speed": "100",
+          "CIF_power_type": "DMU"
+        }
+      ],
+      "transaction_type": "Overwrite",
+      "train_status": "P",
+      "schedule_start_date": "2026-08-10",
+      "schedule_end_date": "2026-09-01",
+      "schedule_days_runs": "1111100",
+      "applicable_timetable": "Y",
+      "CIF_train_uid": "ZZ12345",
+      "CIF_stp_indicator": "O"
+    }
+  }
+}

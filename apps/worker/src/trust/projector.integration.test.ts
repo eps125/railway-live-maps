@@ -28,8 +28,9 @@ const bucket = "railway-raw-test";
 const fixturesDir = resolveTrustFixturesDir();
 
 // The fixtures under test all narrate a single train's lifecycle under this identity, up until
-// the Change of Identity fixture supersedes it (see create-normal.xml's own doc comment style —
-// constructed from public documentation, not a captured real message).
+// the Change of Identity fixture supersedes it — constructed from public documentation, not a
+// captured real message (unlike VSTP's fixtures, which were corrected against a real capture —
+// see packages/feed-parsers/src/vstp/parseVstpFrame.ts's doc comment).
 const TRAIN_ID = "2A1612AA26";
 const NEW_TRAIN_ID = "2A9912AA26";
 const TRAIN_UID = "ZZ54321";

@@ -1,5 +1,0 @@
-<!-- Structurally valid XML with a root element this parser doesn't recognize — must be
-     retained as `unsupported`, never dropped (CLAUDE.md rule 18). -->
-<SomeFutureVSTPMessageType>
-  <note>a hypothetical future VSTP message shape this parser has never seen</note>
-</SomeFutureVSTPMessageType>

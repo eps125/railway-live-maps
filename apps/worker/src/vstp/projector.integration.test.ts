@@ -27,8 +27,8 @@ const archiveClient = new FakeS3Client() as unknown as S3Client;
 const bucket = "railway-raw-test";
 const fixturesDir = resolveVstpFixturesDir();
 
-// The fixtures under test all share this synthetic train_uid (see create-normal.xml's own
-// doc comment — constructed from public documentation, not a captured real message).
+// The fixtures under test all share this synthetic train_uid (see parseVstpFrame.ts's own doc
+// comment for how the real wire shape these fixtures follow was confirmed).
 const TRAIN_UID = "ZZ12345";
 
 // Recorded frame ids, cleaned up in afterAll — these fixtures have fixed content (unlike TD's
@@ -92,7 +92,7 @@ describe("runProjectVstp (integration)", () => {
   });
 
   it("Create inserts a new schedule row with its locations", async () => {
-    await recordFixture("create-normal.xml");
+    await recordFixture("create-normal.json");
     await runProjectVstp(pool);
 
     const rows = await schedulesFor(TRAIN_UID);
@@ -102,7 +102,7 @@ describe("runProjectVstp (integration)", () => {
   });
 
   it("Overwrite upserts a distinct schedule row under its own STP indicator", async () => {
-    await recordFixture("overwrite-normal.xml");
+    await recordFixture("overwrite-normal.json");
     await runProjectVstp(pool);
 
     const rows = await schedulesFor(TRAIN_UID);
@@ -114,7 +114,7 @@ describe("runProjectVstp (integration)", () => {
   });
 
   it("Delete removes the matching schedule row without touching other STP indicators", async () => {
-    await recordFixture("delete-normal.xml");
+    await recordFixture("delete-normal.json");
     await runProjectVstp(pool);
 
     const rows = await schedulesFor(TRAIN_UID);

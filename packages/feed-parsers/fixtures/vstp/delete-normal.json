@@ -1,0 +1,11 @@
+{
+  "VSTPCIFMsgV1": {
+    "schedule": {
+      "transaction_type": "Delete",
+      "schedule_start_date": "2026-08-10",
+      "schedule_end_date": "2026-09-01",
+      "CIF_stp_indicator": "O",
+      "CIF_train_uid": "ZZ12345"
+    }
+  }
+}

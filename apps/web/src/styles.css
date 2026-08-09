@@ -503,6 +503,56 @@ legend {
   color: var(--color-accent-hover);
 }
 
+.map-inspector__subtitle {
+  font-weight: 400;
+  color: var(--color-text-faint);
+}
+
+.map-inspector--run {
+  min-width: 280px;
+  max-width: 360px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.map-inspector--run dl {
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.map-inspector--run dl:last-of-type {
+  border-bottom: none;
+}
+
+.map-inspector__schedule {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+}
+
+.map-inspector__schedule summary {
+  cursor: pointer;
+  color: var(--color-text-faint);
+}
+
+.map-inspector__schedule table {
+  width: 100%;
+  margin-top: 0.35rem;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+}
+
+.map-inspector__schedule td {
+  padding: 0.1rem 0.3rem 0.1rem 0;
+  white-space: nowrap;
+}
+
+.map-inspector__candidates {
+  margin: 0.3rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.72rem;
+  color: var(--color-text-faint);
+}
+
 /* ---------------------------------------------------------------------------------------------
  * Editor
  * ------------------------------------------------------------------------------------------- */

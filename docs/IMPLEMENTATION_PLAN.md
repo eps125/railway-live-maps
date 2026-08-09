@@ -268,6 +268,61 @@ backfill/retry mechanism in this MVP pass.
 
 Never claim exact continuous punctuality.
 
+**Status: implemented.** Migration `0018_berth_run_resolution.sql` (per `docs/DATA_MODEL.md` §7:
+`occupancy_id`/`selected_train_run_id`/`confidence`/`resolver_version`/`decided_at`/`candidates`
+jsonb, one row per occupancy updated in place on re-resolution — mirrors `run_schedule_link`'s
+own "retained fields, mutable outcome" pattern from Milestone 8) and `0019_...uuid.sql` (a
+pre-existing bug fix found along the way: `berth_occupancy.resolved_run_id` was declared `bigint`
+back in Milestone 4, before `train_run`'s uuid primary key existed, and had never actually been
+written to). Pure scoring logic in `packages/domain/src/resolver/resolveBerthRun.ts` (mirrors
+`schedule/resolveStpPrecedence.ts`'s DB-I/O-free style): candidate generation (exact
+`signalling_id` + service-date match, never a superseded identity) is evidence #1, then a
+weighted score from #2 (schedule-linked via `run_schedule_link`), #3 (temporal plausibility — see
+its own known-limitation note below) and #5 (SMART berth→STANOX correlation via
+`smart_berth_step`); an exact tie at the top score is `ambiguous`, never an arbitrary pick
+(CLAUDE.md rule 5). New checkpointed worker projector (`apps/worker/src/resolver/projector.ts`,
+`project-resolver` command, added to the Portainer `projector` service's loop) processes newly-
+opened occupancies plus a bounded retry pass over still-open, not-yet-`matched` occupancies
+(mirrors TRUST's deferred-relink pass). API: `apps/api/src/lib/liveState.ts`'s `BerthState.
+runSummary` now carries a real `{status, text}` (was hardcoded `null`) — `text` is a short
+Vail-like string built only from the matched run's latest real TRUST movement report, matching
+`docs/PROJECT_SPEC.md`'s "TRUST is not a prediction feed" rule; new `GET /api/v1/td/areas/
+{tdArea}/berths/{berth}/current-run` is the live map's click-a-berth popup in one round trip;
+`GET /api/v1/runs/{runId}`'s `resolverEvidence` (hardcoded `null` since Milestone 8) is now
+populated. Web: `apps/web/src/map/RunPopup.tsx` replaces `MapRenderer.tsx`'s old description-only
+stub, rendering the full `docs/PROJECT_SPEC.md` §5 field list — an `ambiguous` result shows every
+candidate, never a silently-chosen run, and `unmatched` shows the exact spec'd "No matching
+activated schedule found" message.
+
+Two real `project-td --rebuild` regressions surfaced while building this, both fixed in
+`apps/worker/src/td/projector.ts`'s `clearProjectionRows`: `berth_run_resolution`'s new FK into
+`berth_occupancy` made a rebuild fail the instant any occupancy had ever been resolved (now
+cleared first — it's pure derived state, safe to delete); `operator_berth_action`'s FK (from a
+prior session's manual-clear feature, predating this milestone) had the exact same problem, fixed
+differently since it's a permanent audit trail, not derived state — its dangling occupancy
+reference is nulled out, the audit row itself is preserved.
+
+Known limitations (deliberate scope decisions, not gaps to silently paper over):
+
+- Evidence #4 (continuity from a preceding berth's resolved run) and #7 (operator/direction
+  consistency) are not implemented — no ground-truth signal to score them against without #6.
+- Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via
+  SMART/STANOX correlation to the specific berth being resolved, not by consulting the live map
+  document a berth happens to be published on — the resolver stays fully nationwide/map-
+  independent per CLAUDE.md's "map scope must never be used as an ingestion filter."
+- Temporal plausibility (evidence #3) is a day-level check against `train_run.activated_at`, not
+  per-calling-point precision — `schedule_location`'s own times are raw CIF-style text, not
+  parsed timestamps, and `train_run.origin_departure_at` (which would give an exact anchor) is
+  never actually populated by the Milestone 8 TRUST projector (`apps/worker/src/trust/
+projector.ts` hardcodes it `null` — a pre-existing gap, not something this milestone fixes).
+- `berth.updated`/`berth.cleared` WebSocket deltas don't carry a live-refreshed `runSummary`
+  (only the snapshot on connect/reconnect and the REST `/state` poll do) — the already-declared
+  `run.resolution.updated` stub message type would be the clean way to add that, but nothing
+  emits it yet (needs the map-delta projector to also watch `berth_run_resolution`).
+- The popup shows "full schedule" inline (expandable within the same popup) rather than a
+  separate routed page, and links out to run/berth history as identifiers rather than clickable
+  pages — those pages don't exist yet on the web frontend, only as API endpoints.
+
 ## Milestone 10 — snapshots and playback
 
 - Periodic map snapshots.

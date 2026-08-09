@@ -1,9 +1,14 @@
 import type { CompiledMapBundle } from "@railway/map-schema";
 
+export interface RunSummary {
+  status: "matched" | "ambiguous" | "unmatched";
+  text: string | null;
+}
+
 export interface BerthState {
   description: string | null;
   enteredAt: string | null;
-  runSummary: unknown;
+  runSummary: RunSummary | null;
 }
 
 export interface SignalState {

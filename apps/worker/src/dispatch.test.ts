@@ -20,6 +20,8 @@ describe("parseCommand", () => {
     "project-vstp",
     "reparse-vstp-archive",
     "ingest-td",
+    "project-trust",
+    "project-resolver",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);
   });

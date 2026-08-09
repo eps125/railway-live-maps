@@ -18,6 +18,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "import-smart",
   "download-smart",
   "project-trust",
+  "project-resolver",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

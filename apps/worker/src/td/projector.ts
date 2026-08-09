@@ -81,13 +81,29 @@ async function clearProjectionRows(pool: Pool, projectionVersion: number): Promi
   const client = await pool.connect();
   try {
     await client.query("begin");
-    // Child-before-parent for the FK from berth_current_state into berth_occupancy.
+    // Child-before-parent for the FKs into berth_occupancy: berth_current_state and
+    // berth_run_resolution (Milestone 9's resolver) are pure derived state, safe to delete
+    // outright; operator_berth_action (the manual berth-clear audit trail) is a permanent record
+    // that must survive a rebuild, so its now-dangling occupancy reference is nulled out instead
+    // of the row being deleted — without handling this first, the delete below fails with a
+    // foreign key violation the instant any occupancy has ever been resolved or manually cleared,
+    // which in practice is "always" in a real deployment.
     await client.query("delete from td_projection_anomaly where projection_version = $1", [
       projectionVersion,
     ]);
     await client.query("delete from berth_current_state where projection_version = $1", [
       projectionVersion,
     ]);
+    await client.query(
+      `delete from berth_run_resolution
+       where occupancy_id in (select id from berth_occupancy where projection_version = $1)`,
+      [projectionVersion],
+    );
+    await client.query(
+      `update operator_berth_action set closed_occupancy_id = null, closed_occupancy_entered_at = null
+       where closed_occupancy_id in (select id from berth_occupancy where projection_version = $1)`,
+      [projectionVersion],
+    );
     await client.query("delete from berth_occupancy where projection_version = $1", [
       projectionVersion,
     ]);

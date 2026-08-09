@@ -225,6 +225,7 @@ services:
           node dist/index.js project-td
           node dist/index.js project-vstp
           node dist/index.js project-trust
+          node dist/index.js project-resolver
           sleep 1
         done
     depends_on:

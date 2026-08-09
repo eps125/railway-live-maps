@@ -101,6 +101,8 @@ export function buildDeltaMessages(
             berth: change.berth,
             description: change.description,
             enteredAt: change.eventAt,
+            // Same Milestone 9 scope trim as pollingDeltaSource.ts: not resolved per-delta,
+            // only via the socket's snapshot/reconnect and the REST /state poll fallback.
             runSummary: null,
           },
   }));

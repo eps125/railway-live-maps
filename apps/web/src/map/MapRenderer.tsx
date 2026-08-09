@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sortElementsForPaint, type CompiledMapBundle } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
+import { RunPopup } from "./RunPopup.js";
 
 export interface MapRendererProps {
   bundle: CompiledMapBundle;
@@ -121,6 +122,7 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
 
   const selectedBerthState = selectedElementId ? berths[selectedElementId] : undefined;
   const selectedBinding = selectedElementId ? elementIdToBinding.get(selectedElementId) : undefined;
+  const selectedElement = selectedElementId ? bundle.elementsById[selectedElementId] : undefined;
 
   return (
     <div className="map-frame">
@@ -241,7 +243,20 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
         })}
       </svg>
 
-      {selectedElementId ? (
+      {selectedElementId && selectedBinding && selectedBerthState?.description ? (
+        // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup" — only
+        // fetches/renders the full popup for an occupied, bound berth; an empty or unbound one
+        // falls through to the plain stub below instead.
+        <RunPopup
+          key={selectedElementId}
+          elementId={selectedElementId}
+          displayName={
+            selectedElement?.type === "berth" ? selectedElement.displayName : selectedElementId
+          }
+          tdArea={selectedBinding.split("|")[0] ?? ""}
+          berth={selectedBinding.split("|")[1] ?? ""}
+        />
+      ) : selectedElementId ? (
         <div role="status" className="map-inspector">
           <div className="map-inspector__title">{selectedElementId}</div>
           <dl>
@@ -250,7 +265,9 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
             <dt>Description</dt>
             <dd>{selectedBerthState?.description ?? "(empty)"}</dd>
           </dl>
-          <div className="map-inspector__note">Full run details arrive in a later milestone.</div>
+          <div className="map-inspector__note">
+            {selectedBinding ? "This berth is currently empty." : "This element has no TD binding."}
+          </div>
         </div>
       ) : null}
     </div>

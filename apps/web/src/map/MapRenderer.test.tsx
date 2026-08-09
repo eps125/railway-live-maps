@@ -1,7 +1,15 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { MapRenderer } from "./MapRenderer.js";
+
+function jsonResponse(body: unknown): Response {
+  return { ok: true, status: 200, json: async () => body } as unknown as Response;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function bundle(overrides: Partial<CompiledMapBundle> = {}): CompiledMapBundle {
   return {
@@ -93,5 +101,87 @@ describe("MapRenderer", () => {
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const texts = Array.from(container.querySelectorAll("text")).map((el) => el.textContent);
     expect(texts).toEqual(["Back", "Front"]);
+  });
+
+  it("opens the run popup when clicking a populated, bound berth (docs/PROJECT_SPEC.md §5)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "PX",
+            berth: "0512",
+            description: "2A16",
+            occupancyEnteredAt: null,
+            resolution: {
+              status: "unmatched",
+              confidence: null,
+              resolverVersion: 1,
+              candidates: [],
+            },
+            run: null,
+            schedule: null,
+            latestMovement: null,
+          }),
+        ),
+      ),
+    );
+
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+        },
+      },
+      berthBindingIndex: { "PX|0512": "berth-1" },
+    });
+
+    render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-1": { description: "2A16", enteredAt: null, runSummary: null } }}
+        signals={{}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("2A16"));
+
+    expect(await screen.findByText("No matching activated schedule found.")).toBeInTheDocument();
+  });
+
+  it("shows the plain stub, not a popup, for an unbound or empty berth", () => {
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const rect = container.querySelector("rect")!;
+    fireEvent.click(rect);
+
+    expect(screen.getByText("This element has no TD binding.")).toBeInTheDocument();
   });
 });

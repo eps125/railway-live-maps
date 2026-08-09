@@ -99,6 +99,12 @@ export function createPollingDeltaSource(pool: Pool, intervalMs: number): LiveDe
               // both together), but the column is nullable in the schema — fall back to "now"
               // rather than emit a message the protocol schema would reject.
               enteredAt: next.enteredAt ?? eventAt,
+              // Deliberately not resolved per-delta (Milestone 9 scope trim): computing it here
+              // would mean an extra berth_run_resolution/train_run_event query on every poll
+              // tick for every changed row. The socket's own snapshot (initial connect and every
+              // reconnect) and the REST /state poll fallback both carry a real runSummary via
+              // computeLiveState — this just doesn't refresh it on every incremental delta
+              // in between.
               runSummary: null,
             };
       entry.listeners.forEach((listener) => listener(message));

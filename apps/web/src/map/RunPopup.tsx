@@ -1,0 +1,267 @@
+import { useEffect, useState } from "react";
+
+interface ScoredCandidateJson {
+  trainRunId: string;
+  score: number;
+  confidence: number;
+  reasons: string[];
+}
+
+interface CurrentRunResolution {
+  status: "matched" | "ambiguous" | "unmatched";
+  confidence: number | null;
+  resolverVersion: number;
+  decidedAt: string;
+  candidates: ScoredCandidateJson[];
+}
+
+interface CurrentRunRunDetail {
+  runId: string;
+  trustTrainId: string;
+  signallingId: string | null;
+  serviceDate: string;
+  activatedAt: string | null;
+  operatorCode: string | null;
+  serviceCode: string | null;
+  lifecycleState: string;
+  scheduleLink: { matchOutcome: string; scheduleId: string | null } | null;
+}
+
+interface CurrentRunScheduleLocation {
+  seqNo: number;
+  locationType: string;
+  tiploc: string;
+  arrivalPublic: string | null;
+  departurePublic: string | null;
+  passPublic: string | null;
+  platform: string | null;
+}
+
+interface CurrentRunSchedule {
+  scheduleId: string;
+  trainUid: string;
+  stpIndicator: string;
+  source: string;
+  originTiploc: string | null;
+  destinationTiploc: string | null;
+  locations: CurrentRunScheduleLocation[];
+}
+
+interface CurrentRunMovement {
+  eventType: string | null;
+  locationStanox: string | null;
+  platform: string | null;
+  variationStatus: "EARLY" | "LATE" | "ON TIME" | "OFF ROUTE" | null;
+  timetableVariationMinutes: number | null;
+}
+
+interface CurrentRunResponse {
+  tdArea: string;
+  berth: string;
+  description: string | null;
+  occupancyEnteredAt: string | null;
+  resolution: CurrentRunResolution | null;
+  run: CurrentRunRunDetail | null;
+  schedule: CurrentRunSchedule | null;
+  latestMovement: CurrentRunMovement | null;
+}
+
+export interface RunPopupProps {
+  elementId: string;
+  displayName: string;
+  tdArea: string;
+  berth: string;
+}
+
+const STP_LABELS: Record<string, string> = {
+  C: "Cancellation",
+  O: "Overlay",
+  N: "New",
+  P: "Permanent",
+};
+
+function formatTime(publicTime: string | null): string {
+  // Raw CIF-style HHMM(H) text, exactly as supplied (docs/DATA_MODEL.md: never derive a
+  // normalized time from a missing one) — just insert a colon for readability, nothing more.
+  if (!publicTime) return "—";
+  const digits = publicTime.replace(/H$/, "");
+  if (digits.length < 4) return publicTime;
+  return `${digits.slice(0, 2)}:${digits.slice(2, 4)}${publicTime.endsWith("H") ? "½" : ""}`;
+}
+
+/**
+ * The live map's click-a-berth popup (docs/PROJECT_SPEC.md §5 "Train/run popup", Milestone 9).
+ * One fetch per selection against `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run`.
+ * Renders the full spec'd field list, and — critically — never silently picks a run when the
+ * resolver reports `ambiguous`, and never fabricates schedule/operator data when `unmatched`.
+ */
+export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProps): JSX.Element {
+  const [data, setData] = useState<CurrentRunResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setData(null);
+
+    fetch(
+      `/api/v1/td/areas/${encodeURIComponent(tdArea)}/berths/${encodeURIComponent(berth)}/current-run`,
+    )
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load run detail (${response.status})`);
+        }
+        return (await response.json()) as CurrentRunResponse;
+      })
+      .then((body) => {
+        if (!cancelled) setData(body);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load run detail");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tdArea, berth]);
+
+  return (
+    <div role="status" className="map-inspector map-inspector--run">
+      <div className="map-inspector__title">
+        {displayName || elementId}
+        <span className="map-inspector__subtitle">
+          {" "}
+          · {tdArea} {berth}
+        </span>
+      </div>
+
+      {loading ? <p>Loading…</p> : null}
+      {error ? <p className="app-error">{error}</p> : null}
+
+      {!loading && !error && data ? (
+        <>
+          <dl>
+            <dt>Description</dt>
+            <dd>{data.description ?? "(empty)"}</dd>
+            <dt>Entered</dt>
+            <dd>{data.occupancyEnteredAt ?? "—"}</dd>
+          </dl>
+
+          {data.resolution?.status === "matched" && data.run ? (
+            <>
+              <dl>
+                <dt>Match status</dt>
+                <dd>
+                  Matched
+                  {data.resolution.confidence !== null
+                    ? ` (${Math.round(data.resolution.confidence * 100)}% confidence)`
+                    : ""}
+                </dd>
+                <dt>TRUST train ID</dt>
+                <dd>{data.run.trustTrainId}</dd>
+                <dt>Activated</dt>
+                <dd>{data.run.activatedAt ?? "—"}</dd>
+                <dt>Operator</dt>
+                <dd>{data.run.operatorCode ?? "—"}</dd>
+                <dt>Service code</dt>
+                <dd>{data.run.serviceCode ?? "—"}</dd>
+                <dt>Lifecycle</dt>
+                <dd>{data.run.lifecycleState}</dd>
+              </dl>
+
+              {data.schedule ? (
+                <dl>
+                  <dt>Schedule UID</dt>
+                  <dd>{data.schedule.trainUid}</dd>
+                  <dt>Schedule type</dt>
+                  <dd>
+                    {STP_LABELS[data.schedule.stpIndicator] ?? data.schedule.stpIndicator} (
+                    {data.schedule.source})
+                  </dd>
+                  <dt>Origin</dt>
+                  <dd>{data.schedule.originTiploc ?? "—"}</dd>
+                  <dt>Destination</dt>
+                  <dd>{data.schedule.destinationTiploc ?? "—"}</dd>
+                </dl>
+              ) : (
+                <p className="map-inspector__note">
+                  Run matched, but its activation has no linked schedule.
+                </p>
+              )}
+
+              {data.schedule && data.schedule.locations.length > 0 ? (
+                <details className="map-inspector__schedule">
+                  <summary>Full schedule ({data.schedule.locations.length} calling points)</summary>
+                  <table>
+                    <tbody>
+                      {data.schedule.locations.map((loc) => (
+                        <tr key={loc.seqNo}>
+                          <td>{loc.tiploc}</td>
+                          <td>{loc.platform ?? ""}</td>
+                          <td>
+                            {formatTime(loc.arrivalPublic)} → {formatTime(loc.departurePublic)}
+                            {loc.locationType === "pass"
+                              ? `pass ${formatTime(loc.passPublic)}`
+                              : ""}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              ) : null}
+
+              {data.latestMovement ? (
+                <dl>
+                  <dt>Latest report</dt>
+                  <dd>
+                    {data.latestMovement.eventType ?? "—"}
+                    {data.latestMovement.platform
+                      ? ` (platform ${data.latestMovement.platform})`
+                      : ""}
+                  </dd>
+                  <dt>Variation</dt>
+                  <dd>
+                    {data.latestMovement.variationStatus
+                      ? `${data.latestMovement.variationStatus}${
+                          data.latestMovement.timetableVariationMinutes !== null
+                            ? ` (${data.latestMovement.timetableVariationMinutes} min)`
+                            : ""
+                        }`
+                      : "—"}
+                  </dd>
+                </dl>
+              ) : null}
+            </>
+          ) : null}
+
+          {data.resolution?.status === "ambiguous" ? (
+            <>
+              <p className="map-inspector__note">
+                Ambiguous — {data.resolution.candidates.length} plausible candidates, none clearly
+                strongest:
+              </p>
+              <ul className="map-inspector__candidates">
+                {data.resolution.candidates.map((candidate) => (
+                  <li key={candidate.trainRunId}>
+                    {candidate.trainRunId} — {Math.round(candidate.confidence * 100)}%
+                    {candidate.reasons.length > 0 ? ` (${candidate.reasons.join(", ")})` : ""}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+
+          {!data.resolution || data.resolution.status === "unmatched" ? (
+            <p className="map-inspector__note">No matching activated schedule found.</p>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}

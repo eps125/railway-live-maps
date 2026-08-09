@@ -99,6 +99,7 @@ describe("map routes", () => {
               td_area: "PX",
               berth_code: "0512",
               description: "2A16",
+              occupancy_id: null,
               occupancy_entered_at: new Date("2026-08-04T12:00:00Z"),
               source_ingestion_sequence: "42",
             },

@@ -5,12 +5,22 @@ import { z } from "zod";
  * an unexpected version rather than silently misreading deltas. */
 export const LIVE_PROTOCOL_VERSION = 1;
 
+/** Milestone 9: matches apps/api/src/lib/liveState.ts's `RunSummary` exactly — `text` is only
+ * ever set when `status === "matched"` and a real TRUST movement report supplies it, never
+ * fabricated (docs/PROJECT_SPEC.md §5). */
+const RunSummarySchema = z
+  .object({
+    status: z.enum(["matched", "ambiguous", "unmatched"]),
+    text: z.string().nullable(),
+  })
+  .nullable();
+
 /** A berth's state within a full snapshot — vacant berths are represented (nulls), unlike
  * `berth.updated` deltas which are only ever emitted for an occupied berth. */
 const SnapshotBerthStateSchema = z.object({
   description: z.string().nullable(),
   enteredAt: z.string().nullable(),
-  runSummary: z.null(),
+  runSummary: RunSummarySchema,
 });
 
 const SignalStateSchema = z.object({
@@ -53,7 +63,10 @@ export const BerthUpdatedMessageSchema = z.object({
   berth: z.string(),
   description: z.string(),
   enteredAt: z.string(),
-  runSummary: z.null(),
+  // Not resolved per-delta in this pass (see pollingDeltaSource.ts/deltaBuilder.ts's matching
+  // comment) — every producer sends `null` here today, but the wire shape already accepts a
+  // real RunSummary for when that changes.
+  runSummary: RunSummarySchema,
 });
 export type BerthUpdatedMessage = z.infer<typeof BerthUpdatedMessageSchema>;
 
@@ -95,14 +108,17 @@ export const ResyncRequiredMessageSchema = z.object({
 });
 export type ResyncRequiredMessage = z.infer<typeof ResyncRequiredMessageSchema>;
 
-/** Stub only — not emitted by anything until Milestone 9's resolver exists. Declared now so
- * the wire-format union is forward-compatible and clients can already ignore it safely. */
+/** Stub only — Milestone 9's resolver now exists and populates `runSummary` on
+ * snapshots/`berth.updated`, but nothing emits this dedicated per-resolution-change message yet
+ * (that needs the map-delta projector to also watch `berth_run_resolution`, not just
+ * `td_berth_event` — a real follow-up, not done in this pass). Declared now so the wire-format
+ * union is forward-compatible and clients can already ignore it safely. */
 export const RunResolutionUpdatedMessageSchema = z.object({
   type: z.literal("run.resolution.updated"),
   sequence: z.number().int().nonnegative(),
   eventAt: z.string(),
   elementId: z.string(),
-  runSummary: z.unknown(),
+  runSummary: RunSummarySchema,
 });
 export type RunResolutionUpdatedMessage = z.infer<typeof RunResolutionUpdatedMessageSchema>;
 

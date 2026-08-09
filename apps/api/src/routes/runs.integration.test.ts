@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
+import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { registerRunRoutes } from "./runs.js";
 
 function requireEnv(name: string): string {
@@ -64,8 +65,17 @@ async function insertSchedule(trainUid: string): Promise<{ scheduleId: string }>
 describe("run routes (integration)", () => {
   const createdRunIds: string[] = [];
   const createdScheduleIds: string[] = [];
+  const createdOccupancyIds: string[] = [];
 
   afterAll(async () => {
+    if (createdOccupancyIds.length > 0) {
+      await pool.query("delete from berth_run_resolution where occupancy_id = any($1::bigint[])", [
+        createdOccupancyIds,
+      ]);
+      await pool.query("delete from berth_occupancy where id = any($1::bigint[])", [
+        createdOccupancyIds,
+      ]);
+    }
     if (createdRunIds.length > 0) {
       await pool.query("delete from run_schedule_link where train_run_id = any($1::uuid[])", [
         createdRunIds,
@@ -119,6 +129,66 @@ describe("run routes (integration)", () => {
     expect(response.json().scheduleLink).toMatchObject({
       matchOutcome: "matched",
       scheduleId,
+    });
+  });
+
+  it("GET /api/v1/runs/:runId populates resolverEvidence from the run's berth_run_resolution row (Milestone 9)", async () => {
+    const { runId } = await insertRun({});
+    createdRunIds.push(runId);
+
+    // A minimal seeded occupancy this resolution can reference (FK requires a real one).
+    const archiveResult = await pool.query<{ id: string }>(
+      `insert into raw_archive_object (object_key, bucket, content_sha256, compressed_size_bytes, source_kind)
+       values ($1, 'test-bucket', $2, 1, 'broker-frame') returning id`,
+      [`test/${randomUUID()}`, randomUUID()],
+    );
+    const frameResult = await pool.query<{ id: string }>(
+      `insert into feed_frame (feed_name, topic, received_at, body_hash, archive_object_id)
+       values ('TD', '/topic/TD_ALL_SIG_AREA', now(), $1, $2) returning id`,
+      [randomUUID(), archiveResult.rows[0]!.id],
+    );
+    const now = new Date();
+    const eventResult = await pool.query<{ id: string; normalized_event_at_utc: Date }>(
+      `insert into raw_feed_event (
+         frame_id, child_index, feed_name, event_type, message_class, td_area, raw_event_json,
+         normalized_event_at_utc, received_at_utc, semantic_hash, parse_status, parse_version
+       ) values ($1, 0, 'TD', 'CC', 'C', 'ZZ', '{}', $2, $2, $3, 'parsed', 1)
+       returning id, normalized_event_at_utc`,
+      [frameResult.rows[0]!.id, now, randomUUID()],
+    );
+    const occupancyResult = await pool.query<{ id: string; entered_at: Date }>(
+      `insert into berth_occupancy (
+         projection_version, td_area, berth_code, description, entered_at,
+         entry_event_id, entry_event_normalized_at_utc, entry_reason
+       ) values ($1, 'ZZ', '0001', '2A16', $2, $3, $4, 'cc_interpose')
+       returning id, entered_at`,
+      [
+        TD_PROJECTION_VERSION,
+        now,
+        eventResult.rows[0]!.id,
+        eventResult.rows[0]!.normalized_event_at_utc,
+      ],
+    );
+    const occupancy = occupancyResult.rows[0]!;
+    createdOccupancyIds.push(occupancy.id);
+
+    await pool.query(
+      `insert into berth_run_resolution (
+         occupancy_id, occupancy_entered_at, status, selected_train_run_id, confidence,
+         resolver_version, candidates
+       ) values ($1, $2, 'matched', $3, 0.75, 1, '[{"trainRunId":"x","score":75,"reasons":[]}]')`,
+      [occupancy.id, occupancy.entered_at, runId],
+    );
+
+    const app = Fastify();
+    await registerRunRoutes(app, { pool });
+
+    const response = await app.inject({ method: "GET", url: `/api/v1/runs/${runId}` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().resolverEvidence).toMatchObject({
+      status: "matched",
+      confidence: 0.75,
+      resolverVersion: 1,
     });
   });
 

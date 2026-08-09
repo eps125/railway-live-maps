@@ -30,7 +30,7 @@ Response outline:
     "berth-element-id": {
       "description": "1S97",
       "enteredAt": "2026-08-04T12:15:28Z",
-      "runSummary": null
+      "runSummary": { "status": "matched", "text": "approximately 1 late" }
     }
   },
   "signals": {
@@ -38,6 +38,12 @@ Response outline:
   }
 }
 ```
+
+`runSummary` (implemented Milestone 9) is `null` until the occupancy's berth-run resolution
+exists. `status` is `matched`/`ambiguous`/`unmatched` (`GET
+/api/v1/td/areas/{tdArea}/berths/{berth}/current-run` has the full detail); `text` is a short
+Vail-like running-indication string built only from the matched run's latest real TRUST movement
+report, `null` otherwise — never fabricated or predicted.
 
 ### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
 
@@ -51,11 +57,13 @@ Occupancy intervals with resolution summary and playback link data.
 
 Occurrences across all retained TD areas.
 
-### `GET /api/v1/runs/{runId}` (implemented Milestone 8)
+### `GET /api/v1/runs/{runId}` (implemented Milestone 8; `resolverEvidence` implemented Milestone 9)
 
-Run identity, activation, latest status, resolver evidence and links. `resolverEvidence` is
-always `null` until Milestone 9 (the berth-run resolver) lands — present now so the response
-shape doesn't change later. 404 with `error.code: "RUN_NOT_FOUND"` for an unknown `runId`.
+Run identity, activation, latest status, resolver evidence and links. `resolverEvidence` is the
+most recent `berth_run_resolution` row that selected this run (a run occupies several berths
+over its journey, each resolved independently — this is "why the resolver most recently linked a
+berth to this run," not one fixed fact) — `null` when no occupancy has ever resolved to this run.
+404 with `error.code: "RUN_NOT_FOUND"` for an unknown `runId`.
 
 ```json
 {
@@ -78,7 +86,23 @@ shape doesn't change later. 404 with `error.code: "RUN_NOT_FOUND"` for an unknow
     "scheduleId": "42",
     "resolvedAt": "2026-08-10T10:00:00.000Z"
   },
-  "resolverEvidence": null
+  "resolverEvidence": {
+    "status": "matched",
+    "confidence": 0.79,
+    "resolverVersion": 1,
+    "decidedAt": "2026-08-10T10:15:05.000Z",
+    "candidates": [
+      {
+        "trainRunId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "score": 75,
+        "confidence": 0.79,
+        "reasons": [
+          "activation linked to a matched schedule",
+          "occupancy time falls within the schedule's plausible window"
+        ]
+      }
+    ]
+  }
 }
 ```
 
@@ -101,6 +125,66 @@ List every observed TD area with first/last event times, C-Class/S-Class counts,
 ### `GET /api/v1/td/areas/{area}/berths?observedFrom=&observedTo=&after=&limit=`
 
 List observed berth identifiers and basic activity statistics for map-authoring and diagnostics.
+
+### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (implemented Milestone 9)
+
+The live map's click-a-berth popup, one round trip (`docs/PROJECT_SPEC.md` §5 "Train/run
+popup"). 404 with `error.code: "BERTH_NOT_OCCUPIED"` when the berth has no current occupancy —
+matches "click a **populated** berth." `resolution`/`run`/`schedule`/`latestMovement` are all
+`null` until the resolver has processed the occupancy, or stay partially `null` per the match
+outcome (`run`/`schedule`/`latestMovement` are only ever populated when `resolution.status ===
+"matched"` — an `ambiguous` result surfaces its full `candidates` list instead of a chosen run,
+never a silent pick).
+
+```json
+{
+  "tdArea": "PX",
+  "berth": "0512",
+  "description": "2A16",
+  "occupancyEnteredAt": "2026-08-10T10:14:58.000Z",
+  "resolution": {
+    "status": "matched",
+    "confidence": 0.79,
+    "resolverVersion": 1,
+    "decidedAt": "2026-08-10T10:15:05.000Z",
+    "candidates": [
+      {
+        "trainRunId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "score": 75,
+        "confidence": 0.79,
+        "reasons": ["..."]
+      }
+    ]
+  },
+  "run": {
+    "runId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "trustTrainId": "2A1612AA26",
+    "signallingId": "2A16",
+    "serviceDate": "2026-08-10",
+    "activatedAt": "2026-08-10T10:00:00.000Z",
+    "operatorCode": "NT",
+    "serviceCode": "22222000",
+    "lifecycleState": "activated",
+    "scheduleLink": { "matchOutcome": "matched", "scheduleId": "42" }
+  },
+  "schedule": {
+    "scheduleId": "42",
+    "trainUid": "U12345",
+    "stpIndicator": "P",
+    "source": "SCHEDULE",
+    "originTiploc": "PRST",
+    "destinationTiploc": "LANCSTR",
+    "locations": [{ "seqNo": 1, "locationType": "origin", "tiploc": "PRST", "...": "..." }]
+  },
+  "latestMovement": {
+    "eventType": "DEPARTURE",
+    "locationStanox": "11224",
+    "platform": "4",
+    "variationStatus": "LATE",
+    "timetableVariationMinutes": 3
+  }
+}
+```
 
 ### `GET /api/v1/td/areas/{area}/s-class/events?from=&to=&after=&limit=`
 
@@ -240,10 +324,17 @@ Then ordered deltas:
 }
 ```
 
+`berth.updated`'s `runSummary` is always `null` (Milestone 9 scope decision — resolving it per
+delta would mean an extra query on every changed row on the hot delta path). The snapshot sent on
+connect/reconnect and the REST `/state` poll fallback both carry a real `runSummary` via
+`computeLiveState`; deltas just don't refresh it in between. `run.resolution.updated` is declared
+in the wire-format union for forward-compatibility but nothing emits it yet — that needs the
+map-delta projector to also watch `berth_run_resolution`, not just `td_berth_event`.
+
 Other messages:
 
 - `berth.cleared`
-- `run.resolution.updated`
+- `run.resolution.updated` (declared, not yet emitted — see above)
 - `quality.updated`
 - future `signal.updated`
 - `heartbeat`

@@ -278,11 +278,37 @@ skipped from `train_run_event` — nationwide retention is unaffected (the raw m
 `raw_feed_event` regardless), but there's no later-arriving-activation backfill/retry
 mechanism in this MVP pass.
 
+## Milestone 9 — berth-to-run resolver and popup: complete (2026-08-09)
+
+See `docs/IMPLEMENTATION_PLAN.md`'s M9 "Status: implemented" note for the full file-by-file
+summary and known-limitations list. Highlights: migrations `0018_berth_run_resolution.sql` and
+`0019_berth_occupancy_resolved_run_uuid.sql` (a pre-existing Milestone 4 bug found and fixed
+along the way — `resolved_run_id` was `bigint`, `train_run.id` is `uuid`, never actually
+compatible until now); pure scoring in `packages/domain/src/resolver/resolveBerthRun.ts`
+(matched/ambiguous/unmatched, an exact top-score tie is always `ambiguous` — CLAUDE.md rule 5);
+checkpointed `project-resolver` projector with a bounded open-occupancy retry pass; `runSummary`
+now real on `/state`/snapshot; new `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run`;
+`resolverEvidence` now populated on `GET /api/v1/runs/{runId}`; `RunPopup.tsx` replaces the old
+description-only stub. 245 unit tests + 120 integration tests (32 files) pass across the whole
+workspace; full typecheck/lint/format clean.
+
+Also fixed along the way, both real `project-td --rebuild` regressions the new
+`berth_run_resolution` FK exposed by finally exercising a code path nothing had stressed before:
+`clearProjectionRows` now clears `berth_run_resolution` first (pure derived state, safe to
+delete outright), and separately nulls out (not deletes — it's a permanent audit trail, not
+derived state) `operator_berth_action.closed_occupancy_id` for any occupancy being rebuilt — that
+second one was a latent bug from the manual-clear feature (a prior session, pre-M9), not
+something M9 itself introduced. Nothing changed for `apps/worker/src/schedule/
+scheduleImporter.ts`'s daily full-file swap, but it has the same class of latent bug
+(`train_run.schedule_id`/`run_schedule_link.schedule_id` both `references schedule (id)` with no
+`on delete` clause, migration 0015) — flagged, not fixed in this pass, see the spawned follow-up
+task.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):
-**M6 → M11 → M12 → M7 → M8 → M9 → M10 → M13**. M6, M11, M12, M7 and M8 are done (above); next
-up: **Milestone 9** (berth-to-run resolver and popup).
+**M6 → M11 → M12 → M7 → M8 → M9 → M10 → M13**. Everything through M9 is done (above); next up:
+**Milestone 10** (snapshots and playback).
 
 Still open regardless of order: the actual Preston/Carlisle TD `area_id`s used in
 `packages/map-schema/fixtures/lancaster-minimal.json` (`PX`/`CL`) are owner-asserted, not

@@ -29,7 +29,7 @@ interface RunScheduleLinkRow {
   resolved_at: Date;
 }
 
-interface LocationRow {
+export interface LocationRow {
   seq_no: number;
   location_type: string;
   tiploc: string;
@@ -47,7 +47,7 @@ interface LocationRow {
   day_offset: number;
 }
 
-function locationToJson(row: LocationRow) {
+export function locationToJson(row: LocationRow) {
   return {
     seqNo: row.seq_no,
     locationType: row.location_type,
@@ -98,6 +98,25 @@ export async function registerRunRoutes(app: FastifyInstance, deps: RunRoutesDep
     );
     const link = linkResult.rows[0];
 
+    // Milestone 9: the most recent berth_run_resolution row that actually selected this run —
+    // a run can occupy several berths over its journey, each resolved independently, so this is
+    // "why the resolver most recently linked a berth to this run," not a single fixed fact.
+    const resolutionResult = await pool.query<{
+      status: string;
+      confidence: string | null;
+      resolver_version: number;
+      decided_at: Date;
+      candidates: unknown;
+    }>(
+      `select status, confidence, resolver_version, decided_at, candidates
+       from berth_run_resolution
+       where selected_train_run_id = $1
+       order by decided_at desc
+       limit 1`,
+      [runId],
+    );
+    const resolution = resolutionResult.rows[0];
+
     return {
       runId: run.id,
       trustTrainId: run.trust_train_id,
@@ -120,7 +139,15 @@ export async function registerRunRoutes(app: FastifyInstance, deps: RunRoutesDep
             resolvedAt: link.resolved_at.toISOString(),
           }
         : null,
-      resolverEvidence: null,
+      resolverEvidence: resolution
+        ? {
+            status: resolution.status,
+            confidence: resolution.confidence !== null ? Number(resolution.confidence) : null,
+            resolverVersion: resolution.resolver_version,
+            decidedAt: resolution.decided_at.toISOString(),
+            candidates: resolution.candidates,
+          }
+        : null,
     };
   });
 

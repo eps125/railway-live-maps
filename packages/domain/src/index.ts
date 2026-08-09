@@ -73,3 +73,10 @@ export {
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,
 } from "./trust/trustNormalizationVersion.js";
+export {
+  resolveBerthRun,
+  RESOLVER_VERSION,
+  type RunCandidate,
+  type ScoredCandidate,
+  type ResolveBerthRunResult,
+} from "./resolver/resolveBerthRun.js";

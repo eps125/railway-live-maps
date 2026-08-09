@@ -22,6 +22,7 @@ import { runImportSmartCommand } from "./commands/importSmart.js";
 import { runDownloadSmart } from "./commands/downloadSmart.js";
 import { runIngestTrust } from "./commands/ingestTrust.js";
 import { runProjectTrustCommand } from "./commands/projectTrust.js";
+import { runProjectResolverCommand } from "./commands/projectResolver.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -69,6 +70,8 @@ async function main(): Promise<void> {
       return runDownloadSmart(config);
     case "project-trust":
       return runProjectTrustCommand(config, argvRest);
+    case "project-resolver":
+      return runProjectResolverCommand(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
       return;

@@ -94,6 +94,48 @@ describe("applyCA", () => {
       exitReason: "stepped_out",
     });
   });
+
+  it('"----" (signaller manual clear, not a real headcode): closes from/to but never opens a new occupancy carrying it', () => {
+    const result = applyCA({
+      fromBerth: "0123",
+      toBerth: "0124",
+      description: "----",
+      fromOpen: open("2A16", "occ-from"),
+      toOpen: open("9Z99", "occ-to"),
+    });
+
+    expect(result.effects).toEqual([
+      { kind: "closeOccupancy", berth: "from", occupancyId: "occ-from", exitReason: "stepped_out" },
+      {
+        kind: "closeOccupancy",
+        berth: "to",
+        occupancyId: "occ-to",
+        exitReason: "overwritten_by_step",
+      },
+    ]);
+  });
+
+  it('"----" with an empty/mismatched from: no mismatch anomaly (a placeholder can never meaningfully mismatch a real headcode)', () => {
+    const emptyFrom = applyCA({
+      fromBerth: "0123",
+      toBerth: "0124",
+      description: "----",
+      fromOpen: null,
+      toOpen: null,
+    });
+    expect(emptyFrom.effects).toEqual([]);
+
+    const mismatchedFrom = applyCA({
+      fromBerth: "0123",
+      toBerth: "0124",
+      description: "----",
+      fromOpen: open("2A16", "occ-from"),
+      toOpen: null,
+    });
+    expect(mismatchedFrom.effects).toEqual([
+      { kind: "closeOccupancy", berth: "from", occupancyId: "occ-from", exitReason: "stepped_out" },
+    ]);
+  });
 });
 
 describe("applyCB", () => {
@@ -117,6 +159,23 @@ describe("applyCB", () => {
       },
     ]);
   });
+
+  it('"----" (signaller manual clear): still closes a real open occupancy, no mismatch anomaly', () => {
+    const result = applyCB({
+      fromBerth: "0124",
+      description: "----",
+      fromOpen: open("2A16", "occ-1"),
+    });
+
+    expect(result.effects).toEqual([
+      { kind: "closeOccupancy", berth: "from", occupancyId: "occ-1", exitReason: "cancelled" },
+    ]);
+  });
+
+  it('"----" with nothing open: no anomaly, no effects at all', () => {
+    const result = applyCB({ fromBerth: "0124", description: "----", fromOpen: null });
+    expect(result.effects).toEqual([]);
+  });
 });
 
 describe("applyCC", () => {
@@ -139,6 +198,24 @@ describe("applyCC", () => {
         exitReason: "overwritten_by_interpose",
       },
       { kind: "openOccupancy", berth: "to", description: "2A17", entryReason: "cc_interpose" },
+    ]);
+  });
+
+  it('"----" (signaller manual clear) into an empty berth: no effects at all — nothing to close, and never opens a fake occupancy', () => {
+    const result = applyCC({ toBerth: "0125", description: "----", toOpen: null });
+    expect(result.effects).toEqual([]);
+  });
+
+  it('"----" over a real occupant: closes it, but does not open a new "----" occupancy in its place', () => {
+    const result = applyCC({ toBerth: "0125", description: "----", toOpen: open("9Z99", "occ-x") });
+
+    expect(result.effects).toEqual([
+      {
+        kind: "closeOccupancy",
+        berth: "to",
+        occupancyId: "occ-x",
+        exitReason: "overwritten_by_interpose",
+      },
     ]);
   });
 });

@@ -25,6 +25,17 @@ export interface BerthReducerResult {
   effects: BerthEffect[];
 }
 
+/**
+ * Four literal hyphens is a real-world Train Describer convention, not a genuine headcode: a
+ * signaller manually wiping a berth's display types this to force it blank, and the resulting
+ * CA/CB/CC message broadcasts exactly that (confirmed against real production data, 2026-08-10 —
+ * see railforums.co.uk/threads/how-do-train-desciber-berths-work.224961/). Treated as "no train",
+ * not as a real 4-character description: never opens a new occupancy carrying it, and never
+ * compared against a from-berth's real description (comparing a placeholder against a real
+ * headcode isn't a meaningful mismatch — see checkFromMismatch's own call sites below).
+ */
+const NULL_DESCRIPTION = "----";
+
 export interface ApplyCAInput {
   fromBerth: string;
   toBerth: string;
@@ -77,12 +88,18 @@ function checkFromMismatch(
   return null;
 }
 
-/** CA berth step: close `from`, close-and-overwrite `to`, open `to` with `descr`. */
+/** CA berth step: close `from`, close-and-overwrite `to`, open `to` with `descr` — unless
+ * `descr` is the null-marker, in which case `to` is left cleared rather than opened with a fake
+ * "----" occupancy (see NULL_DESCRIPTION). The close side is unaffected: message type alone
+ * (not the description's content) is what determines whether something physically left a berth. */
 export function applyCA(input: ApplyCAInput): BerthReducerResult {
   const effects: BerthEffect[] = [];
+  const isNullDescription = input.description === NULL_DESCRIPTION;
 
-  const mismatch = checkFromMismatch("CA", input.fromBerth, input.description, input.fromOpen);
-  if (mismatch) effects.push(mismatch);
+  if (!isNullDescription) {
+    const mismatch = checkFromMismatch("CA", input.fromBerth, input.description, input.fromOpen);
+    if (mismatch) effects.push(mismatch);
+  }
   if (input.fromOpen) {
     effects.push({
       kind: "closeOccupancy",
@@ -100,22 +117,27 @@ export function applyCA(input: ApplyCAInput): BerthReducerResult {
       exitReason: "overwritten_by_step",
     });
   }
-  effects.push({
-    kind: "openOccupancy",
-    berth: "to",
-    description: input.description,
-    entryReason: "ca_step",
-  });
+  if (!isNullDescription) {
+    effects.push({
+      kind: "openOccupancy",
+      berth: "to",
+      description: input.description,
+      entryReason: "ca_step",
+    });
+  }
 
   return { effects };
 }
 
-/** CB berth cancel: close `from`, record a mismatch if empty/different. No `to` involved. */
+/** CB berth cancel: close `from`, record a mismatch if empty/different (skipped when `descr` is
+ * the null-marker — see NULL_DESCRIPTION). No `to` involved. */
 export function applyCB(input: ApplyCBInput): BerthReducerResult {
   const effects: BerthEffect[] = [];
 
-  const mismatch = checkFromMismatch("CB", input.fromBerth, input.description, input.fromOpen);
-  if (mismatch) effects.push(mismatch);
+  if (input.description !== NULL_DESCRIPTION) {
+    const mismatch = checkFromMismatch("CB", input.fromBerth, input.description, input.fromOpen);
+    if (mismatch) effects.push(mismatch);
+  }
   if (input.fromOpen) {
     effects.push({
       kind: "closeOccupancy",
@@ -128,7 +150,11 @@ export function applyCB(input: ApplyCBInput): BerthReducerResult {
   return { effects };
 }
 
-/** CC berth interpose: overwrite/open `to` with `descr`. No `from` involved, no mismatch check. */
+/** CC berth interpose: overwrite/open `to` with `descr`. No `from` involved, no mismatch check.
+ * When `descr` is the null-marker (see NULL_DESCRIPTION), any existing occupancy is still
+ * closed — a signaller-issued interpose authoritatively says "this berth's state is now
+ * whatever I'm broadcasting", so a prior real occupant is gone regardless — but no new
+ * occupancy is opened; the berth is simply left cleared. */
 export function applyCC(input: ApplyCCInput): BerthReducerResult {
   const effects: BerthEffect[] = [];
 
@@ -140,12 +166,14 @@ export function applyCC(input: ApplyCCInput): BerthReducerResult {
       exitReason: "overwritten_by_interpose",
     });
   }
-  effects.push({
-    kind: "openOccupancy",
-    berth: "to",
-    description: input.description,
-    entryReason: "cc_interpose",
-  });
+  if (input.description !== NULL_DESCRIPTION) {
+    effects.push({
+      kind: "openOccupancy",
+      berth: "to",
+      description: input.description,
+      entryReason: "cc_interpose",
+    });
+  }
 
   return { effects };
 }

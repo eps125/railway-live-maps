@@ -177,22 +177,30 @@ Indexes:
 
 ### C-Class projection behavior
 
+`descr` of `"----"` (four literal hyphens) is a real Train Describer convention for a
+signaller manually blanking a berth's display, not a genuine headcode (confirmed against real
+production data, 2026-08-10). It is treated as "no train" throughout: never opens a new
+occupancy carrying it, and never compared against a `from`-berth's real description (a
+placeholder can never meaningfully mismatch a real headcode). Closing behavior is unaffected —
+message type alone determines whether something physically left a berth.
+
 `CA(from,to,descr)`:
 
 1. Close any open occupancy in `from` at event time.
 2. Close any open occupancy in `to` at event time with reason `overwritten_by_step`.
-3. Open `to` with `descr`.
-4. Record a mismatch anomaly if `from` was empty or contained another description.
+3. Open `to` with `descr` — unless `descr` is `"----"`, in which case `to` is left cleared.
+4. Record a mismatch anomaly if `from` was empty or contained another description — skipped
+   entirely when `descr` is `"----"`.
 
 `CB(from,descr)`:
 
 1. Close any open occupancy in `from`.
-2. Record a mismatch if empty or different.
+2. Record a mismatch if empty or different — skipped entirely when `descr` is `"----"`.
 
 `CC(to,descr)`:
 
 1. Close any open occupancy in `to` with reason `overwritten_by_interpose`.
-2. Open `to` with `descr`.
+2. Open `to` with `descr` — unless `descr` is `"----"`, in which case `to` is left cleared.
 
 `CT` updates area health only.
 

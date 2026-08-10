@@ -225,9 +225,19 @@ async function fetchBatchCandidateData(
   ];
   const scheduleStanoxes = new Map<string, Set<string>>();
   if (scheduleIds.length > 0) {
+    // schedule_location.stanox is never populated for VSTP-sourced schedules (confirmed
+    // 2026-08-10: apps/worker/src/vstp/projector.ts's real-message extraction only carries
+    // tiploc, never stanox — the wire format itself doesn't include one) — VSTP is currently
+    // the *only* source with any schedule data at all, so without this fallback SMART evidence
+    // is architecturally unreachable regardless of how correct smart_berth_step is. Bridges via
+    // CORPUS's tiploc->stanox mapping (location_reference) when the schedule's own stanox is
+    // absent; prefers the schedule's own value when present (e.g. once real CIF SCHEDULE data,
+    // which does carry stanox directly, is imported).
     const locations = await client.query<{ schedule_id: string; stanox: string }>(
-      `select schedule_id, stanox from schedule_location
-       where schedule_id = any($1::bigint[]) and stanox is not null`,
+      `select sl.schedule_id, coalesce(sl.stanox, lr.stanox) as stanox
+       from schedule_location sl
+       left join location_reference lr on lr.tiploc = sl.tiploc
+       where sl.schedule_id = any($1::bigint[]) and coalesce(sl.stanox, lr.stanox) is not null`,
       [scheduleIds],
     );
     for (const row of locations.rows) {

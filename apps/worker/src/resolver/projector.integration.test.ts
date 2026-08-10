@@ -19,6 +19,9 @@ function uniqueSignallingId(): string {
   // 4-char, uppercase letters+digits — same shape as a real headcode.
   return randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase();
 }
+function uniqueTiploc(): string {
+  return `T${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+}
 
 async function seedOccupancy(
   tdArea: string,
@@ -113,6 +116,24 @@ async function seedScheduleLocation(scheduleId: string, stanox: string): Promise
   );
 }
 
+/** No `stanox` — this is the real shape of every VSTP-sourced schedule_location row (VSTP's
+ * wire format only ever carries tiploc, confirmed 2026-08-10), which is what
+ * seedLocationReference()'s CORPUS-derived bridge exists to compensate for. */
+async function seedScheduleLocationTiplocOnly(scheduleId: string, tiploc: string): Promise<void> {
+  await pool.query(
+    `insert into schedule_location (schedule_id, seq_no, location_type, tiploc, stanox)
+     values ($1, 1, 'intermediate', $2, null)`,
+    [scheduleId, tiploc],
+  );
+}
+
+async function seedLocationReference(tiploc: string, stanox: string): Promise<void> {
+  await pool.query(
+    `insert into location_reference (tiploc, stanox, raw_source_json) values ($1, $2, '{}')`,
+    [tiploc, stanox],
+  );
+}
+
 async function seedSmartBerthStep(tdArea: string, toBerth: string, stanox: string): Promise<void> {
   await pool.query(
     `insert into smart_berth_step (td_area, to_berth, stanox, raw_source_json)
@@ -170,6 +191,25 @@ describe("runProjectResolver (integration)", () => {
       resolved_run_id: runId,
       resolution_status: "matched",
     });
+  });
+
+  it("bridges SMART/STANOX evidence via CORPUS's tiploc when the schedule's own location has no stanox (the real shape of every VSTP-sourced schedule)", async () => {
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const tiploc = uniqueTiploc();
+    const occupancyId = await seedOccupancy(area, "0006", signallingId, ENTERED_AT, null);
+
+    const scheduleId = await seedSchedule();
+    await seedScheduleLocationTiplocOnly(scheduleId, tiploc);
+    await seedLocationReference(tiploc, "67890");
+    await seedSmartBerthStep(area, "0006", "67890");
+    const runId = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleId);
+    await seedRunScheduleLink(runId, "matched", scheduleId);
+
+    await runProjectResolver(pool);
+
+    const row = await resolution(occupancyId);
+    expect(row).toMatchObject({ status: "matched", selected_train_run_id: runId });
   });
 
   it("two equally-plausible candidates resolve as ambiguous, never silently picked", async () => {

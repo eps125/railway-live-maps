@@ -55,6 +55,87 @@ function readable(body: Buffer): Readable {
   return Readable.from(body);
 }
 
+interface LocationRow {
+  tiploc: string;
+  stanox: string | null;
+  crs: string | null;
+  nlc: string | null;
+  name: string | null;
+  rawSourceJson: unknown;
+}
+
+interface UnhandledRow {
+  seqNoInFile: number;
+  raw: unknown;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+/** Rows per multi-row INSERT — mirrors smartImporter.ts's fix for the same "one query per
+ * record" slowness (34,194 SMART records took minutes; CORPUS is smaller but the same class
+ * of problem at scale). */
+const BATCH_SIZE = 500;
+
+async function insertLocationBatch(
+  pool: Pool,
+  batch: LocationRow[],
+  sourceFileImportId: string,
+): Promise<void> {
+  const params: unknown[] = [];
+  const valuesClauses: string[] = [];
+  for (const row of batch) {
+    const base = params.length;
+    valuesClauses.push(
+      `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},'CORPUS',$${base + 6},$${base + 7})`,
+    );
+    params.push(
+      row.tiploc,
+      row.stanox,
+      row.crs,
+      row.nlc,
+      row.name,
+      sourceFileImportId,
+      JSON.stringify(row.rawSourceJson),
+    );
+  }
+
+  await pool.query(
+    `insert into location_reference (tiploc, stanox, crs, nlc, name, source, source_file_import_id, raw_source_json)
+     values ${valuesClauses.join(",")}
+     on conflict (tiploc) do update
+     set stanox = excluded.stanox, crs = excluded.crs, nlc = excluded.nlc, name = excluded.name,
+         source_file_import_id = excluded.source_file_import_id, raw_source_json = excluded.raw_source_json,
+         imported_at = now()`,
+    params,
+  );
+}
+
+async function insertUnhandledBatch(
+  pool: Pool,
+  batch: UnhandledRow[],
+  sourceFileImportId: string,
+): Promise<void> {
+  const params: unknown[] = [];
+  const valuesClauses: string[] = [];
+  for (const row of batch) {
+    const base = params.length;
+    valuesClauses.push(`($${base + 1},'corpus_missing_tiploc',$${base + 2},$${base + 3})`);
+    params.push(sourceFileImportId, row.seqNoInFile, JSON.stringify(row.raw));
+  }
+
+  await pool.query(
+    `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
+     values ${valuesClauses.join(",")}`,
+    params,
+  );
+}
+
 /** Imports a CORPUS full extract already saved at `filePath`. Idempotent: reimporting
  * byte-identical content short-circuits without touching `location_reference` again. */
 export async function runImportCorpus(
@@ -96,37 +177,35 @@ export async function runImportCorpus(
     return { sourceFileImportId: sourceFileImport.id, alreadyImported: true, upsertedRows: 0 };
   }
 
-  let upsertedRows = 0;
+  // Deduplicated by tiploc, last-write-wins — mirrors smartImporter.ts's rationale: a single
+  // multi-row INSERT can't ON CONFLICT DO UPDATE the same target row twice, so any duplicate
+  // TIPLOC lines within one file must be resolved in memory before batching.
+  const locationsByTiploc = new Map<string, LocationRow>();
+  const unhandled: UnhandledRow[] = [];
+
   try {
     for await (const record of parseCorpusFileStream(readable(body))) {
       const raw = record.raw as Record<string, unknown>;
       const tiploc = typeof raw.TIPLOC === "string" ? raw.TIPLOC.trim() : "";
       if (!tiploc) {
-        await deps.pool.query(
-          `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
-           values ($1,'corpus_missing_tiploc',$2,$3)`,
-          [sourceFileImport.id, record.seqNoInFile, JSON.stringify(record.raw)],
-        );
+        unhandled.push({ seqNoInFile: record.seqNoInFile, raw: record.raw });
         continue;
       }
-      await deps.pool.query(
-        `insert into location_reference (tiploc, stanox, crs, nlc, name, source, source_file_import_id, raw_source_json)
-         values ($1,$2,$3,$4,$5,'CORPUS',$6,$7)
-         on conflict (tiploc) do update
-         set stanox = excluded.stanox, crs = excluded.crs, nlc = excluded.nlc, name = excluded.name,
-             source_file_import_id = excluded.source_file_import_id, raw_source_json = excluded.raw_source_json,
-             imported_at = now()`,
-        [
-          tiploc,
-          typeof raw.STANOX === "string" ? raw.STANOX : null,
-          typeof raw.CRS === "string" ? raw.CRS : null,
-          typeof raw.NLC === "string" ? raw.NLC : null,
-          typeof raw.NLCDESC === "string" ? raw.NLCDESC : null,
-          sourceFileImport.id,
-          JSON.stringify(record.raw),
-        ],
-      );
-      upsertedRows += 1;
+      locationsByTiploc.set(tiploc, {
+        tiploc,
+        stanox: typeof raw.STANOX === "string" ? raw.STANOX : null,
+        crs: typeof raw.CRS === "string" ? raw.CRS : null,
+        nlc: typeof raw.NLC === "string" ? raw.NLC : null,
+        name: typeof raw.NLCDESC === "string" ? raw.NLCDESC : null,
+        rawSourceJson: record.raw,
+      });
+    }
+
+    for (const batch of chunk(unhandled, BATCH_SIZE)) {
+      await insertUnhandledBatch(deps.pool, batch, sourceFileImport.id);
+    }
+    for (const batch of chunk([...locationsByTiploc.values()], BATCH_SIZE)) {
+      await insertLocationBatch(deps.pool, batch, sourceFileImport.id);
     }
   } catch (error) {
     await deps.pool.query(
@@ -136,6 +215,7 @@ export async function runImportCorpus(
     throw error;
   }
 
+  const upsertedRows = locationsByTiploc.size;
   await deps.pool.query(
     `update source_file_import
      set status = 'completed', completed_at = now(), is_active = true, row_counts = $2

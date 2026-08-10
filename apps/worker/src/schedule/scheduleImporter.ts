@@ -1,8 +1,12 @@
 import { createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { sha256Hex, computeArchiveObjectKey, putImmutableObject } from "@railway/archive";
+import {
+  sha256HexOfStream,
+  computeArchiveObjectKey,
+  putImmutableObjectFromFile,
+} from "@railway/archive";
 import {
   mapToScheduleRow,
   type MappedSchedule,
@@ -381,13 +385,20 @@ async function upsertIntoRealTables(
 }
 
 /** Imports a SCHEDULE full extract already saved at `filePath`. Idempotent: reimporting
- * byte-identical content short-circuits without touching the real tables again. */
+ * byte-identical content short-circuits without touching the real tables again.
+ *
+ * Streams the file rather than reading it whole into memory (unlike smartImporter.ts/
+ * corpusImporter.ts, which stay small enough for readFile to be fine) — confirmed necessary
+ * 2026-08-10 against a real extract that was 3.29GB, well past Node's fs.readFile hard 2 GiB
+ * ceiling (ERR_FS_FILE_TOO_LARGE) regardless of available RAM. Checksum and archive upload each
+ * make their own pass over the already-downloaded local temp file; cheap disk I/O, not a second
+ * network round trip. */
 export async function runImportSchedule(
   deps: ImportScheduleDeps,
   filePath: string,
 ): Promise<ImportScheduleResult> {
-  const body = await readFile(filePath);
-  const checksum = sha256Hex(body);
+  const stats = await stat(filePath);
+  const checksum = await sha256HexOfStream(createReadStream(filePath));
   const receivedAt = new Date();
   const objectKey = computeArchiveObjectKey({
     namespace: "schedule",
@@ -395,11 +406,11 @@ export async function runImportSchedule(
     date: receivedAt,
   });
 
-  await putImmutableObject({
+  await putImmutableObjectFromFile({
     client: deps.archiveClient,
     bucket: deps.archiveBucket,
     key: objectKey,
-    body,
+    filePath,
     contentType: "application/x-ndjson",
   });
 
@@ -409,7 +420,7 @@ export async function runImportSchedule(
        values ($1, $2, $3, $4, 'schedule-file')
        on conflict (object_key) do update set object_key = excluded.object_key
        returning id`,
-      [objectKey, deps.archiveBucket, checksum, body.length],
+      [objectKey, deps.archiveBucket, checksum, stats.size],
     )
     .then((r) => r.rows[0]?.id);
   if (!archiveObjectId) {

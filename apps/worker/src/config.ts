@@ -38,13 +38,15 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
-  // Download endpoints are constructed from docs/REFERENCES.md's publicly documented URL
-  // patterns, not verified against the live NR file service — confirm before relying on the
-  // defaults for a real download-* run.
+  // CORPUS/SMART confirmed correct against the live NR file service (2026-08-10 — both
+  // downloaded and imported successfully). SCHEDULE originally pointed at
+  // SupportingFileAuthenticate (a 404 in production, confirmed 2026-08-10) — the real CIF full
+  // extract lives at a different endpoint, CifFileAuthenticate, and requires an additional
+  // `day=toc-full` query param that SupportingFileAuthenticate's downloads never needed.
   NR_SCHEDULE_DOWNLOAD_URL: z
     .string()
     .default(
-      "https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CIF_ALL_FULL_DAILY",
+      "https://publicdatafeeds.networkrail.co.uk/ntrod/CifFileAuthenticate?type=CIF_ALL_FULL_DAILY&day=toc-full",
     ),
   NR_CORPUS_DOWNLOAD_URL: z
     .string()

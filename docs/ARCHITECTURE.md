@@ -265,7 +265,6 @@ Key settings:
 - `NR_TRUST_TOPIC`
 - `NR_VSTP_TOPIC`
 - `CAPTURE_ALL_TD=true` as a required invariant
-- `PRESTON_MAP_TD_AREA` for Lancaster bindings only
 - `LANCASTER_MAP_SLUG`
 - `DISPLAY_TIMEZONE=Europe/London`
 - freshness thresholds

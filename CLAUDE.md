@@ -40,7 +40,7 @@ Do not repeatedly load every document when one or two are sufficient.
 
 ## Confirm before hardcoding
 
-The owner calls the Preston TD `PN`, while public reference material may use another TD area identifier. Verify the actual incoming `area_id` from captured messages before creating Lancaster bindings. This identifier affects Lancaster map bindings only; it must never limit nationwide ingestion. Signal labels may legitimately use a different prefix.
+The Preston TD area is `PX` (confirmed by the owner) — not `PN`; do not use `PN` anywhere in this project. Still verify the incoming `area_id` on captured messages matches `PX` before creating Lancaster bindings, since public reference material may disagree. This identifier affects Lancaster map bindings only; it must never limit nationwide ingestion. Signal labels may legitimately use a different prefix.
 
 ## Chosen technical direction
 

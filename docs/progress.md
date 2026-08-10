@@ -58,7 +58,7 @@ session's verification — safe to drop, not referenced by anything else.
   source timestamp is missing/unparseable/implausible (the exact plausibility threshold is
   a documented placeholder, not confirmed against real NR data — no live fixtures exist
   yet, see Milestone 0). Fixtures under `fixtures/td/*.json` use synthetic area codes (`ZZ`,
-  `ZY`), deliberately not `PN`.
+  `ZY`), deliberately not `PX` (Preston's confirmed real TD area).
 - `apps/worker/src/td/recorder.ts`: `recordFrame()` implements the exact
   archive-before-ack sequence (checksum → deterministic key → S3 PUT → archive index
   upsert → transaction → `feed_frame` upsert as the idempotency guard → parse → insert

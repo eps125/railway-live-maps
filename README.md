@@ -34,4 +34,4 @@ This pack is the authoritative planning context for building a self-hosted Briti
 
 The system must ingest and retain every TD area from the nationwide feed, plus all subscribed TRUST and VSTP events and complete timetable/reference imports. Do not filter ingestion to Preston or to areas with published maps.
 
-The project owner has described the Preston train describer as `PN`, while public references may use another TD area identifier. Capture real TD messages and confirm the incoming `area_id` before binding the Lancaster map. This is a map-binding question only; nationwide ingestion starts regardless.
+The project owner has confirmed the Preston train describer is `PX` (not `PN` — public references may use another TD area identifier). Capture real TD messages and confirm the incoming `area_id` matches before binding the Lancaster map. This is a map-binding question only; nationwide ingestion starts regardless.

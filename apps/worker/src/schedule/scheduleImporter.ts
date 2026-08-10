@@ -333,59 +333,68 @@ async function upsertIntoRealTables(
   const client = await pool.connect();
   try {
     await client.query("begin");
-    // `distinct on ... order by ..., ctid desc` guards against the same natural key appearing
-    // twice within one staged file (schedule_import_staging has no unique constraint of its
-    // own — it's a plain append-only staging table) — a single INSERT can't ON CONFLICT DO
-    // UPDATE the same target row twice. ctid reliably reflects insertion/file order here since
-    // this staging table is freshly cleared and repopulated for this one import, nothing else
-    // touches it concurrently. Last-in-file wins, same as every other duplicate-natural-key
-    // handling this project does (smartImporter.ts/corpusImporter.ts).
+    // Confirmed necessary 2026-08-10 against the real 607,930-schedule extract: the previous
+    // version re-derived which schedules this import touched via `select distinct` over
+    // schedule_location_import_staging (several million rows for a real extract) for the
+    // location delete/insert steps below. That distinct's sort spilled to disk under
+    // Postgres's default work_mem, turning what should be a bulk operation into a 20+ minute
+    // single statement. SET LOCAL is transaction-scoped — doesn't touch the server's global
+    // setting or affect any other connection (including the always-running project-vstp
+    // projector, which writes to this same schedule table concurrently).
+    await client.query("set local work_mem = '256MB'");
+
+    // Captures exactly which schedule rows this import touched (inserted or updated) straight
+    // from the upsert's own RETURNING clause — the real fix for the slowness above. The
+    // location steps join against this small (one row per schedule) temp table instead of
+    // re-deriving the same natural keys via an expensive distinct over the much larger
+    // location staging table. `distinct on ... order by ..., ctid desc` still guards against
+    // the same natural key appearing twice within one staged file (schedule_import_staging has
+    // no unique constraint of its own) — a single INSERT can't ON CONFLICT DO UPDATE the same
+    // target row twice; ctid reliably reflects insertion/file order here since this staging
+    // table is freshly cleared and repopulated for this one import, nothing else touches it
+    // concurrently. Last-in-file wins, same as every other duplicate-natural-key handling this
+    // project does (smartImporter.ts/corpusImporter.ts).
     await client.query(
-      `insert into schedule (
-         source_file_import_id, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
-         days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
-         train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
+      `create temporary table schedule_upsert_ids on commit drop as
+       with upserted as (
+         insert into schedule (
+           source_file_import_id, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
+           days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
+           train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
+         )
+         select distinct on (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source)
+           $1, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
+           days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
+           train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
+         from schedule_import_staging
+         where staging_import_id = $1
+         order by train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, ctid desc
+         on conflict (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source) do update
+         set source_file_import_id = excluded.source_file_import_id,
+             days_runs_bitmask = excluded.days_runs_bitmask,
+             signalling_id = excluded.signalling_id,
+             operator_code = excluded.operator_code,
+             train_service_code = excluded.train_service_code,
+             train_category = excluded.train_category,
+             train_status = excluded.train_status,
+             power_type = excluded.power_type,
+             origin_tiploc = excluded.origin_tiploc,
+             destination_tiploc = excluded.destination_tiploc,
+             raw_source_json = excluded.raw_source_json,
+             updated_at = now()
+         returning id, train_uid, schedule_start_date, schedule_end_date, stp_indicator, source
        )
-       select distinct on (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source)
-         $1, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
-         days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
-         train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
-       from schedule_import_staging
-       where staging_import_id = $1
-       order by train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, ctid desc
-       on conflict (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source) do update
-       set source_file_import_id = excluded.source_file_import_id,
-           days_runs_bitmask = excluded.days_runs_bitmask,
-           signalling_id = excluded.signalling_id,
-           operator_code = excluded.operator_code,
-           train_service_code = excluded.train_service_code,
-           train_category = excluded.train_category,
-           train_status = excluded.train_status,
-           power_type = excluded.power_type,
-           origin_tiploc = excluded.origin_tiploc,
-           destination_tiploc = excluded.destination_tiploc,
-           raw_source_json = excluded.raw_source_json,
-           updated_at = now()`,
+       select * from upserted`,
       [sourceFileImportId],
     );
+
     // Locations are replaced wholesale per-schedule (not globally): schedule_location has no
     // external FK pointing at individual rows — only schedule_id points the other way — so a
     // delete+reinsert scoped to just the schedules touched by this import is safe, and simpler
     // than diffing individual calling points. Schedules absent from this extract entirely keep
     // their existing locations untouched.
     await client.query(
-      `delete from schedule_location
-       where schedule_id in (
-         select s.id from schedule s
-         join (
-           select distinct train_uid, schedule_start_date, schedule_end_date, stp_indicator, source
-           from schedule_location_import_staging where staging_import_id = $1
-         ) keys
-           on keys.train_uid = s.train_uid and keys.schedule_start_date = s.schedule_start_date
-          and keys.schedule_end_date = s.schedule_end_date and keys.stp_indicator = s.stp_indicator
-          and keys.source = s.source
-       )`,
-      [sourceFileImportId],
+      `delete from schedule_location where schedule_id in (select id from schedule_upsert_ids)`,
     );
     await client.query(
       `insert into schedule_location (
@@ -393,15 +402,15 @@ async function upsertIntoRealTables(
          departure_public, departure_working, pass_public, pass_working, platform, path, line,
          activity_codes, raw_activity_text, day_offset
        )
-       select s.id, sl.seq_no, sl.location_type, sl.tiploc, sl.stanox, sl.arrival_public,
+       select u.id, sl.seq_no, sl.location_type, sl.tiploc, sl.stanox, sl.arrival_public,
          sl.arrival_working, sl.departure_public, sl.departure_working, sl.pass_public,
          sl.pass_working, sl.platform, sl.path, sl.line, sl.activity_codes, sl.raw_activity_text,
          sl.day_offset
        from schedule_location_import_staging sl
-       join schedule s
-         on s.train_uid = sl.train_uid and s.schedule_start_date = sl.schedule_start_date
-        and s.schedule_end_date = sl.schedule_end_date and s.stp_indicator = sl.stp_indicator
-        and s.source = sl.source
+       join schedule_upsert_ids u
+         on u.train_uid = sl.train_uid and u.schedule_start_date = sl.schedule_start_date
+        and u.schedule_end_date = sl.schedule_end_date and u.stp_indicator = sl.stp_indicator
+        and u.source = sl.source
        where sl.staging_import_id = $1`,
       [sourceFileImportId],
     );

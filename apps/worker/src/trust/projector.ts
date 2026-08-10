@@ -35,6 +35,10 @@ export interface ProjectTrustOptions {
   /** Clears this projection version's train_run/train_run_event/run_schedule_link rows and
    * reprocesses from ingestion_sequence 0. */
   rebuild?: boolean;
+  /** Overrides MAX_DEFERRED_LINKS_PER_RUN — exposed mainly so tests can prove the cap/fairness
+   * behavior without seeding hundreds of rows (mirrors project-resolver's own
+   * maxBatchesPerRun option, apps/worker/src/resolver/projector.ts). */
+  maxDeferredLinksPerRun?: number;
 }
 
 export interface ProjectTrustSummary {
@@ -292,7 +296,11 @@ const MAX_DEFERRED_LINKS_PER_RUN = 300;
 /** Re-attempts resolution for a bounded slice of `run_schedule_link` rows that aren't `matched`
  * yet — a later SCHEDULE/VSTP import may resolve a schedule that was missing at activation
  * time. Updates the existing row in place, never re-inserts (docs/DATA_MODEL.md §7). */
-async function resolveDeferredLinks(pool: Pool, summary: ProjectTrustSummary): Promise<void> {
+async function resolveDeferredLinks(
+  pool: Pool,
+  summary: ProjectTrustSummary,
+  maxDeferredLinksPerRun: number = MAX_DEFERRED_LINKS_PER_RUN,
+): Promise<void> {
   const outstanding = await pool.query<{
     id: string;
     train_run_id: string;
@@ -304,7 +312,8 @@ async function resolveDeferredLinks(pool: Pool, summary: ProjectTrustSummary): P
      join train_run tr on tr.id = rsl.train_run_id
      where rsl.match_outcome != 'matched'
      order by random()
-     limit ${MAX_DEFERRED_LINKS_PER_RUN}`,
+     limit $1`,
+    [maxDeferredLinksPerRun],
   );
 
   for (const link of outstanding.rows) {
@@ -626,7 +635,7 @@ export async function runProjectTrust(
     }
   }
 
-  await resolveDeferredLinks(pool, summary);
+  await resolveDeferredLinks(pool, summary, options.maxDeferredLinksPerRun);
 
   return summary;
 }

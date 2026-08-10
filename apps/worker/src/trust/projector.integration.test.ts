@@ -37,6 +37,10 @@ const TRAIN_UID = "ZZ54321";
 const UNIDENTIFIED_ID = "UNKNOWNXXX";
 const DEFERRED_TRAIN_ID = "DEFER00001";
 const DEFERRED_TRAIN_UID = "ZZDEFER01";
+const CAP_TEST_IDS = Array.from({ length: 5 }, (_, i) => ({
+  trainId: `CAPTEST00${i + 1}`,
+  trainUid: `ZZCAPT0${i + 1}`,
+}));
 
 const recordedFrameIds: string[] = [];
 
@@ -147,23 +151,28 @@ async function linkFor(runId: string): Promise<{ match_outcome: string } | undef
 
 describe("runProjectTrust (integration)", () => {
   afterAll(async () => {
+    const allTrainIds = [
+      TRAIN_ID,
+      NEW_TRAIN_ID,
+      UNIDENTIFIED_ID,
+      DEFERRED_TRAIN_ID,
+      ...CAP_TEST_IDS.map((x) => x.trainId),
+    ];
     await pool.query(
       `delete from run_schedule_link where train_run_id in (
          select id from train_run where trust_train_id = any($1::text[])
        )`,
-      [[TRAIN_ID, NEW_TRAIN_ID, UNIDENTIFIED_ID, DEFERRED_TRAIN_ID]],
+      [allTrainIds],
     );
     await pool.query(
       `delete from train_run_event where train_run_id in (
          select id from train_run where trust_train_id = any($1::text[])
        )`,
-      [[TRAIN_ID, NEW_TRAIN_ID, UNIDENTIFIED_ID, DEFERRED_TRAIN_ID]],
+      [allTrainIds],
     );
-    await pool.query("delete from train_run where trust_train_id = any($1::text[])", [
-      [TRAIN_ID, NEW_TRAIN_ID, UNIDENTIFIED_ID, DEFERRED_TRAIN_ID],
-    ]);
+    await pool.query("delete from train_run where trust_train_id = any($1::text[])", [allTrainIds]);
     await pool.query("delete from schedule where train_uid = any($1::text[])", [
-      [TRAIN_UID, DEFERRED_TRAIN_UID],
+      [TRAIN_UID, DEFERRED_TRAIN_UID, ...CAP_TEST_IDS.map((x) => x.trainUid)],
     ]);
     if (recordedFrameIds.length > 0) {
       await pool.query("delete from raw_feed_event where frame_id = any($1::bigint[])", [
@@ -293,5 +302,53 @@ describe("runProjectTrust (integration)", () => {
     const afterNew = await runFor(NEW_TRAIN_ID);
     expect(afterOld).toEqual(beforeOld);
     expect(afterNew).toEqual(beforeNew);
+  });
+
+  it("caps how many deferred links one invocation retries, resolving the rest over later invocations", async () => {
+    // Regression test for a real production incident: with no cap, a single invocation tried
+    // to resolve the entire outstanding backlog (~23,000+ rows against a real SCHEDULE import)
+    // in one go, which took minutes — and since the Portainer projector service runs
+    // project-td/vstp/trust/resolver strictly sequentially, that blocked project-td (and so
+    // berth_current_state, and so the live map) from running at all.
+    async function countMatched(): Promise<number> {
+      const result = await pool.query<{ n: number }>(
+        `select count(*)::int as n from run_schedule_link rsl
+         join train_run tr on tr.id = rsl.train_run_id
+         where tr.trust_train_id = any($1::text[]) and rsl.match_outcome = 'matched'`,
+        [CAP_TEST_IDS.map((x) => x.trainId)],
+      );
+      return result.rows[0]?.n ?? 0;
+    }
+
+    for (const { trainId, trainUid } of CAP_TEST_IDS) {
+      await recordAdHocActivation(trainId, trainUid);
+    }
+    await runProjectTrust(pool);
+
+    // None have a schedule yet — every one resolves unmatched at activation time.
+    for (const { trainId } of CAP_TEST_IDS) {
+      const run = await runFor(trainId);
+      expect((await linkFor(run!.id))?.match_outcome).toBe("unmatched");
+    }
+    expect(await countMatched()).toBe(0);
+
+    // Now every one of the 5 has a real, unambiguous matching schedule.
+    for (const { trainUid } of CAP_TEST_IDS) {
+      await pool.query(
+        `insert into schedule (
+           train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, raw_source_json
+         ) values ($1, '2000-01-01', '2099-12-31', 'P', 'SCHEDULE', '{}')`,
+        [trainUid],
+      );
+    }
+
+    // A single invocation capped at 3 must not resolve all 5 in one call.
+    await runProjectTrust(pool, { maxDeferredLinksPerRun: 3 });
+    expect(await countMatched()).toBe(3);
+
+    // A second invocation clears the remaining 2 (order by random() means no row is starved
+    // forever — the ones missed the first time are eligible again immediately).
+    await runProjectTrust(pool, { maxDeferredLinksPerRun: 3 });
+    expect(await countMatched()).toBe(5);
   });
 });

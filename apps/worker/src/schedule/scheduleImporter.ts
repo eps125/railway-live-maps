@@ -56,8 +56,13 @@ export interface ImportScheduleResult {
   malformedRecords: number;
 }
 
-const BATCH_SIZE = 500;
+const BATCH_SIZE = 2000;
 const VALID_STP_INDICATORS = new Set(["C", "N", "O", "P"]);
+
+/** Rows per import_unhandled_record multi-row INSERT. Only 4 columns, so a much bigger batch
+ * than BATCH_SIZE still fits comfortably under Postgres's 65,535-param limit
+ * (5000*4=20,000). */
+const UNHANDLED_BATCH_SIZE = 5000;
 
 /** Adapts one `JsonScheduleV1` record into the source-agnostic `ScheduleSourceRecord` shape.
  * Returns `null` for a `transaction_type: "Delete"` record (full-extract semantics: the next
@@ -169,12 +174,41 @@ function chunk<T>(items: T[], size: number): T[][] {
   return batches;
 }
 
+interface UnhandledRow {
+  recordType: string;
+  seqNoInFile: number;
+  raw: unknown;
+}
+
+/** Was one client.query() per record for every tiploc/association/unknown/malformed line — in
+ * a real CIF extract (12,047 tiploc + 92,968 association = 105,015 lines) that's 105,015
+ * sequential round trips, the dominant cost behind a multi-hour import (confirmed 2026-08-10).
+ * Same fix as insertStagingBatch below: buffered and flushed as multi-row INSERTs instead. No
+ * conflict handling needed — this table is plain append, never upserted. */
+async function insertUnhandledBatch(
+  pool: Pool,
+  batch: UnhandledRow[],
+  sourceFileImportId: string,
+): Promise<void> {
+  const params: unknown[] = [];
+  const valuesClauses: string[] = [];
+  for (const row of batch) {
+    const base = params.length;
+    valuesClauses.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4})`);
+    params.push(sourceFileImportId, row.recordType, row.seqNoInFile, JSON.stringify(row.raw));
+  }
+
+  await pool.query(
+    `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
+     values ${valuesClauses.join(",")}`,
+    params,
+  );
+}
+
 /** Rows per location multi-row INSERT. Locations aren't bounded by the caller's per-flush
- * BATCH_SIZE (500 schedules) the way schedule rows are — a real CIF extract can average well
- * over 10 locations per schedule, so a 500-schedule flush batch can carry several thousand
- * location rows. 1000 rows * 22 columns = 22,000 params, safely under Postgres's 65,535 limit
- * (500 schedules * 16 columns = 8,000 params fits in a single statement, no sub-chunking
- * needed there). */
+ * BATCH_SIZE the way schedule rows are — a real CIF extract can average well over 10 locations
+ * per schedule, so one flush batch can carry several thousand location rows. 1000 rows * 22
+ * columns = 22,000 params, safely under Postgres's 65,535 limit. */
 const LOCATION_BATCH_SIZE = 1000;
 
 /** Was one client.query() per schedule *and* per location — for a full CIF extract (tens of
@@ -463,6 +497,7 @@ export async function runImportSchedule(
   let sawHeader = false;
   let sawTrailer = false;
   let batch: ScheduleSourceRecord[] = [];
+  let unhandledBatch: UnhandledRow[] = [];
 
   const flushBatch = async (): Promise<void> => {
     if (batch.length === 0) return;
@@ -478,6 +513,12 @@ export async function runImportSchedule(
       client.release();
     }
     batch = [];
+  };
+
+  const flushUnhandledBatch = async (): Promise<void> => {
+    if (unhandledBatch.length === 0) return;
+    await insertUnhandledBatch(deps.pool, unhandledBatch, sourceFileImport.id);
+    unhandledBatch = [];
   };
 
   try {
@@ -506,24 +547,31 @@ export async function runImportSchedule(
           continue; // full-extract semantics: a deleted schedule is simply omitted, not unhandled.
         }
         malformedRecords += 1;
-        await deps.pool.query(
-          `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
-           values ($1,'schedule',$2,$3)`,
-          [sourceFileImport.id, record.seqNoInFile, JSON.stringify(record.raw)],
-        );
+        unhandledBatch.push({
+          recordType: "schedule",
+          seqNoInFile: record.seqNoInFile,
+          raw: record.raw,
+        });
+        if (unhandledBatch.length >= UNHANDLED_BATCH_SIZE) {
+          await flushUnhandledBatch();
+        }
         continue;
       }
       // tiploc / association / unknown / malformed — recognized-but-out-of-scope or genuinely
       // broken lines, all retained via import_unhandled_record (CLAUDE.md rule 18).
       unhandledRecords += 1;
       if (record.recordType === "malformed") malformedRecords += 1;
-      await deps.pool.query(
-        `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
-         values ($1,$2,$3,$4)`,
-        [sourceFileImport.id, record.recordType, record.seqNoInFile, JSON.stringify(record.raw)],
-      );
+      unhandledBatch.push({
+        recordType: record.recordType,
+        seqNoInFile: record.seqNoInFile,
+        raw: record.raw,
+      });
+      if (unhandledBatch.length >= UNHANDLED_BATCH_SIZE) {
+        await flushUnhandledBatch();
+      }
     }
     await flushBatch();
+    await flushUnhandledBatch();
   } catch (error) {
     await deps.pool.query(
       "update source_file_import set status = 'failed', error_summary = $2 where id = $1",

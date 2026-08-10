@@ -3,8 +3,10 @@ import type { Readable } from "node:stream";
 /**
  * SMART (docs/REFERENCES.md's Reference Data wiki link) full extracts are supplied as one JSON
  * document — `{"BERTHDATA": [ {...}, {...}, ... ]}`. Same shape/streaming trade-offs as
- * `parseCorpusFileStream.ts` — constructed from the publicly documented format, not a captured
- * real extract.
+ * `parseCorpusFileStream.ts`. Confirmed against a real production extract (2026-08-10, 34,194
+ * records) — the `BERTHDATA` envelope shape here is correct as originally written; it was the
+ * per-record field name assumed by `smartImporter.ts` (`AREAID` vs. the real `TD`) that was
+ * wrong, not this envelope-parsing layer.
  */
 export interface SmartFileRecord {
   seqNoInFile: number;

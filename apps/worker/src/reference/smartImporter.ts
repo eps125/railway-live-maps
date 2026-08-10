@@ -97,7 +97,13 @@ export async function runImportSmart(
   try {
     for await (const record of parseSmartFileStream(Readable.from(body))) {
       const raw = record.raw as Record<string, unknown>;
-      const tdArea = typeof raw.AREAID === "string" ? raw.AREAID.trim() : "";
+      // Confirmed against a real production SMART full extract (2026-08-10, 34,194 records,
+      // 194 distinct TD areas): the wire field is `TD`, not `AREAID` — this project's own
+      // fixture (constructed from public documentation, not a captured real extract) assumed
+      // the wrong name, so every real record was silently routed to import_unhandled_record
+      // as 'smart_missing_area_id' and smart_berth_step was never actually populated. Same
+      // gap class as the VSTP XML/JSON and TRUST signallingId fixes.
+      const tdArea = typeof raw.TD === "string" ? raw.TD.trim() : "";
       if (!tdArea) {
         await deps.pool.query(
           `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)

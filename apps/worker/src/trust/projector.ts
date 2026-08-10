@@ -278,9 +278,20 @@ async function linkActivationToSchedule(
   }
 }
 
-/** Re-attempts resolution for every `run_schedule_link` row that isn't `matched` yet — a later
- * SCHEDULE/VSTP import may resolve a schedule that was missing at activation time. Updates the
- * existing row in place, never re-inserts (docs/DATA_MODEL.md §7). */
+/** Caps how much of the deferred-relink backlog one project-trust invocation retries. Without
+ * this, a large backlog (confirmed 2026-08-10: ~23,000+ rows after the first real SCHEDULE
+ * import) makes this single query+loop take minutes — and since the Portainer `projector`
+ * service's loop runs project-td/vstp/trust/resolver strictly sequentially, that blocked
+ * project-td from running at all, stalling the live map for 8+ minutes. Same fix shape as
+ * project-resolver's own MAX_BATCHES_PER_RUN cap (apps/worker/src/resolver/projector.ts).
+ * `order by random()` rather than a fixed order (e.g. id) so a row that can never resolve
+ * (no matching schedule exists) doesn't permanently starve the rest of the backlog from ever
+ * being retried — every row gets a roughly fair chance across many rapid cycles instead. */
+const MAX_DEFERRED_LINKS_PER_RUN = 300;
+
+/** Re-attempts resolution for a bounded slice of `run_schedule_link` rows that aren't `matched`
+ * yet — a later SCHEDULE/VSTP import may resolve a schedule that was missing at activation
+ * time. Updates the existing row in place, never re-inserts (docs/DATA_MODEL.md §7). */
 async function resolveDeferredLinks(pool: Pool, summary: ProjectTrustSummary): Promise<void> {
   const outstanding = await pool.query<{
     id: string;
@@ -291,7 +302,9 @@ async function resolveDeferredLinks(pool: Pool, summary: ProjectTrustSummary): P
     `select rsl.id, rsl.train_run_id, rsl.activation_train_uid, tr.service_date::text as service_date
      from run_schedule_link rsl
      join train_run tr on tr.id = rsl.train_run_id
-     where rsl.match_outcome != 'matched'`,
+     where rsl.match_outcome != 'matched'
+     order by random()
+     limit ${MAX_DEFERRED_LINKS_PER_RUN}`,
   );
 
   for (const link of outstanding.rows) {

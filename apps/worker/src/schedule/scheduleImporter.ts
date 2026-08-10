@@ -13,14 +13,26 @@ import {
 import { parseScheduleFileStream } from "@railway/feed-parsers";
 
 /**
- * Milestone 7 (docs/IMPLEMENTATION_PLAN.md): imports a full SCHEDULE extract via the
- * staging-table + single-swap-transaction pattern (packages/database/migrations
- * 0013_schedule_tables.sql's `schedule_import_staging`/`schedule_location_import_staging`) —
- * "readers never see a half-imported file." The SCHEDULE JSON wire shape used here
- * (`JsonScheduleV1` — flat `CIF_train_uid`/`CIF_stp_indicator`/`schedule_segment.schedule_location[]`
- * fields, same field names as VSTP's nested `CIF_bs`) is constructed from the publicly
- * documented format, not a captured real extract — same caveat as
+ * Milestone 7 (docs/IMPLEMENTATION_PLAN.md): imports a full SCHEDULE extract via a staging
+ * table (packages/database/migrations 0013_schedule_tables.sql's `schedule_import_staging`/
+ * `schedule_location_import_staging`) — "readers never see a half-imported file." The SCHEDULE
+ * JSON wire shape used here (`JsonScheduleV1` — flat `CIF_train_uid`/`CIF_stp_indicator`/
+ * `schedule_segment.schedule_location[]` fields, same field names as VSTP's nested `CIF_bs`) is
+ * constructed from the publicly documented format, not a captured real extract — same caveat as
  * `packages/feed-parsers/src/schedule/parseScheduleFileStream.ts`.
+ *
+ * Applying the staged file into the real tables is an upsert by natural key
+ * (`train_uid`/dates/`stp_indicator`/`source`), never a delete-and-reinsert — confirmed
+ * 2026-08-10 that `train_run.schedule_id`/`run_schedule_link.schedule_id` are plain foreign
+ * keys into `schedule` with no cascade, so a wholesale delete would fail outright the moment
+ * any real run has been linked to a CIF-sourced schedule. Historical retention is a second,
+ * equally real reason beyond the FK: this project needs to look back at what schedule was
+ * actually in effect for a past running day, which requires keeping schedule rows whose STP
+ * overlay/date range has already lapsed and simply no longer appears in the latest extract —
+ * `resolveStpPrecedence` already picks the right schedule for a given date from whatever rows
+ * exist regardless of import recency, so nothing needs to be deleted for correctness either.
+ * Known limitation, deliberately deferred: a schedule retracted by NR without a formal STP
+ * cancellation record has no way to disappear from our data — accepted for now, not solved.
  */
 export interface ImportScheduleDeps {
   pool: Pool;
@@ -257,7 +269,10 @@ async function clearStagingRows(pool: Pool, stagingImportId: string): Promise<vo
   ]);
 }
 
-async function swapIntoRealTables(
+/** Applies the staged file into the real `schedule`/`schedule_location` tables — upsert by
+ * natural key, never delete-and-reinsert (see this module's own doc comment for why: FK safety
+ * and historical retention are the same fix). */
+async function upsertIntoRealTables(
   pool: Pool,
   sourceFileImportId: string,
   rowCounts: Record<string, number>,
@@ -265,20 +280,58 @@ async function swapIntoRealTables(
   const client = await pool.connect();
   try {
     await client.query("begin");
-    await client.query(
-      `delete from schedule_location where schedule_id in (select id from schedule where source = 'SCHEDULE')`,
-    );
-    await client.query(`delete from schedule where source = 'SCHEDULE'`);
+    // `distinct on ... order by ..., ctid desc` guards against the same natural key appearing
+    // twice within one staged file (schedule_import_staging has no unique constraint of its
+    // own — it's a plain append-only staging table) — a single INSERT can't ON CONFLICT DO
+    // UPDATE the same target row twice. ctid reliably reflects insertion/file order here since
+    // this staging table is freshly cleared and repopulated for this one import, nothing else
+    // touches it concurrently. Last-in-file wins, same as every other duplicate-natural-key
+    // handling this project does (smartImporter.ts/corpusImporter.ts).
     await client.query(
       `insert into schedule (
          source_file_import_id, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
          days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
          train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
        )
-       select $1, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
+       select distinct on (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source)
+         $1, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
          days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
          train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
-       from schedule_import_staging where staging_import_id = $1`,
+       from schedule_import_staging
+       where staging_import_id = $1
+       order by train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, ctid desc
+       on conflict (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source) do update
+       set source_file_import_id = excluded.source_file_import_id,
+           days_runs_bitmask = excluded.days_runs_bitmask,
+           signalling_id = excluded.signalling_id,
+           operator_code = excluded.operator_code,
+           train_service_code = excluded.train_service_code,
+           train_category = excluded.train_category,
+           train_status = excluded.train_status,
+           power_type = excluded.power_type,
+           origin_tiploc = excluded.origin_tiploc,
+           destination_tiploc = excluded.destination_tiploc,
+           raw_source_json = excluded.raw_source_json,
+           updated_at = now()`,
+      [sourceFileImportId],
+    );
+    // Locations are replaced wholesale per-schedule (not globally): schedule_location has no
+    // external FK pointing at individual rows — only schedule_id points the other way — so a
+    // delete+reinsert scoped to just the schedules touched by this import is safe, and simpler
+    // than diffing individual calling points. Schedules absent from this extract entirely keep
+    // their existing locations untouched.
+    await client.query(
+      `delete from schedule_location
+       where schedule_id in (
+         select s.id from schedule s
+         join (
+           select distinct train_uid, schedule_start_date, schedule_end_date, stp_indicator, source
+           from schedule_location_import_staging where staging_import_id = $1
+         ) keys
+           on keys.train_uid = s.train_uid and keys.schedule_start_date = s.schedule_start_date
+          and keys.schedule_end_date = s.schedule_end_date and keys.stp_indicator = s.stp_indicator
+          and keys.source = s.source
+       )`,
       [sourceFileImportId],
     );
     await client.query(
@@ -295,7 +348,7 @@ async function swapIntoRealTables(
        join schedule s
          on s.train_uid = sl.train_uid and s.schedule_start_date = sl.schedule_start_date
         and s.schedule_end_date = sl.schedule_end_date and s.stp_indicator = sl.stp_indicator
-        and s.source = sl.source and s.source_file_import_id = $1
+        and s.source = sl.source
        where sl.staging_import_id = $1`,
       [sourceFileImportId],
     );
@@ -306,7 +359,9 @@ async function swapIntoRealTables(
     await client.query("delete from schedule_import_staging where staging_import_id = $1", [
       sourceFileImportId,
     ]);
-    // Only one SCHEDULE full extract is ever "current" at a time.
+    // Purely informational now — "which extract most recently completed" — not a visibility
+    // gate: schedule rows from older imports stay live and queryable regardless of is_active
+    // (see this module's own doc comment on historical retention).
     await client.query(
       "update source_file_import set is_active = false where file_kind = 'schedule_full'",
     );
@@ -460,7 +515,7 @@ export async function runImportSchedule(
     throw new Error(message);
   }
 
-  await swapIntoRealTables(deps.pool, sourceFileImport.id, {
+  await upsertIntoRealTables(deps.pool, sourceFileImport.id, {
     scheduleRows,
     locationRows,
     unhandledRecords,

@@ -100,6 +100,10 @@ function extractScheduleRecord(raw: unknown): ScheduleSourceRecord | null {
     passPublic: typeof loc.public_pass === "string" ? loc.public_pass : null,
     passWorking: typeof loc.pass === "string" ? loc.pass : null,
     platform: typeof loc.platform === "string" ? loc.platform : null,
+    // Confirmed against a real production SCHEDULE full extract (2026-08-10): present directly
+    // on each location, not CIF_-prefixed the way VSTP's own extractor reads them.
+    path: typeof loc.path === "string" ? loc.path : null,
+    line: typeof loc.line === "string" ? loc.line : null,
   }));
 
   return {
@@ -108,12 +112,23 @@ function extractScheduleRecord(raw: unknown): ScheduleSourceRecord | null {
     scheduleEndDate,
     stpIndicator: stpIndicator as ScheduleSourceRecord["stpIndicator"],
     daysRunsBitmask: typeof obj.schedule_days_runs === "string" ? obj.schedule_days_runs : null,
-    signallingId: typeof obj.signalling_id === "string" ? obj.signalling_id : null,
+    // Confirmed against a real production SCHEDULE full extract (2026-08-10): signalling_id,
+    // CIF_train_service_code, CIF_power_type and CIF_train_category all live one level down
+    // inside schedule_segment, not on the record itself — this project's own fixture (built
+    // from public documentation, not a captured real extract) assumed the wrong nesting, so
+    // every real CIF-sourced schedule's signalling_id/service code/power type/category was
+    // silently always null. Same gap class as the VSTP XML/JSON, TRUST signallingId, and SMART
+    // AREAID/TD fixes — VSTP's own extractor already reads these correctly from its segment,
+    // this one just didn't match it. atoc_code and train_status are genuinely top-level (not
+    // in the segment) and were already correct.
+    signallingId: typeof segment?.signalling_id === "string" ? segment.signalling_id : null,
     operatorCode: typeof obj.atoc_code === "string" ? obj.atoc_code : null,
     trainServiceCode:
-      typeof obj.CIF_train_service_code === "string" ? obj.CIF_train_service_code : null,
+      typeof segment?.CIF_train_service_code === "string" ? segment.CIF_train_service_code : null,
+    trainCategory:
+      typeof segment?.CIF_train_category === "string" ? segment.CIF_train_category : null,
     trainStatus: typeof obj.train_status === "string" ? obj.train_status : null,
-    powerType: typeof obj.CIF_power_type === "string" ? obj.CIF_power_type : null,
+    powerType: typeof segment?.CIF_power_type === "string" ? segment.CIF_power_type : null,
     locations,
     source: "SCHEDULE",
     rawSourceJson: raw,

@@ -68,14 +68,34 @@ async function scheduleRowsFor(
 async function scheduleDetailFor(
   trainUid: string,
   stpIndicator: string,
-): Promise<{ id: string; signallingId: string | null } | undefined> {
-  const result = await pool.query<{ id: string; signalling_id: string | null }>(
-    `select id, signalling_id from schedule
+): Promise<
+  | {
+      id: string;
+      signallingId: string | null;
+      trainCategory: string | null;
+      powerType: string | null;
+    }
+  | undefined
+> {
+  const result = await pool.query<{
+    id: string;
+    signalling_id: string | null;
+    train_category: string | null;
+    power_type: string | null;
+  }>(
+    `select id, signalling_id, train_category, power_type from schedule
      where train_uid = $1 and stp_indicator = $2 and source = 'SCHEDULE'`,
     [trainUid, stpIndicator],
   );
   const row = result.rows[0];
-  return row ? { id: row.id, signallingId: row.signalling_id } : undefined;
+  return row
+    ? {
+        id: row.id,
+        signallingId: row.signalling_id,
+        trainCategory: row.train_category,
+        powerType: row.power_type,
+      }
+    : undefined;
 }
 
 async function locationDeparturesFor(scheduleId: string): Promise<(string | null)[]> {
@@ -119,6 +139,16 @@ describe("runImportSchedule (integration)", () => {
 
     const zz99999 = await scheduleRowsFor("ZZ99999");
     expect(zz99999).toHaveLength(1);
+
+    // signalling_id/CIF_train_category/CIF_power_type all live inside schedule_segment on the
+    // real wire, not on the record itself — confirmed against a real extract 2026-08-10. This
+    // fixture's ZZ54321 P record carries all three there.
+    const zz54321P = await scheduleDetailFor("ZZ54321", "P");
+    expect(zz54321P).toMatchObject({
+      signallingId: "2A16",
+      trainCategory: "XX",
+      powerType: "EMU",
+    });
   });
 
   it("a later full extract updates in place (same row id) and never deletes a schedule simply absent from it", async () => {

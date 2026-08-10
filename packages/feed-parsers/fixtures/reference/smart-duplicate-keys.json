@@ -1,0 +1,34 @@
+{
+  "BERTHDATA": [
+    {
+      "STEPTYPE": "B",
+      "FROMBERTH": "0001",
+      "TOBERTH": "0002",
+      "STANOX": "11223",
+      "EVENT": "B",
+      "PLATFORM": "1",
+      "TOLINE": "",
+      "BERTHOFFSET": "-60",
+      "ROUTE": "OLD ROUTE",
+      "FROMLINE": "",
+      "TD": "ZZ",
+      "COMMENT": "16/05/2023",
+      "STANME": "TESTJUNC"
+    },
+    {
+      "STEPTYPE": "B",
+      "FROMBERTH": "0001",
+      "TOBERTH": "0002",
+      "STANOX": "11223",
+      "EVENT": "B",
+      "PLATFORM": "1",
+      "TOLINE": "",
+      "BERTHOFFSET": "-60",
+      "ROUTE": "NEW ROUTE",
+      "FROMLINE": "",
+      "TD": "ZZ",
+      "COMMENT": "16/05/2023",
+      "STANME": "TESTJUNC"
+    }
+  ]
+}

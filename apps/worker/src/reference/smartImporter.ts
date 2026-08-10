@@ -52,6 +52,106 @@ async function findOrCreateSourceFileImport(
   return row;
 }
 
+interface BerthStepRow {
+  tdArea: string;
+  fromBerth: string | null;
+  toBerth: string | null;
+  stanox: string | null;
+  platform: string | null;
+  eventType: string | null;
+  routeIndicator: string | null;
+  rawSourceJson: unknown;
+}
+
+interface UnhandledRow {
+  seqNoInFile: number;
+  raw: unknown;
+}
+
+/** Real natural-key duplicates exist in production SMART extracts (confirmed 2026-08-10:
+ * 1,142 of 34,194 records share a (td_area, from_berth, to_berth, event_type) with another
+ * record in the same file) — a single multi-row INSERT can't ON CONFLICT DO UPDATE the same
+ * target row twice, so duplicates must be resolved in memory first. Keyed the same way as the
+ * DB's own coalesced unique index, last-write-wins to match the previous sequential loop's
+ * behavior exactly (each record's upsert would have overwritten the previous one anyway). */
+function naturalKey(
+  row: Pick<BerthStepRow, "tdArea" | "fromBerth" | "toBerth" | "eventType">,
+): string {
+  return `${row.tdArea}|${row.fromBerth ?? ""}|${row.toBerth ?? ""}|${row.eventType ?? ""}`;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+/** Rows per multi-row INSERT — keeps each statement's param count (9/row) and text size well
+ * within Postgres limits while cutting ~34k sequential round trips down to a few dozen. */
+const BATCH_SIZE = 500;
+
+async function insertBerthStepBatch(
+  pool: Pool,
+  batch: BerthStepRow[],
+  sourceFileImportId: string,
+): Promise<void> {
+  const params: unknown[] = [];
+  const valuesClauses: string[] = [];
+  for (const row of batch) {
+    const base = params.length;
+    valuesClauses.push(
+      `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9})`,
+    );
+    params.push(
+      row.tdArea,
+      row.fromBerth,
+      row.toBerth,
+      row.stanox,
+      row.platform,
+      row.eventType,
+      row.routeIndicator,
+      sourceFileImportId,
+      JSON.stringify(row.rawSourceJson),
+    );
+  }
+
+  await pool.query(
+    `insert into smart_berth_step (
+       td_area, from_berth, to_berth, stanox, platform, event_type, route_indicator,
+       source_file_import_id, raw_source_json
+     ) values ${valuesClauses.join(",")}
+     on conflict (td_area, coalesce(from_berth, ''), coalesce(to_berth, ''), coalesce(event_type, ''))
+     do update
+     set stanox = excluded.stanox, platform = excluded.platform,
+         route_indicator = excluded.route_indicator,
+         source_file_import_id = excluded.source_file_import_id,
+         raw_source_json = excluded.raw_source_json, imported_at = now()`,
+    params,
+  );
+}
+
+async function insertUnhandledBatch(
+  pool: Pool,
+  batch: UnhandledRow[],
+  sourceFileImportId: string,
+): Promise<void> {
+  const params: unknown[] = [];
+  const valuesClauses: string[] = [];
+  for (const row of batch) {
+    const base = params.length;
+    valuesClauses.push(`($${base + 1},'smart_missing_area_id',$${base + 2},$${base + 3})`);
+    params.push(sourceFileImportId, row.seqNoInFile, JSON.stringify(row.raw));
+  }
+
+  await pool.query(
+    `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
+     values ${valuesClauses.join(",")}`,
+    params,
+  );
+}
+
 /** Imports a SMART full extract already saved at `filePath`. Idempotent: reimporting
  * byte-identical content short-circuits without touching `smart_berth_step` again. */
 export async function runImportSmart(
@@ -93,55 +193,43 @@ export async function runImportSmart(
     return { sourceFileImportId: sourceFileImport.id, alreadyImported: true, upsertedRows: 0 };
   }
 
-  let upsertedRows = 0;
+  // Confirmed against a real production SMART full extract (2026-08-10, 34,194 records,
+  // 194 distinct TD areas): the wire field is `TD`, not `AREAID` — this project's own
+  // fixture (constructed from public documentation, not a captured real extract) assumed
+  // the wrong name, so every real record was silently routed to import_unhandled_record
+  // as 'smart_missing_area_id' and smart_berth_step was never actually populated. Same
+  // gap class as the VSTP XML/JSON and TRUST signallingId fixes.
+  const berthStepsByKey = new Map<string, BerthStepRow>();
+  const unhandled: UnhandledRow[] = [];
+
   try {
     for await (const record of parseSmartFileStream(Readable.from(body))) {
       const raw = record.raw as Record<string, unknown>;
-      // Confirmed against a real production SMART full extract (2026-08-10, 34,194 records,
-      // 194 distinct TD areas): the wire field is `TD`, not `AREAID` — this project's own
-      // fixture (constructed from public documentation, not a captured real extract) assumed
-      // the wrong name, so every real record was silently routed to import_unhandled_record
-      // as 'smart_missing_area_id' and smart_berth_step was never actually populated. Same
-      // gap class as the VSTP XML/JSON and TRUST signallingId fixes.
       const tdArea = typeof raw.TD === "string" ? raw.TD.trim() : "";
       if (!tdArea) {
-        await deps.pool.query(
-          `insert into import_unhandled_record (source_file_import_id, record_type, seq_no_in_file, raw_json)
-           values ($1,'smart_missing_area_id',$2,$3)`,
-          [sourceFileImport.id, record.seqNoInFile, JSON.stringify(record.raw)],
-        );
+        unhandled.push({ seqNoInFile: record.seqNoInFile, raw: record.raw });
         continue;
       }
-      const fromBerth =
-        typeof raw.FROMBERTH === "string" && raw.FROMBERTH.length > 0 ? raw.FROMBERTH : null;
-      const toBerth =
-        typeof raw.TOBERTH === "string" && raw.TOBERTH.length > 0 ? raw.TOBERTH : null;
-      const eventType = typeof raw.EVENT === "string" && raw.EVENT.length > 0 ? raw.EVENT : null;
+      const row: BerthStepRow = {
+        tdArea,
+        fromBerth:
+          typeof raw.FROMBERTH === "string" && raw.FROMBERTH.length > 0 ? raw.FROMBERTH : null,
+        toBerth: typeof raw.TOBERTH === "string" && raw.TOBERTH.length > 0 ? raw.TOBERTH : null,
+        stanox: typeof raw.STANOX === "string" ? raw.STANOX : null,
+        platform: typeof raw.PLATFORM === "string" ? raw.PLATFORM : null,
+        eventType: typeof raw.EVENT === "string" && raw.EVENT.length > 0 ? raw.EVENT : null,
+        routeIndicator: typeof raw.ROUTE === "string" && raw.ROUTE.length > 0 ? raw.ROUTE : null,
+        rawSourceJson: record.raw,
+      };
+      // Last-write-wins on a duplicate natural key — see naturalKey()'s doc comment.
+      berthStepsByKey.set(naturalKey(row), row);
+    }
 
-      await deps.pool.query(
-        `insert into smart_berth_step (
-           td_area, from_berth, to_berth, stanox, platform, event_type, route_indicator,
-           source_file_import_id, raw_source_json
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         on conflict (td_area, coalesce(from_berth, ''), coalesce(to_berth, ''), coalesce(event_type, ''))
-         do update
-         set stanox = excluded.stanox, platform = excluded.platform,
-             route_indicator = excluded.route_indicator,
-             source_file_import_id = excluded.source_file_import_id,
-             raw_source_json = excluded.raw_source_json, imported_at = now()`,
-        [
-          tdArea,
-          fromBerth,
-          toBerth,
-          typeof raw.STANOX === "string" ? raw.STANOX : null,
-          typeof raw.PLATFORM === "string" ? raw.PLATFORM : null,
-          eventType,
-          typeof raw.ROUTE === "string" && raw.ROUTE.length > 0 ? raw.ROUTE : null,
-          sourceFileImport.id,
-          JSON.stringify(record.raw),
-        ],
-      );
-      upsertedRows += 1;
+    for (const batch of chunk(unhandled, BATCH_SIZE)) {
+      await insertUnhandledBatch(deps.pool, batch, sourceFileImport.id);
+    }
+    for (const batch of chunk([...berthStepsByKey.values()], BATCH_SIZE)) {
+      await insertBerthStepBatch(deps.pool, batch, sourceFileImport.id);
     }
   } catch (error) {
     await deps.pool.query(
@@ -151,6 +239,7 @@ export async function runImportSmart(
     throw error;
   }
 
+  const upsertedRows = berthStepsByKey.size;
   await deps.pool.query(
     `update source_file_import
      set status = 'completed', completed_at = now(), is_active = true, row_counts = $2

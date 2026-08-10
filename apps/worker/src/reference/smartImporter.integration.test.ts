@@ -47,6 +47,7 @@ async function resetFixtureState(fileName: string): Promise<void> {
 describe("runImportSmart (integration)", () => {
   beforeAll(async () => {
     await resetFixtureState("smart-small.json");
+    await resetFixtureState("smart-duplicate-keys.json");
     await pool.query("delete from smart_berth_step where td_area = 'ZZ'");
   });
 
@@ -82,6 +83,20 @@ describe("runImportSmart (integration)", () => {
       "select count(*)::int as n from smart_berth_step where td_area = 'ZZ'",
     );
     expect(after.rows[0]?.n).toBe(before.rows[0]?.n);
+  });
+
+  it("resolves duplicate natural keys within one file to a single row, last-write-wins (real SMART extracts have ~1,142 such duplicates in 34,194 records — the batched multi-row insert can't ON CONFLICT DO UPDATE the same target row twice, so this must be deduplicated before the batch is built)", async () => {
+    const result = await runImportSmart(deps, join(fixturesDir, "smart-duplicate-keys.json"));
+
+    expect(result.alreadyImported).toBe(false);
+    expect(result.upsertedRows).toBe(1);
+
+    const rows = await pool.query<{ route_indicator: string | null }>(
+      `select route_indicator from smart_berth_step
+       where td_area = 'ZZ' and from_berth = '0001' and to_berth = '0002' and event_type = 'B'`,
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]?.route_indicator).toBe("NEW ROUTE");
   });
 
   it("a whole-file JSON parse failure marks the import failed rather than partially applying", async () => {

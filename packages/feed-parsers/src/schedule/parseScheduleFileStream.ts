@@ -29,7 +29,13 @@ const RECORD_TYPE_BY_WRAPPER_KEY: Record<string, ScheduleFileRecordType> = {
   JsonTimetableV1: "header",
   JsonScheduleV1: "schedule",
   TiplocV1: "tiploc",
-  AssociationV1: "association",
+  // Confirmed against a real production SCHEDULE full extract (2026-08-10, 92,968 real
+  // records): the wrapper key is JsonAssociationV1, matching the Json-prefixed naming of every
+  // other real wrapper key here — this project's own fixture assumed the unprefixed
+  // AssociationV1, so every real association record was silently misclassified as "unknown"
+  // instead of "association" (still fully retained either way via import_unhandled_record,
+  // just mislabeled — same fixture-vs-reality gap class as this file's other confirmed fixes).
+  JsonAssociationV1: "association",
   EOF: "trailer",
 };
 

@@ -4,5 +4,5 @@
 {"JsonScheduleV1":{"transaction_type":"Create","CIF_train_uid":"ZZ99999","schedule_start_date":"2026-08-10","schedule_end_date":"2026-08-10","CIF_stp_indicator":"N","schedule_days_runs":"0000000","atoc_code":"XC","train_status":"P","schedule_segment":{"signalling_id":"5Z02","CIF_train_service_code":"99999000","schedule_location":[{"location_type":"LO","tiploc_code":"PRST","departure":"1400","public_departure":"1400"},{"location_type":"LT","tiploc_code":"LANCSTR","arrival":"1430","public_arrival":"1430"}]}}}
 {"JsonScheduleV1":{"transaction_type":"Delete","CIF_train_uid":"ZZ54321","schedule_start_date":"2026-08-04","schedule_end_date":"2026-08-04","CIF_stp_indicator":"C"}}
 {"TiplocV1":{"tiploc_code":"LANCSTR","nalco":"123456","stanox":"11223","crs_code":"LAN","description":"LANCASTER"}}
-{"AssociationV1":{"transaction_type":"Create","main_train_uid":"ZZ54321","assoc_train_uid":"ZZ99999","assoc_start_date":"2026-08-10","category":"JJ"}}
+{"JsonAssociationV1":{"transaction_type":"Create","main_train_uid":"ZZ54321","assoc_train_uid":"ZZ99999","assoc_start_date":"2026-08-10","category":"JJ"}}
 {"EOF":true}

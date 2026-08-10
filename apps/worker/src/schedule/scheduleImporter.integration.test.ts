@@ -130,8 +130,18 @@ describe("runImportSchedule (integration)", () => {
 
     expect(result.alreadyImported).toBe(false);
     expect(result.scheduleRows).toBe(3); // ZZ54321 P, ZZ54321 O, ZZ99999 N — the Delete record is excluded.
-    expect(result.unhandledRecords).toBe(2); // TiplocV1 + AssociationV1.
+    expect(result.unhandledRecords).toBe(2); // TiplocV1 + JsonAssociationV1.
     expect(result.malformedRecords).toBe(0);
+
+    // The real wrapper key is JsonAssociationV1 (matching every other real Json-prefixed key),
+    // not the unprefixed AssociationV1 this project originally assumed — confirmed against a
+    // real extract 2026-08-10 (92,968 real association records, all previously misclassified
+    // as generic "unknown" instead of "association").
+    const unhandledTypes = await pool.query<{ record_type: string }>(
+      `select record_type from import_unhandled_record where source_file_import_id = $1 order by record_type`,
+      [result.sourceFileImportId],
+    );
+    expect(unhandledTypes.rows.map((r) => r.record_type)).toEqual(["association", "tiploc"]);
 
     const zz54321 = await scheduleRowsFor("ZZ54321");
     expect(zz54321.map((r) => r.stp_indicator)).toEqual(["O", "P"]);

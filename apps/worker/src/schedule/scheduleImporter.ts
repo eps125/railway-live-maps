@@ -5,6 +5,8 @@ import type { S3Client } from "@aws-sdk/client-s3";
 import { sha256Hex, computeArchiveObjectKey, putImmutableObject } from "@railway/archive";
 import {
   mapToScheduleRow,
+  type MappedSchedule,
+  type ScheduleLocationRowValues,
   type ScheduleSourceRecord,
   type ScheduleSourceLocation,
 } from "@railway/domain";
@@ -128,72 +130,119 @@ async function findOrCreateSourceFileImport(
   return row;
 }
 
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+/** Rows per location multi-row INSERT. Locations aren't bounded by the caller's per-flush
+ * BATCH_SIZE (500 schedules) the way schedule rows are — a real CIF extract can average well
+ * over 10 locations per schedule, so a 500-schedule flush batch can carry several thousand
+ * location rows. 1000 rows * 22 columns = 22,000 params, safely under Postgres's 65,535 limit
+ * (500 schedules * 16 columns = 8,000 params fits in a single statement, no sub-chunking
+ * needed there). */
+const LOCATION_BATCH_SIZE = 1000;
+
+/** Was one client.query() per schedule *and* per location — for a full CIF extract (tens of
+ * thousands of schedules, likely hundreds of thousands of locations) that's the same
+ * "minutes-long sequential round trips" problem smartImporter.ts had at 34,194 records, just
+ * worse. Batched into multi-row INSERTs instead — this is staging-table population inside an
+ * already-open transaction (the caller's flushBatch), so no natural-key conflict handling is
+ * needed here (unlike smartImporter.ts/corpusImporter.ts's upsert-in-place tables). */
 async function insertStagingBatch(
   client: PoolClient,
   stagingImportId: string,
   records: ScheduleSourceRecord[],
 ): Promise<void> {
+  const scheduleParams: unknown[] = [];
+  const scheduleValuesClauses: string[] = [];
+  const allLocations: { mapped: MappedSchedule; loc: ScheduleLocationRowValues }[] = [];
+
   for (const record of records) {
     const mapped = mapToScheduleRow(record);
+    const base = scheduleParams.length;
+    scheduleValuesClauses.push(
+      `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16})`,
+    );
+    scheduleParams.push(
+      stagingImportId,
+      mapped.schedule.trainUid,
+      mapped.schedule.scheduleStartDate,
+      mapped.schedule.scheduleEndDate,
+      mapped.schedule.stpIndicator,
+      mapped.schedule.daysRunsBitmask,
+      mapped.schedule.signallingId,
+      mapped.schedule.operatorCode,
+      mapped.schedule.trainServiceCode,
+      mapped.schedule.trainCategory,
+      mapped.schedule.trainStatus,
+      mapped.schedule.powerType,
+      mapped.schedule.originTiploc,
+      mapped.schedule.destinationTiploc,
+      mapped.schedule.source,
+      JSON.stringify(mapped.schedule.rawSourceJson),
+    );
+    for (const loc of mapped.locations) {
+      allLocations.push({ mapped, loc });
+    }
+  }
+
+  if (scheduleValuesClauses.length > 0) {
     await client.query(
       `insert into schedule_import_staging (
          staging_import_id, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
          days_runs_bitmask, signalling_id, operator_code, train_service_code, train_category,
          train_status, power_type, origin_tiploc, destination_tiploc, source, raw_source_json
-       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-      [
+       ) values ${scheduleValuesClauses.join(",")}`,
+      scheduleParams,
+    );
+  }
+
+  for (const locationBatch of chunk(allLocations, LOCATION_BATCH_SIZE)) {
+    const locParams: unknown[] = [];
+    const locValuesClauses: string[] = [];
+    for (const { mapped, loc } of locationBatch) {
+      const base = locParams.length;
+      locValuesClauses.push(
+        `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22})`,
+      );
+      locParams.push(
         stagingImportId,
         mapped.schedule.trainUid,
         mapped.schedule.scheduleStartDate,
         mapped.schedule.scheduleEndDate,
         mapped.schedule.stpIndicator,
-        mapped.schedule.daysRunsBitmask,
-        mapped.schedule.signallingId,
-        mapped.schedule.operatorCode,
-        mapped.schedule.trainServiceCode,
-        mapped.schedule.trainCategory,
-        mapped.schedule.trainStatus,
-        mapped.schedule.powerType,
-        mapped.schedule.originTiploc,
-        mapped.schedule.destinationTiploc,
         mapped.schedule.source,
-        JSON.stringify(mapped.schedule.rawSourceJson),
-      ],
-    );
-    for (const loc of mapped.locations) {
-      await client.query(
-        `insert into schedule_location_import_staging (
-           staging_import_id, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
-           source, seq_no, location_type, tiploc, stanox, arrival_public, arrival_working,
-           departure_public, departure_working, pass_public, pass_working, platform, path, line,
-           activity_codes, raw_activity_text, day_offset
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-        [
-          stagingImportId,
-          mapped.schedule.trainUid,
-          mapped.schedule.scheduleStartDate,
-          mapped.schedule.scheduleEndDate,
-          mapped.schedule.stpIndicator,
-          mapped.schedule.source,
-          loc.seqNo,
-          loc.locationType,
-          loc.tiploc,
-          loc.stanox,
-          loc.arrivalPublic,
-          loc.arrivalWorking,
-          loc.departurePublic,
-          loc.departureWorking,
-          loc.passPublic,
-          loc.passWorking,
-          loc.platform,
-          loc.path,
-          loc.line,
-          loc.activityCodes,
-          loc.rawActivityText,
-          loc.dayOffset,
-        ],
+        loc.seqNo,
+        loc.locationType,
+        loc.tiploc,
+        loc.stanox,
+        loc.arrivalPublic,
+        loc.arrivalWorking,
+        loc.departurePublic,
+        loc.departureWorking,
+        loc.passPublic,
+        loc.passWorking,
+        loc.platform,
+        loc.path,
+        loc.line,
+        loc.activityCodes,
+        loc.rawActivityText,
+        loc.dayOffset,
       );
     }
+    await client.query(
+      `insert into schedule_location_import_staging (
+         staging_import_id, train_uid, schedule_start_date, schedule_end_date, stp_indicator,
+         source, seq_no, location_type, tiploc, stanox, arrival_public, arrival_working,
+         departure_public, departure_working, pass_public, pass_working, platform, path, line,
+         activity_codes, raw_activity_text, day_offset
+       ) values ${locValuesClauses.join(",")}`,
+      locParams,
+    );
   }
 }
 

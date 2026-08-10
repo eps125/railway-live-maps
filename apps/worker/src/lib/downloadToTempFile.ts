@@ -25,8 +25,7 @@ async function sniffGzip(source: Readable): Promise<{ isGzip: boolean; stream: R
   const firstChunk: Buffer = Buffer.isBuffer(first.value)
     ? first.value
     : Buffer.from(first.value as string);
-  const isGzip =
-    firstChunk.length >= 2 && firstChunk.subarray(0, 2).equals(GZIP_MAGIC_BYTES);
+  const isGzip = firstChunk.length >= 2 && firstChunk.subarray(0, 2).equals(GZIP_MAGIC_BYTES);
 
   async function* replay(): AsyncGenerator<Buffer> {
     yield firstChunk;

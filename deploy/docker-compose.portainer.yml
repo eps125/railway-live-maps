@@ -61,12 +61,13 @@ x-worker-env: &worker-env
   # Milestone 7) — previously missing from this anchor entirely, so setting
   # SCHEDULE_DOWNLOAD_ENABLED in Portainer's stack environment editor silently had no effect
   # (docker compose only injects env vars a service's `environment:` block actually
-  # references). Off by default: these are one-off/periodic `download-*` console runs, not
-  # meant to be left permanently on.
+  # references). Unlike TD/VSTP/TRUST_LIVE_ENABLED, this flag alone triggers nothing — no
+  # always-running service calls download-smart/download-schedule/download-corpus
+  # automatically, it only gates whether those console commands refuse to run.
   NR_SCHEDULE_DOWNLOAD_URL: ${NR_SCHEDULE_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CIF_ALL_FULL_DAILY}
   NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
   NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
-  SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-false}
+  SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-true}
   # Must match the `api` service's own copy of this flag below — see the map-deltas service
   # and docs/ARCHITECTURE.md's Milestone 6 note. On: the WebSocket layer gets pushed deltas
   # over Redis pub/sub instead of polling Postgres, which is what actually makes the map feel

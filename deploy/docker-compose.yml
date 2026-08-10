@@ -77,11 +77,13 @@ services:
       # SCHEDULE/CORPUS/SMART full-extract download support (docs/IMPLEMENTATION_PLAN.md
       # Milestone 7) — previously missing from this block entirely, so setting
       # SCHEDULE_DOWNLOAD_ENABLED had no effect (docker compose only injects env vars a
-      # service's `environment:` block actually references).
+      # service's `environment:` block actually references). Unlike TD/VSTP/TRUST_LIVE_ENABLED,
+      # this flag alone triggers nothing on its own — it only gates whether the download-*
+      # console commands refuse to run — so defaulting it true is safe even for local dev.
       NR_SCHEDULE_DOWNLOAD_URL: ${NR_SCHEDULE_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CIF_ALL_FULL_DAILY}
       NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
       NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
-      SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-false}
+      SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-true}
     secrets:
       - nr_username
       - nr_password

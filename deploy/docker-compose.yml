@@ -32,6 +32,8 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
       EDITOR_ENABLED: ${EDITOR_ENABLED:-false}
+      LIVE_WS_POLL_INTERVAL_MS: ${LIVE_WS_POLL_INTERVAL_MS:-1000}
+      LIVE_WS_HEARTBEAT_INTERVAL_MS: ${LIVE_WS_HEARTBEAT_INTERVAL_MS:-15000}
     ports:
       - "${API_PORT:-3000}:3000"
     depends_on:
@@ -57,7 +59,6 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       CAPTURE_ALL_TD: ${CAPTURE_ALL_TD:-true}
-      PRESTON_MAP_TD_AREA: ${PRESTON_MAP_TD_AREA:-UNCONFIRMED}
       RAW_ARCHIVE_ENDPOINT: ${RAW_ARCHIVE_ENDPOINT:-http://archive:9000}
       RAW_ARCHIVE_BUCKET: ${RAW_ARCHIVE_BUCKET:-railway-raw}
       RAW_ARCHIVE_ACCESS_KEY: ${RAW_ARCHIVE_ACCESS_KEY}
@@ -73,7 +74,14 @@ services:
       TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-false}
       VSTP_LIVE_ENABLED: ${VSTP_LIVE_ENABLED:-false}
       TRUST_LIVE_ENABLED: ${TRUST_LIVE_ENABLED:-false}
-      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+      # SCHEDULE/CORPUS/SMART full-extract download support (docs/IMPLEMENTATION_PLAN.md
+      # Milestone 7) — previously missing from this block entirely, so setting
+      # SCHEDULE_DOWNLOAD_ENABLED had no effect (docker compose only injects env vars a
+      # service's `environment:` block actually references).
+      NR_SCHEDULE_DOWNLOAD_URL: ${NR_SCHEDULE_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CIF_ALL_FULL_DAILY}
+      NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
+      NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
+      SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-false}
     secrets:
       - nr_username
       - nr_password

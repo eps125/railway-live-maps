@@ -1,15 +1,18 @@
 # Pull-only variant of docker-compose.yml for Portainer: no `build:` context, images come
 # straight from GHCR. Use this file (not docker-compose.yml) when deploying via Portainer's
 # "Repository" stack method pointing at this repo, or by pasting it into the Web editor.
-# Pin APP_TAG to a real commit SHA once you trust a build — do not run `latest` long-term
-# in production (docs/ARCHITECTURE.md §8).
+# APP_TAG defaults to `latest` (deploy/.env.example) — a deliberate owner choice for this
+# single-operator deployment, not the general production advice docs/ARCHITECTURE.md §8 gives
+# (pin to a real commit SHA once you trust a build) for a multi-operator/higher-stakes setup.
 #
 # Deliberately has no Docker-secret file mounts (no host filesystem access required to
 # deploy) — NR_USERNAME/NR_PASSWORD are plain environment variables (Portainer's stack
 # environment editor) instead of mounted secret files. Weaker than a mounted secret (visible
 # via `docker inspect`/the Portainer UI to anyone with stack access) — see deploy/DEPLOYMENT.md
-# §4's caveat. Live ingestion still stays off by default regardless (every `*_LIVE_ENABLED`
-# flag below defaults to `false`).
+# §4's caveat. Every `*_LIVE_ENABLED` flag below now defaults to `true` (deploy/.env.example)
+# — also a deliberate owner choice once TD/VSTP/TRUST were confirmed working against real NR
+# feeds; NR_USERNAME/NR_PASSWORD must still be set in Portainer's stack environment editor for
+# any of the three to actually connect (loadConfig fails fast otherwise).
 #
 # `worker` itself stays an idle daemon (its default command) — it's the stable target for
 # Portainer's "Console" one-off commands (migrate, ensure-archive-bucket, publish-map, ...).
@@ -40,7 +43,6 @@ x-worker-env: &worker-env
   DATABASE_URL: ${DATABASE_URL}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
   CAPTURE_ALL_TD: ${CAPTURE_ALL_TD:-true}
-  PRESTON_MAP_TD_AREA: ${PRESTON_MAP_TD_AREA:-UNCONFIRMED}
   RAW_ARCHIVE_ENDPOINT: ${RAW_ARCHIVE_ENDPOINT:-http://archive:9000}
   RAW_ARCHIVE_BUCKET: ${RAW_ARCHIVE_BUCKET:-railway-raw}
   RAW_ARCHIVE_ACCESS_KEY: ${RAW_ARCHIVE_ACCESS_KEY}
@@ -52,10 +54,19 @@ x-worker-env: &worker-env
   # Real values go in Portainer's stack environment editor, never in this file or Git.
   NR_USERNAME: ${NR_USERNAME:-}
   NR_PASSWORD: ${NR_PASSWORD:-}
-  TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-false}
-  VSTP_LIVE_ENABLED: ${VSTP_LIVE_ENABLED:-false}
-  TRUST_LIVE_ENABLED: ${TRUST_LIVE_ENABLED:-false}
-  DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
+  TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-true}
+  VSTP_LIVE_ENABLED: ${VSTP_LIVE_ENABLED:-true}
+  TRUST_LIVE_ENABLED: ${TRUST_LIVE_ENABLED:-true}
+  # SCHEDULE/CORPUS/SMART full-extract download support (docs/IMPLEMENTATION_PLAN.md
+  # Milestone 7) — previously missing from this anchor entirely, so setting
+  # SCHEDULE_DOWNLOAD_ENABLED in Portainer's stack environment editor silently had no effect
+  # (docker compose only injects env vars a service's `environment:` block actually
+  # references). Off by default: these are one-off/periodic `download-*` console runs, not
+  # meant to be left permanently on.
+  NR_SCHEDULE_DOWNLOAD_URL: ${NR_SCHEDULE_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CIF_ALL_FULL_DAILY}
+  NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
+  NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
+  SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-false}
   # Must match the `api` service's own copy of this flag below — see the map-deltas service
   # and docs/ARCHITECTURE.md's Milestone 6 note. On: the WebSocket layer gets pushed deltas
   # over Redis pub/sub instead of polling Postgres, which is what actually makes the map feel
@@ -70,7 +81,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-6050}:80"
     networks: [frontend, backend]
 
   api:
@@ -87,12 +98,18 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
-      EDITOR_ENABLED: ${EDITOR_ENABLED:-false}
+      EDITOR_ENABLED: ${EDITOR_ENABLED:-true}
       # Must match the worker-side copy of this flag (x-worker-env above) — if only one side
       # has it on, deltas either never get published or never get subscribed to.
       LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
+      # Previously missing from this block entirely (apps/api/src/config.ts has both with safe
+      # defaults, so nothing broke — but Portainer's environment editor couldn't actually
+      # override them). LIVE_WS_POLL_INTERVAL_MS is also the fallback poll interval when
+      # LIVE_WS_REDIS_PUBSUB_ENABLED is false.
+      LIVE_WS_POLL_INTERVAL_MS: ${LIVE_WS_POLL_INTERVAL_MS:-1000}
+      LIVE_WS_HEARTBEAT_INTERVAL_MS: ${LIVE_WS_HEARTBEAT_INTERVAL_MS:-15000}
     ports:
-      - "${API_PORT:-3000}:3000"
+      - "${API_PORT:-6051}:3000"
     depends_on:
       postgres:
         condition: service_healthy

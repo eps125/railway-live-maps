@@ -317,6 +317,81 @@ describe("runProjectResolver (integration)", () => {
     expect((await resolution(occupancyC))?.status).toBe("unmatched");
   });
 
+  it("continuity from a preceding matched occupancy chain-heals a run of ties for the same description (real-world flap regression)", async () => {
+    // Regression for a real production incident: a headcode shared by two genuine same-day
+    // services ties on schedule-linked + temporally-plausible evidence whenever SMART coverage
+    // is absent for a particular berth — without continuity evidence, a train confidently matched
+    // one step flips to ambiguous on the very next step (and stays that way indefinitely) even
+    // though nothing about it actually changed. Three consecutive berths, only the first has
+    // SMART coverage — the other two must self-heal via continuity, and the third must chain
+    // through the *second's* continuity-derived match, not just the first's SMART-derived one.
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const enteredAt1 = ENTERED_AT;
+    const enteredAt2 = new Date(ENTERED_AT.getTime() + 60_000);
+    const enteredAt3 = new Date(ENTERED_AT.getTime() + 120_000);
+
+    const occupancy1 = await seedOccupancy(area, "0100", signallingId, enteredAt1, enteredAt2);
+    const occupancy2 = await seedOccupancy(area, "0102", signallingId, enteredAt2, enteredAt3);
+    const occupancy3 = await seedOccupancy(area, "0104", signallingId, enteredAt3, null);
+
+    const scheduleA = await seedSchedule();
+    await seedScheduleLocation(scheduleA, "99001");
+    await seedSmartBerthStep(area, "0100", "99001"); // only berth 0100 has SMART coverage
+    const runA = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleA);
+    await seedRunScheduleLink(runA, "matched", scheduleA);
+
+    const scheduleB = await seedSchedule();
+    const runB = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleB);
+    await seedRunScheduleLink(runB, "matched", scheduleB);
+
+    await runProjectResolver(pool);
+
+    expect(await resolution(occupancy1)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runA,
+    });
+    expect(await resolution(occupancy2)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runA,
+    });
+    expect(await resolution(occupancy3)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runA,
+    });
+    void runB;
+  });
+
+  it("continuity never applies across a gap wider than the lookback window", async () => {
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const enteredAt1 = ENTERED_AT;
+    const enteredAt2 = new Date(ENTERED_AT.getTime() + 11 * 60_000); // just past the 10-minute window
+
+    const occupancy1 = await seedOccupancy(area, "0110", signallingId, enteredAt1, enteredAt2);
+    const occupancy2 = await seedOccupancy(area, "0112", signallingId, enteredAt2, null);
+
+    const scheduleA = await seedSchedule();
+    await seedScheduleLocation(scheduleA, "99002");
+    await seedSmartBerthStep(area, "0110", "99002");
+    const runA = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleA);
+    await seedRunScheduleLink(runA, "matched", scheduleA);
+
+    const scheduleB = await seedSchedule();
+    const runB = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleB);
+    await seedRunScheduleLink(runB, "matched", scheduleB);
+
+    await runProjectResolver(pool);
+
+    expect(await resolution(occupancy1)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runA,
+    });
+    // Outside the window: back to a genuine, honestly-reported tie.
+    expect((await resolution(occupancy2))?.status).toBe("ambiguous");
+    void runB;
+  });
+
   it("caps work per invocation and resumes the rest on the next call, reporting moreBacklogRemains", async () => {
     // Regression test for the real production incident: the very first run against an
     // already-large nationwide backlog needs to make bounded, visible progress per invocation

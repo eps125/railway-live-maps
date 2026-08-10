@@ -89,11 +89,20 @@ function formatTime(publicTime: string | null): string {
   return `${digits.slice(0, 2)}:${digits.slice(2, 4)}${publicTime.endsWith("H") ? "½" : ""}`;
 }
 
+/** How often the popup re-fetches while open. Resolution isn't necessarily settled the instant a
+ * berth is clicked — project-resolver runs its own decoupled loop (deploy/docker-compose.
+ * portainer.yml's `projector-backlog` service), so a berth clicked right as a train arrives can
+ * genuinely still be `unmatched` for a few seconds. A one-shot fetch would then never update even
+ * after the backend resolves it moments later — confirmed 2026-08-10 against a real occupancy
+ * that matched 15s after entering while the popup, opened at entry, kept showing "no match". */
+const POLL_INTERVAL_MS = 2000;
+
 /**
  * The live map's click-a-berth popup (docs/PROJECT_SPEC.md §5 "Train/run popup", Milestone 9).
- * One fetch per selection against `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run`.
- * Renders the full spec'd field list, and — critically — never silently picks a run when the
- * resolver reports `ambiguous`, and never fabricates schedule/operator data when `unmatched`.
+ * Polls `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` every POLL_INTERVAL_MS while
+ * open, so a resolution decided after the popup was opened still reaches it. Renders the full
+ * spec'd field list, and — critically — never silently picks a run when the resolver reports
+ * `ambiguous`, and never fabricates schedule/operator data when `unmatched`.
  */
 export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProps): JSX.Element {
   const [data, setData] = useState<CurrentRunResponse | null>(null);
@@ -106,27 +115,38 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
     setError(null);
     setData(null);
 
-    fetch(
-      `/api/v1/td/areas/${encodeURIComponent(tdArea)}/berths/${encodeURIComponent(berth)}/current-run`,
-    )
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Failed to load run detail (${response.status})`);
-        }
-        return (await response.json()) as CurrentRunResponse;
-      })
-      .then((body) => {
-        if (!cancelled) setData(body);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load run detail");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    function fetchOnce(): void {
+      fetch(
+        `/api/v1/td/areas/${encodeURIComponent(tdArea)}/berths/${encodeURIComponent(berth)}/current-run`,
+      )
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Failed to load run detail (${response.status})`);
+          }
+          return (await response.json()) as CurrentRunResponse;
+        })
+        .then((body) => {
+          if (!cancelled) {
+            setData(body);
+            setError(null);
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : "Failed to load run detail");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }
+
+    fetchOnce();
+    const intervalId = setInterval(fetchOnce, POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
+      clearInterval(intervalId);
     };
   }, [tdArea, berth]);
 

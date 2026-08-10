@@ -42,6 +42,11 @@ const RETRY_INTERVAL_MS = 5 * 60 * 1000;
  * available for this check; that makes this a day-level plausibility signal, not per-calling-
  * point precision (schedule_location's own times are raw CIF-style text, not parsed timestamps). */
 const MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
+/** How far back a preceding occupancy of the same description can still count as continuity
+ * evidence (resolveBerthRun.ts's `recentContinuity`). Real inter-berth timing is seconds to low
+ * minutes even on a quiet corridor; 10 minutes is a generous bound that comfortably covers gaps
+ * without reaching into an unrelated, much older occupancy that happens to share a headcode. */
+const CONTINUITY_WINDOW_MS = 10 * 60 * 1000;
 
 export interface ProjectResolverOptions {
   batchSize?: number;
@@ -113,6 +118,11 @@ interface TrainRunCandidateRow {
 /** Everything `resolveOne` needs to score every occupancy in the current batch, fetched with a
  * small, fixed number of queries regardless of batch size — see the module doc comment for why
  * this replaced a per-occupancy query loop. */
+interface ContinuityEntry {
+  enteredAt: Date;
+  trainRunId: string;
+}
+
 interface BatchCandidateData {
   /** Key: `${signallingId}|${serviceDate}`. */
   trainRunsByKey: Map<string, TrainRunCandidateRow[]>;
@@ -122,16 +132,20 @@ interface BatchCandidateData {
   smartStanoxesByAreaBerth: Map<string, Set<string>>;
   /** Key: schedule id. */
   scheduleStanoxes: Map<string, Set<string>>;
+  /** Key: description. The most recent `matched` occupancy of that description seen so far —
+   * seeded from berth_run_resolution before the batch starts, then kept current as resolveBatch
+   * resolves each occupancy in order, so continuity can chain forward within one batch too. */
+  continuityByDescription: Map<string, ContinuityEntry>;
 }
 
 /**
  * Candidate generation (docs/DATA_MODEL.md §8 evidence #1: exact signalling identity for the
  * occupancy's service date, never a run whose identity was superseded) plus the evidence signals
- * this MVP pass scores (#2 schedule-linked, #3 temporal plausibility via activated_at, #5 SMART/
- * STANOX correlation — see resolveBerthRun.ts's own doc comment for the full evidence-coverage
- * note, including #4/#6/#7's documented deferral).
+ * this pass scores (#2 schedule-linked, #3 temporal plausibility via activated_at, #4 continuity
+ * from a preceding occupancy, #5 SMART/STANOX correlation — see resolveBerthRun.ts's own doc
+ * comment for the full evidence-coverage note, including #6/#7's documented deferral).
  *
- * Fetches for the **whole batch at once** — a fixed 4 queries regardless of how many occupancies
+ * Fetches for the **whole batch at once** — a fixed 5 queries regardless of how many occupancies
  * are in it, using the same `join (select unnest(...) ...) wanted` pattern
  * `apps/api/src/lib/liveState.ts`'s `computeLiveState` already established for this. A prior
  * version queried per-occupancy (up to 4 sequential round trips each), which was fine against
@@ -247,7 +261,42 @@ async function fetchBatchCandidateData(
     }
   }
 
-  return { trainRunsByKey, linkedRunIds, smartStanoxesByAreaBerth, scheduleStanoxes };
+  const continuityByDescription = new Map<string, ContinuityEntry>();
+  if (signallingIds.length > 0) {
+    const enteredAts = occupancies.map(({ row }) => row.entered_at.getTime());
+    const earliestNeeded = new Date(Math.min(...enteredAts) - CONTINUITY_WINDOW_MS);
+    const latestNeeded = new Date(Math.max(...enteredAts));
+    const continuityResult = await client.query<{
+      description: string;
+      entered_at: Date;
+      selected_train_run_id: string;
+    }>(
+      `select bo.description, bo.entered_at, brr.selected_train_run_id
+       from berth_run_resolution brr
+       join berth_occupancy bo on bo.id = brr.occupancy_id
+       join (select distinct unnest($1::text[]) as description) wanted
+         on wanted.description = bo.description
+       where brr.status = 'matched' and bo.entered_at >= $2 and bo.entered_at <= $3`,
+      [signallingIds, earliestNeeded, latestNeeded],
+    );
+    for (const row of continuityResult.rows) {
+      const existing = continuityByDescription.get(row.description);
+      if (!existing || row.entered_at.getTime() > existing.enteredAt.getTime()) {
+        continuityByDescription.set(row.description, {
+          enteredAt: row.entered_at,
+          trainRunId: row.selected_train_run_id,
+        });
+      }
+    }
+  }
+
+  return {
+    trainRunsByKey,
+    linkedRunIds,
+    smartStanoxesByAreaBerth,
+    scheduleStanoxes,
+    continuityByDescription,
+  };
 }
 
 function buildCandidates(
@@ -259,6 +308,13 @@ function buildCandidates(
   const smartStanoxes =
     data.smartStanoxesByAreaBerth.get(`${occupancy.td_area}|${occupancy.berth_code}`) ??
     new Set<string>();
+  const continuity = data.continuityByDescription.get(occupancy.description);
+  const continuityRunId =
+    continuity !== undefined &&
+    continuity.enteredAt.getTime() < occupancy.entered_at.getTime() &&
+    occupancy.entered_at.getTime() - continuity.enteredAt.getTime() <= CONTINUITY_WINDOW_MS
+      ? continuity.trainRunId
+      : null;
 
   return runs.map((run) => {
     const temporallyPlausible =
@@ -276,6 +332,7 @@ function buildCandidates(
       trainRunId: run.id,
       hasMatchedSchedule: data.linkedRunIds.has(run.id),
       temporallyPlausible,
+      recentContinuity: run.id === continuityRunId,
       smartStanoxMatch,
     };
   });
@@ -286,7 +343,7 @@ async function resolveOne(
   occupancy: OccupancyRow,
   serviceDate: string,
   data: BatchCandidateData,
-): Promise<"matched" | "ambiguous" | "unmatched"> {
+): Promise<{ status: "matched" | "ambiguous" | "unmatched"; selectedRunId: string | null }> {
   const candidates = buildCandidates(occupancy, serviceDate, data);
   const result = resolveBerthRun(candidates);
   const selectedRunId = result.status === "matched" ? result.selectedTrainRunId : null;
@@ -317,10 +374,15 @@ async function resolveOne(
     [occupancy.id, selectedRunId, result.status],
   );
 
-  return result.status;
+  return { status: result.status, selectedRunId };
 }
 
-/** Resolves every occupancy in `rows` against one shared `fetchBatchCandidateData` call. */
+/** Resolves every occupancy in `rows` against one shared `fetchBatchCandidateData` call. Updates
+ * `data.continuityByDescription` as each occupancy resolves so a `matched` result becomes
+ * continuity evidence for the *next* occupancy of the same description later in this same batch —
+ * without this, a long unbroken run of same-description steps landing in one batch could only
+ * ever chain-heal from continuity seeded before the batch started, not from matches it just made
+ * itself. */
 async function resolveBatch(
   client: PoolClient,
   rows: OccupancyRow[],
@@ -333,9 +395,18 @@ async function resolveBatch(
   }));
   const data = await fetchBatchCandidateData(client, withServiceDates);
   for (const { row, serviceDate } of withServiceDates) {
-    const status = await resolveOne(client, row, serviceDate, data);
+    const { status, selectedRunId } = await resolveOne(client, row, serviceDate, data);
     summary[countAs] += 1;
     summary[status] += 1;
+    if (status === "matched" && selectedRunId) {
+      const existing = data.continuityByDescription.get(row.description);
+      if (!existing || row.entered_at.getTime() > existing.enteredAt.getTime()) {
+        data.continuityByDescription.set(row.description, {
+          enteredAt: row.entered_at,
+          trainRunId: selectedRunId,
+        });
+      }
+    }
   }
 }
 

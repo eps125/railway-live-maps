@@ -6,6 +6,7 @@ function candidate(overrides: Partial<RunCandidate>): RunCandidate {
     trainRunId: "run-1",
     hasMatchedSchedule: false,
     temporallyPlausible: false,
+    recentContinuity: false,
     smartStanoxMatch: false,
     ...overrides,
   };
@@ -24,12 +25,13 @@ describe("resolveBerthRun", () => {
     expect(result.candidates[0]).toMatchObject({ trainRunId: "run-1", score: 0 });
   });
 
-  it("a single strong candidate (schedule-linked + temporally plausible + SMART match) is matched", () => {
+  it("a single strong candidate (schedule-linked + temporally plausible + continuity + SMART match) is matched", () => {
     const result = resolveBerthRun([
       candidate({
         trainRunId: "run-1",
         hasMatchedSchedule: true,
         temporallyPlausible: true,
+        recentContinuity: true,
         smartStanoxMatch: true,
       }),
     ]);
@@ -37,6 +39,44 @@ describe("resolveBerthRun", () => {
     if (result.status !== "matched") throw new Error("expected matched");
     expect(result.selectedTrainRunId).toBe("run-1");
     expect(result.confidence).toBe(1);
+  });
+
+  it("continuity from a preceding occupancy breaks a tie between two otherwise-equal candidates", () => {
+    const withContinuity = candidate({
+      trainRunId: "with-continuity",
+      hasMatchedSchedule: true,
+      recentContinuity: true,
+    });
+    const withoutContinuity = candidate({
+      trainRunId: "without-continuity",
+      hasMatchedSchedule: true,
+    });
+    const result = resolveBerthRun([withoutContinuity, withContinuity]);
+    expect(result.status).toBe("matched");
+    if (result.status !== "matched") throw new Error("expected matched");
+    expect(result.selectedTrainRunId).toBe("with-continuity");
+  });
+
+  it("a missing SMART match for one step no longer flips a continuity-backed run to ambiguous", () => {
+    // Regression for the real-world "matched, one step ambiguous, matched again" flap: two
+    // same-headcode candidates tie on schedule-linked + temporally-plausible whenever SMART
+    // coverage is absent for a particular berth; continuity (this run was *just* matched) should
+    // still break the tie even though SMART can't.
+    const justMatched = candidate({
+      trainRunId: "just-matched",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+      recentContinuity: true,
+    });
+    const otherHeadcodeSharer = candidate({
+      trainRunId: "other-sharer",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+    });
+    const result = resolveBerthRun([otherHeadcodeSharer, justMatched]);
+    expect(result.status).toBe("matched");
+    if (result.status !== "matched") throw new Error("expected matched");
+    expect(result.selectedTrainRunId).toBe("just-matched");
   });
 
   it("a schedule-linked candidate beats a non-linked one with otherwise equal evidence", () => {

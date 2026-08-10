@@ -306,8 +306,24 @@ reference is nulled out, the audit row itself is preserved.
 
 Known limitations (deliberate scope decisions, not gaps to silently paper over):
 
-- Evidence #4 (continuity from a preceding berth's resolved run) and #7 (operator/direction
-  consistency) are not implemented — no ground-truth signal to score them against without #6.
+- Evidence #7 (operator/direction consistency) is not implemented — no ground-truth signal to
+  score it against without #6.
+- Evidence #4 (continuity from a preceding berth's resolved run) was added 2026-08-10 after real
+  production data showed the gap: a headcode shared by two genuinely different same-day services
+  ties on schedule-linked + temporally-plausible evidence whenever SMART/STANOX coverage (#5) is
+  absent for a particular berth, and with no memory of the immediately preceding, already-`matched`
+  occupancy of the same description, that produced a real train flipping to `ambiguous` for one
+  step (sometimes many consecutive steps) before recovering. `packages/domain/src/resolver/
+resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weight 30, between
+  temporal plausibility and SMART/STANOX per docs/DATA_MODEL.md §8's ordering);
+  `apps/worker/src/resolver/projector.ts` seeds it from the most recent `matched`
+  `berth_run_resolution` row for the same description within a 10-minute window and keeps it
+  current as each batch resolves, so a chain of many ambiguous steps in a row self-heals from a
+  single earlier match rather than needing SMART coverage at every one. `RESOLVER_VERSION` bumped
+  1→2. Relatedly, `apps/web/src/map/RunPopup.tsx` was fetch-once — a berth clicked right as a
+  train arrived (the resolver's own decoupled loop, see `projector-backlog` in
+  `deploy/docker-compose.portainer.yml`, can take a few seconds) would show "no match" forever
+  even after the backend resolved it moments later; it now polls every 2s while open.
 - Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via
   SMART/STANOX correlation to the specific berth being resolved, not by consulting the live map
   document a berth happens to be published on — the resolver stays fully nationwide/map-

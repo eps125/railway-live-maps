@@ -11,27 +11,40 @@
  * (CLAUDE.md rule 7): every candidate considered is returned, not just the winner.
  *
  * Evidence weights follow docs/DATA_MODEL.md §8's descending-importance ordering for the signals
- * this MVP pass implements (exact signalling match is the candidate-generation gate itself, not
+ * this pass implements (exact signalling match is the candidate-generation gate itself, not
  * scored here):
  *   2. Activation directly linked to a valid schedule for the service date.
  *   3. Temporal plausibility around booked and actual times.
+ *   4. Continuity from preceding berth occupancy/run links.
  *   5. SMART berth/STANOX evidence.
- * Evidence #4 (continuity from preceding berth occupancy/run links), #6 (map/corridor coverage —
- * satisfied instead via SMART/STANOX grounding, see the M9 plan's design-decisions note) and #7
- * (operator/direction consistency, no ground truth to compare against without map/corridor
- * context) are documented known limitations, not implemented in this pass.
+ * Evidence #6 (map/corridor coverage — satisfied instead via SMART/STANOX grounding, see the M9
+ * plan's design-decisions note) and #7 (operator/direction consistency, no ground truth to
+ * compare against without map/corridor context) remain documented known limitations, not
+ * implemented in this pass.
+ *
+ * #4 (continuity) was added 2026-08-10 after observing that every occupancy was being scored
+ * from scratch with no memory of the same physical train's immediately preceding, already-
+ * `matched` occupancy: whenever SMART berth/STANOX coverage (evidence #5) happened to be missing
+ * for exactly one berth in an otherwise-unbroken journey, a routine tie between two same-headcode
+ * candidates went unbroken for that single step, flipping a confidently-tracked train to
+ * `ambiguous` for one berth before immediately recovering. Continuity evidence — the specific
+ * train_run_id a *different*, already-`matched` occupancy of the same description resolved to
+ * very recently — fixes this without weakening rule 5: it never trusts the raw four-character
+ * description alone, only an already-decided resolver outcome.
  *
  * Weights/thresholds are a versioned, tunable MVP starting point (docs/DATA_MODEL.md §8:
  * "Thresholds belong in versioned resolver configuration and tests") — bump RESOLVER_VERSION
  * whenever they change, since stored `berth_run_resolution` rows record which version produced
  * them.
  */
-export const RESOLVER_VERSION = 1;
+export const RESOLVER_VERSION = 2;
 
 const SCHEDULE_LINKED_WEIGHT = 40;
 const TEMPORAL_PLAUSIBILITY_WEIGHT = 35;
+const CONTINUITY_WEIGHT = 30;
 const SMART_STANOX_WEIGHT = 25;
-const MAX_SCORE = SCHEDULE_LINKED_WEIGHT + TEMPORAL_PLAUSIBILITY_WEIGHT + SMART_STANOX_WEIGHT;
+const MAX_SCORE =
+  SCHEDULE_LINKED_WEIGHT + TEMPORAL_PLAUSIBILITY_WEIGHT + CONTINUITY_WEIGHT + SMART_STANOX_WEIGHT;
 
 export interface RunCandidate {
   trainRunId: string;
@@ -39,6 +52,10 @@ export interface RunCandidate {
   hasMatchedSchedule: boolean;
   /** The occupancy's entered_at falls within the candidate's schedule's plausible day window. */
   temporallyPlausible: boolean;
+  /** A different, more recent occupancy of the same description resolved to this exact
+   * train_run_id with status `matched` (bounded lookback window — see the caller). Evidence about
+   * an already-decided resolver outcome, never about the raw description alone (rule 5). */
+  recentContinuity: boolean;
   /** smart_berth_step ties this exact berth to a STANOX the candidate's schedule calls at. */
   smartStanoxMatch: boolean;
 }
@@ -70,6 +87,10 @@ function scoreCandidate(candidate: RunCandidate): ScoredCandidate {
   if (candidate.temporallyPlausible) {
     score += TEMPORAL_PLAUSIBILITY_WEIGHT;
     reasons.push("occupancy time falls within the schedule's plausible window");
+  }
+  if (candidate.recentContinuity) {
+    score += CONTINUITY_WEIGHT;
+    reasons.push("a preceding occupancy of the same description was just matched to this run");
   }
   if (candidate.smartStanoxMatch) {
     score += SMART_STANOX_WEIGHT;

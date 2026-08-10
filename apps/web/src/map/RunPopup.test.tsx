@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunPopup } from "./RunPopup.js";
 
@@ -132,5 +132,60 @@ describe("RunPopup", () => {
     render(<RunPopup elementId="berth-3" displayName="Berth 3" tdArea="PX" berth="0514" />);
 
     expect(await screen.findByText("No matching activated schedule found.")).toBeInTheDocument();
+  });
+
+  it("picks up a resolution that lands after the popup was already open (regression)", async () => {
+    // Real-world case, 2026-08-10: a berth clicked right as a train arrived showed "unmatched"
+    // forever because the old implementation fetched exactly once — the resolver matched it 15s
+    // later and the popup never found out. The popup must poll, not fetch-once.
+    vi.useFakeTimers();
+    const unmatchedBody = {
+      tdArea: "PX",
+      berth: "0226",
+      description: "9S93",
+      occupancyEnteredAt: "2026-08-10T19:46:33.000Z",
+      resolution: { status: "unmatched", confidence: null, resolverVersion: 2, candidates: [] },
+      run: null,
+      schedule: null,
+      latestMovement: null,
+    };
+    const matchedBody = {
+      ...unmatchedBody,
+      resolution: { status: "matched", confidence: 0.75, resolverVersion: 2, candidates: [] },
+      run: {
+        runId: "run-9s93",
+        trustTrainId: "729S93MT10",
+        signallingId: "9S93",
+        serviceDate: "2026-08-10",
+        activatedAt: "2026-08-10T15:40:21.000Z",
+        operatorCode: "GW",
+        serviceCode: "9S93000",
+        lifecycleState: "activated",
+        scheduleLink: { matchOutcome: "matched", scheduleId: "1" },
+      },
+      schedule: null,
+      latestMovement: null,
+    };
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(unmatchedBody))
+      .mockResolvedValue(jsonResponse(matchedBody));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<RunPopup elementId="berth-px-0226" displayName="0226" tdArea="PX" berth="0226" />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("No matching activated schedule found.")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(screen.getByText("729S93MT10")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    vi.useRealTimers();
   });
 });

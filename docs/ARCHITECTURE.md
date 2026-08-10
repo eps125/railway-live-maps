@@ -86,6 +86,8 @@ One image may run different commands/roles:
 
 For the first implementation, one worker process may host several modules. Split roles into separate containers only when measured throughput, restart isolation or operational control requires it.
 
+`project-td` runs its own dedicated loop (`projector-td`), separate from `project-vstp`/`project-trust`/`project-resolver` (`projector-backlog`). Measured 2026-08-10: sharing one sequential loop let schedule/TRUST/resolver backlog work (which can legitimately take many seconds per invocation) block `project-td` for as long as it ran, stalling live berth positions for up to ~25s. `project-td` is latency-critical (it feeds the live map directly); the other three are correctness-important but not latency-critical, so they run in their own loop and may lag behind real-time independently without affecting live rendering.
+
 ### `postgres`
 
 Authoritative database for:

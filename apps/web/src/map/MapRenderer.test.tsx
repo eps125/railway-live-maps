@@ -219,7 +219,7 @@ describe("MapRenderer", () => {
   });
 
   it("follows a matched run to its new berth instead of staying stuck on the old one", async () => {
-    const fetchMock = vi.fn(() =>
+    const fetchMock = vi.fn((_url: string) =>
       Promise.resolve(
         jsonResponse({
           tdArea: "PX",

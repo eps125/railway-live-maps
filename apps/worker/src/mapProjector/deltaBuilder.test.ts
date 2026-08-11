@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { berthChangesForEvent, buildDeltaMessages } from "./deltaBuilder.js";
+import {
+  berthChangesForEvent,
+  buildDeltaMessages,
+  buildRunResolutionDeltaMessages,
+} from "./deltaBuilder.js";
 
 describe("berthChangesForEvent", () => {
   it("CA yields both a from-clear and a to-update", () => {
@@ -130,5 +134,54 @@ describe("buildDeltaMessages", () => {
       500,
     );
     expect(messages).toEqual([]);
+  });
+});
+
+describe("buildRunResolutionDeltaMessages", () => {
+  it("builds a run.resolution.updated message per bound map", () => {
+    const messages = buildRunResolutionDeltaMessages(
+      "2026-08-11T10:00:00.000Z",
+      { status: "matched", text: "approximately 3 late", trainRunId: "run-1" },
+      [
+        { mapSlug: "lancaster", elementId: "berth-1" },
+        { mapSlug: "other-map", elementId: "berth-99" },
+      ],
+      600,
+    );
+    expect(messages).toEqual([
+      {
+        mapSlug: "lancaster",
+        message: {
+          type: "run.resolution.updated",
+          sequence: 600,
+          eventAt: "2026-08-11T10:00:00.000Z",
+          elementId: "berth-1",
+          runSummary: { status: "matched", text: "approximately 3 late", trainRunId: "run-1" },
+        },
+      },
+      {
+        mapSlug: "other-map",
+        message: {
+          type: "run.resolution.updated",
+          sequence: 600,
+          eventAt: "2026-08-11T10:00:00.000Z",
+          elementId: "berth-99",
+          runSummary: { status: "matched", text: "approximately 3 late", trainRunId: "run-1" },
+        },
+      },
+    ]);
+  });
+
+  it("carries an ambiguous/unmatched runSummary through with a null trainRunId", () => {
+    const messages = buildRunResolutionDeltaMessages(
+      "2026-08-11T10:00:00.000Z",
+      { status: "ambiguous", text: null, trainRunId: null },
+      [{ mapSlug: "lancaster", elementId: "berth-1" }],
+      601,
+    );
+    expect(messages[0]?.message).toMatchObject({
+      type: "run.resolution.updated",
+      runSummary: { status: "ambiguous", text: null, trainRunId: null },
+    });
   });
 });

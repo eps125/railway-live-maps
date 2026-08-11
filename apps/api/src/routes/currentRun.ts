@@ -1,8 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import { TD_PROJECTION_VERSION, extractMovementReport } from "@railway/domain";
 import { apiError } from "../lib/queryRange.js";
-import { extractMovementReport } from "../lib/runSummary.js";
 import { locationToJson, type LocationRow } from "./runs.js";
 
 export interface CurrentRunRoutesDeps {

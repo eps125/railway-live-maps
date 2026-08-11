@@ -22,6 +22,17 @@ const SIGNAL_COLORS: Record<SignalState["state"], string> = {
   off: "#3fb950",
 };
 
+/** Bright blue only for a confirmed resolver match; anything else occupied (ambiguous,
+ * unmatched, or not yet resolved — runSummary is null until the resolver decides, which can
+ * genuinely lag a step or two behind the berth stepping) gets a visibly darker shade rather than
+ * being indistinguishable from a confirmed match. */
+function berthColors(berthState: BerthState | undefined): { fill: string; stroke: string } {
+  if (!berthState?.description) return { fill: "#161d27", stroke: "#2d3644" };
+  return berthState.runSummary?.status === "matched"
+    ? { fill: "#388bfd", stroke: "#58a6ff" }
+    : { fill: "#1c3a5e", stroke: "#2f5b8a" };
+}
+
 const PADDING = 40;
 const MIN_ZOOM_WIDTH = 100;
 
@@ -42,10 +53,31 @@ function initialViewBox(bundle: CompiledMapBundle): ViewBox {
 export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.Element {
   const [viewBox, setViewBox] = useState<ViewBox>(() => initialViewBox(bundle));
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  // Set only when the selected berth was a confirmed match — lets the popup follow this specific
+  // run across berth steps instead of the berth it happened to be clicked in (rule 5: a raw
+  // description alone is never a stable identity, but a resolver-confirmed train_run id is).
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
     null,
   );
   const svgRef = useRef<SVGSVGElement>(null);
+
+  // Re-targets the selection to wherever the tracked run currently is, every time berth state
+  // changes. If it's no longer occupying any berth on this map (left the bound area, or its
+  // resolution changed to no longer match this run), the selection closes rather than keep
+  // showing an increasingly wrong berth — an honest "it's gone" beats stale data.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    const current = Object.entries(berths).find(
+      ([, state]) => state.runSummary?.trainRunId === selectedRunId,
+    );
+    if (current) {
+      if (current[0] !== selectedElementId) setSelectedElementId(current[0]);
+    } else {
+      setSelectedElementId(null);
+      setSelectedRunId(null);
+    }
+  }, [berths, selectedRunId, selectedElementId]);
 
   const elementIdToBinding = useMemo(() => {
     const map = new Map<string, string>();
@@ -165,10 +197,18 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
           }
           if (element.type === "berth") {
             const berthState = berths[element.id];
+            const colors = berthColors(berthState);
             return (
               <g
                 key={element.id}
-                onClick={() => setSelectedElementId(element.id)}
+                onClick={() => {
+                  const trainRunId =
+                    berthState?.runSummary?.status === "matched"
+                      ? berthState.runSummary.trainRunId
+                      : null;
+                  setSelectedRunId(trainRunId);
+                  setSelectedElementId(element.id);
+                }}
                 style={{ cursor: "pointer" }}
               >
                 <rect
@@ -176,8 +216,8 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
                   y={element.y}
                   width={element.width}
                   height={element.height}
-                  fill={berthState?.description ? "#388bfd" : "#161d27"}
-                  stroke={berthState?.description ? "#58a6ff" : "#2d3644"}
+                  fill={colors.fill}
+                  stroke={colors.stroke}
                   strokeWidth={1}
                   rx={2}
                 />
@@ -248,7 +288,10 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
         // fetches/renders the full popup for an occupied, bound berth; an empty or unbound one
         // falls through to the plain stub below instead.
         <RunPopup
-          key={selectedElementId}
+          // Keyed on the run when one's tracked, not the berth — otherwise following a run to a
+          // new berth would remount the popup (a "Loading…" flash) even though nothing about the
+          // selection logically changed.
+          key={selectedRunId ?? selectedElementId}
           elementId={selectedElementId}
           displayName={
             selectedElement?.type === "berth" ? selectedElement.displayName : selectedElementId

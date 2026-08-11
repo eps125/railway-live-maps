@@ -159,6 +159,164 @@ describe("MapRenderer", () => {
     expect(await screen.findByText("No matching activated schedule found.")).toBeInTheDocument();
   });
 
+  it("shades a matched berth brighter than an ambiguous/unmatched one", () => {
+    const doc = bundle({
+      elementsById: {
+        "berth-matched": {
+          id: "berth-matched",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Matched",
+        },
+        "berth-ambiguous": {
+          id: "berth-ambiguous",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 60,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Ambiguous",
+        },
+      },
+    });
+
+    const { container } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-matched": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "matched", text: null, trainRunId: "run-x" },
+          },
+          "berth-ambiguous": {
+            description: "1C61",
+            enteredAt: null,
+            runSummary: { status: "ambiguous", text: null, trainRunId: null },
+          },
+        }}
+        signals={{}}
+      />,
+    );
+
+    const rects = container.querySelectorAll("rect");
+    const matchedFill = rects[0]!.getAttribute("fill");
+    const ambiguousFill = rects[1]!.getAttribute("fill");
+    expect(matchedFill).toBe("#388bfd");
+    expect(ambiguousFill).not.toBe(matchedFill);
+    expect(ambiguousFill).not.toBe("#161d27"); // still occupied, just not the "empty" color either
+  });
+
+  it("follows a matched run to its new berth instead of staying stuck on the old one", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({
+          tdArea: "PX",
+          berth: "0002",
+          description: "1S45",
+          occupancyEnteredAt: null,
+          resolution: { status: "matched", confidence: 1, resolverVersion: 2, candidates: [] },
+          run: {
+            runId: "run-x",
+            trustTrainId: "T1S4511",
+            signallingId: "1S45",
+            serviceDate: "2026-08-11",
+            activatedAt: null,
+            operatorCode: null,
+            serviceCode: null,
+            lifecycleState: "activated",
+            scheduleLink: null,
+          },
+          schedule: null,
+          latestMovement: null,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+        },
+        "berth-2": {
+          id: "berth-2",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 60,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 2",
+        },
+      },
+      berthBindingIndex: { "PX|0001": "berth-1", "PX|0002": "berth-2" },
+    });
+
+    const { rerender } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "matched", text: null, trainRunId: "run-x" },
+          },
+          "berth-2": { description: null, enteredAt: null, runSummary: null },
+        }}
+        signals={{}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("1S45"));
+    await screen.findByText(/Matched/);
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/areas/PX/berths/0001/");
+
+    // The train steps from berth-1 to berth-2 — same run, new berth.
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": { description: null, enteredAt: null, runSummary: null },
+          "berth-2": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "matched", text: null, trainRunId: "run-x" },
+          },
+        }}
+        signals={{}}
+      />,
+    );
+
+    await screen.findByText(/Matched/);
+    const lastCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[0];
+    expect(lastCall).toContain("/areas/PX/berths/0002/");
+  });
+
   it("shows the plain stub, not a popup, for an unbound or empty berth", () => {
     const doc = bundle({
       elementsById: {

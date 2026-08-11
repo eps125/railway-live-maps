@@ -3,6 +3,9 @@ import type { CompiledMapBundle } from "@railway/map-schema";
 export interface RunSummary {
   status: "matched" | "ambiguous" | "unmatched";
   text: string | null;
+  /** The resolver's selected train_run id, only ever set when `status === "matched"` — lets the
+   * map follow this specific run across berth steps instead of the berth it happened to enter. */
+  trainRunId: string | null;
 }
 
 export interface BerthState {

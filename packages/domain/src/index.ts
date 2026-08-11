@@ -69,6 +69,11 @@ export {
 } from "./trust/runReducer.js";
 export { computeServiceDate } from "./trust/serviceDate.js";
 export {
+  extractMovementReport,
+  runningIndicationText,
+  type MovementReport,
+} from "./trust/runningIndication.js";
+export {
   TRUST_NORMALIZATION_VERSION,
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,

@@ -111,8 +111,19 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
       }
       if (message.type === "quality.updated") {
         setQuality(message.quality);
+        return;
       }
-      // run.resolution.updated: no rendering consumer until Milestone 9 — safely ignored.
+      if (message.type === "run.resolution.updated") {
+        // Only ever updates runSummary — description/enteredAt come from berth.updated/cleared,
+        // which the server keeps ordered ahead of this within the same publish cycle (see
+        // apps/worker/src/mapProjector/projector.ts's publishResolutionDeltas doc comment). If
+        // this element isn't known yet (snapshot hasn't landed), there's nothing to merge into.
+        setBerths((prev) => {
+          const existing = prev?.[message.elementId];
+          if (!prev || !existing) return prev;
+          return { ...prev, [message.elementId]: { ...existing, runSummary: message.runSummary } };
+        });
+      }
     }
 
     function connect(): void {

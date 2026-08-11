@@ -7,6 +7,10 @@
  * apps/worker/src/trust/projector.ts stores (see its own `row.raw_event_json.body` read) — the
  * movement fields live on `body`. Field names/values are the real ones
  * packages/feed-parsers/fixtures/trust/movement-*.json use.
+ *
+ * Shared between apps/api (REST/WS snapshot) and apps/worker (map-delta projector's
+ * run.resolution.updated publisher) — moved here 2026-08-11 so both consume identical logic
+ * rather than the worker duplicating it.
  */
 export interface MovementReport {
   eventType: string | null;

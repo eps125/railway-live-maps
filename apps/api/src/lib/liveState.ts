@@ -1,14 +1,22 @@
 import type { Pool } from "pg";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import {
+  TD_PROJECTION_VERSION,
+  extractMovementReport,
+  runningIndicationText,
+} from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { liveDataStatus, tdAreasFromBundle } from "./mapVersion.js";
-import { extractMovementReport, runningIndicationText } from "./runSummary.js";
 
 export interface RunSummary {
   status: "matched" | "ambiguous" | "unmatched";
   /** A short Vail-like running-indication string, only ever set when `status === "matched"` and
    * a real TRUST movement report supplies it — never fabricated (docs/PROJECT_SPEC.md §5). */
   text: string | null;
+  /** The resolver's selected train_run id, only ever set when `status === "matched"` — lets a
+   * client track this specific run across berth steps instead of re-resolving by description
+   * (which rule 5 forbids treating as a stable identity on its own). Added 2026-08-11 for the
+   * live map's "follow the headcode, not the berth" popup behavior. */
+  trainRunId: string | null;
 }
 
 export interface BerthState {
@@ -153,6 +161,7 @@ async function computeRunSummaries(
     result.set(row.occupancy_id, {
       status: row.status,
       text: report ? runningIndicationText(report) : null,
+      trainRunId: row.selected_train_run_id,
     });
   }
   return result;

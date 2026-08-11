@@ -9,7 +9,7 @@ export interface MapRendererProps {
   signals: Record<string, SignalState>;
 }
 
-interface ViewBox {
+export interface ViewBox {
   x: number;
   y: number;
   width: number;
@@ -34,7 +34,26 @@ function berthColors(berthState: BerthState | undefined): { fill: string; stroke
 }
 
 const PADDING = 40;
-const MIN_ZOOM_WIDTH = 100;
+export const MIN_ZOOM_WIDTH = 100;
+
+/** Pure zoom math for a two-finger pinch, factored out so it's directly unit-testable — jsdom
+ * (this project's test environment) doesn't implement the `PointerEvent` constructor at all, so
+ * a genuine two-distinct-pointer gesture can't be reliably simulated through fireEvent; this is
+ * the part of the gesture handling that actually matters to get right. Mirrors onWheel's
+ * "zoom around a fixed center" approach, just driven by pinch distance ratio instead of wheel
+ * delta. */
+export function viewBoxAfterPinch(
+  pinch: { startDistance: number; origin: ViewBox },
+  currentDistance: number,
+): ViewBox | null {
+  if (currentDistance === 0) return null;
+  const scale = pinch.startDistance / currentDistance;
+  const newWidth = Math.max(pinch.origin.width * scale, MIN_ZOOM_WIDTH);
+  const newHeight = Math.max(pinch.origin.height * scale, MIN_ZOOM_WIDTH);
+  const cx = pinch.origin.x + pinch.origin.width / 2;
+  const cy = pinch.origin.y + pinch.origin.height / 2;
+  return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
+}
 
 function initialViewBox(bundle: CompiledMapBundle): ViewBox {
   const { minX, minY, maxX, maxY } = bundle.boundingBox;
@@ -60,6 +79,11 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
   const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
     null,
   );
+  // Two-finger pinch-to-zoom (touch has no wheel event) — tracks the distance between the two
+  // touches at pinch start so subsequent moves scale the viewBox by how that distance has
+  // changed, the same "zoom around a fixed center" idea onWheel already uses for the mouse.
+  const [pinch, setPinch] = useState<{ startDistance: number; origin: ViewBox } | null>(null);
+  const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const svgRef = useRef<SVGSVGElement>(null);
 
   // Re-targets the selection to wherever the tracked run currently is, every time berth state
@@ -134,22 +158,59 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
     return () => svg.removeEventListener("wheel", onWheel);
   }, []);
 
+  function pointerDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>): void {
-    setDrag({ startX: event.clientX, startY: event.clientY, origin: viewBox });
+    // Not implemented in every environment (notably jsdom, and conceivably an older browser) —
+    // a nice-to-have for keeping a fast-moving finger tracked past the element's edge, not a
+    // requirement for the pan/pinch logic itself to work.
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (activePointers.current.size === 2) {
+      // A second finger landing supersedes any single-finger pan already in progress.
+      setDrag(null);
+      const [a, b] = [...activePointers.current.values()];
+      setPinch({ startDistance: pointerDistance(a!, b!), origin: viewBox });
+    } else if (activePointers.current.size === 1) {
+      setDrag({ startX: event.clientX, startY: event.clientY, origin: viewBox });
+    }
   }
 
   function onPointerMove(event: React.PointerEvent<SVGSVGElement>): void {
-    if (!drag) return;
-    const svg = event.currentTarget;
-    const scaleX = drag.origin.width / svg.clientWidth;
-    const scaleY = drag.origin.height / svg.clientHeight;
-    const dx = (event.clientX - drag.startX) * scaleX;
-    const dy = (event.clientY - drag.startY) * scaleY;
-    setViewBox({ ...drag.origin, x: drag.origin.x - dx, y: drag.origin.y - dy });
+    if (!activePointers.current.has(event.pointerId)) return;
+    activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pinch && activePointers.current.size === 2) {
+      const [a, b] = [...activePointers.current.values()];
+      const next = viewBoxAfterPinch(pinch, pointerDistance(a!, b!));
+      if (next) setViewBox(next);
+      return;
+    }
+
+    if (drag && activePointers.current.size === 1) {
+      const svg = event.currentTarget;
+      const scaleX = drag.origin.width / svg.clientWidth;
+      const scaleY = drag.origin.height / svg.clientHeight;
+      const dx = (event.clientX - drag.startX) * scaleX;
+      const dy = (event.clientY - drag.startY) * scaleY;
+      setViewBox({ ...drag.origin, x: drag.origin.x - dx, y: drag.origin.y - dy });
+    }
   }
 
-  function onPointerUp(): void {
+  function onPointerUp(event: React.PointerEvent<SVGSVGElement>): void {
+    activePointers.current.delete(event.pointerId);
     setDrag(null);
+    setPinch(null);
+    // One finger still down after the other lifts (pinch ending, or a 3rd+ touch releasing) —
+    // resume panning from its current position rather than jumping back to wherever the very
+    // first pointerdown in this gesture happened.
+    if (activePointers.current.size === 1) {
+      const [remaining] = [...activePointers.current.values()];
+      setDrag({ startX: remaining!.x, startY: remaining!.y, origin: viewBox });
+    }
   }
 
   const selectedBerthState = selectedElementId ? berths[selectedElementId] : undefined;
@@ -165,10 +226,15 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
         width="100%"
         height="600"
-        style={{ background: "#0d1117", cursor: drag ? "grabbing" : "grab", touchAction: "none" }}
+        style={{
+          background: "#0d1117",
+          cursor: drag || pinch ? "grabbing" : "grab",
+          touchAction: "none",
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         onPointerLeave={onPointerUp}
       >
         {elements.map((element) => {

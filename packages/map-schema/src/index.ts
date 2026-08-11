@@ -21,6 +21,7 @@ export {
 export { validateMapDocument, type ValidationIssue, type ValidationResult } from "./validate.js";
 export {
   compileMapDocument,
+  computeBoundingBox,
   sortElementsForPaint,
   Z_INDEX_LAYER_BAND,
   type CompiledMapBundle,

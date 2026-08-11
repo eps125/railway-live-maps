@@ -2,6 +2,7 @@ import { useEditorDispatch, useEditorState, type ToolMode } from "./EditorState.
 
 const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "select", label: "Select" },
+  { mode: "multiselect", label: "Multiselect" },
   { mode: "trackPath", label: "Track" },
   { mode: "berth", label: "Berth" },
   { mode: "signal", label: "Signal" },
@@ -12,7 +13,8 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
 
 /** docs/MAP_EDITOR_SPEC.md §6: "Left symbol/tool palette." Clicking a tool arms it; the next
  * click on empty canvas (`EditorCanvas.tsx`) places a default-sized element of that type and
- * switches back to Select. */
+ * switches back to Select — except Multiselect, armed the same way but consumed by a drag
+ * (rubber-band select) rather than a click, also switching back to Select once released. */
 export function ToolPalette(): JSX.Element {
   const { toolMode } = useEditorState();
   const dispatch = useEditorDispatch();

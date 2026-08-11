@@ -195,6 +195,54 @@ describe("PropertyPanel BindingFields", () => {
   });
 });
 
+function docWithLabel(): MapDocument {
+  return {
+    schemaVersion: 1,
+    map: {
+      id: "m",
+      name: "m",
+      canvas: { width: 200, height: 200, gridSize: 10 },
+      timezone: "Europe/London",
+    },
+    layers: [{ id: "l", name: "l", visible: true, locked: false, order: 0 }],
+    elements: [
+      {
+        id: "label-a",
+        layerId: "l",
+        zIndex: 0,
+        type: "label",
+        x: 10,
+        y: 10,
+        text: "Platform 1",
+        align: "left",
+        fontSize: 12,
+      },
+    ],
+    topology: { nodes: [], edges: [] },
+    bindings: [],
+    editorMetadata: {},
+  };
+}
+
+describe("PropertyPanel label fields", () => {
+  it("shows and commits the label's font size", async () => {
+    render(
+      <EditorStateProvider initialDocument={docWithLabel()}>
+        <Select id="label-a" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    const fontSizeInput = await screen.findByLabelText("Font size");
+    expect(fontSizeInput).toHaveValue(12);
+
+    fireEvent.change(fontSizeInput, { target: { value: "20" } });
+    fireEvent.blur(fontSizeInput);
+
+    expect(fontSizeInput).toHaveValue(20);
+  });
+});
+
 describe("PropertyPanel layer reassignment", () => {
   it("shows the selected element's current layer and moves it when changed", async () => {
     vi.stubGlobal(

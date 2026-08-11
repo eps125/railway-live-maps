@@ -22,6 +22,43 @@ function flattenPoints(points: Array<{ x: number; y: number }>): number[] {
   return points.flatMap((p) => [p.x, p.y]);
 }
 
+export interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** A berth has a real width/height; every other positioned element (signal/label/boundary) is
+ * point-shaped in the document, and a points-based element (trackPath/platform) has no single
+ * x/y at all — each needs its own way of turning into a rubber-band-select-able rectangle. */
+export function elementBounds(element: MapElement): Bounds | null {
+  if ("points" in element) {
+    if (element.points.length === 0) return null;
+    const xs = element.points.map((p) => p.x);
+    const ys = element.points.map((p) => p.y);
+    return {
+      minX: Math.min(...xs),
+      minY: Math.min(...ys),
+      maxX: Math.max(...xs),
+      maxY: Math.max(...ys),
+    };
+  }
+  if (element.type === "berth") {
+    return {
+      minX: element.x,
+      minY: element.y,
+      maxX: element.x + element.width,
+      maxY: element.y + element.height,
+    };
+  }
+  return { minX: element.x, minY: element.y, maxX: element.x, maxY: element.y };
+}
+
+export function boundsIntersect(a: Bounds, b: Bounds): boolean {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+}
+
 function signalFill(symbolStyle: string): string {
   // Editor-only preview convention for the symbolStyle token itself (an editable document
   // field, not a computed aspect) — matches CLAUDE.md #9's blank/on/off vocabulary exactly.
@@ -126,6 +163,10 @@ function defaultElementForTool(
         ],
       };
     case "select":
+    case "multiselect":
+      // Multiselect places nothing on click — it's consumed by a drag (see
+      // handleStageMouseDown/Move/Up's rubber-band-select handling), same as a plain click
+      // with no drag distance doing nothing useful for it either.
       return null;
   }
 }
@@ -161,6 +202,16 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     width: FALLBACK_CANVAS_VIEW_WIDTH,
     height: FALLBACK_CANVAS_VIEW_HEIGHT,
   });
+  // Rubber-band select (Multiselect tool): world-space drag start/current-point while active,
+  // null otherwise. Kept separate from the Stage's own draggable-when-Select pan (see the
+  // `draggable={toolMode === "select"}` prop below) rather than folded into Select mode itself —
+  // Select's empty-canvas drag is already how the canvas is panned, and there is no other pan
+  // input (the wheel handler only zooms), so overloading that same drag for marquee-select would
+  // remove panning rather than add a new capability.
+  const [marquee, setMarquee] = useState<{
+    start: { x: number; y: number };
+    end: { x: number; y: number };
+  } | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -219,6 +270,44 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   function handleStageDragEnd(e: Konva.KonvaEventObject<DragEvent>): void {
     if (e.target !== e.target.getStage()) return;
     dispatch({ type: "setViewport", viewport: { ...viewport, x: e.target.x(), y: e.target.y() } });
+  }
+
+  function handleStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
+    if (toolMode !== "multiselect") return;
+    const stage = e.target.getStage();
+    if (!stage || e.target !== stage) return;
+    const point = toWorldPoint(stage);
+    setMarquee({ start: point, end: point });
+  }
+
+  function handleStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>): void {
+    if (!marquee) return;
+    const stage = e.target.getStage();
+    if (!stage) return;
+    setMarquee({ ...marquee, end: toWorldPoint(stage) });
+  }
+
+  function handleStageMouseUp(e: Konva.KonvaEventObject<MouseEvent>): void {
+    if (!marquee) return;
+    const box: Bounds = {
+      minX: Math.min(marquee.start.x, marquee.end.x),
+      minY: Math.min(marquee.start.y, marquee.end.y),
+      maxX: Math.max(marquee.start.x, marquee.end.x),
+      maxY: Math.max(marquee.start.y, marquee.end.y),
+    };
+    const withinLockedLayer = new Set(doc.layers.filter((l) => l.locked).map((l) => l.id));
+    const hit = doc.elements
+      .filter((el) => !withinLockedLayer.has(el.layerId))
+      .filter((el) => {
+        const bounds = elementBounds(el);
+        return bounds !== null && boundsIntersect(box, bounds);
+      })
+      .map((el) => el.id);
+
+    const ids = e.evt.shiftKey ? [...new Set([...selection, ...hit])] : hit;
+    dispatch({ type: "setSelection", ids });
+    setMarquee(null);
+    dispatch({ type: "setToolMode", mode: "select" });
   }
 
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>): void {
@@ -338,16 +427,39 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
       ? selection[0]
       : null;
 
+  // The grid/background follow wherever the viewport currently is, rather than a document-level
+  // canvas.width/height boundary — panning left or right always uncovers more usable space,
+  // never runs off the edge of a pre-set canvas size. `canvas.{width,height}` in the document
+  // still exists (packages/map-schema/src/document.ts) but is now purely a publish-time value,
+  // recomputed to fit the real element bounding box when the map is published (see
+  // MapEditorApp/the publish flow) — it's not consulted for rendering here at all anymore.
+  // Padded to 3x the visible area (1x on each side) so a single continuous drag-pan gesture
+  // doesn't visibly outrun the grid before `handleStageDragEnd` commits the new viewport and
+  // this recomputes — Konva moves already-rendered children with the stage's own transform
+  // during a drag with no React re-render needed, only the *extent* of what's rendered depends
+  // on viewport state being current.
+  const visibleWorld = {
+    minX: -viewport.x / viewport.scale,
+    minY: -viewport.y / viewport.scale,
+    maxX: (stageSize.width - viewport.x) / viewport.scale,
+    maxY: (stageSize.height - viewport.y) / viewport.scale,
+  };
+  const padX = visibleWorld.maxX - visibleWorld.minX;
+  const padY = visibleWorld.maxY - visibleWorld.minY;
+  const gridMinX = snap(visibleWorld.minX - padX, gridSize);
+  const gridMaxX = snap(visibleWorld.maxX + padX, gridSize);
+  const gridMinY = snap(visibleWorld.minY - padY, gridSize);
+  const gridMaxY = snap(visibleWorld.maxY + padY, gridSize);
+
   const gridLines: JSX.Element[] = [];
-  const { width: canvasWidth, height: canvasHeight } = doc.map.canvas;
-  for (let x = 0; x <= canvasWidth; x += gridSize) {
+  for (let x = gridMinX; x <= gridMaxX; x += gridSize) {
     gridLines.push(
-      <Line key={`gx-${x}`} points={[x, 0, x, canvasHeight]} stroke="#1c2430" strokeWidth={1} />,
+      <Line key={`gx-${x}`} points={[x, gridMinY, x, gridMaxY]} stroke="#1c2430" strokeWidth={1} />,
     );
   }
-  for (let y = 0; y <= canvasHeight; y += gridSize) {
+  for (let y = gridMinY; y <= gridMaxY; y += gridSize) {
     gridLines.push(
-      <Line key={`gy-${y}`} points={[0, y, canvasWidth, y]} stroke="#1c2430" strokeWidth={1} />,
+      <Line key={`gy-${y}`} points={[gridMinX, y, gridMaxX, y]} stroke="#1c2430" strokeWidth={1} />,
     );
   }
 
@@ -377,9 +489,18 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
         onWheel={handleWheel}
         onDragEnd={handleStageDragEnd}
         onClick={handleStageClick}
+        onMouseDown={handleStageMouseDown}
+        onMouseMove={handleStageMouseMove}
+        onMouseUp={handleStageMouseUp}
       >
         <Layer listening={false}>
-          <Rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="#0d1117" />
+          <Rect
+            x={gridMinX}
+            y={gridMinY}
+            width={gridMaxX - gridMinX}
+            height={gridMaxY - gridMinY}
+            fill="#0d1117"
+          />
           {gridLines}
         </Layer>
         <Layer>
@@ -559,6 +680,18 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                   : []
               }
               rotateEnabled={false}
+            />
+          ) : null}
+          {marquee ? (
+            <Rect
+              x={Math.min(marquee.start.x, marquee.end.x)}
+              y={Math.min(marquee.start.y, marquee.end.y)}
+              width={Math.abs(marquee.end.x - marquee.start.x)}
+              height={Math.abs(marquee.end.y - marquee.start.y)}
+              fill="rgba(88, 166, 255, 0.15)"
+              stroke="#58a6ff"
+              strokeWidth={1 / viewport.scale}
+              listening={false}
             />
           ) : null}
         </Layer>

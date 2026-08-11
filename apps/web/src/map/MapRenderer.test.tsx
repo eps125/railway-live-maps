@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompiledMapBundle } from "@railway/map-schema";
-import { MapRenderer } from "./MapRenderer.js";
+import { MapRenderer, viewBoxAfterPinch, MIN_ZOOM_WIDTH } from "./MapRenderer.js";
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
@@ -317,6 +317,23 @@ describe("MapRenderer", () => {
     expect(lastCall).toContain("/areas/PX/berths/0002/");
   });
 
+  it("a single-finger touch still pans (proves pointer-based interaction is wired up)", () => {
+    const doc = bundle();
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    const initialViewBox = svg.getAttribute("viewBox")!;
+    const initialWidth = Number(initialViewBox.split(" ")[2]);
+
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 60, clientY: 100 });
+
+    const newViewBox = svg.getAttribute("viewBox")!;
+    const newWidth = Number(newViewBox.split(" ")[2]);
+    // Panning moves x/y, never changes width/height.
+    expect(newWidth).toBe(initialWidth);
+    expect(newViewBox).not.toBe(initialViewBox);
+  });
+
   it("shows the plain stub, not a popup, for an unbound or empty berth", () => {
     const doc = bundle({
       elementsById: {
@@ -341,5 +358,35 @@ describe("MapRenderer", () => {
     fireEvent.click(rect);
 
     expect(screen.getByText("This element has no TD binding.")).toBeInTheDocument();
+  });
+});
+
+describe("viewBoxAfterPinch", () => {
+  const origin = { x: 0, y: 0, width: 1000, height: 1000 };
+
+  it("fingers moving apart (distance grows) zooms in — smaller viewBox, same center", () => {
+    const result = viewBoxAfterPinch({ startDistance: 20, origin }, 60);
+    expect(result).not.toBeNull();
+    expect(result!.width).toBeCloseTo(333.333); // 1000 * (20/60)
+    expect(result!.height).toBeCloseTo(333.333);
+    // Center stays fixed: origin's center was (500,500); new box must still center there.
+    expect(result!.x + result!.width / 2).toBeCloseTo(500);
+    expect(result!.y + result!.height / 2).toBeCloseTo(500);
+  });
+
+  it("fingers moving together (distance shrinks) zooms out — larger viewBox", () => {
+    const result = viewBoxAfterPinch({ startDistance: 20, origin }, 10);
+    expect(result).not.toBeNull();
+    expect(result!.width).toBeCloseTo(2000); // 1000 * (20/10)
+  });
+
+  it("never zooms in past MIN_ZOOM_WIDTH", () => {
+    const result = viewBoxAfterPinch({ startDistance: 20, origin }, 10_000);
+    expect(result!.width).toBe(MIN_ZOOM_WIDTH);
+    expect(result!.height).toBe(MIN_ZOOM_WIDTH);
+  });
+
+  it("returns null for a zero distance rather than dividing by zero", () => {
+    expect(viewBoxAfterPinch({ startDistance: 20, origin }, 0)).toBeNull();
   });
 });

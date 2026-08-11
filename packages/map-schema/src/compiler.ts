@@ -54,7 +54,7 @@ export function sortElementsForPaint(elements: MapElement[], layers: Layer[]): M
     .map(({ element }) => element);
 }
 
-function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["boundingBox"] {
+export function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["boundingBox"] {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;

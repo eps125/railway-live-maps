@@ -1,6 +1,43 @@
 import { createHash } from "node:crypto";
-import { compileMapDocument, type MapDocument, type CompiledMapBundle } from "@railway/map-schema";
+import {
+  compileMapDocument,
+  computeBoundingBox,
+  type MapDocument,
+  type CompiledMapBundle,
+} from "@railway/map-schema";
 import { insertMapBindingIndexRows, type Queryable } from "./mapBindingIndex.js";
+
+/** Matches apps/web/src/map/MapRenderer.tsx's own PADDING/MIN_ZOOM_WIDTH constants — same
+ * "pad the real content a bit, floor it at a sane minimum" convention, applied here so a
+ * published map_version's stored canvas.width/height reflects what's actually on the map rather
+ * than whatever value the document happened to be created with. Nothing downstream currently
+ * reads canvas.width/height for positioning (the editor's own grid follows the viewport, not
+ * this field, and the public renderer never reads it at all) — this exists so the field stays a
+ * meaningful, truthful size rather than a stale leftover, in case a future consumer wants it. */
+const CANVAS_TRIM_PADDING = 40;
+const MIN_CANVAS_DIMENSION = 100;
+
+/** Recomputes canvas.width/height to fit the document's real element bounding box (with
+ * padding), leaving gridSize untouched — an editor working on an "infinite" canvas (grid follows
+ * the viewport, not a fixed pre-set size) never has to manually resize it, and publishing is what
+ * trims the excess. Computed from `doc.elements` directly (the same way `compileMapDocument`
+ * will) *before* compiling, so the trimmed doc and the bundle compiled from it stay consistent —
+ * `compileMapDocument` passes `canvas` straight through unchanged, so trimming after compiling
+ * would leave the canonical document and the compiled bundle disagreeing with each other. */
+export function trimCanvasToContent(doc: MapDocument): MapDocument {
+  const { minX, minY, maxX, maxY } = computeBoundingBox(doc.elements);
+  return {
+    ...doc,
+    map: {
+      ...doc.map,
+      canvas: {
+        ...doc.map.canvas,
+        width: Math.max(maxX - minX + CANVAS_TRIM_PADDING * 2, MIN_CANVAS_DIMENSION),
+        height: Math.max(maxY - minY + CANVAS_TRIM_PADDING * 2, MIN_CANVAS_DIMENSION),
+      },
+    },
+  };
+}
 
 export interface PublishMapVersionInput {
   slug: string;
@@ -34,7 +71,8 @@ export async function publishMapVersion(
   client: Queryable,
   input: PublishMapVersionInput,
 ): Promise<PublishMapVersionResult> {
-  const { slug, doc, effectiveFrom, publishedBy } = input;
+  const { slug, effectiveFrom, publishedBy } = input;
+  const doc = trimCanvasToContent(input.doc);
   const bundle = compileMapDocument(doc);
   const canonicalJson = JSON.stringify(doc);
   const checksum = createHash("sha256").update(canonicalJson).digest("hex");

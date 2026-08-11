@@ -388,6 +388,11 @@ export function PropertyPanel(): JSX.Element {
           <TextField label="Text" value={element.text} onCommit={(v) => setProp("text", v)} />
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <NumberField
+            label="Font size"
+            value={element.fontSize}
+            onCommit={(v) => setProp("fontSize", v)}
+          />
         </>
       )}
 

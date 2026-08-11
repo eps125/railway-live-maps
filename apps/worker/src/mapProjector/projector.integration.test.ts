@@ -235,8 +235,14 @@ describe("runProjectMapDeltas (integration)", () => {
     const redis = new CapturingRedisPublisher();
     await runProjectMapDeltas(pool, redis);
 
+    // Scoped to this test's own channel — every test in this file reuses "berth-1" as the
+    // elementId (on its own map/slug each time), so filtering by elementId alone can match a
+    // different test's still-within-the-lookback-window resolution on an unrelated channel.
     const staleMessage = redis.published.find(
-      (p) => p.message.type === "run.resolution.updated" && p.message.elementId === "berth-1",
+      (p) =>
+        p.channel === `railway:live:${slug}` &&
+        p.message.type === "run.resolution.updated" &&
+        p.message.elementId === "berth-1",
     );
     expect(staleMessage).toBeUndefined();
   });

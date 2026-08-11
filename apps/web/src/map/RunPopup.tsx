@@ -91,7 +91,7 @@ function formatTime(publicTime: string | null): string {
 
 /** How often the popup re-fetches while open. Resolution isn't necessarily settled the instant a
  * berth is clicked — project-resolver runs its own decoupled loop (deploy/docker-compose.
- * portainer.yml's `projector-backlog` service), so a berth clicked right as a train arrives can
+ * portainer.yml's `projector-resolver` service), so a berth clicked right as a train arrives can
  * genuinely still be `unmatched` for a few seconds. A one-shot fetch would then never update even
  * after the backend resolves it moments later — confirmed 2026-08-10 against a real occupancy
  * that matched 15s after entering while the popup, opened at entry, kept showing "no match". */

@@ -22,12 +22,15 @@ const DEFAULT_BATCH_SIZE = 200;
 /** Caps how much of a large backlog one invocation processes before returning. Without this, the
  * very first run after deploying this projector against an already-large nationwide
  * `berth_occupancy` history (every TD area, since go-live) would work through the entire backlog
- * in one call — the Portainer `projector` service's loop invokes this command fresh every cycle
- * and doesn't print anything until the call returns, so a long first run looks indistinguishable
- * from a hang, and blocks project-td/project-vstp/project-trust (the lines after it in that loop)
- * from running the whole time. Capping batches per invocation means each loop cycle makes bounded,
- * visible progress (a `project-resolver complete: {...}` line every ~1s) instead of one silent
- * multi-minute-or-longer call — the backlog just takes several cycles to fully drain instead of one. */
+ * in one call — the Portainer `projector-resolver` service's loop invokes this command fresh
+ * every cycle and doesn't print anything until the call returns, so a long first run looks
+ * indistinguishable from a hang. Originally this also blocked project-td/project-vstp/
+ * project-trust, which shared this same loop; they've since moved to their own `projector-td`/
+ * `projector-schedule` loops (2026-08-10/2026-08-11) specifically because this cap alone wasn't
+ * tight enough to stop resolver's own internal batch loop from starving them of turns even within
+ * this file. Capping batches per invocation means each loop cycle makes bounded, visible progress
+ * (a `project-resolver complete: {...}` line every ~1s) instead of one silent multi-minute-or-
+ * longer call — the backlog just takes several cycles to fully drain instead of one. */
 const MAX_BATCHES_PER_RUN = 25;
 /** How far apart resolution attempts must be for a still-open, not-yet-matched occupancy to be
  * retried — mirrors TRUST's own deferred-relink pass (a later-arriving activation can turn an
@@ -425,7 +428,8 @@ async function resolveBatch(
  * with no cross-row dependency a concurrent run could interleave badly with (project-td's lock
  * exists specifically because closeOccupancy depends on another row's *prior* effect being
  * committed — nothing here reads one occupancy's resolution to decide another's). The Portainer
- * `projector` service's loop also only ever runs one project-* command at a time regardless.
+ * `projector-resolver` service's loop also only ever runs one invocation of this command at a
+ * time regardless.
  */
 export async function runProjectResolver(
   pool: Pool,

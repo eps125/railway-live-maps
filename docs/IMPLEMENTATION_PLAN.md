@@ -281,10 +281,12 @@ weighted score from #2 (schedule-linked via `run_schedule_link`), #3 (temporal p
 its own known-limitation note below) and #5 (SMART berth→STANOX correlation via
 `smart_berth_step`); an exact tie at the top score is `ambiguous`, never an arbitrary pick
 (CLAUDE.md rule 5). New checkpointed worker projector (`apps/worker/src/resolver/projector.ts`,
-`project-resolver` command, run from the Portainer `projector-backlog` service's loop alongside
-`project-vstp`/`project-trust` — split from `project-td`'s own `projector-td` loop on 2026-08-10
-so resolver/TRUST backlog work can never stall live berth positions) processes newly-
-opened occupancies plus a bounded retry pass over still-open, not-yet-`matched` occupancies
+`project-resolver` command, run from its own Portainer `projector-resolver` service loop — split
+from `project-td`'s `projector-td` loop on 2026-08-10 so resolver/TRUST backlog work can never
+stall live berth positions, then split a second time on 2026-08-11 from `project-vstp`/
+`project-trust`'s `projector-schedule` loop after resolver's own internal batch loop was observed
+starving them of turns) processes newly-opened occupancies plus a bounded retry pass over
+still-open, not-yet-`matched` occupancies
 (mirrors TRUST's deferred-relink pass). API: `apps/api/src/lib/liveState.ts`'s `BerthState.
 runSummary` now carries a real `{status, text}` (was hardcoded `null`) — `text` is a short
 Vail-like string built only from the matched run's latest real TRUST movement report, matching
@@ -321,7 +323,7 @@ resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weigh
   current as each batch resolves, so a chain of many ambiguous steps in a row self-heals from a
   single earlier match rather than needing SMART coverage at every one. `RESOLVER_VERSION` bumped
   1→2. Relatedly, `apps/web/src/map/RunPopup.tsx` was fetch-once — a berth clicked right as a
-  train arrived (the resolver's own decoupled loop, see `projector-backlog` in
+  train arrived (the resolver's own decoupled loop, see `projector-resolver` in
   `deploy/docker-compose.portainer.yml`, can take a few seconds) would show "no match" forever
   even after the backend resolved it moments later; it now polls every 2s while open.
 - Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via

@@ -19,11 +19,11 @@
 # Actual live ingestion runs in the three dedicated `ingest-*` services below: each is always
 # running, but its shell wrapper idles (`sleep infinity`) rather than connecting whenever its
 # own `*_LIVE_ENABLED` flag is false, so leaving them at the default is a safe no-op rather
-# than a crash loop. `projector-td` and `projector-backlog` periodically re-run the one-shot
-# `project-*` commands (there is no built-in scheduler yet) so ingested data actually becomes
-# queryable without needing to run those commands by hand after every test — split into two
-# loops so schedule/TRUST/resolver backlog work can never stall live berth positions (see the
-# comments on each service below).
+# than a crash loop. `projector-td`, `projector-schedule` and `projector-resolver` periodically
+# re-run the one-shot `project-*` commands (there is no built-in scheduler yet) so ingested data
+# actually becomes queryable without needing to run those commands by hand after every test —
+# split into three loops so live berth positions and resolver latency can never be stalled by
+# schedule/TRUST backlog work, or each other (see the comments on each service below).
 #
 # Postgres/Redis/archive are published to the host below for direct testing access — this
 # is a deliberate departure from docs/ARCHITECTURE.md §12 ("only the reverse proxy/web entry
@@ -230,7 +230,7 @@ services:
   # incremental (a single indexed query against its own checkpoint), so an idle backlog returns
   # instantly — this loop's sleep is one of the two things that set the map's actual end-to-end
   # update latency (the other is map-deltas below). Deliberately its own service rather than
-  # sharing a loop with projector-backlog below: project-vstp/trust/resolver can each take many
+  # sharing a loop with projector-schedule/projector-resolver below: those can each take many
   # seconds per invocation while working through backlog, and when project-td shared one
   # sequential loop with them, live berth positions stalled for as long as schedule/TRUST
   # resolution stayed busy — confirmed 2026-08-10 as the dominant cause of live-map lag (up to
@@ -256,17 +256,18 @@ services:
       disable: true
     networks: [backend]
 
-  # Slow lane: schedule/TRUST/resolver backlog work, deliberately isolated from projector-td (see
-  # above) so it can take as long as it needs — large nationwide backlogs, deferred TRUST
-  # relinking, resolver candidate matching — without ever blocking live berth positions. Kept
-  # together as one loop because they have real sequencing dependencies on each other (trust
-  # correlates against project-td's output; resolver matches against trust's train_run rows).
-  # Each project-* command is checkpointed and incremental, so an idle backlog returns instantly —
-  # harmless to leave running even with every *_LIVE_ENABLED flag false. project-resolver batches
-  # its reads per project-td batch rather than per occupancy specifically so this stays true
-  # against the real nationwide backlog — a per-occupancy version of it previously hung this whole
-  # loop indefinitely (see apps/worker/src/resolver/projector.ts's module doc comment).
-  projector-backlog:
+  # Schedule/TRUST backlog work, deliberately isolated from projector-td (see above) so it can
+  # take as long as it needs — large nationwide backlogs, deferred TRUST relinking — without ever
+  # blocking live berth positions. vstp and trust are kept together because they have a real
+  # sequencing dependency (trust correlates against project-td's output); project-resolver was
+  # split out into its own projector-resolver service below on 2026-08-11: resolver's own
+  # internal batch loop (up to 25 batches per invocation) could run long enough that vstp/trust
+  # barely got a turn in a shared loop — trust-runs' checkpoint was observed advancing roughly
+  # every 7-9s instead of every ~1s, risking a resolver pass finding "no candidate yet" for a
+  # just-activated train, on top of adding straightforward resolution latency. Each project-*
+  # command is checkpointed and incremental, so an idle backlog returns instantly — harmless to
+  # leave running even with every *_LIVE_ENABLED flag false.
+  projector-schedule:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped
     environment: *worker-env
@@ -277,6 +278,29 @@ services:
         while true; do
           node dist/index.js project-vstp
           node dist/index.js project-trust
+          sleep 1
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks: [backend]
+
+  # Resolver candidate matching, its own loop since 2026-08-11 (see projector-schedule's comment
+  # above for why). project-resolver batches its reads per project-td batch rather than per
+  # occupancy specifically so an idle-vs-large backlog both stay fast — a per-occupancy version of
+  # it previously hung this whole loop indefinitely (see apps/worker/src/resolver/projector.ts's
+  # module doc comment).
+  projector-resolver:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment: *worker-env
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
           node dist/index.js project-resolver
           sleep 1
         done

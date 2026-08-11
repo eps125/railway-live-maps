@@ -45,10 +45,25 @@ const RETRY_INTERVAL_MS = 5 * 60 * 1000;
  * available for this check; that makes this a day-level plausibility signal, not per-calling-
  * point precision (schedule_location's own times are raw CIF-style text, not parsed timestamps). */
 const MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
-/** How far back a preceding occupancy of the same description can still count as continuity
- * evidence (resolveBerthRun.ts's `recentContinuity`). Real inter-berth timing is seconds to low
- * minutes even on a quiet corridor; 10 minutes is a generous bound that comfortably covers gaps
- * without reaching into an unrelated, much older occupancy that happens to share a headcode. */
+/** How far back a preceding occupancy of the same description **in the same TD area** can still
+ * count as continuity evidence (resolveBerthRun.ts's `recentContinuity`). Real inter-berth timing
+ * is seconds to low minutes even on a quiet corridor; 10 minutes is a generous bound that
+ * comfortably covers gaps without reaching into an unrelated, much older occupancy that happens
+ * to share a headcode.
+ *
+ * Confirmed live 2026-08-11 that a window alone isn't enough: a TD headcode gets set on a
+ * stabled unit well before TRUST fires the corresponding activation (sometimes 1-2+ hours
+ * ahead, for the unit's *next* working), so a real headcode can sit with zero matching
+ * candidates for a long stretch — plenty of time for an unrelated earlier match (a genuinely
+ * different real train that shared the same headcode hours earlier) to keep re-winning via
+ * continuity, since nothing about the mechanism ever recognized reality had moved on. Two
+ * changes address this: continuity is now scoped per (description, td_area) instead of
+ * description alone (a nationwide-unscoped match let an occupancy in one TD area's continuity
+ * chain feed into a same-description occupancy anywhere else in the country), and
+ * buildCandidates below never lets continuity win over a candidate with a strictly more recent
+ * `activatedAt` — a freshly-activated real train is stronger, more literal evidence that the
+ * headcode has moved on than a self-reinforcing chain. Where neither signal clearly wins, the
+ * honest result is `ambiguous`, not a confident guess (CLAUDE.md rule 7). */
 const CONTINUITY_WINDOW_MS = 10 * 60 * 1000;
 
 export interface ProjectResolverOptions {
@@ -135,10 +150,12 @@ interface BatchCandidateData {
   smartStanoxesByAreaBerth: Map<string, Set<string>>;
   /** Key: schedule id. */
   scheduleStanoxes: Map<string, Set<string>>;
-  /** Key: description. The most recent `matched` occupancy of that description seen so far —
-   * seeded from berth_run_resolution before the batch starts, then kept current as resolveBatch
-   * resolves each occupancy in order, so continuity can chain forward within one batch too. */
-  continuityByDescription: Map<string, ContinuityEntry>;
+  /** Key: `${description}|${tdArea}`. The most recent `matched` occupancy of that description in
+   * that TD area seen so far — seeded from berth_run_resolution before the batch starts, then
+   * kept current as resolveBatch resolves each occupancy in order, so continuity can chain
+   * forward within one batch too. Scoped by area (not description alone) so a match in one part
+   * of the country can never feed a same-description occupancy somewhere unrelated. */
+  continuityByDescriptionArea: Map<string, ContinuityEntry>;
 }
 
 /**
@@ -264,28 +281,41 @@ async function fetchBatchCandidateData(
     }
   }
 
-  const continuityByDescription = new Map<string, ContinuityEntry>();
-  if (signallingIds.length > 0) {
+  const continuityDescriptions: string[] = [];
+  const continuityAreas: string[] = [];
+  const seenContinuityKeys = new Set<string>();
+  for (const { row } of occupancies) {
+    const key = `${row.description}|${row.td_area}`;
+    if (seenContinuityKeys.has(key)) continue;
+    seenContinuityKeys.add(key);
+    continuityDescriptions.push(row.description);
+    continuityAreas.push(row.td_area);
+  }
+
+  const continuityByDescriptionArea = new Map<string, ContinuityEntry>();
+  if (continuityDescriptions.length > 0) {
     const enteredAts = occupancies.map(({ row }) => row.entered_at.getTime());
     const earliestNeeded = new Date(Math.min(...enteredAts) - CONTINUITY_WINDOW_MS);
     const latestNeeded = new Date(Math.max(...enteredAts));
     const continuityResult = await client.query<{
       description: string;
+      td_area: string;
       entered_at: Date;
       selected_train_run_id: string;
     }>(
-      `select bo.description, bo.entered_at, brr.selected_train_run_id
+      `select bo.description, bo.td_area, bo.entered_at, brr.selected_train_run_id
        from berth_run_resolution brr
        join berth_occupancy bo on bo.id = brr.occupancy_id
-       join (select distinct unnest($1::text[]) as description) wanted
-         on wanted.description = bo.description
-       where brr.status = 'matched' and bo.entered_at >= $2 and bo.entered_at <= $3`,
-      [signallingIds, earliestNeeded, latestNeeded],
+       join (select unnest($1::text[]) as description, unnest($2::text[]) as td_area) wanted
+         on wanted.description = bo.description and wanted.td_area = bo.td_area
+       where brr.status = 'matched' and bo.entered_at >= $3 and bo.entered_at <= $4`,
+      [continuityDescriptions, continuityAreas, earliestNeeded, latestNeeded],
     );
     for (const row of continuityResult.rows) {
-      const existing = continuityByDescription.get(row.description);
+      const key = `${row.description}|${row.td_area}`;
+      const existing = continuityByDescriptionArea.get(key);
       if (!existing || row.entered_at.getTime() > existing.enteredAt.getTime()) {
-        continuityByDescription.set(row.description, {
+        continuityByDescriptionArea.set(key, {
           enteredAt: row.entered_at,
           trainRunId: row.selected_train_run_id,
         });
@@ -298,7 +328,7 @@ async function fetchBatchCandidateData(
     linkedRunIds,
     smartStanoxesByAreaBerth,
     scheduleStanoxes,
-    continuityByDescription,
+    continuityByDescriptionArea,
   };
 }
 
@@ -311,13 +341,32 @@ function buildCandidates(
   const smartStanoxes =
     data.smartStanoxesByAreaBerth.get(`${occupancy.td_area}|${occupancy.berth_code}`) ??
     new Set<string>();
-  const continuity = data.continuityByDescription.get(occupancy.description);
+  const continuity = data.continuityByDescriptionArea.get(
+    `${occupancy.description}|${occupancy.td_area}`,
+  );
   const continuityRunId =
     continuity !== undefined &&
     continuity.enteredAt.getTime() < occupancy.entered_at.getTime() &&
     occupancy.entered_at.getTime() - continuity.enteredAt.getTime() <= CONTINUITY_WINDOW_MS
       ? continuity.trainRunId
       : null;
+  const continuityRun = continuityRunId
+    ? runs.find((run) => run.id === continuityRunId)
+    : undefined;
+  // A candidate whose own activation is more recent than the continuity-tracked run's is
+  // stronger, more literal evidence that the headcode has moved on to a different real train —
+  // see CONTINUITY_WINDOW_MS's doc comment for the real incident this fixes. Suppressing
+  // continuity here (rather than just not applying it to the fresher candidate) means a
+  // genuinely tied field of same-headcode candidates comes out `ambiguous`, not an arbitrary
+  // pick of whichever candidate happens to be freshest.
+  const continuitySuppressedByFresherCandidate =
+    continuityRun?.activatedAt != null &&
+    runs.some(
+      (run) =>
+        run.id !== continuityRun.id &&
+        run.activatedAt !== null &&
+        run.activatedAt.getTime() > continuityRun.activatedAt!.getTime(),
+    );
 
   return runs.map((run) => {
     const temporallyPlausible =
@@ -335,7 +384,7 @@ function buildCandidates(
       trainRunId: run.id,
       hasMatchedSchedule: data.linkedRunIds.has(run.id),
       temporallyPlausible,
-      recentContinuity: run.id === continuityRunId,
+      recentContinuity: run.id === continuityRunId && !continuitySuppressedByFresherCandidate,
       smartStanoxMatch,
     };
   });
@@ -381,11 +430,11 @@ async function resolveOne(
 }
 
 /** Resolves every occupancy in `rows` against one shared `fetchBatchCandidateData` call. Updates
- * `data.continuityByDescription` as each occupancy resolves so a `matched` result becomes
- * continuity evidence for the *next* occupancy of the same description later in this same batch —
- * without this, a long unbroken run of same-description steps landing in one batch could only
- * ever chain-heal from continuity seeded before the batch started, not from matches it just made
- * itself. */
+ * `data.continuityByDescriptionArea` as each occupancy resolves so a `matched` result becomes
+ * continuity evidence for the *next* occupancy of the same description/area later in this same
+ * batch — without this, a long unbroken run of same-description steps landing in one batch could
+ * only ever chain-heal from continuity seeded before the batch started, not from matches it just
+ * made itself. */
 async function resolveBatch(
   client: PoolClient,
   rows: OccupancyRow[],
@@ -402,9 +451,10 @@ async function resolveBatch(
     summary[countAs] += 1;
     summary[status] += 1;
     if (status === "matched" && selectedRunId) {
-      const existing = data.continuityByDescription.get(row.description);
+      const key = `${row.description}|${row.td_area}`;
+      const existing = data.continuityByDescriptionArea.get(key);
       if (!existing || row.entered_at.getTime() > existing.enteredAt.getTime()) {
-        data.continuityByDescription.set(row.description, {
+        data.continuityByDescriptionArea.set(key, {
           enteredAt: row.entered_at,
           trainRunId: selectedRunId,
         });

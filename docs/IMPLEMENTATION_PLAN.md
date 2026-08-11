@@ -322,7 +322,16 @@ resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weigh
   `berth_run_resolution` row for the same description within a 10-minute window and keeps it
   current as each batch resolves, so a chain of many ambiguous steps in a row self-heals from a
   single earlier match rather than needing SMART coverage at every one. `RESOLVER_VERSION` bumped
-  1→2. Relatedly, `apps/web/src/map/RunPopup.tsx` was fetch-once — a berth clicked right as a
+  1→2. Refined again 2026-08-11 after a live production case showed continuity itself
+  over-correcting: a TD headcode gets set on a stabled unit well before TRUST fires the matching
+  activation (sometimes 1-2+ hours ahead, for the unit's _next_ working), so a stale continuity
+  chain from a genuinely different earlier train sharing the same headcode kept confidently
+  winning long after that train's relevance had ended, instead of the honest `ambiguous`. Fixed
+  two ways: continuity is now scoped per `(description, td_area)` rather than description alone
+  (it was leaking nationwide — a match in one TD area could feed a same-description occupancy
+  anywhere else in the country), and it's suppressed entirely whenever another candidate has a
+  strictly more recent `activated_at` (a freshly-activated real train outranks a self-reinforcing
+  chain). Relatedly, `apps/web/src/map/RunPopup.tsx` was fetch-once — a berth clicked right as a
   train arrived (the resolver's own decoupled loop, see `projector-resolver` in
   `deploy/docker-compose.portainer.yml`, can take a few seconds) would show "no match" forever
   even after the backend resolved it moments later; it now polls every 2s while open.

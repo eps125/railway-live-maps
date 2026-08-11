@@ -392,6 +392,82 @@ describe("runProjectResolver (integration)", () => {
     void runB;
   });
 
+  it("continuity does not leak from one TD area into a same-description occupancy in a different area", async () => {
+    // Regression for a real production incident (2026-08-11): a headcode reused nationwide fed
+    // one area's continuity match into a completely unrelated area's occupancy of the same
+    // description, well within the lookback window but nowhere near the same physical location.
+    const areaA = uniqueArea();
+    const areaB = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const enteredAt1 = ENTERED_AT;
+    const enteredAt2 = new Date(ENTERED_AT.getTime() + 60_000);
+
+    const occupancyA = await seedOccupancy(areaA, "0400", signallingId, enteredAt1, null);
+    const scheduleA = await seedSchedule();
+    await seedScheduleLocation(scheduleA, "99004");
+    await seedSmartBerthStep(areaA, "0400", "99004");
+    const runA = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleA);
+    await seedRunScheduleLink(runA, "matched", scheduleA);
+
+    const scheduleB = await seedSchedule();
+    const runB = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleB);
+    await seedRunScheduleLink(runB, "matched", scheduleB);
+
+    const occupancyB = await seedOccupancy(areaB, "0500", signallingId, enteredAt2, null);
+
+    await runProjectResolver(pool);
+
+    expect(await resolution(occupancyA)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runA,
+    });
+    // Different area, no SMART coverage of its own: a genuine, honestly-reported tie, not an
+    // accidental match inherited from area A.
+    expect((await resolution(occupancyB))?.status).toBe("ambiguous");
+  });
+
+  it("continuity never lets a stale match win over a candidate with a more recent activation", async () => {
+    // Regression for the same real incident: a TD headcode gets set on a stabled unit well
+    // before TRUST fires the matching activation, so a genuinely different, freshly-activated
+    // real train can appear *after* a stale continuity chain has already locked onto an earlier
+    // one. The fresher activation must win the tie-break, not the older chain.
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const enteredAt1 = ENTERED_AT;
+    const enteredAt2 = new Date(ENTERED_AT.getTime() + 60_000);
+
+    const occupancy1 = await seedOccupancy(area, "0600", signallingId, enteredAt1, enteredAt2);
+    const occupancy2 = await seedOccupancy(area, "0602", signallingId, enteredAt2, null);
+
+    const staleActivatedAt = new Date(ACTIVATED_AT.getTime() - 60 * 60_000);
+    const scheduleStale = await seedSchedule();
+    await seedScheduleLocation(scheduleStale, "99005");
+    await seedSmartBerthStep(area, "0600", "99005");
+    const runStale = await seedTrainRun(
+      signallingId,
+      SERVICE_DATE,
+      staleActivatedAt,
+      scheduleStale,
+    );
+    await seedRunScheduleLink(runStale, "matched", scheduleStale);
+
+    const scheduleFresh = await seedSchedule();
+    const runFresh = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleFresh);
+    await seedRunScheduleLink(runFresh, "matched", scheduleFresh);
+
+    await runProjectResolver(pool);
+
+    // occupancy1: SMART breaks the tie toward the stale run — its own resolution is fine.
+    expect(await resolution(occupancy1)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runStale,
+    });
+    // occupancy2: continuity would normally carry runStale forward, but runFresh's more recent
+    // activation suppresses it — an honestly-reported tie, not a confidently-wrong stale match.
+    expect((await resolution(occupancy2))?.status).toBe("ambiguous");
+    void runFresh;
+  });
+
   it("caps work per invocation and resumes the rest on the next call, reporting moreBacklogRemains", async () => {
     // Regression test for the real production incident: the very first run against an
     // already-large nationwide backlog needs to make bounded, visible progress per invocation

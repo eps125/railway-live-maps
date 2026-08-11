@@ -163,10 +163,10 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
   }
 
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>): void {
-    // Not implemented in every environment (notably jsdom, and conceivably an older browser) —
-    // a nice-to-have for keeping a fast-moving finger tracked past the element's edge, not a
-    // requirement for the pan/pinch logic itself to work.
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    // Deliberately no setPointerCapture here (tried it, reverted 2026-08-11): capturing on
+    // every pointerdown — including a plain tap that lands on a berth — broke the click event a
+    // berth's own onClick depends on to open the popup. Losing a fast-moving finger past the
+    // element's edge mid-gesture is a real but much smaller cost than that.
     activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
     if (activePointers.current.size === 2) {

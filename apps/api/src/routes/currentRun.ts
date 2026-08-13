@@ -190,6 +190,25 @@ export async function registerCurrentRunRoutes(
         }
       }
 
+      // TIPLOC -> human-readable location name (CORPUS import, location_reference) — resolved
+      // fresh at read time rather than stored on schedule_location, same reasoning as the
+      // candidate-identity enrichment above: a name lookup can only ever go stale if cached.
+      // Falls back to the bare TIPLOC everywhere below when CORPUS has no entry for it (or hasn't
+      // been imported at all yet) — never blocks the rest of the response on a missing name.
+      const tiplocsNeeded = new Set<string>(locations.map((loc) => loc.tiploc));
+      if (schedule?.origin_tiploc) tiplocsNeeded.add(schedule.origin_tiploc);
+      if (schedule?.destination_tiploc) tiplocsNeeded.add(schedule.destination_tiploc);
+      const locationNameByTiploc = new Map<string, string>();
+      if (tiplocsNeeded.size > 0) {
+        const nameResult = await pool.query<{ tiploc: string; name: string | null }>(
+          `select tiploc, name from location_reference where tiploc = any($1::text[])`,
+          [[...tiplocsNeeded]],
+        );
+        for (const row of nameResult.rows) {
+          if (row.name) locationNameByTiploc.set(row.tiploc, row.name);
+        }
+      }
+
       return {
         tdArea,
         berth,
@@ -228,8 +247,17 @@ export async function registerCurrentRunRoutes(
               stpIndicator: schedule.stp_indicator,
               source: schedule.source,
               originTiploc: schedule.origin_tiploc,
+              originName: schedule.origin_tiploc
+                ? (locationNameByTiploc.get(schedule.origin_tiploc) ?? null)
+                : null,
               destinationTiploc: schedule.destination_tiploc,
-              locations: locations.map(locationToJson),
+              destinationName: schedule.destination_tiploc
+                ? (locationNameByTiploc.get(schedule.destination_tiploc) ?? null)
+                : null,
+              locations: locations.map((loc) => ({
+                ...locationToJson(loc),
+                locationName: locationNameByTiploc.get(loc.tiploc) ?? null,
+              })),
             }
           : null,
         latestMovement,

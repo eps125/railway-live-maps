@@ -34,6 +34,7 @@ interface CurrentRunScheduleLocation {
   seqNo: number;
   locationType: string;
   tiploc: string;
+  locationName: string | null;
   arrivalPublic: string | null;
   departurePublic: string | null;
   passPublic: string | null;
@@ -46,7 +47,9 @@ interface CurrentRunSchedule {
   stpIndicator: string;
   source: string;
   originTiploc: string | null;
+  originName: string | null;
   destinationTiploc: string | null;
+  destinationName: string | null;
   locations: CurrentRunScheduleLocation[];
 }
 
@@ -90,6 +93,13 @@ function formatTime(publicTime: string | null): string {
   const digits = publicTime.replace(/H$/, "");
   if (digits.length < 4) return publicTime;
   return `${digits.slice(0, 2)}:${digits.slice(2, 4)}${publicTime.endsWith("H") ? "½" : ""}`;
+}
+
+/** CORPUS's location_reference has no entry for every TIPLOC (import coverage gaps, or CORPUS
+ * simply not imported yet) — always fall back to the raw TIPLOC rather than showing nothing. */
+function formatLocation(tiploc: string | null, name: string | null): string {
+  if (!tiploc) return "—";
+  return name ? `${name} (${tiploc})` : tiploc;
 }
 
 /** How often the popup re-fetches while open. Resolution isn't necessarily settled the instant a
@@ -207,9 +217,11 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
                     {data.schedule.source})
                   </dd>
                   <dt>Origin</dt>
-                  <dd>{data.schedule.originTiploc ?? "—"}</dd>
+                  <dd>{formatLocation(data.schedule.originTiploc, data.schedule.originName)}</dd>
                   <dt>Destination</dt>
-                  <dd>{data.schedule.destinationTiploc ?? "—"}</dd>
+                  <dd>
+                    {formatLocation(data.schedule.destinationTiploc, data.schedule.destinationName)}
+                  </dd>
                 </dl>
               ) : (
                 <p className="map-inspector__note">
@@ -222,18 +234,43 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
                   <summary>Full schedule ({data.schedule.locations.length} calling points)</summary>
                   <table>
                     <tbody>
-                      {data.schedule.locations.map((loc) => (
-                        <tr key={loc.seqNo}>
-                          <td>{loc.tiploc}</td>
-                          <td>{loc.platform ?? ""}</td>
-                          <td>
-                            {formatTime(loc.arrivalPublic)} → {formatTime(loc.departurePublic)}
-                            {loc.locationType === "pass"
-                              ? `pass ${formatTime(loc.passPublic)}`
-                              : ""}
-                          </td>
-                        </tr>
-                      ))}
+                      {data.schedule.locations.map((loc) => {
+                        // A "call" (real stop) has a booked arrival and/or departure; a location
+                        // with only a pass time is never actually visited long enough to board —
+                        // greyed out and shown as a single time, no arrow, same distinction other
+                        // public train-time sites draw between calling and passing points. A
+                        // location with neither (a structural/junction TIPLOC CIF includes for
+                        // route continuity, not a timed point at all) gets the same muted
+                        // treatment since there's nothing booked there either.
+                        const isCall = loc.arrivalPublic !== null || loc.departurePublic !== null;
+                        const muted = !isCall;
+                        return (
+                          <tr
+                            key={loc.seqNo}
+                            className={muted ? "map-inspector__schedule-row--muted" : ""}
+                          >
+                            <td>{formatLocation(loc.tiploc, loc.locationName)}</td>
+                            <td>{loc.platform ?? ""}</td>
+                            {isCall ? (
+                              <>
+                                <td className="map-inspector__schedule-time map-inspector__schedule-time--arrival">
+                                  {formatTime(loc.arrivalPublic)}
+                                </td>
+                                <td className="map-inspector__schedule-arrow">→</td>
+                                <td className="map-inspector__schedule-time map-inspector__schedule-time--departure">
+                                  {formatTime(loc.departurePublic)}
+                                </td>
+                              </>
+                            ) : (
+                              <td className="map-inspector__schedule-time" colSpan={3}>
+                                {loc.passPublic !== null
+                                  ? `pass ${formatTime(loc.passPublic)}`
+                                  : "—"}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </details>

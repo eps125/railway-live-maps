@@ -546,6 +546,33 @@ legend {
   white-space: nowrap;
 }
 
+/* Arrival/arrow/departure are separate cells (not one concatenated string) specifically so the
+ * browser's own table column sizing keeps the arrow at the same x position down every row,
+ * regardless of which individual cells are blank ("—") vs a real time. */
+.map-inspector__schedule-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.map-inspector__schedule-time--arrival {
+  text-align: right;
+}
+
+.map-inspector__schedule-time--departure {
+  text-align: left;
+}
+
+.map-inspector__schedule-arrow {
+  text-align: center;
+  color: var(--color-text-faint);
+  padding-left: 0.2rem;
+  padding-right: 0.2rem;
+}
+
+/* Passing points and untimed structural TIPLOCs — de-emphasized against real calling points. */
+.map-inspector__schedule-row--muted {
+  color: var(--color-text-faint);
+}
+
 .map-inspector__candidates {
   margin: 0.3rem 0 0;
   padding-left: 1rem;

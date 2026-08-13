@@ -39,16 +39,49 @@ describe("RunPopup", () => {
               stpIndicator: "P",
               source: "SCHEDULE",
               originTiploc: "PRST",
+              originName: "Preston",
               destinationTiploc: "LANCSTR",
+              destinationName: "Lancaster",
               locations: [
                 {
                   seqNo: 1,
                   locationType: "origin",
                   tiploc: "PRST",
+                  locationName: "Preston",
                   arrivalPublic: null,
                   departurePublic: "1000",
                   passPublic: null,
                   platform: "4",
+                },
+                {
+                  seqNo: 2,
+                  locationType: "pass",
+                  tiploc: "OXHEYJN",
+                  locationName: "Oxheys Junction",
+                  arrivalPublic: null,
+                  departurePublic: null,
+                  passPublic: "1006",
+                  platform: null,
+                },
+                {
+                  seqNo: 3,
+                  locationType: "intermediate",
+                  tiploc: "UNTIMEDJ",
+                  locationName: null,
+                  arrivalPublic: null,
+                  departurePublic: null,
+                  passPublic: null,
+                  platform: null,
+                },
+                {
+                  seqNo: 4,
+                  locationType: "destination",
+                  tiploc: "LANCSTR",
+                  locationName: "Lancaster",
+                  arrivalPublic: "1030",
+                  departurePublic: null,
+                  passPublic: null,
+                  platform: "3",
                 },
               ],
             },
@@ -69,6 +102,17 @@ describe("RunPopup", () => {
     expect(await screen.findByText("2A1612AA26")).toBeInTheDocument();
     expect(screen.getByText("U12345")).toBeInTheDocument();
     expect(screen.getByText(/Matched/)).toBeInTheDocument();
+    // Origin/destination resolved via CORPUS, raw TIPLOC kept alongside rather than hidden — each
+    // appears twice (once in the summary dl, once as that calling point's own row).
+    expect(screen.getAllByText("Preston (PRST)")).toHaveLength(2);
+    expect(screen.getAllByText("Lancaster (LANCSTR)")).toHaveLength(2);
+    // A calling point (destination) shows its own arrival.
+    expect(screen.getByText("10:30")).toBeInTheDocument();
+    // A passing point shows its pass time, prefixed and distinguishable from a call.
+    expect(screen.getByText("pass 10:06")).toBeInTheDocument();
+    // An untimed structural TIPLOC (no name, no times at all) still gets a row, not silently
+    // dropped, and falls back to the raw TIPLOC when CORPUS has no name for it.
+    expect(screen.getByText("UNTIMEDJ")).toBeInTheDocument();
   });
 
   it("shows candidates without picking one when ambiguous", async () => {

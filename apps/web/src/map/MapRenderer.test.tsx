@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { MapRenderer, viewBoxAfterPinch, MIN_ZOOM_WIDTH } from "./MapRenderer.js";
@@ -334,7 +334,7 @@ describe("MapRenderer", () => {
     expect(newViewBox).not.toBe(initialViewBox);
   });
 
-  it("shows the plain stub, not a popup, for an unbound or empty berth", () => {
+  it("does nothing when clicking an unbound or empty berth — only occupied berths are clickable", () => {
     const doc = bundle({
       elementsById: {
         "berth-1": {
@@ -357,7 +357,216 @@ describe("MapRenderer", () => {
     const rect = container.querySelector("rect")!;
     fireEvent.click(rect);
 
-    expect(screen.getByText("This element has no TD binding.")).toBeInTheDocument();
+    expect(container.querySelector(".map-inspector")).not.toBeInTheDocument();
+  });
+
+  it("keeps the popup open through the gap right after a berth step, before any berth reports the run yet", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string) =>
+      Promise.resolve(
+        jsonResponse({
+          tdArea: "PX",
+          berth: "0001",
+          description: "1S45",
+          occupancyEnteredAt: null,
+          resolution: { status: "matched", confidence: 1, resolverVersion: 2, candidates: [] },
+          run: {
+            runId: "run-x",
+            trustTrainId: "T1S4511",
+            signallingId: "1S45",
+            serviceDate: "2026-08-11",
+            activatedAt: null,
+            operatorCode: null,
+            serviceCode: null,
+            lifecycleState: "activated",
+            scheduleLink: null,
+          },
+          schedule: null,
+          latestMovement: null,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+        },
+        "berth-2": {
+          id: "berth-2",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 60,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 2",
+        },
+      },
+      berthBindingIndex: { "PX|0001": "berth-1", "PX|0002": "berth-2" },
+    });
+
+    const { container, rerender } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "matched", text: null, trainRunId: "run-x" },
+          },
+          "berth-2": { description: null, enteredAt: null, runSummary: null },
+        }}
+        signals={{}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("1S45"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".map-inspector--run")).toBeInTheDocument();
+
+    // The train has left berth-1, but the resolver hasn't confirmed it in berth-2 yet — no berth
+    // on the map currently reports run-x. The popup must not close in this window.
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": { description: null, enteredAt: null, runSummary: null },
+          "berth-2": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "ambiguous", text: null, trainRunId: null },
+          },
+        }}
+        signals={{}}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(container.querySelector(".map-inspector--run")).toBeInTheDocument();
+
+    // Resolver catches up: berth-2 now confirms run-x, well within the grace window.
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": { description: null, enteredAt: null, runSummary: null },
+          "berth-2": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "matched", text: null, trainRunId: "run-x" },
+          },
+        }}
+        signals={{}}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(container.querySelector(".map-inspector--run")).toBeInTheDocument();
+    const lastCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[0];
+    expect(lastCall).toContain("/areas/PX/berths/0002/");
+
+    vi.useRealTimers();
+  });
+
+  it("closes the popup once the tracked run is genuinely gone for the whole grace window", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string) =>
+      Promise.resolve(
+        jsonResponse({
+          tdArea: "PX",
+          berth: "0001",
+          description: "1S45",
+          occupancyEnteredAt: null,
+          resolution: { status: "matched", confidence: 1, resolverVersion: 2, candidates: [] },
+          run: {
+            runId: "run-x",
+            trustTrainId: "T1S4511",
+            signallingId: "1S45",
+            serviceDate: "2026-08-11",
+            activatedAt: null,
+            operatorCode: null,
+            serviceCode: null,
+            lifecycleState: "activated",
+            scheduleLink: null,
+          },
+          schedule: null,
+          latestMovement: null,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+        },
+      },
+      berthBindingIndex: { "PX|0001": "berth-1" },
+    });
+
+    const { container, rerender } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": {
+            description: "1S45",
+            enteredAt: null,
+            runSummary: { status: "matched", text: null, trainRunId: "run-x" },
+          },
+        }}
+        signals={{}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("1S45"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".map-inspector--run")).toBeInTheDocument();
+
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-1": { description: null, enteredAt: null, runSummary: null } }}
+        signals={{}}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
+    });
+    expect(container.querySelector(".map-inspector--run")).not.toBeInTheDocument();
+
+    vi.useRealTimers();
   });
 });
 

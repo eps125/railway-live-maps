@@ -152,7 +152,10 @@ never a silent pick).
         "trainRunId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "score": 75,
         "confidence": 0.79,
-        "reasons": ["..."]
+        "reasons": ["..."],
+        "signallingId": "2A16",
+        "trustTrainId": "2A1612AA26",
+        "trainUid": "U12345"
       }
     ]
   },
@@ -173,8 +176,18 @@ never a silent pick).
     "stpIndicator": "P",
     "source": "SCHEDULE",
     "originTiploc": "PRST",
+    "originName": "Preston",
     "destinationTiploc": "LANCSTR",
-    "locations": [{ "seqNo": 1, "locationType": "origin", "tiploc": "PRST", "...": "..." }]
+    "destinationName": "Lancaster",
+    "locations": [
+      {
+        "seqNo": 1,
+        "locationType": "origin",
+        "tiploc": "PRST",
+        "locationName": "Preston",
+        "...": "..."
+      }
+    ]
   },
   "latestMovement": {
     "eventType": "DEPARTURE",

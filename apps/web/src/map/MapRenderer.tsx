@@ -36,6 +36,15 @@ function berthColors(berthState: BerthState | undefined): { fill: string; stroke
 const PADDING = 40;
 export const MIN_ZOOM_WIDTH = 100;
 
+/** How long to keep a tracked matched run's popup open after no berth on the map reports it
+ * anymore, before treating it as genuinely gone. A berth step is not atomic from the client's
+ * point of view: the old berth's occupancy clears before the resolver has necessarily confirmed
+ * the run in its new berth (apps/worker/src/resolver/projector.ts's own loop), so there's a real
+ * window — normally under a couple of seconds, but worth padding — where *no* berth reports the
+ * tracked run even though it hasn't actually left. Closing immediately on the first missed check
+ * was confirmed 2026-08-13 to make the popup flicker shut on every single step. */
+const RUN_LOST_GRACE_MS = 8000;
+
 /** Pure zoom math for a two-finger pinch, factored out so it's directly unit-testable — jsdom
  * (this project's test environment) doesn't implement the `PointerEvent` constructor at all, so
  * a genuine two-distinct-pointer gesture can't be reliably simulated through fireEvent; this is
@@ -85,23 +94,39 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
   const [pinch, setPinch] = useState<{ startDistance: number; origin: ViewBox } | null>(null);
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const svgRef = useRef<SVGSVGElement>(null);
+  const runLostTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Re-targets the selection to wherever the tracked run currently is, every time berth state
-  // changes. If it's no longer occupying any berth on this map (left the bound area, or its
-  // resolution changed to no longer match this run), the selection closes rather than keep
-  // showing an increasingly wrong berth — an honest "it's gone" beats stale data.
+  // changes. If no berth reports it, that doesn't necessarily mean it's gone — see
+  // RUN_LOST_GRACE_MS — so closing only happens once that grace window elapses with the run still
+  // nowhere to be found, not on the first missed check.
   useEffect(() => {
     if (!selectedRunId) return;
     const current = Object.entries(berths).find(
       ([, state]) => state.runSummary?.trainRunId === selectedRunId,
     );
     if (current) {
+      if (runLostTimeoutRef.current) {
+        clearTimeout(runLostTimeoutRef.current);
+        runLostTimeoutRef.current = null;
+      }
       if (current[0] !== selectedElementId) setSelectedElementId(current[0]);
-    } else {
-      setSelectedElementId(null);
-      setSelectedRunId(null);
+      return;
+    }
+    if (!runLostTimeoutRef.current) {
+      runLostTimeoutRef.current = setTimeout(() => {
+        setSelectedElementId(null);
+        setSelectedRunId(null);
+        runLostTimeoutRef.current = null;
+      }, RUN_LOST_GRACE_MS);
     }
   }, [berths, selectedRunId, selectedElementId]);
+
+  useEffect(() => {
+    return () => {
+      if (runLostTimeoutRef.current) clearTimeout(runLostTimeoutRef.current);
+    };
+  }, []);
 
   const elementIdToBinding = useMemo(() => {
     const map = new Map<string, string>();
@@ -213,7 +238,6 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
     }
   }
 
-  const selectedBerthState = selectedElementId ? berths[selectedElementId] : undefined;
   const selectedBinding = selectedElementId ? elementIdToBinding.get(selectedElementId) : undefined;
   const selectedElement = selectedElementId ? bundle.elementsById[selectedElementId] : undefined;
 
@@ -264,18 +288,25 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
           if (element.type === "berth") {
             const berthState = berths[element.id];
             const colors = berthColors(berthState);
+            // An empty berth has nothing to show a popup for — only occupied berths respond to
+            // clicks (docs/PROJECT_SPEC.md §5: "click a populated berth").
+            const isOccupied = Boolean(berthState?.description);
             return (
               <g
                 key={element.id}
-                onClick={() => {
-                  const trainRunId =
-                    berthState?.runSummary?.status === "matched"
-                      ? berthState.runSummary.trainRunId
-                      : null;
-                  setSelectedRunId(trainRunId);
-                  setSelectedElementId(element.id);
-                }}
-                style={{ cursor: "pointer" }}
+                onClick={
+                  isOccupied
+                    ? () => {
+                        const trainRunId =
+                          berthState?.runSummary?.status === "matched"
+                            ? berthState.runSummary.trainRunId
+                            : null;
+                        setSelectedRunId(trainRunId);
+                        setSelectedElementId(element.id);
+                      }
+                    : undefined
+                }
+                style={{ cursor: isOccupied ? "pointer" : "default" }}
               >
                 <rect
                   x={element.x}
@@ -349,10 +380,15 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
         })}
       </svg>
 
-      {selectedElementId && selectedBinding && selectedBerthState?.description ? (
-        // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup" — only
-        // fetches/renders the full popup for an occupied, bound berth; an empty or unbound one
-        // falls through to the plain stub below instead.
+      {selectedElementId && selectedBinding ? (
+        // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup" — berths
+        // only accept clicks while occupied (see the berth <g> above), so reaching this state
+        // always traces back to a real occupied-berth click, or the popup following an
+        // already-tracked matched run to wherever it currently is (selectedRunId), including
+        // through the brief gap right after a berth step where neither the old berth nor the new
+        // one has caught up yet — trusting the tracked selection here rather than re-checking the
+        // *current* berth's own description is exactly what keeps the popup open through that gap
+        // instead of flickering shut on every step.
         <RunPopup
           // Keyed on the run when one's tracked, not the berth — otherwise following a run to a
           // new berth would remount the popup (a "Loading…" flash) even though nothing about the
@@ -365,19 +401,6 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
           tdArea={selectedBinding.split("|")[0] ?? ""}
           berth={selectedBinding.split("|")[1] ?? ""}
         />
-      ) : selectedElementId ? (
-        <div role="status" className="map-inspector">
-          <div className="map-inspector__title">{selectedElementId}</div>
-          <dl>
-            <dt>TD binding</dt>
-            <dd>{selectedBinding ?? "unbound"}</dd>
-            <dt>Description</dt>
-            <dd>{selectedBerthState?.description ?? "(empty)"}</dd>
-          </dl>
-          <div className="map-inspector__note">
-            {selectedBinding ? "This berth is currently empty." : "This element has no TD binding."}
-          </div>
-        </div>
       ) : null}
     </div>
   );

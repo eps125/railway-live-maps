@@ -15,6 +15,7 @@ const pool = createPool({ connectionString: requireEnv("DATABASE_URL") });
 const createdOccupancyIds: string[] = [];
 const createdRunIds: string[] = [];
 const createdScheduleIds: string[] = [];
+const createdLocationReferenceTiplocs: string[] = [];
 
 afterAll(async () => {
   if (createdOccupancyIds.length > 0) {
@@ -36,6 +37,11 @@ afterAll(async () => {
   }
   if (createdScheduleIds.length > 0) {
     await pool.query("delete from schedule where id = any($1::bigint[])", [createdScheduleIds]);
+  }
+  if (createdLocationReferenceTiplocs.length > 0) {
+    await pool.query("delete from location_reference where tiploc = any($1::text[])", [
+      createdLocationReferenceTiplocs,
+    ]);
   }
   await pool.end();
 });
@@ -133,17 +139,67 @@ async function seedTrainRun(
  * swap unconditionally deletes every source='SCHEDULE' row, which would collide with these
  * test fixtures outliving this test run (same reasoning as the resolver integration suite's
  * own seedSchedule helper). */
-async function seedSchedule(trainUid: string): Promise<string> {
+async function seedSchedule(
+  trainUid: string,
+  originDestination: { originTiploc?: string; destinationTiploc?: string } = {},
+): Promise<string> {
   const result = await pool.query<{ id: string }>(
     `insert into schedule (
-       train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, raw_source_json
-     ) values ($1, '2026-01-01', '2026-12-31', 'P', 'VSTP', '{}')
+       train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, origin_tiploc,
+       destination_tiploc, raw_source_json
+     ) values ($1, '2026-01-01', '2026-12-31', 'P', 'VSTP', $2, $3, '{}')
      returning id`,
-    [trainUid],
+    [trainUid, originDestination.originTiploc ?? null, originDestination.destinationTiploc ?? null],
   );
   const scheduleId = result.rows[0]!.id;
   createdScheduleIds.push(scheduleId);
   return scheduleId;
+}
+
+async function seedScheduleLocation(
+  scheduleId: string,
+  overrides: {
+    seqNo: number;
+    locationType: string;
+    tiploc: string;
+    arrivalPublic?: string;
+    departurePublic?: string;
+    passPublic?: string;
+    platform?: string;
+  },
+): Promise<void> {
+  await pool.query(
+    `insert into schedule_location (
+       schedule_id, seq_no, location_type, tiploc, arrival_public, departure_public, pass_public,
+       platform
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      scheduleId,
+      overrides.seqNo,
+      overrides.locationType,
+      overrides.tiploc,
+      overrides.arrivalPublic ?? null,
+      overrides.departurePublic ?? null,
+      overrides.passPublic ?? null,
+      overrides.platform ?? null,
+    ],
+  );
+}
+
+async function seedLocationReference(tiploc: string, name: string): Promise<void> {
+  await pool.query(
+    `insert into location_reference (tiploc, name, raw_source_json) values ($1, $2, '{}')`,
+    [tiploc, name],
+  );
+  createdLocationReferenceTiplocs.push(tiploc);
+}
+
+async function seedRunScheduleLink(trainRunId: string, scheduleId: string): Promise<void> {
+  await pool.query(
+    `insert into run_schedule_link (train_run_id, activation_at, schedule_id, match_outcome)
+     values ($1, now(), $2, 'matched')`,
+    [trainRunId, scheduleId],
+  );
 }
 
 async function seedResolution(
@@ -287,6 +343,64 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const unlinked = candidates.find((c) => c.trainRunId === unlinkedRunId);
       expect(unlinked).toMatchObject({ signallingId: "2T37", trainUid: null });
       expect(unlinked?.trustTrainId).toEqual(expect.any(String));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("resolves TIPLOCs to CORPUS location names for origin/destination and each calling point", async () => {
+    const area = uniqueArea();
+    const originTiploc = `OR${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    const destTiploc = `DE${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    const untimedTiploc = `UN${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    await seedLocationReference(originTiploc, "Test Origin");
+    await seedLocationReference(destTiploc, "Test Destination");
+    // Deliberately no location_reference row for untimedTiploc — proves the fallback to the raw
+    // TIPLOC when CORPUS has no matching entry, rather than the whole response failing.
+
+    const { occupancyId } = await seedOccupiedBerth(area, "0005", "3Y01");
+    const scheduleId = await seedSchedule("C99999", {
+      originTiploc,
+      destinationTiploc: destTiploc,
+    });
+    await seedScheduleLocation(scheduleId, {
+      seqNo: 1,
+      locationType: "origin",
+      tiploc: originTiploc,
+      departurePublic: "0900",
+    });
+    await seedScheduleLocation(scheduleId, {
+      seqNo: 2,
+      locationType: "intermediate",
+      tiploc: untimedTiploc,
+    });
+    await seedScheduleLocation(scheduleId, {
+      seqNo: 3,
+      locationType: "destination",
+      tiploc: destTiploc,
+      arrivalPublic: "0930",
+    });
+    const runId = await seedTrainRun("3Y01", scheduleId);
+    await seedRunScheduleLink(runId, scheduleId);
+    await seedResolution(occupancyId, "matched", runId);
+
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0005/current-run`,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.schedule.originName).toBe("Test Origin");
+      expect(body.schedule.destinationName).toBe("Test Destination");
+      const locations = body.schedule.locations as Array<{
+        tiploc: string;
+        locationName: string | null;
+      }>;
+      expect(locations.find((l) => l.tiploc === originTiploc)?.locationName).toBe("Test Origin");
+      expect(locations.find((l) => l.tiploc === destTiploc)?.locationName).toBe("Test Destination");
+      expect(locations.find((l) => l.tiploc === untimedTiploc)?.locationName).toBeNull();
     } finally {
       await app.close();
     }

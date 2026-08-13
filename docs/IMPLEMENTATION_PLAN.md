@@ -383,6 +383,31 @@ projector.ts` hardcodes it `null` — a pre-existing gap, not something this mil
   separate routed page, and links out to run/berth history as identifiers rather than clickable
   pages — those pages don't exist yet on the web frontend, only as API endpoints.
 
+2026-08-13 popup/map polish, from real usage:
+
+- Calling points are now resolved from raw TIPLOC to a human-readable name via CORPUS
+  (`location_reference`), for origin/destination and every row of the full-schedule table —
+  looked up fresh at request time in `apps/api/src/routes/currentRun.ts` (same "enrich at read
+  time, never store" reasoning as the candidate-identity enrichment above), falling back to the
+  bare TIPLOC wherever CORPUS has no entry. A location with only a pass time (no booked
+  arrival/departure) is now shown as a single greyed-out pass time instead of blank dashes, and a
+  genuine calling point's arrival/departure/arrow are three separate table cells rather than one
+  concatenated string — the previous single-string rendering let the arrow's on-screen position
+  drift row to row depending on whether either side was blank; separate `<td>`s let the browser's
+  own column layout keep it pinned.
+- `apps/web/src/map/MapRenderer.tsx`: empty berths no longer respond to clicks at all (no
+  `onClick`, default cursor) — clicking was never meaningful there (`docs/PROJECT_SPEC.md` §5
+  always specified "click a **populated** berth"), and the old empty/unbound stub panel is
+  removed as a result (it can no longer be reached). Fixed a real bug in the existing
+  run-tracking logic (the comment describing it — "lets the map follow this specific run across
+  berth steps" — was already the intent, just not achieving it): the popup closed the instant _no_
+  berth on the map reported the tracked run, which happens on every ordinary step for a brief,
+  normal window — the old berth's occupancy clears before the resolver has confirmed the run in
+  its new berth. `RUN_LOST_GRACE_MS` (8s) now gives that window before treating the run as
+  genuinely gone, and the popup's render condition no longer re-checks the _current_ berth's own
+  `description` (which was closing the popup independently of the tracking fix, since that
+  specific berth's description clears the moment the train steps out of it).
+
 ## Milestone 10 — snapshots and playback
 
 - Periodic map snapshots.

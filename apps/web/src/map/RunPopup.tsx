@@ -38,6 +38,7 @@ interface CurrentRunScheduleLocation {
   arrivalPublic: string | null;
   departurePublic: string | null;
   passPublic: string | null;
+  passWorking: string | null;
   platform: string | null;
 }
 
@@ -244,6 +245,14 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
                         // treatment since there's nothing booked there either.
                         const isCall = loc.arrivalPublic !== null || loc.departurePublic !== null;
                         const muted = !isCall;
+                        // CIF has no real concept of a *public* pass time — junctions and other
+                        // non-stop points are essentially never customer-facing, so passPublic is
+                        // null for nearly every real passing point; the actually-booked time lives
+                        // in passWorking (confirmed 2026-08-13 against realtimetrains.co.uk, which
+                        // shows exactly these working times for non-stop locations). Preferring
+                        // passPublic when it IS present costs nothing and covers the rare case
+                        // where a public pass time genuinely is published.
+                        const passTime = loc.passPublic ?? loc.passWorking;
                         return (
                           <tr
                             key={loc.seqNo}
@@ -263,9 +272,7 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
                               </>
                             ) : (
                               <td className="map-inspector__schedule-time" colSpan={3}>
-                                {loc.passPublic !== null
-                                  ? `pass ${formatTime(loc.passPublic)}`
-                                  : "—"}
+                                {passTime !== null ? `pass ${formatTime(passTime)}` : "—"}
                               </td>
                             )}
                           </tr>

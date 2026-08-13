@@ -51,6 +51,7 @@ describe("RunPopup", () => {
                   arrivalPublic: null,
                   departurePublic: "1000",
                   passPublic: null,
+                  passWorking: null,
                   platform: "4",
                 },
                 {
@@ -61,26 +62,43 @@ describe("RunPopup", () => {
                   arrivalPublic: null,
                   departurePublic: null,
                   passPublic: "1006",
+                  passWorking: null,
                   platform: null,
                 },
                 {
+                  // The realistic case (confirmed against real production data 2026-08-13): CIF
+                  // essentially never populates a *public* pass time for a junction — only the
+                  // working one. Proves the fallback, not just the rarely-populated public field.
                   seqNo: 3,
+                  locationType: "pass",
+                  tiploc: "WRKGJN",
+                  locationName: "Working Junction",
+                  arrivalPublic: null,
+                  departurePublic: null,
+                  passPublic: null,
+                  passWorking: "1215",
+                  platform: null,
+                },
+                {
+                  seqNo: 4,
                   locationType: "intermediate",
                   tiploc: "UNTIMEDJ",
                   locationName: null,
                   arrivalPublic: null,
                   departurePublic: null,
                   passPublic: null,
+                  passWorking: null,
                   platform: null,
                 },
                 {
-                  seqNo: 4,
+                  seqNo: 5,
                   locationType: "destination",
                   tiploc: "LANCSTR",
                   locationName: "Lancaster",
                   arrivalPublic: "1030",
                   departurePublic: null,
                   passPublic: null,
+                  passWorking: null,
                   platform: "3",
                 },
               ],
@@ -110,6 +128,9 @@ describe("RunPopup", () => {
     expect(screen.getByText("10:30")).toBeInTheDocument();
     // A passing point shows its pass time, prefixed and distinguishable from a call.
     expect(screen.getByText("pass 10:06")).toBeInTheDocument();
+    // No public pass time (the realistic case) falls back to the working pass time rather than
+    // showing a blank dash — real train-time sites show exactly this working time.
+    expect(screen.getByText("pass 12:15")).toBeInTheDocument();
     // An untimed structural TIPLOC (no name, no times at all) still gets a row, not silently
     // dropped, and falls back to the raw TIPLOC when CORPUS has no name for it.
     expect(screen.getByText("UNTIMEDJ")).toBeInTheDocument();

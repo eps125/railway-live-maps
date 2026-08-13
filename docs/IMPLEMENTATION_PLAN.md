@@ -394,7 +394,13 @@ projector.ts` hardcodes it `null` — a pre-existing gap, not something this mil
   genuine calling point's arrival/departure/arrow are three separate table cells rather than one
   concatenated string — the previous single-string rendering let the arrow's on-screen position
   drift row to row depending on whether either side was blank; separate `<td>`s let the browser's
-  own column layout keep it pinned.
+  own column layout keep it pinned. First cut of the passing-point display only ever read
+  `passPublic`, which turned out to render as a blank dash for nearly every real passing point —
+  confirmed same day against a real service's RTT page (realtimetrains.co.uk, permitted per
+  CLAUDE.md rule 14, not one of the three named sites) that CIF essentially never carries a
+  _public_ pass time for a non-stop junction, only a working one; `apps/web/src/map/RunPopup.tsx`
+  now falls back to `passWorking` (already fetched by the API via the shared `locationToJson`,
+  just not previously read by the popup) whenever `passPublic` is null, which is the normal case.
 - `apps/web/src/map/MapRenderer.tsx`: empty berths no longer respond to clicks at all (no
   `onClick`, default cursor) — clicking was never meaningful there (`docs/PROJECT_SPEC.md` §5
   always specified "click a **populated** berth"), and the old empty/unbound stub panel is

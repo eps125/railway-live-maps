@@ -412,7 +412,21 @@ projector.ts` hardcodes it `null` — a pre-existing gap, not something this mil
   its new berth. `RUN_LOST_GRACE_MS` (8s) now gives that window before treating the run as
   genuinely gone, and the popup's render condition no longer re-checks the _current_ berth's own
   `description` (which was closing the popup independently of the tracking fix, since that
-  specific berth's description clears the moment the train steps out of it).
+  specific berth's description clears the moment the train steps out of it). It also had no
+  explicit close affordance at all — a small "×" button (`onClose` prop, `.map-inspector__close`)
+  now closes it and cancels any pending grace-period timeout.
+- The first cut of call-vs-pass classification (`isCall = arrivalPublic !== null ||
+departurePublic !== null`) only ever looked at _public_ times, which happened to work for
+  passenger schedules but silently misclassified every stop on a freight/parcels working as a
+  pass — confirmed 2026-08-13 against a real freight service (4S44 / gb-nr:W32423) on
+  realtimetrains.co.uk (permitted per CLAUDE.md rule 14): freight timetables essentially never
+  carry public times at all, only working ones, so a genuine booked stop (e.g. "stops for staffing
+  reasons") was rendering identically to an ordinary passing junction. `isCall` now falls back to
+  `arrivalWorking`/`departureWorking` the same way the pass-time fix falls back to `passWorking`.
+  Also added a Path/Line column (`schedule_location.path`/`.line`, already fetched by the API, not
+  previously surfaced) and a `<thead>` now that the table has enough columns to need one; the table
+  itself is wrapped in its own horizontally-scrolling container so a long schedule widens only the
+  table, not the whole page.
 
 ## Milestone 10 — snapshots and playback
 

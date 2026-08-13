@@ -400,6 +400,14 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
           }
           tdArea={selectedBinding.split("|")[0] ?? ""}
           berth={selectedBinding.split("|")[1] ?? ""}
+          onClose={() => {
+            if (runLostTimeoutRef.current) {
+              clearTimeout(runLostTimeoutRef.current);
+              runLostTimeoutRef.current = null;
+            }
+            setSelectedElementId(null);
+            setSelectedRunId(null);
+          }}
         />
       ) : null}
     </div>

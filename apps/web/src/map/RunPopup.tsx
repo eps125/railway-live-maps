@@ -36,10 +36,14 @@ interface CurrentRunScheduleLocation {
   tiploc: string;
   locationName: string | null;
   arrivalPublic: string | null;
+  arrivalWorking: string | null;
   departurePublic: string | null;
+  departureWorking: string | null;
   passPublic: string | null;
   passWorking: string | null;
   platform: string | null;
+  path: string | null;
+  line: string | null;
 }
 
 interface CurrentRunSchedule {
@@ -78,6 +82,7 @@ export interface RunPopupProps {
   displayName: string;
   tdArea: string;
   berth: string;
+  onClose: () => void;
 }
 
 const STP_LABELS: Record<string, string> = {
@@ -118,7 +123,13 @@ const POLL_INTERVAL_MS = 2000;
  * spec'd field list, and — critically — never silently picks a run when the resolver reports
  * `ambiguous`, and never fabricates schedule/operator data when `unmatched`.
  */
-export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProps): JSX.Element {
+export function RunPopup({
+  elementId,
+  displayName,
+  tdArea,
+  berth,
+  onClose,
+}: RunPopupProps): JSX.Element {
   const [data, setData] = useState<CurrentRunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,11 +178,16 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
   return (
     <div role="status" className="map-inspector map-inspector--run">
       <div className="map-inspector__title">
-        {displayName || elementId}
-        <span className="map-inspector__subtitle">
-          {" "}
-          · {tdArea} {berth}
+        <span>
+          {displayName || elementId}
+          <span className="map-inspector__subtitle">
+            {" "}
+            · {tdArea} {berth}
+          </span>
         </span>
+        <button type="button" className="map-inspector__close" aria-label="Close" onClick={onClose}>
+          ×
+        </button>
       </div>
 
       {loading ? <p>Loading…</p> : null}
@@ -233,53 +249,65 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
               {data.schedule && data.schedule.locations.length > 0 ? (
                 <details className="map-inspector__schedule">
                   <summary>Full schedule ({data.schedule.locations.length} calling points)</summary>
-                  <table>
-                    <tbody>
-                      {data.schedule.locations.map((loc) => {
-                        // A "call" (real stop) has a booked arrival and/or departure; a location
-                        // with only a pass time is never actually visited long enough to board —
-                        // greyed out and shown as a single time, no arrow, same distinction other
-                        // public train-time sites draw between calling and passing points. A
-                        // location with neither (a structural/junction TIPLOC CIF includes for
-                        // route continuity, not a timed point at all) gets the same muted
-                        // treatment since there's nothing booked there either.
-                        const isCall = loc.arrivalPublic !== null || loc.departurePublic !== null;
-                        const muted = !isCall;
-                        // CIF has no real concept of a *public* pass time — junctions and other
-                        // non-stop points are essentially never customer-facing, so passPublic is
-                        // null for nearly every real passing point; the actually-booked time lives
-                        // in passWorking (confirmed 2026-08-13 against realtimetrains.co.uk, which
-                        // shows exactly these working times for non-stop locations). Preferring
-                        // passPublic when it IS present costs nothing and covers the rare case
-                        // where a public pass time genuinely is published.
-                        const passTime = loc.passPublic ?? loc.passWorking;
-                        return (
-                          <tr
-                            key={loc.seqNo}
-                            className={muted ? "map-inspector__schedule-row--muted" : ""}
-                          >
-                            <td>{formatLocation(loc.tiploc, loc.locationName)}</td>
-                            <td>{loc.platform ?? ""}</td>
-                            {isCall ? (
-                              <>
-                                <td className="map-inspector__schedule-time map-inspector__schedule-time--arrival">
-                                  {formatTime(loc.arrivalPublic)}
+                  <div className="map-inspector__schedule-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Location</th>
+                          <th>Pl</th>
+                          <th colSpan={3}>Time</th>
+                          <th>Path/Line</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.schedule.locations.map((loc) => {
+                          // A "call" (real stop) has a booked arrival and/or departure — public if
+                          // published, but freight/parcels workings essentially never have public
+                          // times at all (confirmed 2026-08-13 against a real freight service on
+                          // realtimetrains.co.uk: every genuine stop there, e.g. a staffing/pathing
+                          // stop, only ever carries *working* arrival/departure), so working times
+                          // are the fallback rather than an edge case. A location with only a pass
+                          // time is never actually visited long enough to board — greyed out and
+                          // shown as a single time, no arrow, same distinction other public
+                          // train-time sites draw between calling and passing points. A location
+                          // with neither (a structural/junction TIPLOC CIF includes for route
+                          // continuity, not a timed point at all) gets the same muted treatment
+                          // since there's nothing booked there either.
+                          const arrival = loc.arrivalPublic ?? loc.arrivalWorking;
+                          const departure = loc.departurePublic ?? loc.departureWorking;
+                          const isCall = arrival !== null || departure !== null;
+                          const muted = !isCall;
+                          const passTime = loc.passPublic ?? loc.passWorking;
+                          const pathLine = [loc.path, loc.line].filter(Boolean).join("/");
+                          return (
+                            <tr
+                              key={loc.seqNo}
+                              className={muted ? "map-inspector__schedule-row--muted" : ""}
+                            >
+                              <td>{formatLocation(loc.tiploc, loc.locationName)}</td>
+                              <td>{loc.platform ?? ""}</td>
+                              {isCall ? (
+                                <>
+                                  <td className="map-inspector__schedule-time map-inspector__schedule-time--arrival">
+                                    {formatTime(arrival)}
+                                  </td>
+                                  <td className="map-inspector__schedule-arrow">→</td>
+                                  <td className="map-inspector__schedule-time map-inspector__schedule-time--departure">
+                                    {formatTime(departure)}
+                                  </td>
+                                </>
+                              ) : (
+                                <td className="map-inspector__schedule-time" colSpan={3}>
+                                  {passTime !== null ? `pass ${formatTime(passTime)}` : "—"}
                                 </td>
-                                <td className="map-inspector__schedule-arrow">→</td>
-                                <td className="map-inspector__schedule-time map-inspector__schedule-time--departure">
-                                  {formatTime(loc.departurePublic)}
-                                </td>
-                              </>
-                            ) : (
-                              <td className="map-inspector__schedule-time" colSpan={3}>
-                                {passTime !== null ? `pass ${formatTime(passTime)}` : "—"}
-                              </td>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                              )}
+                              <td className="map-inspector__schedule-pathline">{pathLine}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </details>
               ) : null}
 

@@ -498,9 +498,30 @@ legend {
 }
 
 .map-inspector__title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
   font-weight: 600;
   font-family: var(--font-mono);
   color: var(--color-accent-hover);
+}
+
+.map-inspector__close {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0 0.2rem;
+  margin: -0.1rem -0.15rem 0 0;
+  line-height: 1;
+  font-size: 1.1rem;
+  font-family: inherit;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.map-inspector__close:hover {
+  color: var(--color-text);
 }
 
 .map-inspector__subtitle {
@@ -534,16 +555,35 @@ legend {
   color: var(--color-text-faint);
 }
 
+/* The table can end up wider than the popup (long location names, the extra Path/Line column) —
+ * scroll it in its own box rather than letting the whole page gain a horizontal scrollbar. */
+.map-inspector__schedule-scroll {
+  overflow-x: auto;
+  margin-top: 0.35rem;
+}
+
 .map-inspector__schedule table {
   width: 100%;
-  margin-top: 0.35rem;
   border-collapse: collapse;
   font-family: var(--font-mono);
+}
+
+.map-inspector__schedule th {
+  padding: 0 0.3rem 0.15rem 0;
+  text-align: left;
+  font-weight: 400;
+  color: var(--color-text-faint);
+  white-space: nowrap;
 }
 
 .map-inspector__schedule td {
   padding: 0.1rem 0.3rem 0.1rem 0;
   white-space: nowrap;
+}
+
+.map-inspector__schedule-pathline {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
 }
 
 /* Arrival/arrow/departure are separate cells (not one concatenated string) specifically so the

@@ -49,10 +49,14 @@ describe("RunPopup", () => {
                   tiploc: "PRST",
                   locationName: "Preston",
                   arrivalPublic: null,
+                  arrivalWorking: null,
                   departurePublic: "1000",
+                  departureWorking: "0958",
                   passPublic: null,
                   passWorking: null,
                   platform: "4",
+                  path: null,
+                  line: "UF",
                 },
                 {
                   seqNo: 2,
@@ -60,10 +64,14 @@ describe("RunPopup", () => {
                   tiploc: "OXHEYJN",
                   locationName: "Oxheys Junction",
                   arrivalPublic: null,
+                  arrivalWorking: null,
                   departurePublic: null,
+                  departureWorking: null,
                   passPublic: "1006",
                   passWorking: null,
                   platform: null,
+                  path: null,
+                  line: null,
                 },
                 {
                   // The realistic case (confirmed against real production data 2026-08-13): CIF
@@ -74,32 +82,62 @@ describe("RunPopup", () => {
                   tiploc: "WRKGJN",
                   locationName: "Working Junction",
                   arrivalPublic: null,
+                  arrivalWorking: null,
                   departurePublic: null,
+                  departureWorking: null,
                   passPublic: null,
                   passWorking: "1215",
                   platform: null,
+                  path: "DS",
+                  line: "DF",
                 },
                 {
+                  // A freight/parcels-style genuine stop (2026-08-13, real 4S44 example): never
+                  // has public times at all, but is a real stop (distinct booked working
+                  // arrival/departure) — must be classified as a call, not a muted pass.
                   seqNo: 4,
+                  locationType: "intermediate",
+                  tiploc: "STAFFJN",
+                  locationName: null,
+                  arrivalPublic: null,
+                  arrivalWorking: "1351",
+                  departurePublic: null,
+                  departureWorking: "1356",
+                  passPublic: null,
+                  passWorking: null,
+                  platform: null,
+                  path: null,
+                  line: null,
+                },
+                {
+                  seqNo: 5,
                   locationType: "intermediate",
                   tiploc: "UNTIMEDJ",
                   locationName: null,
                   arrivalPublic: null,
+                  arrivalWorking: null,
                   departurePublic: null,
+                  departureWorking: null,
                   passPublic: null,
                   passWorking: null,
                   platform: null,
+                  path: null,
+                  line: null,
                 },
                 {
-                  seqNo: 5,
+                  seqNo: 6,
                   locationType: "destination",
                   tiploc: "LANCSTR",
                   locationName: "Lancaster",
                   arrivalPublic: "1030",
+                  arrivalWorking: "1029",
                   departurePublic: null,
+                  departureWorking: null,
                   passPublic: null,
                   passWorking: null,
                   platform: "3",
+                  path: null,
+                  line: null,
                 },
               ],
             },
@@ -115,7 +153,15 @@ describe("RunPopup", () => {
       ),
     );
 
-    render(<RunPopup elementId="berth-1" displayName="Berth 1" tdArea="PX" berth="0512" />);
+    render(
+      <RunPopup
+        elementId="berth-1"
+        displayName="Berth 1"
+        tdArea="PX"
+        berth="0512"
+        onClose={() => {}}
+      />,
+    );
 
     expect(await screen.findByText("2A1612AA26")).toBeInTheDocument();
     expect(screen.getByText("U12345")).toBeInTheDocument();
@@ -131,6 +177,12 @@ describe("RunPopup", () => {
     // No public pass time (the realistic case) falls back to the working pass time rather than
     // showing a blank dash — real train-time sites show exactly this working time.
     expect(screen.getByText("pass 12:15")).toBeInTheDocument();
+    // A freight-style stop with only working times (no public times at all) is classified as a
+    // real call, not lumped in with the muted passing points.
+    expect(screen.getByText("13:51")).toBeInTheDocument();
+    expect(screen.getByText("13:56")).toBeInTheDocument();
+    // Path/Line codes are shown alongside the location.
+    expect(screen.getByText("DS/DF")).toBeInTheDocument();
     // An untimed structural TIPLOC (no name, no times at all) still gets a row, not silently
     // dropped, and falls back to the raw TIPLOC when CORPUS has no name for it.
     expect(screen.getByText("UNTIMEDJ")).toBeInTheDocument();
@@ -181,7 +233,15 @@ describe("RunPopup", () => {
       ),
     );
 
-    render(<RunPopup elementId="berth-2" displayName="Berth 2" tdArea="PX" berth="0513" />);
+    render(
+      <RunPopup
+        elementId="berth-2"
+        displayName="Berth 2"
+        tdArea="PX"
+        berth="0513"
+        onClose={() => {}}
+      />,
+    );
 
     expect(await screen.findByText(/Ambiguous/)).toBeInTheDocument();
     // Human-readable identity (UID · headcode · TRUST id), not the bare UUID — a raw id is
@@ -215,9 +275,57 @@ describe("RunPopup", () => {
       ),
     );
 
-    render(<RunPopup elementId="berth-3" displayName="Berth 3" tdArea="PX" berth="0514" />);
+    render(
+      <RunPopup
+        elementId="berth-3"
+        displayName="Berth 3"
+        tdArea="PX"
+        berth="0514"
+        onClose={() => {}}
+      />,
+    );
 
     expect(await screen.findByText("No matching activated schedule found.")).toBeInTheDocument();
+  });
+
+  it("has a close button that calls onClose", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "PX",
+            berth: "0515",
+            description: "5A16",
+            occupancyEnteredAt: null,
+            resolution: {
+              status: "unmatched",
+              confidence: null,
+              resolverVersion: 1,
+              candidates: [],
+            },
+            run: null,
+            schedule: null,
+            latestMovement: null,
+          }),
+        ),
+      ),
+    );
+
+    const onClose = vi.fn();
+    render(
+      <RunPopup
+        elementId="berth-4"
+        displayName="Berth 4"
+        tdArea="PX"
+        berth="0515"
+        onClose={onClose}
+      />,
+    );
+
+    const closeButton = await screen.findByRole("button", { name: "Close" });
+    closeButton.click();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("picks up a resolution that lands after the popup was already open (regression)", async () => {
@@ -259,7 +367,15 @@ describe("RunPopup", () => {
       .mockResolvedValue(jsonResponse(matchedBody));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<RunPopup elementId="berth-px-0226" displayName="0226" tdArea="PX" berth="0226" />);
+    render(
+      <RunPopup
+        elementId="berth-px-0226"
+        displayName="0226"
+        tdArea="PX"
+        berth="0226"
+        onClose={() => {}}
+      />,
+    );
 
     await act(async () => {
       await Promise.resolve();

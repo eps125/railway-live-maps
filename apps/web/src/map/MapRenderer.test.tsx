@@ -159,6 +159,65 @@ describe("MapRenderer", () => {
     expect(await screen.findByText("No matching activated schedule found.")).toBeInTheDocument();
   });
 
+  it("closes the popup via its close button", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "PX",
+            berth: "0512",
+            description: "2A16",
+            occupancyEnteredAt: null,
+            resolution: {
+              status: "unmatched",
+              confidence: null,
+              resolverVersion: 1,
+              candidates: [],
+            },
+            run: null,
+            schedule: null,
+            latestMovement: null,
+          }),
+        ),
+      ),
+    );
+
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+        },
+      },
+      berthBindingIndex: { "PX|0512": "berth-1" },
+    });
+
+    const { container } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-1": { description: "2A16", enteredAt: null, runSummary: null } }}
+        signals={{}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("2A16"));
+    await screen.findByText("No matching activated schedule found.");
+    expect(container.querySelector(".map-inspector--run")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(container.querySelector(".map-inspector--run")).not.toBeInTheDocument();
+  });
+
   it("shades a matched berth brighter than an ambiguous/unmatched one", () => {
     const doc = bundle({
       elementsById: {

@@ -36,6 +36,7 @@ const testConfig: Config = {
   NR_CORPUS_DOWNLOAD_URL: "https://example.invalid/corpus",
   NR_SMART_DOWNLOAD_URL: "https://example.invalid/smart",
   SCHEDULE_DOWNLOAD_ENABLED: false,
+  REFERENCE_DATA_REFRESH_TIME: "01:00",
   PARTITION_MONTHS_AHEAD: 3,
   LIVE_WS_REDIS_PUBSUB_ENABLED: false,
   NR_USERNAME: undefined,

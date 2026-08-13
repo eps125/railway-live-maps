@@ -22,6 +22,8 @@ describe("parseCommand", () => {
     "ingest-td",
     "project-trust",
     "project-resolver",
+    "refresh-reference-data",
+    "schedule-reference-refresh",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);
   });

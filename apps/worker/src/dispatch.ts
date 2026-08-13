@@ -17,6 +17,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "download-corpus",
   "import-smart",
   "download-smart",
+  "refresh-reference-data",
   "project-trust",
   "project-resolver",
 ] as const;
@@ -24,12 +25,15 @@ export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 
 /** Long-running worker roles. "serve" is the default (no argv) idle daemon; "ingest-td"/
  * "ingest-vstp"/"ingest-trust" are the live feed connectors — each refuses to start unless its
- * own `*_LIVE_ENABLED` flag is true. */
+ * own `*_LIVE_ENABLED` flag is true. "schedule-reference-refresh" runs the same work as the
+ * `refresh-reference-data` one-shot command, but once a day at a fixed Europe/London time rather
+ * than on demand — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true. */
 export const LONG_RUNNING_ROLE_NAMES = [
   "serve",
   "ingest-td",
   "ingest-vstp",
   "ingest-trust",
+  "schedule-reference-refresh",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];
 

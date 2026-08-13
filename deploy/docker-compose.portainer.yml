@@ -63,13 +63,19 @@ x-worker-env: &worker-env
   # Milestone 7) — previously missing from this anchor entirely, so setting
   # SCHEDULE_DOWNLOAD_ENABLED in Portainer's stack environment editor silently had no effect
   # (docker compose only injects env vars a service's `environment:` block actually
-  # references). Unlike TD/VSTP/TRUST_LIVE_ENABLED, this flag alone triggers nothing — no
-  # always-running service calls download-smart/download-schedule/download-corpus
-  # automatically, it only gates whether those console commands refuse to run.
+  # references). Gates both the manual download-{schedule,smart,corpus} console commands AND
+  # the always-running `reference-data-refresh` service below, which calls all three
+  # automatically once a day at REFERENCE_DATA_REFRESH_TIME — same on/off discipline as
+  # TD/VSTP/TRUST_LIVE_ENABLED (2026-08-13: previously this flag really did trigger nothing on
+  # its own, before that service existed).
   NR_SCHEDULE_DOWNLOAD_URL: ${NR_SCHEDULE_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/CifFileAuthenticate?type=CIF_ALL_FULL_DAILY&day=toc-full}
   NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
   NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
   SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-true}
+  # Europe/London wall-clock time (24h HH:MM) the reference-data-refresh service below runs
+  # download-schedule/download-smart/download-corpus at, once a day. Only takes effect while
+  # SCHEDULE_DOWNLOAD_ENABLED is true — see that service's own comment.
+  REFERENCE_DATA_REFRESH_TIME: ${REFERENCE_DATA_REFRESH_TIME:-01:00}
   # Must match the `api` service's own copy of this flag below — see the map-deltas service
   # and docs/ARCHITECTURE.md's Milestone 6 note. On: the WebSocket layer gets pushed deltas
   # over Redis pub/sub instead of polling Postgres, which is what actually makes the map feel
@@ -224,6 +230,39 @@ services:
     healthcheck:
       disable: true
     # See ingest-td above: needs real internet access to reach Network Rail.
+    networks: [backend, egress]
+
+  # Automatically re-downloads/re-imports SCHEDULE, SMART and CORPUS once a day at
+  # REFERENCE_DATA_REFRESH_TIME (Europe/London, default 01:00) — previously the only way to
+  # refresh reference data was running download-schedule/download-smart/download-corpus by hand
+  # via Portainer's Console (docs/IMPLEMENTATION_PLAN.md Milestone 7). Idles (sleep infinity)
+  # unless SCHEDULE_DOWNLOAD_ENABLED=true, same pattern as ingest-td/vstp/trust above — flip the
+  # flag and redeploy to start automatic daily refreshes. A failed night is logged and retried the
+  # following day rather than crash-looping the container (apps/worker/src/commands/
+  # scheduleReferenceRefresh.ts).
+  reference-data-refresh:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment: *worker-env
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$SCHEDULE_DOWNLOAD_ENABLED" = "true" ]; then
+          exec node dist/index.js schedule-reference-refresh
+        else
+          echo "reference-data-refresh: SCHEDULE_DOWNLOAD_ENABLED is not true, idling"
+          exec sleep infinity
+        fi
+    depends_on:
+      postgres:
+        condition: service_healthy
+      archive:
+        condition: service_started
+    healthcheck:
+      disable: true
+    # `egress` (not `internal`): reaches publicdatafeeds.networkrail.co.uk directly, same
+    # requirement as ingest-td/vstp/trust and the worker service's own console commands.
     networks: [backend, egress]
 
   # Fast lane: re-runs project-td in its own tight loop. project-td is checkpointed and

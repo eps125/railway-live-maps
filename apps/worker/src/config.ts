@@ -64,6 +64,15 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
+  // Europe/London wall-clock time (HH:MM, 24h) the schedule-reference-refresh long-running role
+  // runs download-schedule/download-smart/download-corpus at, once a day. Only takes effect when
+  // SCHEDULE_DOWNLOAD_ENABLED=true — same gate every download-* command already enforces.
+  REFERENCE_DATA_REFRESH_TIME: z
+    .string()
+    .default("01:00")
+    .refine((value) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value), {
+      message: "REFERENCE_DATA_REFRESH_TIME must be HH:MM 24-hour (e.g. 01:00)",
+    }),
   PARTITION_MONTHS_AHEAD: z.coerce.number().int().positive().default(3),
   // Milestone 6: gates the optional `project-map-deltas` Redis pub/sub publisher. Must match
   // apps/api/src/config.ts's flag of the same name — if only the API side is on, it subscribes

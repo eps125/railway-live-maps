@@ -20,6 +20,8 @@ import { runImportCorpusCommand } from "./commands/importCorpus.js";
 import { runDownloadCorpus } from "./commands/downloadCorpus.js";
 import { runImportSmartCommand } from "./commands/importSmart.js";
 import { runDownloadSmart } from "./commands/downloadSmart.js";
+import { runRefreshReferenceData } from "./commands/refreshReferenceData.js";
+import { runScheduleReferenceRefresh } from "./commands/scheduleReferenceRefresh.js";
 import { runIngestTrust } from "./commands/ingestTrust.js";
 import { runProjectTrustCommand } from "./commands/projectTrust.js";
 import { runProjectResolverCommand } from "./commands/projectResolver.js";
@@ -68,6 +70,8 @@ async function main(): Promise<void> {
       return runImportSmartCommand(config, argvRest);
     case "download-smart":
       return runDownloadSmart(config);
+    case "refresh-reference-data":
+      return runRefreshReferenceData(config);
     case "project-trust":
       return runProjectTrustCommand(config, argvRest);
     case "project-resolver":
@@ -80,6 +84,9 @@ async function main(): Promise<void> {
       return;
     case "ingest-trust":
       await runIngestTrust(config);
+      return;
+    case "schedule-reference-refresh":
+      await runScheduleReferenceRefresh(config);
       return;
     case "serve":
       await runServe(config);

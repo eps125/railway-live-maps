@@ -199,12 +199,32 @@ never hide ambiguity) — exposed via the new `GET /api/v1/schedule/{trainUid}?d
 TD/VSTP/TRUST broker connection and archive-before-ack recorder were generalized in this
 milestone (`apps/worker/src/shared/`) so TRUST (Milestone 8) doesn't need a third copy.
 Download commands (`download-schedule`/`download-corpus`/`download-smart`) exist but are
-gated behind `SCHEDULE_DOWNLOAD_ENABLED` (default false) and untested against the live NR
-endpoints in this environment — only the file-path `import-*` commands are exercised by the
-integration suite. `ingest-vstp`/`project-vstp` are similarly gated behind
-`VSTP_LIVE_ENABLED`. Known limitation: `location_reference` upserts never remove a TIPLOC
-absent from a newer CORPUS extract (an intentional "upsert in place, no delete-and-swap"
-design choice for this smaller dataset, not an oversight).
+gated behind `SCHEDULE_DOWNLOAD_ENABLED` and require `NR_USERNAME`/`NR_PASSWORD` — CORPUS/SMART
+confirmed correct against the real NR file service 2026-08-10 (SCHEDULE's URL was wrong at
+first — `SupportingFileAuthenticate` 404s for it; the real CIF full extract lives at
+`CifFileAuthenticate` with an extra `day=toc-full` param, fixed same day). `ingest-vstp`/
+`project-vstp` are similarly gated behind `VSTP_LIVE_ENABLED`. Known limitation:
+`location_reference` upserts never remove a TIPLOC absent from a newer CORPUS extract (an
+intentional "upsert in place, no delete-and-swap" design choice for this smaller dataset, not
+an oversight).
+
+2026-08-13: these three downloads were manual-only (a console command run by hand) until real
+usage made clear that was a gap — reference data was silently going stale unless someone
+remembered to run it. `refresh-reference-data` (`apps/worker/src/commands/
+refreshReferenceData.ts`) now runs all three back to back, each independently of the others'
+outcome so one bad fetch doesn't block the rest, and `schedule-reference-refresh`
+(`apps/worker/src/commands/scheduleReferenceRefresh.ts`) is a new long-running worker role that
+calls it once a day at `REFERENCE_DATA_REFRESH_TIME` (Europe/London wall clock, default
+`01:00`) — wired up as the always-running `reference-data-refresh` service in
+`deploy/docker-compose.portainer.yml`, idling unless `SCHEDULE_DOWNLOAD_ENABLED=true` (same
+pattern as `ingest-td`/`ingest-vstp`/`ingest-trust`). The daily-time calculation
+(`msUntilNextLondonTime`) uses the same `Intl.DateTimeFormat`-based Europe/London wall-clock
+technique as `packages/domain/src/trust/serviceDate.ts`'s traffic-day boundary rather than fixed
+UTC math, so the refresh stays pinned to local clock time across the BST/GMT transition — it can
+land up to an hour early/late specifically on the one or two days a year the clocks actually
+change (documented limitation in the function's own doc comment), which is immaterial for a
+once-daily, non-safety-critical reference-data job. A failed night is logged, not thrown, so one
+bad run doesn't crash-loop the container or cost the next day's attempt.
 
 ## Milestone 8 — nationwide TRUST runs and activation linkage
 
@@ -302,7 +322,7 @@ activated schedule found" message.
 reasons}` per candidate (packages/domain/src/resolver/resolveBerthRun.ts's `ScoredCandidate`) — no
 human-readable identity, since storing it redundantly on every resolution row would only ever go
 stale. 2026-08-11: real production feedback that the popup's ambiguous-candidate list showing bare
-UUIDs was "useless" led to enriching candidates at *read* time instead — `apps/api/src/routes/
+UUIDs was "useless" led to enriching candidates at _read_ time instead — `apps/api/src/routes/
 currentRun.ts` now batch-queries `train_run` LEFT JOIN `schedule` for every candidate's
 `trainRunId` and adds `signallingId`/`trustTrainId`/`trainUid` (headcode / TRUST reporting id /
 schedule UID, per the user's explicit preference over service code) fetched fresh on each request;

@@ -49,6 +49,25 @@ interface ScheduleRow {
   destination_tiploc: string | null;
 }
 
+/** Shape of one element in berth_run_resolution.candidates (packages/domain/src/resolver/
+ * resolveBerthRun.ts's ScoredCandidate, as stored). Only ever carries a bare trainRunId — never
+ * enriched at resolve time, since a candidate's headcode/UID/TRUST id can be looked up fresh
+ * whenever it's actually read, and storing it redundantly on every resolution row would only ever
+ * go stale. */
+interface StoredCandidate {
+  trainRunId: string;
+  score: number;
+  confidence: number;
+  reasons: string[];
+}
+
+interface CandidateIdentityRow {
+  id: string;
+  signalling_id: string | null;
+  trust_train_id: string;
+  train_uid: string | null;
+}
+
 /**
  * `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9): the live map's
  * click-a-berth popup, one round trip — docs/PROJECT_SPEC.md §5's full field list (scheduled
@@ -85,6 +104,40 @@ export async function registerCurrentRunRoutes(
         [state.occupancy_id],
       );
       const resolution = resolutionResult.rows[0];
+
+      // Enrich the stored candidates (bare trainRunId only) with human-readable identity for the
+      // popup's ambiguous-candidates list — a raw UUID tells an operator nothing actionable.
+      let enrichedCandidates: Array<
+        StoredCandidate & {
+          signallingId: string | null;
+          trustTrainId: string | null;
+          trainUid: string | null;
+        }
+      > = [];
+      if (resolution?.candidates) {
+        const storedCandidates = resolution.candidates as StoredCandidate[];
+        const candidateIds = storedCandidates.map((c) => c.trainRunId);
+        const identityResult =
+          candidateIds.length > 0
+            ? await pool.query<CandidateIdentityRow>(
+                `select tr.id, tr.signalling_id, tr.trust_train_id, s.train_uid
+                 from train_run tr
+                 left join schedule s on s.id = tr.schedule_id
+                 where tr.id = any($1::uuid[])`,
+                [candidateIds],
+              )
+            : { rows: [] };
+        const identityByRunId = new Map(identityResult.rows.map((row) => [row.id, row]));
+        enrichedCandidates = storedCandidates.map((candidate) => {
+          const identity = identityByRunId.get(candidate.trainRunId);
+          return {
+            ...candidate,
+            signallingId: identity?.signalling_id ?? null,
+            trustTrainId: identity?.trust_train_id ?? null,
+            trainUid: identity?.train_uid ?? null,
+          };
+        });
+      }
 
       let run: TrainRunRow | undefined;
       let scheduleLink: RunScheduleLinkRow | undefined;
@@ -150,7 +203,7 @@ export async function registerCurrentRunRoutes(
               confidence: resolution.confidence !== null ? Number(resolution.confidence) : null,
               resolverVersion: resolution.resolver_version,
               decidedAt: resolution.decided_at.toISOString(),
-              candidates: resolution.candidates,
+              candidates: enrichedCandidates,
             }
           : null,
         run: run

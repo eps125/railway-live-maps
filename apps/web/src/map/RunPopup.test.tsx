@@ -86,8 +86,26 @@ describe("RunPopup", () => {
               confidence: null,
               resolverVersion: 1,
               candidates: [
-                { trainRunId: "run-a", score: 40, confidence: 0.4, reasons: ["schedule-linked"] },
-                { trainRunId: "run-b", score: 40, confidence: 0.4, reasons: ["schedule-linked"] },
+                {
+                  trainRunId: "run-a",
+                  score: 40,
+                  confidence: 0.4,
+                  reasons: ["schedule-linked"],
+                  signallingId: "3A16",
+                  trustTrainId: "723A16MG11",
+                  trainUid: "C17206",
+                },
+                // No identity resolved (edge case — e.g. the train_run has since been deleted):
+                // falls back to the raw id rather than showing nothing.
+                {
+                  trainRunId: "run-b",
+                  score: 40,
+                  confidence: 0.4,
+                  reasons: ["schedule-linked"],
+                  signallingId: null,
+                  trustTrainId: null,
+                  trainUid: null,
+                },
               ],
             },
             run: null,
@@ -101,7 +119,10 @@ describe("RunPopup", () => {
     render(<RunPopup elementId="berth-2" displayName="Berth 2" tdArea="PX" berth="0513" />);
 
     expect(await screen.findByText(/Ambiguous/)).toBeInTheDocument();
-    expect(screen.getByText(/run-a/)).toBeInTheDocument();
+    // Human-readable identity (UID · headcode · TRUST id), not the bare UUID — a raw id is
+    // useless to someone reading the popup (confirmed feedback, 2026-08-11).
+    expect(screen.getByText(/C17206 · 3A16 · 723A16MG11/)).toBeInTheDocument();
+    // No identity resolved at all: falls back to the raw trainRunId rather than an empty label.
     expect(screen.getByText(/run-b/)).toBeInTheDocument();
   });
 

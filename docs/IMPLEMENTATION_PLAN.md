@@ -298,6 +298,17 @@ stub, rendering the full `docs/PROJECT_SPEC.md` §5 field list — an `ambiguous
 candidate, never a silently-chosen run, and `unmatched` shows the exact spec'd "No matching
 activated schedule found" message.
 
+`berth_run_resolution.candidates` only ever stores a bare `{trainRunId, score, confidence,
+reasons}` per candidate (packages/domain/src/resolver/resolveBerthRun.ts's `ScoredCandidate`) — no
+human-readable identity, since storing it redundantly on every resolution row would only ever go
+stale. 2026-08-11: real production feedback that the popup's ambiguous-candidate list showing bare
+UUIDs was "useless" led to enriching candidates at *read* time instead — `apps/api/src/routes/
+currentRun.ts` now batch-queries `train_run` LEFT JOIN `schedule` for every candidate's
+`trainRunId` and adds `signallingId`/`trustTrainId`/`trainUid` (headcode / TRUST reporting id /
+schedule UID, per the user's explicit preference over service code) fetched fresh on each request;
+`apps/web/src/map/RunPopup.tsx` renders `UID · headcode · TRUST id` (falling back to the raw
+`trainRunId` only if all three are unresolved, e.g. a since-deleted `train_run`).
+
 Two real `project-td --rebuild` regressions surfaced while building this, both fixed in
 `apps/worker/src/td/projector.ts`'s `clearProjectionRows`: `berth_run_resolution`'s new FK into
 `berth_occupancy` made a rebuild fail the instant any occupancy had ever been resolved (now

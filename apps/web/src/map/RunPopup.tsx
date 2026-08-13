@@ -5,6 +5,9 @@ interface ScoredCandidateJson {
   score: number;
   confidence: number;
   reasons: string[];
+  signallingId: string | null;
+  trustTrainId: string | null;
+  trainUid: string | null;
 }
 
 interface CurrentRunResolution {
@@ -269,7 +272,10 @@ export function RunPopup({ elementId, displayName, tdArea, berth }: RunPopupProp
               <ul className="map-inspector__candidates">
                 {data.resolution.candidates.map((candidate) => (
                   <li key={candidate.trainRunId}>
-                    {candidate.trainRunId} — {Math.round(candidate.confidence * 100)}%
+                    {[candidate.trainUid, candidate.signallingId, candidate.trustTrainId]
+                      .filter((part): part is string => Boolean(part))
+                      .join(" · ") || candidate.trainRunId}{" "}
+                    — {Math.round(candidate.confidence * 100)}%
                     {candidate.reasons.length > 0 ? ` (${candidate.reasons.join(", ")})` : ""}
                   </li>
                 ))}

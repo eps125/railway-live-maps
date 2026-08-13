@@ -14,6 +14,7 @@ function requireEnv(name: string): string {
 const pool = createPool({ connectionString: requireEnv("DATABASE_URL") });
 const createdOccupancyIds: string[] = [];
 const createdRunIds: string[] = [];
+const createdScheduleIds: string[] = [];
 
 afterAll(async () => {
   if (createdOccupancyIds.length > 0) {
@@ -32,6 +33,9 @@ afterAll(async () => {
       createdRunIds,
     ]);
     await pool.query("delete from train_run where id = any($1::uuid[])", [createdRunIds]);
+  }
+  if (createdScheduleIds.length > 0) {
+    await pool.query("delete from schedule where id = any($1::bigint[])", [createdScheduleIds]);
   }
   await pool.end();
 });
@@ -109,22 +113,44 @@ async function seedOccupiedBerth(
   return { occupancyId };
 }
 
-async function seedTrainRun(signallingId: string): Promise<string> {
+async function seedTrainRun(
+  signallingId: string,
+  scheduleId: string | null = null,
+): Promise<string> {
+  const trustTrainId = `T${randomUUID().replace(/-/g, "").slice(0, 8)}`;
   const result = await pool.query<{ id: string }>(
-    `insert into train_run (trust_train_id, signalling_id, service_date, last_event_at)
-     values ($1, $2, '2026-08-10', now())
+    `insert into train_run (trust_train_id, signalling_id, service_date, schedule_id, last_event_at)
+     values ($1, $2, '2026-08-10', $3, now())
      returning id`,
-    [`T${randomUUID().replace(/-/g, "").slice(0, 8)}`, signallingId],
+    [trustTrainId, signallingId, scheduleId],
   );
   const runId = result.rows[0]!.id;
   createdRunIds.push(runId);
   return runId;
 }
 
+/** source: 'VSTP', not 'SCHEDULE' — apps/worker/src/schedule/scheduleImporter.ts's full-file
+ * swap unconditionally deletes every source='SCHEDULE' row, which would collide with these
+ * test fixtures outliving this test run (same reasoning as the resolver integration suite's
+ * own seedSchedule helper). */
+async function seedSchedule(trainUid: string): Promise<string> {
+  const result = await pool.query<{ id: string }>(
+    `insert into schedule (
+       train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, raw_source_json
+     ) values ($1, '2026-01-01', '2026-12-31', 'P', 'VSTP', '{}')
+     returning id`,
+    [trainUid],
+  );
+  const scheduleId = result.rows[0]!.id;
+  createdScheduleIds.push(scheduleId);
+  return scheduleId;
+}
+
 async function seedResolution(
   occupancyId: string,
   status: "matched" | "ambiguous" | "unmatched",
   selectedTrainRunId: string | null,
+  candidates: unknown[] = [],
 ): Promise<void> {
   const occupancy = await pool.query<{ entered_at: Date }>(
     `select entered_at from berth_occupancy where id = $1`,
@@ -134,13 +160,14 @@ async function seedResolution(
     `insert into berth_run_resolution (
        occupancy_id, occupancy_entered_at, status, selected_train_run_id, confidence,
        resolver_version, candidates
-     ) values ($1, $2, $3, $4, $5, 1, '[]')`,
+     ) values ($1, $2, $3, $4, $5, 1, $6)`,
     [
       occupancyId,
       occupancy.rows[0]!.entered_at,
       status,
       selectedTrainRunId,
       selectedTrainRunId ? 1 : null,
+      JSON.stringify(candidates),
     ],
   );
 }
@@ -222,6 +249,44 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const body = response.json();
       expect(body.resolution.status).toBe("ambiguous");
       expect(body.run).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("enriches ambiguous candidates with headcode/UID/TRUST id looked up fresh, not stored stale", async () => {
+    const area = uniqueArea();
+    const { occupancyId } = await seedOccupiedBerth(area, "0004", "2T37");
+    const scheduleId = await seedSchedule("C17206");
+    const linkedRunId = await seedTrainRun("2T37", scheduleId);
+    const unlinkedRunId = await seedTrainRun("2T37", null);
+    await seedResolution(occupancyId, "ambiguous", null, [
+      { trainRunId: linkedRunId, score: 58, confidence: 0.58, reasons: ["schedule-linked"] },
+      { trainRunId: unlinkedRunId, score: 40, confidence: 0.4, reasons: ["description-only"] },
+    ]);
+
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0004/current-run`,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      const candidates = body.resolution.candidates as Array<{
+        trainRunId: string;
+        signallingId: string | null;
+        trustTrainId: string | null;
+        trainUid: string | null;
+      }>;
+
+      const linked = candidates.find((c) => c.trainRunId === linkedRunId);
+      expect(linked).toMatchObject({ signallingId: "2T37", trainUid: "C17206" });
+      expect(linked?.trustTrainId).toEqual(expect.any(String));
+
+      const unlinked = candidates.find((c) => c.trainRunId === unlinkedRunId);
+      expect(unlinked).toMatchObject({ signallingId: "2T37", trainUid: null });
+      expect(unlinked?.trustTrainId).toEqual(expect.any(String));
     } finally {
       await app.close();
     }

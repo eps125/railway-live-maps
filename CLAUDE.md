@@ -32,7 +32,7 @@ Do not repeatedly load every document when one or two are sufficient.
 11. Published map versions are immutable and have effective date ranges.
 12. The editor produces canonical map JSON, never React/SVG source as authoritative output.
 13. The public renderer and editor preview consume the same domain model and state semantics.
-14. Do not scrape Vail Data, Traksy or OpenTrainTimes. They are product inspiration only.
+14. Do not scrape Vail Data, Traksy or OpenTrainTimes. They are product inspiration only. Unless authorised on a case by case basis by live chat or otherwise.
 15. Do not expose Network Rail credentials to the browser, repository or logs.
 16. The application must be clearly labelled non-safety-critical and not official.
 17. Nationwide capture and map publication are separate concerns: the absence of a map must not prevent storage, projection or history queries for an area.

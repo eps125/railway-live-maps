@@ -14,6 +14,7 @@ import {
   TD_PROJECTION_VERSION,
   type RunCandidate,
 } from "@railway/domain";
+import { BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
 
 export { RESOLVER_VERSION };
 export const RESOLVER_PROJECTION_NAME = "berth-run-resolver";
@@ -474,12 +475,21 @@ async function resolveBatch(
  *    checkpoint on purpose), naturally self-limiting since it only ever considers currently-open,
  *    still-unresolved occupancies rather than the full history.
  *
- * No advisory lock (unlike project-td): every write here is an idempotent per-occupancy upsert
- * with no cross-row dependency a concurrent run could interleave badly with (project-td's lock
- * exists specifically because closeOccupancy depends on another row's *prior* effect being
- * committed — nothing here reads one occupancy's resolution to decide another's). The Portainer
- * `projector-resolver` service's loop also only ever runs one invocation of this command at a
- * time regardless.
+ * No self-exclusion advisory lock (unlike project-td): every write here is an idempotent
+ * per-occupancy upsert with no *logical* cross-row dependency a concurrent run of this same
+ * function could interleave badly with (project-td's self-lock exists specifically because
+ * closeOccupancy depends on another row's *prior* effect being committed — nothing here reads one
+ * occupancy's resolution to decide another's). The Portainer `projector-resolver` service's loop
+ * also only ever runs one invocation of this command at a time regardless.
+ *
+ * Each batch transaction below DOES take `BERTH_OCCUPANCY_WRITE_LOCK_KEY`
+ * (`pg_advisory_xact_lock`) before writing to `berth_occupancy` — a real production deadlock
+ * (40P01) on 2026-08-14 against project-td, both updating overlapping `berth_occupancy` rows in
+ * different orders within their own multi-row transactions (this projector's main-phase batch
+ * updates in ascending `id` order; the retry phase below in `decided_at` order — neither matches
+ * project-td's TD-message-arrival order). Postgres deadlocks are possible here even with zero
+ * logical dependency between the rows, purely from row-lock acquisition order — see
+ * `apps/worker/src/shared/advisoryLock.ts`'s doc comment.
  */
 export async function runProjectResolver(
   pool: Pool,
@@ -519,6 +529,10 @@ export async function runProjectResolver(
     const client = await pool.connect();
     try {
       await client.query("begin");
+      // Prevents a real 40P01 deadlock against project-td's own berth_occupancy writes — see this
+      // function's doc comment and apps/worker/src/shared/advisoryLock.ts. Released automatically
+      // on commit/rollback below, never needs an explicit unlock.
+      await client.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
       const maxId = batch.rows.reduce((max, row) => {
         const rowId = BigInt(row.id);
         return rowId > max ? rowId : max;
@@ -541,6 +555,8 @@ export async function runProjectResolver(
   const retryClient = await pool.connect();
   try {
     await retryClient.query("begin");
+    // See the main-phase batch transaction above for why.
+    await retryClient.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
     const retryCutoff = new Date(Date.now() - RETRY_INTERVAL_MS);
     const stale = await retryClient.query<OccupancyRow>(
       `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description

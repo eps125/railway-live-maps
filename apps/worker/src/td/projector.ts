@@ -17,8 +17,9 @@ import {
   type OpenOccupancySnapshot,
   type BerthEffect,
 } from "@railway/domain";
+import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
 
-export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION };
+export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION, advisoryLockKey };
 
 const DEFAULT_BATCH_SIZE = 500;
 
@@ -68,13 +69,6 @@ function computeConfigHash(): string {
   return createHash("sha256")
     .update(`td-projection-v${TD_PROJECTION_VERSION}-norm-v${TD_NORMALIZATION_VERSION}`)
     .digest("hex");
-}
-
-/** Postgres advisory lock keys are signed 64-bit integers — any well-distributed 64 bits works,
- * so this just takes the first 8 bytes of a hash of a fixed name rather than picking an
- * arbitrary literal that'd be easy to accidentally collide with some other lock elsewhere. */
-export function advisoryLockKey(name: string): bigint {
-  return createHash("sha256").update(`td-projector-lock:${name}`).digest().readBigInt64BE(0);
 }
 
 async function clearProjectionRows(pool: Pool, projectionVersion: number): Promise<void> {
@@ -481,6 +475,15 @@ async function projectSClassRow(
  * leaves a berth showing occupied forever, with no error anywhere to indicate it happened. The
  * lock makes that interleaving impossible: a second concurrent invocation fails to acquire it and
  * returns immediately rather than racing.
+ *
+ * Each per-batch transaction also takes `BERTH_OCCUPANCY_WRITE_LOCK_KEY` (`pg_advisory_xact_lock`,
+ * transaction-scoped) before touching any `berth_occupancy` row — a real production deadlock
+ * (40P01) on 2026-08-14 between this projector and `project-resolver`, both updating overlapping
+ * `berth_occupancy` rows in different orders within their own multi-row transactions. See
+ * `apps/worker/src/shared/advisoryLock.ts`'s doc comment for the full mechanism and why this is
+ * scoped to one batch transaction rather than a lock held for the whole run (which would
+ * reintroduce the latency coupling `projector-td`/`projector-resolver` were split into separate
+ * services to avoid).
  */
 export async function runProjectTd(
   pool: Pool,
@@ -534,6 +537,10 @@ export async function runProjectTd(
       const client = await pool.connect();
       try {
         await client.query("begin");
+        // Prevents a real 40P01 deadlock against project-resolver's own berth_occupancy writes —
+        // see this function's doc comment and apps/worker/src/shared/advisoryLock.ts. Released
+        // automatically on commit/rollback below, never needs an explicit unlock.
+        await client.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
         let maxSequence = BigInt(lastSequence);
 
         for (const row of batch.rows) {

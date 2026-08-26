@@ -337,6 +337,25 @@ prior session's manual-clear feature, predating this milestone) had the exact sa
 differently since it's a permanent audit trail, not derived state — its dangling occupancy
 reference is nulled out, the audit row itself is preserved.
 
+2026-08-14: a real Postgres `deadlock detected` (40P01) hit `project-td` in production —
+`project-td`'s per-batch transaction updates several `berth_occupancy` rows in TD message arrival
+order (a single CA event alone can close two occupancies, from- and to-berth), while
+`project-resolver`'s batches update rows in ascending `id` (main phase) or `decided_at` (retry
+phase) order; two concurrent multi-row transactions acquiring row locks in different orders can
+deadlock at the Postgres level even though neither projector has any _logical_ dependency on the
+other's data. Fixed with a new shared transaction-scoped mutex, `apps/worker/src/shared/
+advisoryLock.ts`'s `BERTH_OCCUPANCY_WRITE_LOCK_KEY` (`pg_advisory_xact_lock`, auto-released on
+commit/rollback) — both `runProjectTd`'s batch transaction and `runProjectResolver`'s main-phase
+and retry-phase transactions now take it immediately after `BEGIN`, before touching any
+`berth_occupancy` row. Deliberately scoped to one batch transaction rather than held for a whole
+run, so it can't reintroduce the latency coupling `projector-td`/`projector-resolver` were split
+into separate services to avoid (docs/ARCHITECTURE.md's "initial containers" section) — it only
+ever serializes the two loops for the duration of one short transaction each, and does nothing at
+all when there's no contention. Postgres's own deadlock handling meant no data was left
+inconsistent by the incident itself: the checkpoint advance sits inside the same transaction as
+the row effects, so a rolled-back deadlock victim just reprocesses the same batch cleanly on the
+shell loop's next tick.
+
 Known limitations (deliberate scope decisions, not gaps to silently paper over):
 
 - Evidence #7 (operator/direction consistency) is not implemented — no ground-truth signal to

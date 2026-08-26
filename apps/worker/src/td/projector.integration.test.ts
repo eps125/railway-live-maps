@@ -9,6 +9,11 @@ import {
   TD_PROJECTION_NAME,
   advisoryLockKey,
 } from "./projector.js";
+import { BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -384,5 +389,41 @@ describe("runProjectTd (integration)", () => {
     const summary = await runProjectTd(pool);
     expect(summary.skippedLockContention).toBe(false);
     expect((await currentState(area, "0950"))?.description).toBe("LOCK");
+  });
+
+  it("blocks on the shared berth_occupancy write lock instead of risking a deadlock with project-resolver", async () => {
+    // Regression test for a real production deadlock (40P01, 2026-08-14): project-td and
+    // project-resolver each update several berth_occupancy rows per transaction, in different
+    // orders, and Postgres can deadlock two such transactions even with no logical dependency
+    // between the rows. apps/worker/src/shared/advisoryLock.ts's BERTH_OCCUPANCY_WRITE_LOCK_KEY
+    // fixes this by making the two projectors' batch transactions take turns. This proves
+    // runProjectTd actually acquires that lock (not just documents the intent) by holding it
+    // externally and confirming the run genuinely blocks — not skips, not errors — until released.
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([cc(area, "0960", "DLCK", t)], new Date(t));
+    await record([ca(area, "0960", "0961", "DLCK", t + 1000)], new Date(t + 1000));
+
+    const lockHolder = await pool.connect();
+    await lockHolder.query("begin");
+    await lockHolder.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
+
+    try {
+      const runPromise = runProjectTd(pool);
+
+      const outcome = await Promise.race([
+        runPromise.then(() => "done" as const),
+        sleep(300).then(() => "still-pending" as const),
+      ]);
+      expect(outcome).toBe("still-pending");
+
+      await lockHolder.query("commit");
+      await runPromise;
+    } finally {
+      lockHolder.release();
+    }
+
+    expect(await currentState(area, "0960")).toEqual({ description: null, occupancy_id: null });
+    expect((await currentState(area, "0961"))?.description).toBe("DLCK");
   });
 });

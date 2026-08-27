@@ -81,6 +81,14 @@ x-worker-env: &worker-env
   # over Redis pub/sub instead of polling Postgres, which is what actually makes the map feel
   # live rather than merely "polls a bit faster."
   LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
+  # The `project-resolver` live loop only resolves berth occupancies entered within this many
+  # hours (default 72). Keeps a RESOLVER_VERSION bump — which starts a fresh resolver checkpoint
+  # at 0 — from grinding oldest-first through every retained nationwide day before the live map
+  # reflects "now". Not an ingestion filter: ingestion and the TD/berth-occupancy projections
+  # stay fully nationwide; older resolver history is caught up on demand with
+  # `project-resolver --backfill --since <YYYY-MM-DD>` (its own advisory lock, so it runs
+  # alongside the 1s loop). `project-resolver --rebuild` ignores this window.
+  RESOLVER_LIVE_WINDOW_HOURS: ${RESOLVER_LIVE_WINDOW_HOURS:-72}
 
 services:
   web:

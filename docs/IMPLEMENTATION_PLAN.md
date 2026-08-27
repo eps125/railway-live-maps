@@ -427,10 +427,30 @@ resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weigh
   `movement` events (`train_run_event`, by reported `loc_stanox`) include the berth's SMART
   `to_berth` STANOX within ±8 minutes of the occupancy's `entered_at` — fetched once per batch
   alongside the existing candidate reads (a 6th fixed query, no per-occupancy round trip).
-  `RESOLVER_VERSION` bumped 2→3; re-run `project-resolver --rebuild` after deploying. Still gated
-  on the exact-signalling-identity candidate set like every other signal (CLAUDE.md rule 5), and
-  does not address the separate "no candidate at all" case (a TD headcode seen before its TRUST
-  activation fires) — the open-occupancy retry pass already covers that.
+  `RESOLVER_VERSION` bumped 2→3. On deploy the new resolver checkpoint starts at 0, but the live
+  window below means the loop only re-decides the last `RESOLVER_LIVE_WINDOW_HOURS` and catches
+  up to "now" in seconds — `--rebuild` is _not_ needed and should be avoided (it reprocesses the
+  entire retained history); use `--backfill --since <date>` if older history needs to be lifted
+  to v3. Still gated on the exact-signalling-identity candidate set like every other signal
+  (CLAUDE.md rule 5), and does not address the separate "no candidate at all" case (a TD headcode
+  seen before its TRUST activation fires) — the open-occupancy retry pass already covers that.
+- Resolver live-freshness window + `--backfill` added 2026-08-27, same change as #3b. The
+  `project-resolver` forward scan and retry pass are bounded to `entered_at >= now() -
+RESOLVER_LIVE_WINDOW_HOURS` (`apps/worker/src/config.ts`, default 72). Without it, a
+  `RESOLVER_VERSION` bump (fresh checkpoint at sequence 0, forward scan `id`-ordered) makes the
+  resolver grind oldest-first through ~14 days of retained _nationwide_ `berth_occupancy` before
+  the live map reflects the current hour — today is processed last. This is a resolver-only
+  freshness policy, not an ingestion/projection filter: raw capture and the TD/berth-occupancy
+  projections stay fully nationwide and unfiltered (CLAUDE.md rule 17), the resolver output for
+  older occupancies is retained (whatever version last decided it), and everything needed to
+  resolve the full history is still on disk. `--rebuild` ignores the window (the deliberate
+  full-history escape hatch). `project-resolver --backfill --since <YYYY-MM-DD>` resolves
+  occupancies from that date forward that aren't already at `RESOLVER_VERSION` — a left join
+  against `berth_run_resolution` rather than a checkpoint, so it's resumable and self-terminating;
+  it runs under a **separate** advisory lock (`berth-run-resolver:backfill`) so an operator can
+  catch history up alongside the 1s live loop instead of the two starving each other, with
+  per-batch `berth_occupancy` writes still serialized by `BERTH_OCCUPANCY_WRITE_LOCK_KEY`. Re-run
+  it until the summary's `moreBacklogRemains` is false.
 - Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via
   SMART/STANOX correlation to the specific berth being resolved, not by consulting the live map
   document a berth happens to be published on — the resolver stays fully nationwide/map-

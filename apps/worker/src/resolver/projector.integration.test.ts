@@ -345,6 +345,43 @@ describe("runProjectResolver (integration)", () => {
     expect(row).toMatchObject({ status: "unmatched", selected_train_run_id: null });
   });
 
+  it("the live window skips occupancies older than it; --backfill --since resolves them without touching the live checkpoint", async () => {
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    // ENTERED_AT is many days before real wall-clock `now()`, so a 72h live window excludes it.
+    const occupancyId = await seedOccupancy(area, "0800", signallingId, ENTERED_AT, null);
+
+    const scheduleId = await seedSchedule();
+    await seedScheduleLocation(scheduleId, "80001");
+    await seedSmartBerthStep(area, "0800", "80001");
+    const runId = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleId);
+    await seedRunScheduleLink(runId, "matched", scheduleId);
+
+    // Windowed live loop: the stale occupancy is never picked up.
+    await runProjectResolver(pool, { liveWindowMs: 72 * 60 * 60 * 1000 });
+    expect(await resolution(occupancyId)).toBeUndefined();
+
+    // Backfill from before it — re-run until drained, mirroring how an operator runs it.
+    const since = new Date(ENTERED_AT.getTime() - 60_000);
+    let guard = 0;
+    let summary = await runProjectResolver(pool, { backfillSince: since });
+    while (summary.moreBacklogRemains && guard++ < 50) {
+      summary = await runProjectResolver(pool, { backfillSince: since });
+    }
+
+    expect(await resolution(occupancyId)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runId,
+    });
+
+    // Backfilled rows are stamped at the current resolver version, so a further backfill pass
+    // over the same range doesn't re-decide this one.
+    const before = await resolution(occupancyId);
+    await runProjectResolver(pool, { backfillSince: since });
+    const after = await resolution(occupancyId);
+    expect(after?.decided_at).toEqual(before?.decided_at);
+  });
+
   it("re-running is idempotent — the checkpoint advances and the row is updated in place, not duplicated", async () => {
     const area = uniqueArea();
     const occupancyId = await seedOccupancy(area, "0004", uniqueSignallingId(), ENTERED_AT, null);

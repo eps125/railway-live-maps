@@ -78,14 +78,45 @@ const CONTINUITY_WINDOW_MS = 10 * 60 * 1000;
  * fetched for evidence #5), never neighbouring berths — a deliberately conservative start. */
 const MOVEMENT_CORRELATION_WINDOW_MS = 8 * 60 * 1000;
 
+/** Advisory-lock name suffix for the backfill phase — a *separate* self-exclusion lock from the
+ * normal loop's, so an operator-invoked `project-resolver --backfill` runs alongside the
+ * 1-second Portainer `projector-resolver` loop instead of losing every turn to it. Their
+ * per-batch berth_occupancy writes are still serialized by BERTH_OCCUPANCY_WRITE_LOCK_KEY, so
+ * concurrency here is safe; it just means history catch-up makes progress in the gaps rather
+ * than being starved. Two backfills still can't overlap each other (same suffix). */
+const BACKFILL_LOCK_SUFFIX = ":backfill";
+
 export interface ProjectResolverOptions {
   batchSize?: number;
   /** Overrides MAX_BATCHES_PER_RUN — exposed mainly so tests can prove the cap/resume behavior
    * without seeding thousands of rows. */
   maxBatchesPerRun?: number;
   /** Clears every berth_run_resolution row and the denormalized berth_occupancy columns, then
-   * reprocesses every occupancy from scratch. */
+   * reprocesses every occupancy from scratch. Deliberately bypasses `liveWindowMs` — this is the
+   * rare, explicit "reprocess the entire retained history" escape hatch. */
   rebuild?: boolean;
+  /**
+   * The normal (non-rebuild, non-backfill) forward scan and retry pass only consider occupancies
+   * with `entered_at >= now() - liveWindowMs`. This is what keeps a `RESOLVER_VERSION` bump from
+   * making the live map wait while the resolver grinds oldest-first through every retained day of
+   * nationwide `berth_occupancy` before it ever reaches "now" (the forward scan is `id`-ordered,
+   * so today is otherwise processed last). Ingestion and the TD/berth-occupancy projections stay
+   * fully nationwide and unfiltered — only this downstream evidence-combining projection gets a
+   * freshness window, and `--backfill` / `--rebuild` can still resolve older history on demand.
+   *
+   * Omitted ⇒ unbounded (every existing occupancy considered). The `project-resolver` command
+   * always supplies a finite value from `RESOLVER_LIVE_WINDOW_HOURS`; tests that seed fixtures at
+   * fixed historical dates rely on the unbounded default.
+   */
+  liveWindowMs?: number;
+  /**
+   * Backfill mode: instead of the checkpointed forward scan + retry pass, resolve every
+   * occupancy with `entered_at >= backfillSince` that isn't already at `RESOLVER_VERSION` (a
+   * left join against `berth_run_resolution`, no checkpoint bookkeeping — naturally resumable and
+   * self-terminating). Bounded per invocation by `maxBatchesPerRun`; re-run until
+   * `moreBacklogRemains` is false. Runs under its own advisory lock (see BACKFILL_LOCK_SUFFIX).
+   */
+  backfillSince?: Date;
 }
 
 export interface ProjectResolverSummary {
@@ -539,15 +570,75 @@ async function resolveBatch(
 }
 
 /**
+ * Backfill phase (`project-resolver --backfill --since <date>`): resolve every occupancy with
+ * `entered_at >= since` that isn't already at `RESOLVER_VERSION`, oldest `id` first. No checkpoint
+ * — the `berth_run_resolution` left join *is* the progress marker (every processed row is stamped
+ * with the current `resolver_version` by `resolveOne`, so it drops out of the next query),
+ * which makes this naturally resumable across invocations and self-terminating once the range is
+ * fully current. Bounded per invocation by `maxBatchesPerRun`, same as the main loop; re-run
+ * until `moreBacklogRemains` is false. Writes still serialize with the live loop via
+ * `BERTH_OCCUPANCY_WRITE_LOCK_KEY` inside `resolveBatch`.
+ */
+async function runBackfillPhase(
+  pool: Pool,
+  since: Date,
+  batchSize: number,
+  maxBatchesPerRun: number,
+): Promise<ProjectResolverSummary> {
+  const summary: ProjectResolverSummary = { ...EMPTY_SUMMARY };
+
+  for (let batchesProcessed = 0; batchesProcessed < maxBatchesPerRun; batchesProcessed++) {
+    const batch = await pool.query<OccupancyRow>(
+      `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description
+       from berth_occupancy bo
+       left join berth_run_resolution brr on brr.occupancy_id = bo.id
+       where bo.projection_version = $1 and bo.entered_at >= $2
+         and (brr.occupancy_id is null or brr.resolver_version is distinct from $3)
+       order by bo.id
+       limit $4`,
+      [TD_PROJECTION_VERSION, since, RESOLVER_VERSION, batchSize],
+    );
+    if (batch.rows.length === 0) break;
+
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await resolveBatch(client, batch.rows, summary, "newlyResolved");
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    if (batch.rows.length === batchSize && batchesProcessed === maxBatchesPerRun - 1) {
+      summary.moreBacklogRemains = true;
+    }
+  }
+
+  return summary;
+}
+
+/**
  * Turns berth occupancies into resolved (or explicitly not-resolved) train runs
- * (docs/IMPLEMENTATION_PLAN.md Milestone 9). Two phases per invocation:
+ * (docs/IMPLEMENTATION_PLAN.md Milestone 9).
+ *
+ * With `options.backfillSince` set this instead runs `runBackfillPhase` (see there) under a
+ * separate advisory lock and returns — the two phases below are the normal live-loop path.
+ *
+ * Two phases per normal invocation:
  *
  * 1. Checkpointed forward scan over newly-created `berth_occupancy` rows (same shape as
- *    project-td's main loop) — every occupancy gets resolved exactly once as it appears.
+ *    project-td's main loop) — every occupancy gets resolved exactly once as it appears. Bounded
+ *    to `entered_at >= now() - options.liveWindowMs` (unless `--rebuild`), so a RESOLVER_VERSION
+ *    bump doesn't make the live map wait out an oldest-first pass over every retained nationwide
+ *    day before reaching "now"; older history is caught up via `--backfill` on demand.
  * 2. A bounded retry pass over still-**open** occupancies whose last resolution wasn't `matched`
- *    and is older than `RETRY_INTERVAL_MS` — not checkpointed (it revisits rows below the
- *    checkpoint on purpose), naturally self-limiting since it only ever considers currently-open,
- *    still-unresolved occupancies rather than the full history.
+ *    and is older than `RETRY_INTERVAL_MS`, and that are still inside the same freshness window —
+ *    not checkpointed (it revisits rows below the checkpoint on purpose), naturally self-limiting
+ *    since it only ever considers currently-open, still-unresolved, still-recent occupancies
+ *    rather than the full history.
  *
  * Takes a self-exclusion advisory lock for its entire run, same pattern as project-td (added
  * 2026-08-27): every write here is an idempotent per-occupancy upsert with no *logical* cross-row
@@ -581,7 +672,19 @@ export async function runProjectResolver(
 ): Promise<ProjectResolverSummary> {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const maxBatchesPerRun = options.maxBatchesPerRun ?? MAX_BATCHES_PER_RUN;
-  const lockKey = advisoryLockKey(RESOLVER_PROJECTION_NAME);
+  const liveWindowMs = options.liveWindowMs ?? Number.POSITIVE_INFINITY;
+  // `--rebuild` deliberately reprocesses the whole retained history; a non-finite window means
+  // "no window" (the unbounded default / test fixtures at fixed historical dates). Either way,
+  // collapse to the epoch so `entered_at >= $cutoff` is a no-op rather than a NULL/invalid param.
+  const windowCutoff =
+    options.rebuild || !Number.isFinite(liveWindowMs)
+      ? new Date(0)
+      : new Date(Date.now() - liveWindowMs);
+
+  const isBackfill = options.backfillSince !== undefined;
+  const lockKey = advisoryLockKey(
+    isBackfill ? `${RESOLVER_PROJECTION_NAME}${BACKFILL_LOCK_SUFFIX}` : RESOLVER_PROJECTION_NAME,
+  );
   const lockClient = await pool.connect();
   try {
     const lockResult = await lockClient.query<{ locked: boolean }>(
@@ -590,6 +693,15 @@ export async function runProjectResolver(
     );
     if (!lockResult.rows[0]?.locked) {
       return { ...EMPTY_SUMMARY, skippedLockContention: true };
+    }
+
+    if (isBackfill) {
+      return await runBackfillPhase(
+        pool,
+        options.backfillSince as Date,
+        batchSize,
+        maxBatchesPerRun,
+      );
     }
 
     const definitionId = await getOrCreateProjectionDefinition(
@@ -611,13 +723,18 @@ export async function runProjectResolver(
       const checkpoint = await getCheckpoint(pool, definitionId);
       const lastId = checkpoint?.lastIngestionSequence ?? "0";
 
+      // `entered_at >= $4` keeps a RESOLVER_VERSION bump (fresh checkpoint at 0) from grinding
+      // oldest-first through every retained nationwide day before reaching "now" — see
+      // ProjectResolverOptions.liveWindowMs. Rows older than the window below an already-advanced
+      // checkpoint stay on whatever resolver version last decided them until `--backfill` picks
+      // them up; nothing is deleted.
       const batch = await pool.query<OccupancyRow>(
         `select id, entered_at, td_area, berth_code, description
          from berth_occupancy
-         where projection_version = $1 and id > $2
+         where projection_version = $1 and id > $2 and entered_at >= $4
          order by id
          limit $3`,
-        [TD_PROJECTION_VERSION, lastId, batchSize],
+        [TD_PROJECTION_VERSION, lastId, batchSize, windowCutoff],
       );
       if (batch.rows.length === 0) break;
 
@@ -647,15 +764,18 @@ export async function runProjectResolver(
     try {
       await retryClient.query("begin");
       const retryCutoff = new Date(Date.now() - RETRY_INTERVAL_MS);
+      // Same freshness window as the forward scan: an occupancy still open (no clearing message)
+      // days after it was entered is almost certainly stale, not genuinely awaiting a
+      // later-arriving activation — stop retrying it forever.
       const stale = await retryClient.query<OccupancyRow>(
         `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description
          from berth_occupancy bo
          join berth_run_resolution brr on brr.occupancy_id = bo.id
          where bo.projection_version = $1 and bo.left_at is null and brr.status != 'matched'
-           and brr.decided_at < $2
+           and brr.decided_at < $2 and bo.entered_at >= $4
          order by brr.decided_at asc
          limit $3`,
-        [TD_PROJECTION_VERSION, retryCutoff, batchSize],
+        [TD_PROJECTION_VERSION, retryCutoff, batchSize, windowCutoff],
       );
       await resolveBatch(retryClient, stale.rows, summary, "retried");
       await retryClient.query("commit");

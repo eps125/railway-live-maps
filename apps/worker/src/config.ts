@@ -74,6 +74,13 @@ const baseSchema = z.object({
       message: "REFERENCE_DATA_REFRESH_TIME must be HH:MM 24-hour (e.g. 01:00)",
     }),
   PARTITION_MONTHS_AHEAD: z.coerce.number().int().positive().default(3),
+  // Milestone 9: the `project-resolver` live loop only resolves berth occupancies whose
+  // `entered_at` is within this many hours. Keeps a RESOLVER_VERSION bump (which starts a fresh
+  // checkpoint at 0) from grinding oldest-first through every retained nationwide day before the
+  // live map reflects "now". Not an ingestion/projection filter — ingestion and the
+  // TD/berth-occupancy projections stay fully nationwide; older resolver history is caught up on
+  // demand via `project-resolver --backfill --since <date>`, and `--rebuild` ignores this.
+  RESOLVER_LIVE_WINDOW_HOURS: z.coerce.number().int().positive().default(72),
   // Milestone 6: gates the optional `project-map-deltas` Redis pub/sub publisher. Must match
   // apps/api/src/config.ts's flag of the same name — if only the API side is on, it subscribes
   // to a channel nothing publishes to (falls back to nothing, since polling stays the source

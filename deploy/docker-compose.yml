@@ -84,6 +84,10 @@ services:
       NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
       NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
       SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-true}
+      # Freshness window for the project-resolver live loop (hours, default 72). See
+      # deploy/docker-compose.portainer.yml — that's the variant that actually runs the loop;
+      # kept here for parity. Older resolver history: `project-resolver --backfill --since <date>`.
+      RESOLVER_LIVE_WINDOW_HOURS: ${RESOLVER_LIVE_WINDOW_HOURS:-72}
     secrets:
       - nr_username
       - nr_password

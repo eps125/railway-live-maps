@@ -14,7 +14,7 @@ import {
   TD_PROJECTION_VERSION,
   type RunCandidate,
 } from "@railway/domain";
-import { BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
+import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
 
 export { RESOLVER_VERSION };
 export const RESOLVER_PROJECTION_NAME = "berth-run-resolver";
@@ -86,6 +86,10 @@ export interface ProjectResolverSummary {
   /** True when this invocation stopped at MAX_BATCHES_PER_RUN with more backlog still waiting —
    * not an error, just "the next cycle will keep draining it." */
   moreBacklogRemains: boolean;
+  /** True when this invocation did nothing because another runProjectResolver was already in
+   * progress — not an error, just "try again next tick." See the self-exclusion lock note on
+   * runProjectResolver below. */
+  skippedLockContention: boolean;
 }
 
 const EMPTY_SUMMARY: ProjectResolverSummary = {
@@ -95,6 +99,7 @@ const EMPTY_SUMMARY: ProjectResolverSummary = {
   ambiguous: 0,
   unmatched: 0,
   moreBacklogRemains: false,
+  skippedLockContention: false,
 };
 
 interface OccupancyRow {
@@ -484,12 +489,16 @@ async function resolveBatch(
  *    checkpoint on purpose), naturally self-limiting since it only ever considers currently-open,
  *    still-unresolved occupancies rather than the full history.
  *
- * No self-exclusion advisory lock (unlike project-td): every write here is an idempotent
- * per-occupancy upsert with no *logical* cross-row dependency a concurrent run of this same
- * function could interleave badly with (project-td's self-lock exists specifically because
- * closeOccupancy depends on another row's *prior* effect being committed — nothing here reads one
- * occupancy's resolution to decide another's). The Portainer `projector-resolver` service's loop
- * also only ever runs one invocation of this command at a time regardless.
+ * Takes a self-exclusion advisory lock for its entire run, same pattern as project-td (added
+ * 2026-08-27): every write here is an idempotent per-occupancy upsert with no *logical* cross-row
+ * dependency a concurrent run of this same function could interleave badly with, so this was
+ * originally skipped on the theory that the Portainer `projector-resolver` service's own `while
+ * true; do node dist/index.js project-resolver; sleep 1; done` loop already guarantees only one
+ * invocation runs at a time. That guarantee only holds *within* one container's lifetime — a
+ * redeploy doesn't guarantee the old container's process has fully exited before the new one's
+ * loop starts, and this was confirmed live in production the same day: three concurrent
+ * connections were observed all running this function's own batch-select query at once. The lock
+ * makes that structurally impossible regardless of what triggers the overlap.
  *
  * Each batch (both phases, via `resolveBatch`) DOES take `BERTH_OCCUPANCY_WRITE_LOCK_KEY`
  * (`pg_advisory_xact_lock`) before writing to `berth_occupancy` — a real production deadlock
@@ -512,79 +521,94 @@ export async function runProjectResolver(
 ): Promise<ProjectResolverSummary> {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const maxBatchesPerRun = options.maxBatchesPerRun ?? MAX_BATCHES_PER_RUN;
-  const definitionId = await getOrCreateProjectionDefinition(
-    pool,
-    RESOLVER_PROJECTION_NAME,
-    RESOLVER_VERSION,
-    computeConfigHash(),
-  );
-  await ensureCheckpoint(pool, definitionId);
-
-  if (options.rebuild) {
-    await clearProjectionRows(pool);
-    await resetCheckpoint(pool, definitionId);
-  }
-
-  const summary: ProjectResolverSummary = { ...EMPTY_SUMMARY };
-
-  for (let batchesProcessed = 0; batchesProcessed < maxBatchesPerRun; batchesProcessed++) {
-    const checkpoint = await getCheckpoint(pool, definitionId);
-    const lastId = checkpoint?.lastIngestionSequence ?? "0";
-
-    const batch = await pool.query<OccupancyRow>(
-      `select id, entered_at, td_area, berth_code, description
-       from berth_occupancy
-       where projection_version = $1 and id > $2
-       order by id
-       limit $3`,
-      [TD_PROJECTION_VERSION, lastId, batchSize],
+  const lockKey = advisoryLockKey(RESOLVER_PROJECTION_NAME);
+  const lockClient = await pool.connect();
+  try {
+    const lockResult = await lockClient.query<{ locked: boolean }>(
+      "select pg_try_advisory_lock($1) as locked",
+      [lockKey],
     );
-    if (batch.rows.length === 0) break;
+    if (!lockResult.rows[0]?.locked) {
+      return { ...EMPTY_SUMMARY, skippedLockContention: true };
+    }
 
-    const client = await pool.connect();
+    const definitionId = await getOrCreateProjectionDefinition(
+      pool,
+      RESOLVER_PROJECTION_NAME,
+      RESOLVER_VERSION,
+      computeConfigHash(),
+    );
+    await ensureCheckpoint(pool, definitionId);
+
+    if (options.rebuild) {
+      await clearProjectionRows(pool);
+      await resetCheckpoint(pool, definitionId);
+    }
+
+    const summary: ProjectResolverSummary = { ...EMPTY_SUMMARY };
+
+    for (let batchesProcessed = 0; batchesProcessed < maxBatchesPerRun; batchesProcessed++) {
+      const checkpoint = await getCheckpoint(pool, definitionId);
+      const lastId = checkpoint?.lastIngestionSequence ?? "0";
+
+      const batch = await pool.query<OccupancyRow>(
+        `select id, entered_at, td_area, berth_code, description
+         from berth_occupancy
+         where projection_version = $1 and id > $2
+         order by id
+         limit $3`,
+        [TD_PROJECTION_VERSION, lastId, batchSize],
+      );
+      if (batch.rows.length === 0) break;
+
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const maxId = batch.rows.reduce((max, row) => {
+          const rowId = BigInt(row.id);
+          return rowId > max ? rowId : max;
+        }, BigInt(lastId));
+        await resolveBatch(client, batch.rows, summary, "newlyResolved");
+        await advanceCheckpoint(client, definitionId, maxId.toString());
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      if (batch.rows.length === batchSize && batchesProcessed === maxBatchesPerRun - 1) {
+        summary.moreBacklogRemains = true;
+      }
+    }
+
+    const retryClient = await pool.connect();
     try {
-      await client.query("begin");
-      const maxId = batch.rows.reduce((max, row) => {
-        const rowId = BigInt(row.id);
-        return rowId > max ? rowId : max;
-      }, BigInt(lastId));
-      await resolveBatch(client, batch.rows, summary, "newlyResolved");
-      await advanceCheckpoint(client, definitionId, maxId.toString());
-      await client.query("commit");
+      await retryClient.query("begin");
+      const retryCutoff = new Date(Date.now() - RETRY_INTERVAL_MS);
+      const stale = await retryClient.query<OccupancyRow>(
+        `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description
+         from berth_occupancy bo
+         join berth_run_resolution brr on brr.occupancy_id = bo.id
+         where bo.projection_version = $1 and bo.left_at is null and brr.status != 'matched'
+           and brr.decided_at < $2
+         order by brr.decided_at asc
+         limit $3`,
+        [TD_PROJECTION_VERSION, retryCutoff, batchSize],
+      );
+      await resolveBatch(retryClient, stale.rows, summary, "retried");
+      await retryClient.query("commit");
     } catch (error) {
-      await client.query("rollback");
+      await retryClient.query("rollback");
       throw error;
     } finally {
-      client.release();
+      retryClient.release();
     }
 
-    if (batch.rows.length === batchSize && batchesProcessed === maxBatchesPerRun - 1) {
-      summary.moreBacklogRemains = true;
-    }
-  }
-
-  const retryClient = await pool.connect();
-  try {
-    await retryClient.query("begin");
-    const retryCutoff = new Date(Date.now() - RETRY_INTERVAL_MS);
-    const stale = await retryClient.query<OccupancyRow>(
-      `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description
-       from berth_occupancy bo
-       join berth_run_resolution brr on brr.occupancy_id = bo.id
-       where bo.projection_version = $1 and bo.left_at is null and brr.status != 'matched'
-         and brr.decided_at < $2
-       order by brr.decided_at asc
-       limit $3`,
-      [TD_PROJECTION_VERSION, retryCutoff, batchSize],
-    );
-    await resolveBatch(retryClient, stale.rows, summary, "retried");
-    await retryClient.query("commit");
-  } catch (error) {
-    await retryClient.query("rollback");
-    throw error;
+    return summary;
   } finally {
-    retryClient.release();
+    await lockClient.query("select pg_advisory_unlock($1)", [lockKey]).catch(() => {});
+    lockClient.release();
   }
-
-  return summary;
 }

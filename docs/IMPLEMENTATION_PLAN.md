@@ -367,6 +367,22 @@ after `fetchBatchCandidateData` returns and immediately before the per-occupancy
 correctness guarantee (no write to `berth_occupancy` outside the lock) is unchanged, only the
 window during which project-td can be blocked shrank to just the actual write phase.
 
+Same day, a further production observation: `runProjectResolver` had no self-exclusion advisory
+lock at all (unlike `project-td`), relying entirely on the assumption that the `projector-resolver`
+service's own `while true; do node dist/index.js project-resolver; sleep 1; done` loop guarantees
+only one invocation runs at a time. That guarantee only holds _within_ one container's lifetime —
+a Portainer redeploy doesn't guarantee the old container's process has fully exited before the new
+one's loop starts. Live `pg_stat_activity` snapshots caught exactly this: three concurrent
+connections all running `runProjectResolver`'s own batch-select query at once, with no zombie
+transaction or code-level double-invocation to explain it (a full repo-wide investigation — every
+compose file, the dispatch table, the command wrapper, the function's own internal loop, health
+checks, worker_threads/child_process/cluster usage — turned up nothing; see this section's own
+history for the fuller "everything checked out clean" writeup). Fixed by giving `project-resolver`
+the exact same self-exclusion lock `project-td` already has (`pg_try_advisory_lock` for the whole
+run, backing off with `skippedLockContention: true` rather than racing if another instance already
+holds it) — structurally impossible for two instances to run concurrently now, regardless of what
+triggers the overlap.
+
 Known limitations (deliberate scope decisions, not gaps to silently paper over):
 
 - Evidence #7 (operator/direction consistency) is not implemented — no ground-truth signal to

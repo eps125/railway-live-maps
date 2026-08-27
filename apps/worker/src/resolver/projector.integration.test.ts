@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
-import { runProjectResolver } from "./projector.js";
-import { BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
+import { runProjectResolver, RESOLVER_PROJECTION_NAME } from "./projector.js";
+import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -530,6 +530,40 @@ describe("runProjectResolver (integration)", () => {
       lockHolder.release();
     }
 
+    expect((await resolution(occupancyId))?.status).toBe("unmatched");
+  });
+
+  it("skips instead of racing when another run already holds the self-exclusion advisory lock", async () => {
+    // Regression test for a real production incident (2026-08-27): three concurrent connections
+    // were observed all running this function's own batch-select query at once — a redeploy
+    // doesn't guarantee the old container's process has fully exited before the new one's loop
+    // starts, unlike this file's own `while true` shell loop, which only guarantees "one at a
+    // time" within a single container's lifetime. This proves the fix (mirroring project-td's own
+    // self-exclusion lock): a second concurrent invocation backs off cleanly instead of racing.
+    const area = uniqueArea();
+    const occupancyId = await seedOccupancy(area, "0901", uniqueSignallingId(), ENTERED_AT, null);
+
+    const lockKey = advisoryLockKey(RESOLVER_PROJECTION_NAME);
+    const lockHolder = await pool.connect();
+    try {
+      const acquired = await lockHolder.query<{ locked: boolean }>(
+        "select pg_try_advisory_lock($1) as locked",
+        [lockKey],
+      );
+      expect(acquired.rows[0]?.locked).toBe(true);
+
+      const summary = await runProjectResolver(pool);
+      expect(summary.skippedLockContention).toBe(true);
+      expect(summary.newlyResolved).toBe(0);
+      expect(await resolution(occupancyId)).toBeUndefined();
+    } finally {
+      await lockHolder.query("select pg_advisory_unlock($1)", [lockKey]);
+      lockHolder.release();
+    }
+
+    // Once released, a normal run proceeds exactly as usual.
+    const summary = await runProjectResolver(pool);
+    expect(summary.skippedLockContention).toBe(false);
     expect((await resolution(occupancyId))?.status).toBe("unmatched");
   });
 });

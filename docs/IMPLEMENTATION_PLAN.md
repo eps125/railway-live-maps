@@ -356,6 +356,17 @@ inconsistent by the incident itself: the checkpoint advance sits inside the same
 the row effects, so a rolled-back deadlock victim just reprocesses the same batch cleanly on the
 shell loop's next tick.
 
+2026-08-27: that "brief" assumption turned out to be wrong for `project-resolver` specifically,
+discovered live in production during a post-redeploy backlog: acquiring the lock immediately after
+`BEGIN` meant it was held through `fetchBatchCandidateData` too — a read-only query (continuity
+seeding, schedule/SMART lookups) that can run for many seconds of disk I/O under real backlog
+load, but never writes to `berth_occupancy` and so never needed the lock at all. `project-td`'s
+checkpoint commits went from sub-second apart to 16+ seconds apart, which is what "the map is
+running behind" actually traced back to. Fixed by moving the lock acquisition into `resolveBatch`,
+after `fetchBatchCandidateData` returns and immediately before the per-occupancy writes — the
+correctness guarantee (no write to `berth_occupancy` outside the lock) is unchanged, only the
+window during which project-td can be blocked shrank to just the actual write phase.
+
 Known limitations (deliberate scope decisions, not gaps to silently paper over):
 
 - Evidence #7 (operator/direction consistency) is not implemented — no ground-truth signal to

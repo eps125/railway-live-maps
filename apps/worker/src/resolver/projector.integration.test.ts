@@ -147,6 +147,43 @@ async function seedSmartBerthStep(tdArea: string, toBerth: string, stanox: strin
   );
 }
 
+/** A single TRUST movement `train_run_event` for `trainRunId` reporting `locStanox` at `eventAt`
+ * — the raw material for the resolver's movement-correlation (#3b) signal. Creates the backing
+ * raw_archive_object/feed_frame/raw_feed_event lineage the composite FK requires, same pattern as
+ * seedOccupancy(). */
+async function seedMovementEvent(
+  trainRunId: string,
+  locStanox: string,
+  eventAt: Date,
+): Promise<void> {
+  const body = JSON.stringify({ body: { loc_stanox: locStanox } });
+  const archiveResult = await pool.query<{ id: string }>(
+    `insert into raw_archive_object (object_key, bucket, content_sha256, compressed_size_bytes, source_kind)
+     values ($1, 'test-bucket', $2, 1, 'broker-frame') returning id`,
+    [`test/${randomUUID()}`, randomUUID()],
+  );
+  const frameResult = await pool.query<{ id: string }>(
+    `insert into feed_frame (feed_name, topic, received_at, body_hash, archive_object_id)
+     values ('TRUST', '/topic/TRAIN_MVT_ALL_TOC', now(), $1, $2) returning id`,
+    [randomUUID(), archiveResult.rows[0]!.id],
+  );
+  const rawEvent = await pool.query<{ id: string; ingestion_sequence: string }>(
+    `insert into raw_feed_event (
+       frame_id, child_index, feed_name, event_type, message_class, raw_event_json,
+       normalized_event_at_utc, received_at_utc, semantic_hash, parse_status, parse_version
+     ) values ($1, 0, 'TRUST', 'movement', null, $2, $3, $3, $4, 'parsed', 1)
+     returning id, ingestion_sequence`,
+    [frameResult.rows[0]!.id, body, eventAt, randomUUID()],
+  );
+  await pool.query(
+    `insert into train_run_event (
+       train_run_id, raw_event_id, raw_event_normalized_at_utc, trust_message_type, event_at,
+       ingestion_sequence, normalization_version, raw_event_json
+     ) values ($1, $2, $3, 'movement', $3, $4, 1, $5)`,
+    [trainRunId, rawEvent.rows[0]!.id, eventAt, rawEvent.rows[0]!.ingestion_sequence, body],
+  );
+}
+
 async function resolution(occupancyId: string): Promise<
   | {
       status: string;
@@ -231,6 +268,70 @@ describe("runProjectResolver (integration)", () => {
     expect(row?.status).toBe("ambiguous");
     expect(row?.selected_train_run_id).toBeNull();
     void runA;
+    void runB;
+  });
+
+  it("movement-report correlation breaks a schedule + temporal + SMART tie toward the run reporting past this berth", async () => {
+    // The real 2C84 case: two genuine same-day workings of one headcode tie on every coarse
+    // signal — both schedule-linked, both inside the 24h temporal window, both SMART-correlated
+    // because both routes call at the berth's STANOX — with no preceding matched occupancy to
+    // chain continuity from. Only one is actually reporting TRUST movements past this berth now.
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const occupancyId = await seedOccupancy(area, "0700", signallingId, ENTERED_AT, null);
+    await seedSmartBerthStep(area, "0700", "70001");
+
+    const scheduleHere = await seedSchedule();
+    await seedScheduleLocation(scheduleHere, "70001");
+    const runHere = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleHere);
+    await seedRunScheduleLink(runHere, "matched", scheduleHere);
+
+    const scheduleElsewhere = await seedSchedule();
+    await seedScheduleLocation(scheduleElsewhere, "70001");
+    const runElsewhere = await seedTrainRun(
+      signallingId,
+      SERVICE_DATE,
+      ACTIVATED_AT,
+      scheduleElsewhere,
+    );
+    await seedRunScheduleLink(runElsewhere, "matched", scheduleElsewhere);
+
+    // runHere reports the berth's STANOX 30s after the step; runElsewhere is reporting a
+    // completely different STANOX at the same moment.
+    await seedMovementEvent(runHere, "70001", new Date(ENTERED_AT.getTime() + 30_000));
+    await seedMovementEvent(runElsewhere, "88888", new Date(ENTERED_AT.getTime() + 30_000));
+
+    await runProjectResolver(pool);
+
+    expect(await resolution(occupancyId)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: runHere,
+    });
+  });
+
+  it("a movement report outside the correlation window does not break the tie", async () => {
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const occupancyId = await seedOccupancy(area, "0702", signallingId, ENTERED_AT, null);
+    await seedSmartBerthStep(area, "0702", "72001");
+
+    const scheduleA = await seedSchedule();
+    await seedScheduleLocation(scheduleA, "72001");
+    const runA = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleA);
+    await seedRunScheduleLink(runA, "matched", scheduleA);
+
+    const scheduleB = await seedSchedule();
+    await seedScheduleLocation(scheduleB, "72001");
+    const runB = await seedTrainRun(signallingId, SERVICE_DATE, ACTIVATED_AT, scheduleB);
+    await seedRunScheduleLink(runB, "matched", scheduleB);
+
+    // runA did report this STANOX, but ~20 minutes before the train stepped into the berth — a
+    // different pass entirely (or an earlier working), not this occupancy.
+    await seedMovementEvent(runA, "72001", new Date(ENTERED_AT.getTime() - 20 * 60_000));
+
+    await runProjectResolver(pool);
+
+    expect((await resolution(occupancyId))?.status).toBe("ambiguous");
     void runB;
   });
 

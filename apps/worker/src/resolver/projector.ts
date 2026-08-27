@@ -66,6 +66,17 @@ const MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
  * headcode has moved on than a self-reinforcing chain. Where neither signal clearly wins, the
  * honest result is `ambiguous`, not a confident guess (CLAUDE.md rule 7). */
 const CONTINUITY_WINDOW_MS = 10 * 60 * 1000;
+/** How close a candidate run's own TRUST movement report (by reported `loc_stanox`) must fall to
+ * a berth occupancy's `entered_at` to count as live-position evidence that the headcode belongs
+ * to that run (resolveBerthRun.ts's `movementCorrelation`). TRUST movement reports lag the
+ * physical event by tens of seconds to a couple of minutes and TD/TRUST clocks aren't identical,
+ * so this is deliberately looser than CONTINUITY_WINDOW_MS's inter-berth timing — but still far
+ * tighter than the resolver's only other temporal signal (a 24h day-window on `activated_at`),
+ * which is the whole point: two genuine same-day workings of one headcode are hours apart, so an
+ * 8-minute window cleanly separates the one physically reporting past this berth now from the one
+ * that isn't. Correlated only against the berth's own SMART `to_berth` STANOX set (already
+ * fetched for evidence #5), never neighbouring berths — a deliberately conservative start. */
+const MOVEMENT_CORRELATION_WINDOW_MS = 8 * 60 * 1000;
 
 export interface ProjectResolverOptions {
   batchSize?: number;
@@ -156,6 +167,10 @@ interface BatchCandidateData {
   smartStanoxesByAreaBerth: Map<string, Set<string>>;
   /** Key: schedule id. */
   scheduleStanoxes: Map<string, Set<string>>;
+  /** Key: train_run id. Every `movement` TRUST report for that candidate run whose `event_at`
+   * falls in the batch's `entered_at` span ± MOVEMENT_CORRELATION_WINDOW_MS, with the STANOX it
+   * reported — the raw material for resolveBerthRun.ts's `movementCorrelation` signal. */
+  movementStanoxesByRunId: Map<string, Array<{ stanox: string; eventAt: Date }>>;
   /** Key: `${description}|${tdArea}`. The most recent `matched` occupancy of that description in
    * that TD area seen so far — seeded from berth_run_resolution before the batch starts, then
    * kept current as resolveBatch resolves each occupancy in order, so continuity can chain
@@ -167,11 +182,13 @@ interface BatchCandidateData {
 /**
  * Candidate generation (docs/DATA_MODEL.md §8 evidence #1: exact signalling identity for the
  * occupancy's service date, never a run whose identity was superseded) plus the evidence signals
- * this pass scores (#2 schedule-linked, #3 temporal plausibility via activated_at, #4 continuity
- * from a preceding occupancy, #5 SMART/STANOX correlation — see resolveBerthRun.ts's own doc
- * comment for the full evidence-coverage note, including #6/#7's documented deferral).
+ * this pass scores (#2 schedule-linked, #3 temporal plausibility via activated_at, #3b live
+ * movement-report correlation — the candidate's own TRUST movement stream reporting past this
+ * berth's SMART STANOX near the occupancy time, #4 continuity from a preceding occupancy, #5
+ * SMART/STANOX correlation — see resolveBerthRun.ts's own doc comment for the full
+ * evidence-coverage note, including #6/#7's documented deferral).
  *
- * Fetches for the **whole batch at once** — a fixed 5 queries regardless of how many occupancies
+ * Fetches for the **whole batch at once** — a fixed 6 queries regardless of how many occupancies
  * are in it, using the same `join (select unnest(...) ...) wanted` pattern
  * `apps/api/src/lib/liveState.ts`'s `computeLiveState` already established for this. A prior
  * version queried per-occupancy (up to 4 sequential round trips each), which was fine against
@@ -229,6 +246,34 @@ async function fetchBatchCandidateData(
         )
       : { rows: [] };
   const linkedRunIds = new Set(linkResult.rows.map((row) => row.train_run_id));
+
+  // Live movement-report correlation (#3b). Every 'movement' TRUST event for any candidate run in
+  // this batch, bounded to the batch's occupancy-time span widened by the correlation window on
+  // both sides — one query for the whole batch, same shape as the others here. loc_stanox lives
+  // in the raw event body (train_run_event has no normalized column for it); the
+  // train_run_event_train_run_idx (train_run_id, event_at desc) index covers the filter.
+  const enteredAtMsForMovement = occupancies.map(({ row }) => row.entered_at.getTime());
+  const movementResult =
+    runIds.length > 0
+      ? await client.query<{ train_run_id: string; loc_stanox: string; event_at: Date }>(
+          `select train_run_id, raw_event_json->'body'->>'loc_stanox' as loc_stanox, event_at
+           from train_run_event
+           where train_run_id = any($1::uuid[]) and trust_message_type = 'movement'
+             and event_at >= $2 and event_at <= $3
+             and raw_event_json->'body'->>'loc_stanox' is not null`,
+          [
+            runIds,
+            new Date(Math.min(...enteredAtMsForMovement) - MOVEMENT_CORRELATION_WINDOW_MS),
+            new Date(Math.max(...enteredAtMsForMovement) + MOVEMENT_CORRELATION_WINDOW_MS),
+          ],
+        )
+      : { rows: [] };
+  const movementStanoxesByRunId = new Map<string, Array<{ stanox: string; eventAt: Date }>>();
+  for (const row of movementResult.rows) {
+    const list = movementStanoxesByRunId.get(row.train_run_id) ?? [];
+    list.push({ stanox: row.loc_stanox, eventAt: row.event_at });
+    movementStanoxesByRunId.set(row.train_run_id, list);
+  }
 
   const tdAreas: string[] = [];
   const berthCodes: string[] = [];
@@ -334,6 +379,7 @@ async function fetchBatchCandidateData(
     linkedRunIds,
     smartStanoxesByAreaBerth,
     scheduleStanoxes,
+    movementStanoxesByRunId,
     continuityByDescriptionArea,
   };
 }
@@ -386,12 +432,26 @@ function buildCandidates(
       candidateStanoxes !== undefined &&
       [...smartStanoxes].some((stanox) => candidateStanoxes.has(stanox));
 
+    // Live-truth (#3b): this run's own recent TRUST movement stream reported it at a STANOX that
+    // SMART ties to *this berth*, within MOVEMENT_CORRELATION_WINDOW_MS of when the train stepped
+    // into it. Needs the berth's SMART coverage to exist at all — no SMART STANOX for the berth
+    // means nothing to correlate against, same precondition as smartStanoxMatch.
+    const movementCorrelation =
+      smartStanoxes.size > 0 &&
+      (data.movementStanoxesByRunId.get(run.id) ?? []).some(
+        (report) =>
+          smartStanoxes.has(report.stanox) &&
+          Math.abs(report.eventAt.getTime() - occupancy.entered_at.getTime()) <=
+            MOVEMENT_CORRELATION_WINDOW_MS,
+      );
+
     return {
       trainRunId: run.id,
       hasMatchedSchedule: data.linkedRunIds.has(run.id),
       temporallyPlausible,
       recentContinuity: run.id === continuityRunId && !continuitySuppressedByFresherCandidate,
       smartStanoxMatch,
+      movementCorrelation,
     };
   });
 }

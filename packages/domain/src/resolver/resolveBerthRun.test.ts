@@ -8,6 +8,7 @@ function candidate(overrides: Partial<RunCandidate>): RunCandidate {
     temporallyPlausible: false,
     recentContinuity: false,
     smartStanoxMatch: false,
+    movementCorrelation: false,
     ...overrides,
   };
 }
@@ -25,7 +26,7 @@ describe("resolveBerthRun", () => {
     expect(result.candidates[0]).toMatchObject({ trainRunId: "run-1", score: 0 });
   });
 
-  it("a single strong candidate (schedule-linked + temporally plausible + continuity + SMART match) is matched", () => {
+  it("a single candidate with every evidence signal is matched at full confidence", () => {
     const result = resolveBerthRun([
       candidate({
         trainRunId: "run-1",
@@ -33,12 +34,78 @@ describe("resolveBerthRun", () => {
         temporallyPlausible: true,
         recentContinuity: true,
         smartStanoxMatch: true,
+        movementCorrelation: true,
       }),
     ]);
     expect(result.status).toBe("matched");
     if (result.status !== "matched") throw new Error("expected matched");
     expect(result.selectedTrainRunId).toBe("run-1");
     expect(result.confidence).toBe(1);
+  });
+
+  it("movement correlation breaks a schedule + temporal + SMART tie between two same-headcode runs", () => {
+    // The real 2C84 case: two genuine same-day workings tie on every coarse signal (both
+    // schedule-linked, both within the 24h temporal window, both SMART-correlated because both
+    // routes traverse the berth's STANOX) and neither has a preceding matched occupancy to chain
+    // continuity from. Only one is actually reporting TRUST movements past this berth right now.
+    const here = candidate({
+      trainRunId: "reporting-here",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+      smartStanoxMatch: true,
+      movementCorrelation: true,
+    });
+    const elsewhere = candidate({
+      trainRunId: "reporting-elsewhere",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+      smartStanoxMatch: true,
+    });
+    const result = resolveBerthRun([elsewhere, here]);
+    expect(result.status).toBe("matched");
+    if (result.status !== "matched") throw new Error("expected matched");
+    expect(result.selectedTrainRunId).toBe("reporting-here");
+  });
+
+  it("two movement-correlated candidates otherwise tied stay ambiguous, never silently picked", () => {
+    const a = candidate({
+      trainRunId: "run-a",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+      smartStanoxMatch: true,
+      movementCorrelation: true,
+    });
+    const b = candidate({
+      trainRunId: "run-b",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+      smartStanoxMatch: true,
+      movementCorrelation: true,
+    });
+    const result = resolveBerthRun([a, b]);
+    expect(result.status).toBe("ambiguous");
+    expect(result.candidates.map((c) => c.trainRunId).sort()).toEqual(["run-a", "run-b"]);
+  });
+
+  it("movement correlation alone does not outweigh a candidate that wins on every other signal", () => {
+    // Guards MOVEMENT_CORRELATION_WEIGHT < sum of the others: a single stray smart_berth_step row
+    // producing a spurious correlation must not silently override a candidate backed by schedule
+    // link + temporal plausibility + continuity + SMART.
+    const everythingElse = candidate({
+      trainRunId: "backed-by-everything-else",
+      hasMatchedSchedule: true,
+      temporallyPlausible: true,
+      recentContinuity: true,
+      smartStanoxMatch: true,
+    });
+    const onlyCorrelation = candidate({
+      trainRunId: "only-correlation",
+      movementCorrelation: true,
+    });
+    const result = resolveBerthRun([onlyCorrelation, everythingElse]);
+    expect(result.status).toBe("matched");
+    if (result.status !== "matched") throw new Error("expected matched");
+    expect(result.selectedTrainRunId).toBe("backed-by-everything-else");
   });
 
   it("continuity from a preceding occupancy breaks a tie between two otherwise-equal candidates", () => {

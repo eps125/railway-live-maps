@@ -298,9 +298,11 @@ written to). Pure scoring logic in `packages/domain/src/resolver/resolveBerthRun
 `schedule/resolveStpPrecedence.ts`'s DB-I/O-free style): candidate generation (exact
 `signalling_id` + service-date match, never a superseded identity) is evidence #1, then a
 weighted score from #2 (schedule-linked via `run_schedule_link`), #3 (temporal plausibility — see
-its own known-limitation note below) and #5 (SMART berth→STANOX correlation via
-`smart_berth_step`); an exact tie at the top score is `ambiguous`, never an arbitrary pick
-(CLAUDE.md rule 5). New checkpointed worker projector (`apps/worker/src/resolver/projector.ts`,
+its own known-limitation note below), #3b (live movement-report correlation — a candidate run's
+own TRUST `movement` events, by reported `loc_stanox`, placing it at this berth's SMART STANOX
+within ±8 min of the occupancy; added 2026-08-27, see the known-limitation note below), #4
+(continuity) and #5 (SMART berth→STANOX correlation via `smart_berth_step`); an exact tie at the
+top score is `ambiguous`, never an arbitrary pick (CLAUDE.md rule 5). New checkpointed worker projector (`apps/worker/src/resolver/projector.ts`,
 `project-resolver` command, run from its own Portainer `projector-resolver` service loop — split
 from `project-td`'s `projector-td` loop on 2026-08-10 so resolver/TRUST backlog work can never
 stall live berth positions, then split a second time on 2026-08-11 from `project-vstp`/
@@ -412,6 +414,23 @@ resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weigh
   train arrived (the resolver's own decoupled loop, see `projector-resolver` in
   `deploy/docker-compose.portainer.yml`, can take a few seconds) would show "no match" forever
   even after the backend resolved it moments later; it now polls every 2s while open.
+- Live movement-report correlation (evidence #3b) was added 2026-08-27 for the tie continuity
+  can't reach: two genuinely different same-day workings of one headcode, both schedule-linked,
+  both inside the 24h temporal window, both SMART-correlated (both routes call at the berth's
+  STANOX), and neither with a preceding `matched` occupancy to chain continuity from — a dead
+  tie that came out `ambiguous` even though only one of the two trains is physically reporting
+  past the berth (the real observed `2C84` case). `packages/domain/src/resolver/resolveBerthRun.ts`
+  scores it via a new `movementCorrelation` field, weight 45 — the highest single weight (enough
+  to break an otherwise-perfect tie on its own), deliberately less than the sum of the others so
+  one stray `smart_berth_step` row can't silently override a candidate that wins on every other
+  signal. `apps/worker/src/resolver/projector.ts` sets it when the candidate run's own TRUST
+  `movement` events (`train_run_event`, by reported `loc_stanox`) include the berth's SMART
+  `to_berth` STANOX within ±8 minutes of the occupancy's `entered_at` — fetched once per batch
+  alongside the existing candidate reads (a 6th fixed query, no per-occupancy round trip).
+  `RESOLVER_VERSION` bumped 2→3; re-run `project-resolver --rebuild` after deploying. Still gated
+  on the exact-signalling-identity candidate set like every other signal (CLAUDE.md rule 5), and
+  does not address the separate "no candidate at all" case (a TD headcode seen before its TRUST
+  activation fires) — the open-occupancy retry pass already covers that.
 - Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via
   SMART/STANOX correlation to the specific berth being resolved, not by consulting the live map
   document a berth happens to be published on — the resolver stays fully nationwide/map-
@@ -421,6 +440,9 @@ resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weigh
   parsed timestamps, and `train_run.origin_departure_at` (which would give an exact anchor) is
   never actually populated by the Milestone 8 TRUST projector (`apps/worker/src/trust/
 projector.ts` hardcodes it `null` — a pre-existing gap, not something this milestone fixes).
+  The live movement-report correlation bullet above (#3b) supplies the point-wise "actual times"
+  signal for the case that actually matters — telling two same-headcode runs apart — whenever a
+  candidate is genuinely reporting TRUST movements past the berth.
 - `berth.updated`/`berth.cleared` WebSocket deltas don't carry a live-refreshed `runSummary`
   (only the snapshot on connect/reconnect and the REST `/state` poll do) — the already-declared
   `run.resolution.updated` stub message type would be the clean way to add that, but nothing

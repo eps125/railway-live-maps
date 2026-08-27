@@ -32,19 +32,43 @@
  * very recently — fixes this without weakening rule 5: it never trusts the raw four-character
  * description alone, only an already-decided resolver outcome.
  *
+ * `movementCorrelation` was added 2026-08-27 after observing genuine same-day headcode reuse
+ * (two real `2C84` workings, different origins) tie at schedule-linked + temporal + SMART with
+ * no continuity to break it — because both of the weaker signals it stacks are coarse: temporal
+ * plausibility is only a 24h day-window on `activated_at` (`origin_departure_at` is never
+ * populated), and SMART/STANOX evidence matches a candidate schedule's STANOX set *anywhere on
+ * its route*, so any two `2C84`s that both traverse Lancaster both score it. Movement correlation
+ * is the live-truth form of both: the candidate run's *own* TRUST movement stream places it at a
+ * STANOX that SMART-correlates to *this exact berth*, within minutes of the occupancy — actual
+ * reported times, this location specifically. It is the single strongest non-identity signal
+ * available (only one of two same-headcode trains is physically reporting movements past
+ * Lancaster at 20:03), so it carries the highest weight: enough to break a tie on its own, not
+ * so much that a single wrong SMART berth→STANOX row silently overrides every other signal.
+ * Still never trusts the bare description — it is gated on the candidate set (exact signalling
+ * identity + service date) exactly like every other signal here.
+ *
  * Weights/thresholds are a versioned, tunable MVP starting point (docs/DATA_MODEL.md §8:
  * "Thresholds belong in versioned resolver configuration and tests") — bump RESOLVER_VERSION
  * whenever they change, since stored `berth_run_resolution` rows record which version produced
  * them.
  */
-export const RESOLVER_VERSION = 2;
+export const RESOLVER_VERSION = 3;
 
 const SCHEDULE_LINKED_WEIGHT = 40;
 const TEMPORAL_PLAUSIBILITY_WEIGHT = 35;
 const CONTINUITY_WEIGHT = 30;
 const SMART_STANOX_WEIGHT = 25;
+/** Highest single weight — see the module doc comment. Strictly greater than any other single
+ * weight so an otherwise-perfect tie between two same-headcode candidates resolves to whichever
+ * one is actually reporting movements past this berth right now; not the sum of the others, so
+ * it can't by itself outweigh a candidate that genuinely wins on every other signal. */
+const MOVEMENT_CORRELATION_WEIGHT = 45;
 const MAX_SCORE =
-  SCHEDULE_LINKED_WEIGHT + TEMPORAL_PLAUSIBILITY_WEIGHT + CONTINUITY_WEIGHT + SMART_STANOX_WEIGHT;
+  SCHEDULE_LINKED_WEIGHT +
+  TEMPORAL_PLAUSIBILITY_WEIGHT +
+  CONTINUITY_WEIGHT +
+  SMART_STANOX_WEIGHT +
+  MOVEMENT_CORRELATION_WEIGHT;
 
 export interface RunCandidate {
   trainRunId: string;
@@ -58,6 +82,11 @@ export interface RunCandidate {
   recentContinuity: boolean;
   /** smart_berth_step ties this exact berth to a STANOX the candidate's schedule calls at. */
   smartStanoxMatch: boolean;
+  /** The candidate run's own recent TRUST movement stream reported it at a STANOX that
+   * smart_berth_step ties to *this exact berth*, within a bounded window of the occupancy's
+   * entered_at (see the caller's MOVEMENT_CORRELATION_WINDOW_MS). Live-truth evidence about the
+   * candidate run's own reported position, never about the raw description (rule 5). */
+  movementCorrelation: boolean;
 }
 
 export interface ScoredCandidate {
@@ -95,6 +124,10 @@ function scoreCandidate(candidate: RunCandidate): ScoredCandidate {
   if (candidate.smartStanoxMatch) {
     score += SMART_STANOX_WEIGHT;
     reasons.push("SMART berth-to-STANOX correlation matches a called STANOX");
+  }
+  if (candidate.movementCorrelation) {
+    score += MOVEMENT_CORRELATION_WEIGHT;
+    reasons.push("this run's own TRUST movement reports place it at this berth around this time");
   }
   return { trainRunId: candidate.trainRunId, score, confidence: score / MAX_SCORE, reasons };
 }

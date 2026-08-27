@@ -355,7 +355,10 @@ Evidence in descending importance:
 
 1. Exact active TRUST run with matching signalling identity.
 2. Activation directly linked to a valid schedule for the service date.
-3. Temporal plausibility around booked and actual times.
+3. Temporal plausibility around booked and actual times. The strongest form of this, when
+   present, is live correlation of a candidate run's own TRUST movement reports (by reported
+   STANOX) against the specific berth around the occupancy time — actual reported position at
+   an actual reported time, not a day-level plausibility window.
 4. Continuity from preceding berth occupancy/run links.
 5. SMART berth/STANOX evidence.
 6. A selected map or queried corridor's TIPLOC/STANOX coverage.

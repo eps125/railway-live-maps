@@ -78,6 +78,17 @@ export async function getCheckpoint(
   return row ? toCheckpoint(row) : undefined;
 }
 
+/**
+ * Records that a projection has processed forward to `lastIngestionSequence`. Monotonic: the
+ * stored sequence only ever moves forward (`greatest(...)`). Every projector already computes its
+ * next value from the checkpoint it just read, so in normal operation `greatest` is a no-op — but
+ * it makes an out-of-order write a no-op instead of a rewind: a stale process from a redeploy
+ * that already read an older checkpoint, or an operator manually seeding the checkpoint ahead
+ * (both observed rewinding the resolver checkpoint by millions of rows in production on
+ * 2026-08-31, re-triggering an oldest-first grind each time). `resetCheckpoint` is the only
+ * sanctioned way to move a checkpoint backwards. `last_completed_at` still advances every call so
+ * "a pass ran" stays observable even when the sequence didn't move.
+ */
 export async function advanceCheckpoint(
   pool: Queryable,
   projectionDefinitionId: string,
@@ -85,7 +96,8 @@ export async function advanceCheckpoint(
 ): Promise<void> {
   await pool.query(
     `update projection_checkpoint
-     set last_ingestion_sequence = $2, last_completed_at = now(), error_state = null, updated_at = now()
+     set last_ingestion_sequence = greatest(last_ingestion_sequence, $2::bigint),
+         last_completed_at = now(), error_state = null, updated_at = now()
      where projection_definition_id = $1`,
     [projectionDefinitionId, lastIngestionSequence],
   );

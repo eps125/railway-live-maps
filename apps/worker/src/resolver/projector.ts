@@ -631,6 +631,36 @@ async function runBackfillPhase(
 }
 
 /**
+ * One-time seed for a **never-advanced** resolver checkpoint (`last_ingestion_sequence = 0` and
+ * `last_completed_at is null` — the exact state `ensureCheckpoint` leaves a freshly-created row
+ * in, i.e. right after a RESOLVER_VERSION bump). Jumps it to the newest occupancy that already
+ * sits *outside* the live window (`entered_at < windowCutoff`), so the forward scan starts at
+ * "now minus the window" instead of the beginning of retained history. No-op once the checkpoint
+ * has ever advanced, and no-op when there is no pre-window history (fresh/small database).
+ * Returns the id it seeded to, or null if it didn't seed. Exported for its own integration test.
+ */
+export async function seedFreshResolverCheckpoint(
+  pool: Pool,
+  definitionId: string,
+  windowCutoff: Date,
+): Promise<string | null> {
+  const checkpoint = await getCheckpoint(pool, definitionId);
+  if (checkpoint?.lastIngestionSequence !== "0" || checkpoint.lastCompletedAt !== null) {
+    return null;
+  }
+  const edge = await pool.query<{ id: string | null }>(
+    `select max(id) as id from berth_occupancy where projection_version = $1 and entered_at < $2`,
+    [TD_PROJECTION_VERSION, windowCutoff],
+  );
+  const edgeId = edge.rows[0]?.id ?? null;
+  if (edgeId === null || BigInt(edgeId) <= 0n) {
+    return null;
+  }
+  await advanceCheckpoint(pool, definitionId, edgeId);
+  return edgeId;
+}
+
+/**
  * Turns berth occupancies into resolved (or explicitly not-resolved) train runs
  * (docs/IMPLEMENTATION_PLAN.md Milestone 9).
  *
@@ -725,6 +755,15 @@ export async function runProjectResolver(
     if (options.rebuild) {
       await clearProjectionRows(pool);
       await resetCheckpoint(pool, definitionId);
+    } else if (Number.isFinite(liveWindowMs)) {
+      // A RESOLVER_VERSION bump creates a brand-new projection_definition whose checkpoint starts
+      // at 0. Without this, the id-ordered forward scan below grinds oldest-first through every
+      // retained day inside `liveWindowMs` before it reaches "now" — the current hour is resolved
+      // last, leaving the live map unresolved for many minutes on a nationwide backlog (the
+      // 2026-08-31 incident). Seed a never-advanced checkpoint straight to the window edge:
+      // occupancies older than the window keep whatever resolver version last decided them, and
+      // `--backfill` lifts them to the current version on demand.
+      await seedFreshResolverCheckpoint(pool, definitionId, windowCutoff);
     }
 
     const summary: ProjectResolverSummary = { ...EMPTY_SUMMARY };

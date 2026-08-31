@@ -462,6 +462,22 @@ RESOLVER_LIVE_WINDOW_HOURS` (`apps/worker/src/config.ts`, default 72). Without i
   catch history up alongside the 1s live loop instead of the two starving each other, with
   per-batch `berth_occupancy` writes still serialized by `BERTH_OCCUPANCY_WRITE_LOCK_KEY`. Re-run
   it until the summary's `moreBacklogRemains` is false.
+- Deploying the first `RESOLVER_VERSION`-bumped build (v3, 2026-08-31) turned into a multi-hour
+  incident because the window above bounds _how much_ work a bump costs but not the _order_ — the
+  `id`-ordered forward scan still did the whole window oldest-first, so the current hour stayed
+  unresolved while ~5M rows drained, and every manual checkpoint seed to "now" was immediately
+  overwritten by a still-in-flight invocation's `advanceCheckpoint`. Two follow-up fixes so a
+  future bump is a non-event: (a) `advanceCheckpoint` (`@railway/database`) is now **monotonic**
+  (`greatest(last_ingestion_sequence, $2)`) — a stale or out-of-order write can no longer rewind a
+  checkpoint an operator (or a concurrent process) moved ahead; `resetCheckpoint` stays the only
+  sanctioned way back. (b) `runProjectResolver` calls `seedFreshResolverCheckpoint` when it finds
+  a **never-advanced** checkpoint (`last_ingestion_sequence = 0` and `last_completed_at is null` —
+  exactly a just-bumped version) and a finite `liveWindowMs`: it jumps the checkpoint straight to
+  the newest occupancy already outside the window, so the loop starts at "now minus the window"
+  with no oldest-first grind. No-op for `--rebuild`, for an unbounded window (tests), and on a
+  fresh/small database. The separately-broken part of the incident — `project-vstp` wedged since
+  2026-08-16 on the schedule-delete FK — was unrelated (see Milestone 7); it was masking nothing,
+  CIF SCHEDULE covered ~98% of links throughout.
 - Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via
   SMART/STANOX correlation to the specific berth being resolved, not by consulting the live map
   document a berth happens to be published on — the resolver stays fully nationwide/map-

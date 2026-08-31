@@ -1,8 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { createPool } from "@railway/database";
+import {
+  createPool,
+  getOrCreateProjectionDefinition,
+  ensureCheckpoint,
+  getCheckpoint,
+  advanceCheckpoint,
+} from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
-import { runProjectResolver, RESOLVER_PROJECTION_NAME } from "./projector.js";
+import {
+  runProjectResolver,
+  seedFreshResolverCheckpoint,
+  RESOLVER_PROJECTION_NAME,
+} from "./projector.js";
 import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
 
 function sleep(ms: number): Promise<void> {
@@ -333,6 +343,48 @@ describe("runProjectResolver (integration)", () => {
 
     expect((await resolution(occupancyId))?.status).toBe("ambiguous");
     void runB;
+  });
+
+  it("seedFreshResolverCheckpoint jumps a never-advanced checkpoint past pre-window occupancies, then no-ops", async () => {
+    const area = uniqueArea();
+    // freshly inserted, so both get current (top-of-sequence) ids regardless of entered_at
+    const oldOccupancyId = await seedOccupancy(
+      area,
+      "0A01",
+      uniqueSignallingId(),
+      new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+      null,
+    );
+    const recentOccupancyId = await seedOccupancy(
+      area,
+      "0A02",
+      uniqueSignallingId(),
+      new Date(Date.now() - 30 * 60 * 1000),
+      null,
+    );
+
+    const defId = await getOrCreateProjectionDefinition(pool, `test-seed-${randomUUID()}`, 1, "h");
+    await ensureCheckpoint(pool, defId);
+
+    const windowCutoff = new Date(Date.now() - 72 * 60 * 60 * 1000);
+    const seededTo = await seedFreshResolverCheckpoint(pool, defId, windowCutoff);
+
+    // seeded exactly to the highest pre-window occupancy id — the forward scan would now skip it
+    // but still pick up the in-window one.
+    expect(seededTo).toBe(oldOccupancyId);
+    expect(BigInt(seededTo!)).toBeLessThan(BigInt(recentOccupancyId));
+
+    // idempotent: once the checkpoint has advanced, it never re-seeds
+    await advanceCheckpoint(pool, defId, seededTo!);
+    expect(await seedFreshResolverCheckpoint(pool, defId, windowCutoff)).toBeNull();
+
+    // no-op when there is no pre-window history at all
+    const defId2 = await getOrCreateProjectionDefinition(pool, `test-seed-${randomUUID()}`, 1, "h");
+    await ensureCheckpoint(pool, defId2);
+    expect(
+      await seedFreshResolverCheckpoint(pool, defId2, new Date("2000-01-01T00:00:00Z")),
+    ).toBeNull();
+    expect((await getCheckpoint(pool, defId2))?.lastIngestionSequence).toBe("0");
   });
 
   it("no candidates at all resolves as unmatched", async () => {

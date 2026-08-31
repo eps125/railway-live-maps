@@ -45,6 +45,19 @@ describe("projection checkpoint framework (integration)", () => {
     expect(advanced?.lastCompletedAt).not.toBeNull();
   });
 
+  it("advanceCheckpoint is monotonic — a lower (stale/concurrent) value never rewinds it", async () => {
+    const name = `test-projection-${randomUUID()}`;
+    const definitionId = await getOrCreateProjectionDefinition(pool, name, 1, "h");
+    await ensureCheckpoint(pool, definitionId);
+
+    await advanceCheckpoint(pool, definitionId, "1000");
+    await advanceCheckpoint(pool, definitionId, "500"); // stale write — ignored
+    expect((await getCheckpoint(pool, definitionId))?.lastIngestionSequence).toBe("1000");
+
+    await advanceCheckpoint(pool, definitionId, "1500"); // genuine forward progress — applied
+    expect((await getCheckpoint(pool, definitionId))?.lastIngestionSequence).toBe("1500");
+  });
+
   it("returns undefined for a checkpoint that was never ensured", async () => {
     const checkpoint = await getCheckpoint(pool, "999999999");
     expect(checkpoint).toBeUndefined();

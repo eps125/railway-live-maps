@@ -825,16 +825,26 @@ export async function runProjectResolver(
     try {
       await retryClient.query("begin");
       const retryCutoff = new Date(Date.now() - RETRY_INTERVAL_MS);
-      // Same freshness window as the forward scan: an occupancy still open (no clearing message)
-      // days after it was entered is almost certainly stale, not genuinely awaiting a
-      // later-arriving activation — stop retrying it forever.
+      // Cheapness here depends entirely on the `decided_at` range + scan direction.
+      // `berth_run_resolution_retry_idx` is `(decided_at) where status != 'matched'`, and there
+      // are millions of non-`matched` rows — mostly older resolver versions whose occupancies are
+      // long since closed. The old form (`decided_at < retryCutoff` only, `order by ... asc`)
+      // walked that index from the very oldest row forward, doing a `berth_occupancy` lookup per
+      // row only to discard it on `left_at is null` / `entered_at >=`, and never reached `limit` —
+      // many minutes per run, saturating disk I/O in production (2026-09-01). Now: a lower bound
+      // (`decided_at >= $4`, the same `windowCutoff` as the forward scan) plus `desc` order, so
+      // the scan starts just under `retryCutoff` and walks *backwards* — the still-open,
+      // non-`matched` occupancies are always the most recently decided ones, so `limit` fills in
+      // the first fraction of a second. A late-arriving activation can only still fix an occupancy
+      // that is open and was decided within the live window; anything older is a missed clearing
+      // message, not a retry candidate.
       const stale = await retryClient.query<OccupancyRow>(
         `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description
          from berth_occupancy bo
          join berth_run_resolution brr on brr.occupancy_id = bo.id
          where bo.projection_version = $1 and bo.left_at is null and brr.status != 'matched'
-           and brr.decided_at < $2 and bo.entered_at >= $4
-         order by brr.decided_at asc
+           and brr.decided_at >= $4 and brr.decided_at < $2 and bo.entered_at >= $4
+         order by brr.decided_at desc
          limit $3`,
         [TD_PROJECTION_VERSION, retryCutoff, batchSize, windowCutoff],
       );

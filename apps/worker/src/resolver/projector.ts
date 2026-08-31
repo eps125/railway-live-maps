@@ -281,8 +281,17 @@ async function fetchBatchCandidateData(
   // Live movement-report correlation (#3b). Every 'movement' TRUST event for any candidate run in
   // this batch, bounded to the batch's occupancy-time span widened by the correlation window on
   // both sides — one query for the whole batch, same shape as the others here. loc_stanox lives
-  // in the raw event body (train_run_event has no normalized column for it); the
-  // train_run_event_train_run_idx (train_run_id, event_at desc) index covers the filter.
+  // in the raw event body (train_run_event has no normalized column for it).
+  //
+  // The time bound is written against `raw_event_normalized_at_utc`, NOT `event_at`, even though
+  // the two are set to the identical value for every train_run_event row
+  // (apps/worker/src/trust/projector.ts). `raw_event_normalized_at_utc` is train_run_event's
+  // *partition key*, so this bound lets Postgres prune to the one or two month partitions the
+  // window touches; filtering `event_at` (not the partition key) forced a scan of every retained
+  // monthly partition on every batch, which against 14 days of nationwide TRUST movements made
+  // each project-resolver invocation take minutes and the live checkpoint fall permanently
+  // behind (2026-08-31 production incident). `event_at` is still SELECTed for the app-side
+  // window check in buildCandidates.
   const enteredAtMsForMovement = occupancies.map(({ row }) => row.entered_at.getTime());
   const movementResult =
     runIds.length > 0
@@ -290,6 +299,7 @@ async function fetchBatchCandidateData(
           `select train_run_id, raw_event_json->'body'->>'loc_stanox' as loc_stanox, event_at
            from train_run_event
            where train_run_id = any($1::uuid[]) and trust_message_type = 'movement'
+             and raw_event_normalized_at_utc >= $2 and raw_event_normalized_at_utc <= $3
              and event_at >= $2 and event_at <= $3
              and raw_event_json->'body'->>'loc_stanox' is not null`,
           [

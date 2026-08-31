@@ -489,7 +489,14 @@ RESOLVER_LIVE_WINDOW_HOURS` (`apps/worker/src/config.ts`, default 72). Without i
 projector.ts` hardcodes it `null` — a pre-existing gap, not something this milestone fixes).
   The live movement-report correlation bullet above (#3b) supplies the point-wise "actual times"
   signal for the case that actually matters — telling two same-headcode runs apart — whenever a
-  candidate is genuinely reporting TRUST movements past the berth.
+  candidate is genuinely reporting TRUST movements past the berth. `temporallyPlausible` also
+  carries a 20-minute lower-bound grace (`TD_LEADS_TRUST_GRACE_MS`, added 2026-08-31): TD steps a
+  headcode through berths before TRUST fires the activation for that working, so a hard
+  `entered_at >= activated_at` was rejecting the _correct_ just-appeared run while three unrelated
+  same-headcode workings that had activated earlier the same day kept the score (observed live:
+  berth PX 0251 / 5C70, correct run `115C70M931` activated 7.5 min after the step). Tuned without
+  a `RESOLVER_VERSION` bump by owner decision — a plausibility-window widening, not a
+  weight/structure change; the 24h `MAX_JOURNEY_MS` upper bound is unchanged.
 - `berth.updated`/`berth.cleared` WebSocket deltas don't carry a live-refreshed `runSummary`
   (only the snapshot on connect/reconnect and the REST `/state` poll do) — the already-declared
   `run.resolution.updated` stub message type would be the clean way to add that, but nothing

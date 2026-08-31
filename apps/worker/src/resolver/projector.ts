@@ -46,6 +46,18 @@ const RETRY_INTERVAL_MS = 5 * 60 * 1000;
  * available for this check; that makes this a day-level plausibility signal, not per-calling-
  * point precision (schedule_location's own times are raw CIF-style text, not parsed timestamps). */
 const MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
+/** Lower-bound grace on `temporallyPlausible`: a berth occupancy whose TD headcode appeared up to
+ * this long **before** the run's TRUST activation still counts as temporally plausible. TD
+ * routinely leads TRUST — the headcode is stepped through berths before TRUST fires the
+ * activation for that working (CONTINUITY_WINDOW_MS's doc comment notes this can be 1-2+ hours for
+ * a stabled unit's *next* turn; 20 min is a conservative bound for a train already on the move).
+ * Without it, the one geographically-correct candidate for a just-appeared headcode loses the
+ * temporal score to stale same-headcode reuse that activated earlier the same day — observed live
+ * 2026-08-31: berth PX 0251 / 5C70, the correct run `115C70M931` activated 7.5 min *after* the
+ * step, while three unrelated 5C70 workings (schedules nowhere near Lancaster) kept the temporal
+ * score. Threshold tuned without a RESOLVER_VERSION bump by owner decision (2026-08-31) — a
+ * narrow plausibility-window widening, not a weight/structure change. */
+const TD_LEADS_TRUST_GRACE_MS = 20 * 60 * 1000;
 /** How far back a preceding occupancy of the same description **in the same TD area** can still
  * count as continuity evidence (resolveBerthRun.ts's `recentContinuity`). Real inter-berth timing
  * is seconds to low minutes even on a quiet corridor; 10 minutes is a generous bound that
@@ -464,7 +476,7 @@ function buildCandidates(
   return runs.map((run) => {
     const temporallyPlausible =
       run.activatedAt !== null &&
-      occupancy.entered_at.getTime() >= run.activatedAt.getTime() &&
+      occupancy.entered_at.getTime() >= run.activatedAt.getTime() - TD_LEADS_TRUST_GRACE_MS &&
       occupancy.entered_at.getTime() - run.activatedAt.getTime() <= MAX_JOURNEY_MS;
     const candidateStanoxes = run.scheduleId
       ? data.scheduleStanoxes.get(run.scheduleId)

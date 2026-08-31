@@ -345,6 +345,73 @@ describe("runProjectResolver (integration)", () => {
     void runB;
   });
 
+  it("temporal grace: a run whose TRUST activation lags the TD headcode by under the grace window still scores temporal plausibility", async () => {
+    // Real 2026-08-31 case (berth PX 0251 / 5C70): the correct run activated ~7.5 min *after* the
+    // berth step, so under a hard `entered_at >= activated_at` it lost the temporal score to
+    // unrelated same-headcode workings that activated earlier the same day.
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const occupancyId = await seedOccupancy(area, "0C01", signallingId, ENTERED_AT, null);
+
+    const scheduleLagged = await seedSchedule();
+    const laggedRun = await seedTrainRun(
+      signallingId,
+      SERVICE_DATE,
+      new Date(ENTERED_AT.getTime() + 12 * 60_000), // activated 12 min AFTER the step — inside grace
+      scheduleLagged,
+    );
+    await seedRunScheduleLink(laggedRun, "matched", scheduleLagged);
+
+    // A same-headcode run that activated 25h earlier — outside MAX_JOURNEY_MS, so no temporal
+    // score either way; only the schedule link (40). Without grace, laggedRun also scores only 40
+    // → tie → ambiguous. With grace, laggedRun scores 40 + 35 and wins outright.
+    const scheduleStale = await seedSchedule();
+    const staleRun = await seedTrainRun(
+      signallingId,
+      SERVICE_DATE,
+      new Date(ENTERED_AT.getTime() - 25 * 60 * 60_000),
+      scheduleStale,
+    );
+    await seedRunScheduleLink(staleRun, "matched", scheduleStale);
+
+    await runProjectResolver(pool);
+
+    expect(await resolution(occupancyId)).toMatchObject({
+      status: "matched",
+      selected_train_run_id: laggedRun,
+    });
+  });
+
+  it("temporal grace: an activation later than the grace window gets no temporal score", async () => {
+    const area = uniqueArea();
+    const signallingId = uniqueSignallingId();
+    const occupancyId = await seedOccupancy(area, "0C02", signallingId, ENTERED_AT, null);
+
+    const scheduleLate = await seedSchedule();
+    const wayLateRun = await seedTrainRun(
+      signallingId,
+      SERVICE_DATE,
+      new Date(ENTERED_AT.getTime() + 45 * 60_000), // 45 min after the step — beyond the 20-min grace
+      scheduleLate,
+    );
+    await seedRunScheduleLink(wayLateRun, "matched", scheduleLate);
+
+    const scheduleOther = await seedSchedule();
+    const otherRun = await seedTrainRun(
+      signallingId,
+      SERVICE_DATE,
+      new Date(ENTERED_AT.getTime() - 25 * 60 * 60_000),
+      scheduleOther,
+    );
+    await seedRunScheduleLink(otherRun, "matched", scheduleOther);
+
+    await runProjectResolver(pool);
+
+    // both score the schedule link (40) only → honest tie.
+    expect((await resolution(occupancyId))?.status).toBe("ambiguous");
+    void otherRun;
+  });
+
   it("seedFreshResolverCheckpoint jumps a never-advanced checkpoint past pre-window occupancies, then no-ops", async () => {
     const area = uniqueArea();
     // freshly inserted, so both get current (top-of-sequence) ids regardless of entered_at

@@ -118,7 +118,7 @@ export async function registerScheduleRoutes(
                 days_runs_bitmask, signalling_id, operator_code, train_service_code,
                 train_category, train_status, power_type, origin_tiploc, destination_tiploc, source
          from schedule
-         where train_uid = $1`,
+         where train_uid = $1 and withdrawn_at is null`,
         [trainUid],
       );
 

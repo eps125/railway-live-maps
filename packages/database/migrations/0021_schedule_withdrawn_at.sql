@@ -1,0 +1,21 @@
+-- Milestone 7 follow-up. VSTP "Delete" transactions were hard-deleting the matching `schedule`
+-- row (apps/worker/src/vstp/projector.ts `applyDelete`). Once Milestone 8 added
+-- `train_run.schedule_id` and `run_schedule_link.schedule_id` foreign keys (migration 0015, both
+-- ON DELETE NO ACTION), a Delete for any schedule a TRUST activation had already linked to raised
+-- `train_run_schedule_id_fkey` (SQLSTATE 23503), rolled back the whole project-vstp batch, and
+-- left the projector permanently stuck on that one event (observed wedged in production from
+-- 2026-08-16).
+--
+-- `schedule` is a rebuildable projection (docs/DATA_MODEL.md §1), but it is one other projections
+-- hold references into, so a withdrawn VSTP schedule is now *soft*-deleted: `withdrawn_at` is
+-- stamped, the row and any train_run / run_schedule_link references to it stay intact for lineage
+-- and historical display, and every query that selects schedule *candidates for matching* filters
+-- `withdrawn_at is null` (apps/worker/src/trust/projector.ts `resolveScheduleForTrainUid`). A
+-- later Create/Overwrite/Update for the same natural key clears `withdrawn_at` again
+-- (`applyCreateOrOverwrite`'s ON CONFLICT clause).
+--
+-- Nullable, no default: metadata-only add on PostgreSQL 11+, no table rewrite. The existing
+-- `unique (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source)` index
+-- already serves the `where train_uid = $1` lookups; `withdrawn_at is null` is a cheap recheck on
+-- top of it (almost no schedule is ever withdrawn), so no new index is needed.
+alter table schedule add column withdrawn_at timestamptz;

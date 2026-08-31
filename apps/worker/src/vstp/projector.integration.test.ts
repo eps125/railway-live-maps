@@ -36,6 +36,9 @@ const TRAIN_UID = "ZZ12345";
 // separate test runs and make recordVstpFrame see a false "already recorded" in a later run
 // (e.g. recorder.integration.test.ts's own Create-fixture test).
 const recordedFrameIds: string[] = [];
+// train_run rows a test links to a VSTP schedule to exercise the FK path — dropped before the
+// afterAll schedule cleanup, which would otherwise hit the same train_run_schedule_id_fkey.
+const cleanupTrainRunIds: string[] = [];
 
 async function recordFixture(name: string): Promise<void> {
   const body = await readFile(join(fixturesDir, name));
@@ -62,9 +65,23 @@ interface ScheduleRow {
   destination_tiploc: string | null;
 }
 
+/** The *active* VSTP schedule set — `withdrawn_at is null`, matching what
+ * `resolveScheduleForTrainUid` (and every other candidate-selecting reader) sees. A soft-deleted
+ * row still physically exists; see `physicalSchedulesFor` for that. */
 async function schedulesFor(trainUid: string): Promise<ScheduleRow[]> {
   const result = await pool.query<ScheduleRow>(
     `select id, stp_indicator, origin_tiploc, destination_tiploc from schedule
+     where train_uid = $1 and source = 'VSTP' and withdrawn_at is null order by stp_indicator`,
+    [trainUid],
+  );
+  return result.rows;
+}
+
+async function physicalSchedulesFor(
+  trainUid: string,
+): Promise<Array<{ id: string; stp_indicator: string; withdrawn_at: Date | null }>> {
+  const result = await pool.query<{ id: string; stp_indicator: string; withdrawn_at: Date | null }>(
+    `select id, stp_indicator, withdrawn_at from schedule
      where train_uid = $1 and source = 'VSTP' order by stp_indicator`,
     [trainUid],
   );
@@ -81,6 +98,12 @@ async function locationCount(scheduleId: string): Promise<number> {
 
 describe("runProjectVstp (integration)", () => {
   afterAll(async () => {
+    if (cleanupTrainRunIds.length > 0) {
+      await pool.query("delete from run_schedule_link where train_run_id = any($1::uuid[])", [
+        cleanupTrainRunIds,
+      ]);
+      await pool.query("delete from train_run where id = any($1::uuid[])", [cleanupTrainRunIds]);
+    }
     await pool.query("delete from schedule where train_uid = $1 and source = 'VSTP'", [TRAIN_UID]);
     if (recordedFrameIds.length > 0) {
       await pool.query("delete from raw_feed_event where frame_id = any($1::bigint[])", [
@@ -133,13 +156,37 @@ describe("runProjectVstp (integration)", () => {
     expect(location.rows[0]?.departure_public).toBe("1208");
   });
 
-  it("Delete removes the matching schedule row without touching other STP indicators", async () => {
-    await recordFixture("delete-normal.json");
-    await runProjectVstp(pool);
+  it("Delete soft-deletes the matching schedule (FK-safe even when a train_run references it) without touching other STP indicators", async () => {
+    // Link a train_run to the STP 'O' schedule the Overwrite test created — exactly the shape
+    // that made a hard DELETE raise train_run_schedule_id_fkey (23503) and wedge project-vstp in
+    // production from 2026-08-16.
+    const oSchedule = (await physicalSchedulesFor(TRAIN_UID)).find((r) => r.stp_indicator === "O");
+    expect(oSchedule).toBeDefined();
+    const runResult = await pool.query<{ id: string }>(
+      `insert into train_run (trust_train_id, service_date, schedule_id, last_event_at)
+       values ($1, '2026-08-15', $2, now()) returning id`,
+      [`TR${randomUUID().replace(/-/g, "").slice(0, 10)}`, oSchedule!.id],
+    );
+    const runId = runResult.rows[0]!.id;
+    cleanupTrainRunIds.push(runId);
 
-    const rows = await schedulesFor(TRAIN_UID);
-    expect(rows.find((r) => r.stp_indicator === "O")).toBeUndefined();
-    expect(rows.find((r) => r.stp_indicator === "N")).toBeDefined();
+    await recordFixture("delete-normal.json");
+    await expect(runProjectVstp(pool)).resolves.toBeDefined(); // no FK violation
+
+    // 'O' is gone from the active set the resolver sees, 'N' untouched.
+    const active = await schedulesFor(TRAIN_UID);
+    expect(active.find((r) => r.stp_indicator === "O")).toBeUndefined();
+    expect(active.find((r) => r.stp_indicator === "N")).toBeDefined();
+
+    // The row itself still exists (soft delete) and the run's link is preserved for lineage.
+    const physical = await physicalSchedulesFor(TRAIN_UID);
+    const oAfter = physical.find((r) => r.stp_indicator === "O");
+    expect(oAfter?.withdrawn_at).not.toBeNull();
+    const run = await pool.query<{ schedule_id: string | null }>(
+      `select schedule_id from train_run where id = $1`,
+      [runId],
+    );
+    expect(run.rows[0]?.schedule_id).toBe(oSchedule!.id);
   });
 
   it("redelivering an already-projected frame is a safe no-op (idempotent replay)", async () => {

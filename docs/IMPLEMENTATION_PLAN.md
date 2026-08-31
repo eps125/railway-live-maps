@@ -184,8 +184,19 @@ fixture sets (`packages/feed-parsers/fixtures/{vstp,schedule,reference}/`) are *
 from the publicly documented wire formats, not captured real extracts** (same M0 fixture-gap
 caveat as the rest of this milestone; confirm field names against a real capture before
 treating them as verified). `apps/worker/src/vstp/projector.ts` upserts `schedule`/
-`schedule_location` directly (VSTP is incremental: Create/Overwrite upsert by natural key,
-Delete removes the matching row — no staging/swap needed). `apps/worker/src/schedule/
+`schedule_location` directly (VSTP is incremental: Create/Overwrite/Update upsert by natural key,
+Delete **soft-deletes** the matching row — no staging/swap needed). Delete was originally a hard
+`DELETE FROM schedule`; once Milestone 8 added the `train_run.schedule_id` /
+`run_schedule_link.schedule_id` foreign keys (both ON DELETE NO ACTION), a Delete for any
+schedule a TRUST activation had already linked raised `23503` and left `project-vstp` wedged on
+that one event (production, stuck from 2026-08-16 until fixed 2026-08-31). `schedule` is a
+rebuildable projection but one others FK into, so migration `0021_schedule_withdrawn_at.sql` adds
+`schedule.withdrawn_at`: `applyDelete` stamps it instead of deleting, the row and its inbound
+references survive for lineage/history, and every reader that selects a schedule _as a match
+candidate_ (`resolveScheduleForTrainUid` in the TRUST projector, `GET /api/v1/schedule/{trainUid}`)
+filters `withdrawn_at is null`. A later Create/Overwrite/Update for the same natural key clears
+`withdrawn_at`. `--rebuild`'s `clearProjectionRows` nulls the FK references before its hard delete
+(it reprocesses from sequence 0, and the TRUST deferred-relink pass re-establishes them). `apps/worker/src/schedule/
 scheduleImporter.ts` implements the staging-table + single-swap-transaction pattern per
 `docs/DATA_MODEL.md`: chunked staging-table inserts, then one final transaction that replaces
 every `source='SCHEDULE'` row and flips `source_file_import.is_active` — "readers never see a

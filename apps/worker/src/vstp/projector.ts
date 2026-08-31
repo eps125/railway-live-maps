@@ -32,6 +32,8 @@ export interface ProjectVstpSummary {
   batches: number;
   processedEvents: number;
   applied: number;
+  /** VSTP "Delete" transactions that withdrew an active schedule (soft delete — see
+   * `applyDelete`). Already-withdrawn / no-match Deletes are not counted. */
   deleted: number;
   skippedInvalid: number;
 }
@@ -52,7 +54,20 @@ function computeConfigHash(): string {
 }
 
 async function clearProjectionRows(pool: Pool): Promise<void> {
-  // schedule_location cascades on schedule delete (migration 0013's `on delete cascade`).
+  // schedule_location cascades on schedule delete (migration 0013's `on delete cascade`), but
+  // train_run.schedule_id / run_schedule_link.schedule_id are ON DELETE NO ACTION (migration
+  // 0015) — the same FK that drove migration 0021's soft-delete. A --rebuild hard-deletes every
+  // VSTP schedule and reprocesses from sequence 0, so null those references first (the TRUST
+  // projector's deferred-relink pass re-establishes them against the rebuilt rows); without this,
+  // --rebuild would hit 23503 for any VSTP schedule a TRUST activation had linked.
+  await pool.query(
+    `update run_schedule_link set schedule_id = null, match_outcome = 'unmatched'
+     where schedule_id in (select id from schedule where source = 'VSTP')`,
+  );
+  await pool.query(
+    `update train_run set schedule_id = null
+     where schedule_id in (select id from schedule where source = 'VSTP')`,
+  );
   await pool.query(`delete from schedule where source = 'VSTP'`);
 }
 
@@ -179,6 +194,7 @@ async function applyCreateOrOverwrite(
          train_category = excluded.train_category, train_status = excluded.train_status,
          power_type = excluded.power_type, origin_tiploc = excluded.origin_tiploc,
          destination_tiploc = excluded.destination_tiploc, raw_source_json = excluded.raw_source_json,
+         withdrawn_at = null,
          updated_at = now()
      returning id`,
     [
@@ -237,11 +253,23 @@ async function applyCreateOrOverwrite(
   }
 }
 
+/**
+ * VSTP "Delete" transaction — a short-notice schedule being withdrawn. `schedule` is a
+ * projection, but `train_run.schedule_id` / `run_schedule_link.schedule_id` FK into it with
+ * ON DELETE NO ACTION (migration 0015), so a hard delete of a schedule a TRUST activation had
+ * already linked raised 23503 and wedged this projector (production, from 2026-08-16). Soft-delete
+ * instead: stamp `withdrawn_at`, leave the row and its references intact for lineage and
+ * historical display; readers that pick candidates for matching filter `withdrawn_at is null`
+ * (migration 0021; apps/worker/src/trust/projector.ts `resolveScheduleForTrainUid`). A later
+ * Create/Overwrite/Update for the same natural key clears `withdrawn_at` again
+ * (`applyCreateOrOverwrite`'s ON CONFLICT). Already-withdrawn is a no-op (returns false), so
+ * redelivering a Delete frame stays idempotent.
+ */
 async function applyDelete(client: PoolClient, record: ScheduleSourceRecord): Promise<boolean> {
   const result = await client.query(
-    `delete from schedule
+    `update schedule set withdrawn_at = now(), updated_at = now()
      where train_uid = $1 and schedule_start_date = $2 and schedule_end_date = $3
-       and stp_indicator = $4 and source = 'VSTP'`,
+       and stp_indicator = $4 and source = 'VSTP' and withdrawn_at is null`,
     [record.trainUid, record.scheduleStartDate, record.scheduleEndDate, record.stpIndicator],
   );
   return (result.rowCount ?? 0) > 0;
@@ -251,8 +279,9 @@ async function applyDelete(client: PoolClient, record: ScheduleSourceRecord): Pr
  * Projects nationwide VSTP schedule-transaction events into the shared `schedule`/
  * `schedule_location` tables (docs/IMPLEMENTATION_PLAN.md Milestone 7). Unlike the TD/TRUST
  * projectors, VSTP has no separate "current state" table to maintain beyond `schedule` itself —
- * Create/Overwrite upsert by natural key, Delete removes the matching row. Processes strictly in
- * `ingestion_sequence` order so redelivery/replay is idempotent and safe to restart.
+ * Create/Overwrite/Update upsert by natural key, Delete soft-deletes the matching row
+ * (`withdrawn_at`, see `applyDelete`). Processes strictly in `ingestion_sequence` order so
+ * redelivery/replay is idempotent and safe to restart.
  */
 export async function runProjectVstp(
   pool: Pool,

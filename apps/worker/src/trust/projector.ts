@@ -220,9 +220,12 @@ async function resolveScheduleForTrainUid(
     schedule_end_date: string;
     days_runs_bitmask: string | null;
   }>(
+    // `withdrawn_at is null`: a VSTP "Delete" soft-deletes the schedule rather than removing it
+    // (migration 0021, apps/worker/src/vstp/projector.ts) so FK references from already-linked
+    // runs survive — but a withdrawn schedule must never be picked as a *new* match here.
     `select id, stp_indicator, schedule_start_date::text as schedule_start_date,
             schedule_end_date::text as schedule_end_date, days_runs_bitmask
-     from schedule where train_uid = $1`,
+     from schedule where train_uid = $1 and withdrawn_at is null`,
     [trainUid],
   );
   const candidates = rows.rows.map((row) => ({

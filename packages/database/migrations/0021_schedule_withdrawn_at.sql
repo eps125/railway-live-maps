@@ -18,4 +18,7 @@
 -- `unique (train_uid, schedule_start_date, schedule_end_date, stp_indicator, source)` index
 -- already serves the `where train_uid = $1` lookups; `withdrawn_at is null` is a cheap recheck on
 -- top of it (almost no schedule is ever withdrawn), so no new index is needed.
-alter table schedule add column withdrawn_at timestamptz;
+-- `if not exists`: this migration ships in the same build as the projector code that reads the
+-- column, so an operator may add the column by hand first to avoid the brief window where the new
+-- code queries a column the migration hasn't created yet. Either order then works.
+alter table schedule add column if not exists withdrawn_at timestamptz;

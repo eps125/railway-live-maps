@@ -1,7 +1,7 @@
 import { Redis } from "ioredis";
 import { createPool } from "@railway/database";
 import type { Config } from "../config.js";
-import { runProjectTdLive } from "../td/liveProjector.js";
+import { BindingsCache, runProjectTdLive } from "../td/liveProjector.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
 
 /** The hot path ticks fast — the whole point is sub-second end-to-end (ADR 0003). Each tick is
@@ -32,6 +32,8 @@ export async function runProjectTdLiveDaemon(config: Config): Promise<void> {
       })
     : null;
 
+  const bindings = new BindingsCache(pool);
+
   console.log(
     `project-td-live-daemon: starting (tick ${TICK_INTERVAL_MS}ms, ` +
       `deltas ${redis ? "enabled" : "disabled"})`,
@@ -41,7 +43,7 @@ export async function runProjectTdLiveDaemon(config: Config): Promise<void> {
     label: "project-td-live-daemon",
     intervalMs: TICK_INTERVAL_MS,
     tick: async () => {
-      await runProjectTdLive(pool, redis, { maxBatches: MAX_BATCHES_PER_TICK });
+      await runProjectTdLive(pool, redis, { maxBatches: MAX_BATCHES_PER_TICK, bindings });
     },
     onShutdown: async () => {
       redis?.disconnect();

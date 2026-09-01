@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import type { LiveDeltaMessage } from "@railway/protocol";
-import { runProjectTdLive, type RedisPublisher } from "./liveProjector.js";
+import { BindingsCache, runProjectTdLive, type RedisPublisher } from "./liveProjector.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -141,14 +141,14 @@ describe("runProjectTdLive (integration)", () => {
     );
 
     const redis = new CapturingRedis();
-    const summary = await runProjectTdLive(pool, redis, {});
+    const summary = await runProjectTdLive(pool, redis, { bindings: new BindingsCache(pool, 0) });
 
     expect(summary.processedEvents).toBeGreaterThanOrEqual(2);
     expect(await currentDescription(area, "0001")).toBeNull(); // CA moved it out
     expect(await currentDescription(area, "0002")).toBe("1A23");
 
     // Re-running with no new events is a no-op (checkpoint held).
-    const again = await runProjectTdLive(pool, redis, {});
+    const again = await runProjectTdLive(pool, redis, { bindings: new BindingsCache(pool, 0) });
     expect(again.processedEvents).toBe(0);
   });
 
@@ -171,7 +171,8 @@ describe("runProjectTdLive (integration)", () => {
     );
 
     const redis = new CapturingRedis();
-    await runProjectTdLive(pool, redis, {});
+    // Fresh binding cache so the module singleton's TTL can't hide the just-published map.
+    await runProjectTdLive(pool, redis, { bindings: new BindingsCache(pool, 0) });
 
     const forSlug = redis.published.filter((p) => p.channel === `railway:live:${slug}`);
     expect(forSlug).toHaveLength(1);
@@ -195,7 +196,7 @@ describe("runProjectTdLive (integration)", () => {
       { area_id: area, time: String(t), to: "0007", descr: "REAL" },
       new Date(t),
     );
-    await runProjectTdLive(pool, new CapturingRedis(), {});
+    await runProjectTdLive(pool, new CapturingRedis(), { bindings: new BindingsCache(pool, 0) });
     expect(await currentDescription(area, "0007")).toBe("REAL");
 
     // Simulate the other writer (project-td-daemon) having advanced this berth far ahead.
@@ -213,7 +214,7 @@ describe("runProjectTdLive (integration)", () => {
       { area_id: area, time: String(t + 5000), to: "0007", descr: "STALE" },
       new Date(t + 5000),
     );
-    await runProjectTdLive(pool, new CapturingRedis(), {});
+    await runProjectTdLive(pool, new CapturingRedis(), { bindings: new BindingsCache(pool, 0) });
     expect(await currentDescription(area, "0007")).toBe("AHEAD");
   });
 });

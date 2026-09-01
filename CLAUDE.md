@@ -19,7 +19,7 @@ Do not repeatedly load every document when one or two are sufficient.
 
 ## Non-negotiable requirements
 
-1. Raw events from every subscribed feed and every TD area are append-only and retained before they are projected; map scope must never be used as an ingestion filter.
+1. Raw events from every subscribed feed and every TD area are append-only and retained before they are projected; map scope must never be used as an ingestion filter. **Exception (ADR 0002, 2026-09-01):** for TRUST/VSTP/SCHEDULE/CORPUS/SMART, RLM sources already-normalized rows from the operator's own openrail-eps (`garner`) MariaDB instance — itself NR-subscribed and retaining/archiving raw frames — so "raw with lineage" for those five feeds means the garner row + `(table, row_id, created)`, not an NR wire frame. TD still retains raw NR broker frames in RLM.
 2. A Network Rail broker message is acknowledged only after its complete original frame has been archived and every child event has been durably indexed, including unsupported or malformed children with a recorded parse outcome.
 3. Current state, history and playback are derived projections and must be rebuildable.
 4. Store raw and normalized timestamps. Store canonical timestamps in UTC and render user-facing times in `Europe/London`.
@@ -52,6 +52,8 @@ The Preston TD area is `PX` (confirmed by the owner) — not `PN`; do not use `P
 - PostgreSQL as the authoritative database for normalized nationwide events, projections, schedules, histories, drafts and maps.
 - S3-compatible object storage for compressed immutable raw broker frames and source files; MinIO is acceptable for the development Portainer stack.
 - Redis only for ephemeral pub/sub, cache and coordination; never as source of truth.
+- Read-only `mysql2` client for the garner bridge (ADR 0002) — reads the operator's openrail-eps MariaDB for TRUST/VSTP/SCHEDULE/CORPUS/SMART; never written to, never a source of truth beyond that ETL.
+- Long-lived daemon roles (`apps/worker/src/shared/daemonLoop.ts`) for the projector loops, not `while true; node …; sleep 1` shell wrappers (ADR 0002 live-path hardening).
 - SQL migrations and a type-safe query layer; do not make the event model depend on ORM magic.
 - Vitest for unit/integration tests and Playwright for browser tests.
 - Docker Compose deployment managed as a Portainer stack.

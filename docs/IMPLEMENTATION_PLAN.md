@@ -684,6 +684,87 @@ Deliverables once a direction is chosen:
 Purely visual/UX — not a blocker for any other milestone, safe to defer indefinitely. Reference
 inspiration only, per CLAUDE.md non-negotiable #14 (no scraping Vail Data/Traksy/OpenTrainTimes).
 
+## Milestone 15 — live-path hardening and garner integration
+
+Prompted by a run of production incidents (2026-08-31 → 09-01: RESOLVER_VERSION-bump grind,
+project-vstp FK wedge, unbounded retry-pass and `/td/areas` scans, orphaned-connection scan
+storms, repeated "data may be stale" banners). Root causes were architectural placement, not
+domain logic — see `docs/adr/0002-garner-integration-and-live-path.md` for the full analysis and
+the openrail (garner) comparison that informed it. Seven steps, tackled as one push; status per
+step below.
+
+**Step 1+2 — daemonise the live path. `[done — commit bc2f98b]`**
+The `projector-td`/`map-deltas`/`projector-resolver` Portainer services ran
+`while true; do node dist/index.js <cmd>; sleep 1; done` — a full Node cold start every cycle was
+the dominant end-to-end latency, and td vs map-deltas were two unsynchronised loops that could
+drift and stack their waits. New long-lived roles (`apps/worker/src/commands/projectTdDaemon.ts`,
+`projectResolverDaemon.ts`, on the shared `apps/worker/src/shared/daemonLoop.ts` harness):
+`project-td-daemon` runs `runProjectTd` then `runProjectMapDeltas` back-to-back on a 250ms tick in
+one warm process; `project-resolver-daemon` runs the resolver live loop on a 500ms tick.
+`--rebuild`/`--backfill` stay as the one-shot commands. The truly synchronous-with-ingest write
+(garner-style, state updated in the recorder's ack transaction) was deliberately _not_ attempted —
+higher risk against the ack-critical path, and daemonising already removes the dominant latency.
+Follow-up if the daemon tick still isn't tight enough: move `berth_current_state` +
+delta-publish into the `ingest-td` recorder transaction, keeping `td_berth_event`/`berth_occupancy`
+history projection async.
+
+**Step 3 — drop denormalised `berth_occupancy` resolution columns. `[done — commit c90bdc9]`**
+Migration 0022 dropped `resolved_run_id`/`resolution_status`. project-resolver no longer writes
+`berth_occupancy` at all (only `berth_run_resolution`), so the cross-projector row-order deadlock
+condition is gone and `BERTH_OCCUPANCY_WRITE_LOCK_KEY` was removed from both projectors (it was
+the lock-contention source behind the stale-data throttling). `apps/api/src/routes/td.ts` history
+endpoints left-join `berth_run_resolution` — `resolution_status` is now nullable (null = "no
+resolution recorded yet", distinct from an attempted-and-`unmatched`).
+
+**Step 4 — retention. `[partial — prune tool done; weekly partitions + berth_run_resolution
+partitioning deferred]`**
+Done: `prune-partitions --before <YYYY-MM-DD> [--dry-run]` command drops whole existing (monthly)
+partitions older than the cutoff in FK-safe order, dry-run by default. `TD_RAW_RETENTION_DAYS`
+config knob documents the intended policy. **Deferred (own careful pass — DB is 137 GB, four
+incidents in 24h):** (a) switching new partitions from monthly to **weekly** so pruning can
+operate at sub-month granularity — `packages/database/src/partitions.ts` +
+`ensurePartitions.ts` + tests, applies only to future data; (b) making `berth_run_resolution`
+(23 GB, unpartitioned, 28.7M rows) prunable by partitioning it on `occupancy_entered_at` so old
+months drop alongside the TD data — a create-partitioned-copy + swap migration.
+Acceptance for both: existing history untouched, a dry-run reports exactly what a real run would
+drop, and `ensure-partitions` keeps a safe lead of future weekly partitions.
+
+**Step 5 — resolver scope + storage. `[partial — mapped-area scoping done; candidate-JSON
+trimming / lazy resolution deferred]`**
+Done: the eager forward scan is scoped to occupancies in areas a published map actually binds
+(join `map_binding_index`) plus the existing recent-window bound — nationwide history for
+unmapped areas is resolved on demand via `--backfill`, not eagerly forever. This caps
+`berth_run_resolution` growth. **Deferred:** trimming the stored `candidates` JSON (drop the
+per-candidate `reasons` strings; recompute for the popup) and/or moving to fully lazy
+(resolve-on-view + cache) resolution — both change the resolver's trigger model and want their
+own pass. Acceptance: `berth_run_resolution` per-row size roughly halves, or the table only holds
+rows for occupancies someone has actually looked at.
+
+**Step 6 — bounded queries. `[done — commits 900768b, 884e24a, c90bdc9]`**
+Movement-correlation query bounded on the `train_run_event` partition key; retry-pass query
+bounded to recently-decided resolutions and reversed to `desc` so `LIMIT` fills instantly;
+`/td/areas` reads the new `td_area_summary` rollup (migration 0023, maintained incrementally by
+project-td) instead of a full `group by` scan of `raw_feed_event`. Standing rule going forward:
+every projector/bridge query carries an explicit bounded range or reads a rollup — never an
+unbounded scan of a table that grows without limit.
+
+**Step 2 (new) — garner bridge: source TRUST / VSTP / SCHEDULE / CORPUS / SMART from the owner's
+openrail-eps instance instead of subscribing to Network Rail a second time. `[in progress]`**
+See `docs/adr/0002-garner-integration-and-live-path.md`. openrail-eps side: MariaDB port exposed
+(`eps125/openrail-eps` commit 549d4af) with a documented read-only `GRANT SELECT` user. RLM side:
+new `ingest-garner` daemon (flag-gated `GARNER_BRIDGE_ENABLED`, off by default like every
+`*_LIVE_ENABLED`) reading garner's MySQL via `mysql2` and writing into RLM's existing
+`schedule`/`schedule_location`/`location_reference`/`smart_berth_step`/`train_run`/
+`train_run_event` shapes (`source = 'GARNER'`), each source table checkpointed by its `created`/id
+watermark in `projection_checkpoint`. TRUST events reuse the existing pure reducer
+(`packages/domain/src/trust/runReducer.ts`) — only the identity/effect extraction layer is new;
+garner's own `trust_activation.cif_schedule_id`/`deduced` is _not_ consumed (RLM keeps its own
+ambiguity-honest `resolveScheduleForTrainUid`, rule 7). When the bridge is verified live, the
+`ingest-trust`/`ingest-vstp` services and the `download-*`/`import-*` reference commands stop
+being the primary path (code retained for fallback). **Blocked on:** the operator supplying real
+MySQL connection details + a verification pass against the live openrail-eps schema — the C-source
+schema this was built against is documented in the ADR but unverified against a running instance.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

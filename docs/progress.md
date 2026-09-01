@@ -437,7 +437,7 @@ On the live stack `projector-td-live` crash-looped every tick with `canceling st
 statement timeout` inside `seedFromHistory`: `berth_occupancy` is partitioned by `entered_at`
 with no `left_at` index, so `where projection_version = $1 and left_at is null` was a
 sequential scan of every monthly partition and blew the daemon's 10s `statement_timeout`.
-Because the seed ran *before* the checkpoint advance, each failure left the checkpoint in its
+Because the seed ran _before_ the checkpoint advance, each failure left the checkpoint in its
 "fresh" state, so the next tick re-attempted the same doomed seed — the live projector never
 processed an event and never published a WebSocket delta, so the public map only updated on a
 manual refresh (the REST `/state` snapshot).

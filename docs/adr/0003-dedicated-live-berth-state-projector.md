@@ -65,7 +65,7 @@ down, NR does not replay, so the gap is permanent regardless; the history projec
 catches `berth_occupancy` up from `raw_feed_event` and the live projector re-seeds on its next
 fresh start.
 
-**Hotfix 2026-09-02 (migration 0026).** The seed originally ran *before* the checkpoint
+**Hotfix 2026-09-02 (migration 0026).** The seed originally ran _before_ the checkpoint
 advance. `berth_occupancy` is partitioned by `entered_at` with no `left_at` index, so
 `where projection_version = $1 and left_at is null` was a seq-scan of every partition and blew
 the daemon's 10 s `statement_timeout` on the live stack. Because the failure left the checkpoint

@@ -32,7 +32,11 @@ const PROJECT_TD_MAX_BATCHES_PER_TICK = 20;
  * worker console, then restart this daemon to resume live tailing from the rebuilt checkpoint.
  */
 export async function runProjectTdDaemon(config: Config): Promise<void> {
-  const pool = createPool({ connectionString: config.DATABASE_URL });
+  // statementTimeoutMs: nothing this daemon runs is legitimately slow, and a query hung on a
+  // connection Postgres killed during its own restart would otherwise wedge the loop forever
+  // (observed 2026-09-01, twice, after Postgres restarts). 15s cap → the hung query errors,
+  // runDaemonLoop catches it, next tick reconnects.
+  const pool = createPool({ connectionString: config.DATABASE_URL, statementTimeoutMs: 15_000 });
   // Same fail-fast connection settings as the old one-shot project-map-deltas command — a daemon
   // that never gives up retrying a down Redis would otherwise mask the outage in its own logs.
   const redis = config.LIVE_WS_REDIS_PUBSUB_ENABLED

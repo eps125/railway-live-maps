@@ -72,6 +72,9 @@ export async function runIngestGarner(config: Config): Promise<void> {
     connectionString: config.DATABASE_URL,
     max: 4,
     onConnectSql: "set synchronous_commit = off",
+    // Small batches, so no single statement is legitimately slow. A hung query (dead socket
+    // after a Postgres restart) would otherwise stall the whole bridge — fail it fast instead.
+    statementTimeoutMs: 30_000,
   });
   const garner = createGarnerPool(config);
 

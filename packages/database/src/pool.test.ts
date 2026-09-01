@@ -35,4 +35,24 @@ describe("createPool", () => {
       void pool.end();
     }
   });
+
+  it("enables TCP keepalive by default and applies statement_timeout when asked", () => {
+    const withTimeout = createPool({
+      connectionString: "postgres://localhost/never-connected",
+      statementTimeoutMs: 15_000,
+    });
+    const withoutTimeout = createPool({
+      connectionString: "postgres://localhost/never-connected",
+    });
+    try {
+      expect(withTimeout.options.keepAlive).toBe(true);
+      expect(withTimeout.options.statement_timeout).toBe(15_000);
+      expect(withTimeout.options.query_timeout).toBe(15_000);
+      // Unset by default — migrate / --rebuild legitimately run multi-minute statements.
+      expect(withoutTimeout.options.statement_timeout).toBeUndefined();
+    } finally {
+      void withTimeout.end();
+      void withoutTimeout.end();
+    }
+  });
 });

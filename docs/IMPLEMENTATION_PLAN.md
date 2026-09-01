@@ -749,21 +749,43 @@ every projector/bridge query carries an explicit bounded range or reads a rollup
 unbounded scan of a table that grows without limit.
 
 **Step 2 (new) — garner bridge: source TRUST / VSTP / SCHEDULE / CORPUS / SMART from the owner's
-openrail-eps instance instead of subscribing to Network Rail a second time. `[in progress]`**
-See `docs/adr/0002-garner-integration-and-live-path.md`. openrail-eps side: MariaDB port exposed
-(`eps125/openrail-eps` commit 549d4af) with a documented read-only `GRANT SELECT` user. RLM side:
-new `ingest-garner` daemon (flag-gated `GARNER_BRIDGE_ENABLED`, off by default like every
-`*_LIVE_ENABLED`) reading garner's MySQL via `mysql2` and writing into RLM's existing
-`schedule`/`schedule_location`/`location_reference`/`smart_berth_step`/`train_run`/
-`train_run_event` shapes (`source = 'GARNER'`), each source table checkpointed by its `created`/id
-watermark in `projection_checkpoint`. TRUST events reuse the existing pure reducer
-(`packages/domain/src/trust/runReducer.ts`) — only the identity/effect extraction layer is new;
-garner's own `trust_activation.cif_schedule_id`/`deduced` is _not_ consumed (RLM keeps its own
-ambiguity-honest `resolveScheduleForTrainUid`, rule 7). When the bridge is verified live, the
-`ingest-trust`/`ingest-vstp` services and the `download-*`/`import-*` reference commands stop
-being the primary path (code retained for fallback). **Blocked on:** the operator supplying real
-MySQL connection details + a verification pass against the live openrail-eps schema — the C-source
-schema this was built against is documented in the ADR but unverified against a running instance.
+openrail-eps instance instead of subscribing to Network Rail a second time. `[partial —
+CORPUS/SMART done (commit 43f56ac); CIF-schedule + TRUST deferred]`**
+See `docs/adr/0002-garner-integration-and-live-path.md`.
+
+Done:
+
+- openrail-eps side: MariaDB port exposed (`eps125/openrail-eps` commit 549d4af) with a
+  documented read-only `GRANT SELECT` user.
+- RLM side: `mysql2` dependency, `createGarnerPool` (read-only, fail-fast), `GARNER_BRIDGE_ENABLED`
+  - `GARNER_DB_*` config (off by default like every `*_LIVE_ENABLED`; `loadConfig` fails fast if
+    enabled without host/user), and the `ingest-garner` long-running role on the shared
+    `daemonLoop` harness with its own Portainer service (safe no-op at the default).
+- `runGarnerReferenceSync`: full re-sync of garner `corpus` → `location_reference` and `smart` →
+  `smart_berth_step` (`source = 'GARNER'`), upsert on the existing natural keys, every 5 min.
+  This retires the need for `download-corpus`/`import-corpus`/`download-smart`/`import-smart` once
+  the flag is turned on.
+
+Deferred (own follow-up, each a clean separable piece):
+
+- **CIF schedules**: `cif_schedules` / `cif_schedule_locations` → `schedule` / `schedule_location`.
+  Needs a migration widening `schedule.source`'s CHECK from `('SCHEDULE','VSTP')` to also allow
+  `'GARNER'`, an STP-indicator pass-through (garner's `CIF_stp_indicator` is already `C/N/O/P`),
+  and mapping garner's `deleted` epoch column onto RLM's `withdrawn_at` (migration 0021). garner
+  merges VSTP overlays into `cif_schedules` too, so this covers VSTP as well.
+- **TRUST events**: `trust_movement` / `trust_cancellation` / `trust_changeorigin` /
+  `trust_changeid` / `trust_changelocation` + `trust_activation_extra` → `train_run` /
+  `train_run_event` / `run_schedule_link`, reusing `packages/domain/src/trust/runReducer.ts`'s
+  pure `applyActivation`/`applyMovement`/… functions — only a garner-row → `ExtractedIdentity`/
+  effect adapter is new. garner's own `trust_activation.cif_schedule_id` / `deduced` is **not**
+  consumed; RLM keeps `resolveScheduleForTrainUid` so ambiguity stays honestly reported (rule 7).
+  Each source table watermarked by its `created` epoch / auto-increment `id` in
+  `projection_checkpoint` under a `garner-<table>` name.
+
+**Blocked on** for the deferred pieces: the operator supplying real `GARNER_DB_*` credentials and
+a verification pass of the C-source schema (documented in ADR 0002) against the running
+openrail-eps instance. Until they land, `ingest-trust` / `ingest-vstp` / `download-schedule` stay
+the source for TRUST and CIF-schedule data.
 
 ## Later milestones
 

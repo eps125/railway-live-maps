@@ -390,8 +390,46 @@ first time; fixed in one commit.
   `--rebuild` commands still drain fully (unset = old behaviour).
 
 Operational: Postgres was also tuned live via `ALTER SYSTEM` (`shared_buffers` 128MB → 2GB,
-`wal_compression=on`, bigger `max_wal_size`) — not in the repo; fold into the compose `command`
-flags when convenient.
+`wal_compression=on`, bigger `max_wal_size`) — since folded into
+`deploy/docker-compose.portainer.yml`'s `postgres` `command:` flags (`PG_*` env-overridable).
+
+Also this session: `createPool` now attaches a `pool.on('error')` listener and enables TCP
+keepalive on every pool, with an opt-in `statementTimeoutMs` applied to `project-td-daemon`
+(15 s) and `ingest-garner` (30 s) — a query hung on a connection Postgres killed during its own
+restart otherwise waited forever and wedged the daemon loop (observed twice after Postgres
+restarts). `runDaemonLoop` also backs off `errorBackoffMs` (5 s default) after a failing tick,
+and `StompConnection` gained a silent-stall watchdog (force-reconnect if no inbound data for
+`max(heartbeatMs*3, 90 s)`).
+
+## Milestone 16 — dedicated fast live-berth-state projector (2026-09-01)
+
+See `docs/adr/0003-dedicated-live-berth-state-projector.md`. End-to-end latency (TD frame →
+visible on the map) was 6–20 s in steady state — the single `project-td-daemon` does ~5–10
+sequential single-row SQL round-trips per event and published deltas only after the whole
+projection batch, so a queue of ~1500 events ≈ 15 s of lag.
+
+- **`apps/worker/src/td/liveProjector.ts`** (`runProjectTdLive`, `foldLiveBerthState`) + the
+  `project-td-live-daemon` command + `projector-td-live` compose service (100 ms tick). Reads TD
+  CA/CB/CC from `raw_feed_event` in ~100-row batches, folds to the final `description` per berth,
+  writes `berth_current_state` in **one bulk upsert per tick**, and publishes the Redis deltas
+  (bindings cached, 30 s TTL). Own checkpoint `td-live-berth-state`; seeds from open
+  `berth_occupancy` on a fresh checkpoint then tails from the history checkpoint position.
+- `project-td-daemon` no longer runs `runProjectMapDeltas` — the live projector publishes now. It
+  keeps writing `berth_current_state` (monotonic-guarded) as the catch-up / `--rebuild` path.
+- Both `berth_current_state` writers now carry the guard
+  `excluded.source_ingestion_sequence >= berth_current_state.source_ingestion_sequence` and sort
+  by `(td_area, berth_code)`.
+- `berth_current_state.occupancy_id` → `NULL` in steady state. `GET …/current-run` checks
+  `description IS NOT NULL`; `POST …/editor/berths/{a}/{b}/clear` reads `berth_occupancy`
+  directly; `liveState.ts` stopped selecting the column.
+- `clearProjectionRows` (`project-td --rebuild`) resets the `td-live-berth-state` checkpoint.
+- Unit test for `foldLiveBerthState`; integration test for `runProjectTdLive` (writes,
+  binding-scoped deltas, monotonic guard). typecheck / lint / prettier / 315 unit tests green.
+
+**Deploy:** add the `projector-td-live` service (in the updated compose) and redeploy. It creates
+its own `td-live-berth-state` projection on first run and seeds from `berth_occupancy` — no
+migration. Milestone 17 (Tier 3: fold into `ingest-td`) is documented as optional, only if this
+still misses sub-second.
 
 ## Next smallest task
 

@@ -113,6 +113,15 @@ async function clearProjectionRows(pool: Pool, projectionVersion: number): Promi
     await client.query("delete from td_berth_event");
     await client.query("delete from td_heartbeat");
     await client.query("delete from td_s_event");
+    // Reset the fast `project-td-live` projector's checkpoint (ADR 0003) so it re-seeds
+    // `berth_current_state` from the rebuilt `berth_occupancy` and re-tails, rather than sitting
+    // on a checkpoint pointing past rows this rebuild just deleted.
+    await client.query(
+      `delete from projection_checkpoint
+       where projection_definition_id in (
+         select id from projection_definition where name = 'td-live-berth-state'
+       )`,
+    );
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -191,11 +200,15 @@ async function applyEffects(
         ],
       );
       await client.query(
+        // Monotonic guard: `berth_current_state` also has the fast `project-td-live` projector as
+        // a writer (ADR 0003). Never let this (slower) projector's write regress a berth the live
+        // projector has already advanced past.
         `update berth_current_state
          set description = null, occupancy_id = null, occupancy_entered_at = null,
              event_at = $4, source_event_id = $5, source_event_normalized_at_utc = $6,
              source_ingestion_sequence = $7, updated_at = now()
-         where projection_version = $1 and td_area = $2 and berth_code = $3`,
+         where projection_version = $1 and td_area = $2 and berth_code = $3
+           and source_ingestion_sequence <= $7`,
         [
           ctx.projectionVersion,
           ctx.tdArea,
@@ -242,7 +255,8 @@ async function applyEffects(
              occupancy_entered_at = excluded.occupancy_entered_at, event_at = excluded.event_at,
              source_event_id = excluded.source_event_id,
              source_event_normalized_at_utc = excluded.source_event_normalized_at_utc,
-             source_ingestion_sequence = excluded.source_ingestion_sequence, updated_at = now()`,
+             source_ingestion_sequence = excluded.source_ingestion_sequence, updated_at = now()
+         where excluded.source_ingestion_sequence >= berth_current_state.source_ingestion_sequence`,
         [
           ctx.projectionVersion,
           ctx.tdArea,

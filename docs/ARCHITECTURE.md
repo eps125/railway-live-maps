@@ -86,7 +86,22 @@ One image may run different commands/roles:
 
 For the first implementation, one worker process may host several modules. Split roles into separate containers only when measured throughput, restart isolation or operational control requires it.
 
-`project-td`, `project-resolver`, and `project-vstp`/`project-trust` each run in their own dedicated loop (`projector-td`, `projector-resolver`, `projector-schedule`). Measured 2026-08-10: sharing one sequential loop let schedule/TRUST/resolver backlog work (which can legitimately take many seconds per invocation) block `project-td` for as long as it ran, stalling live berth positions for up to ~25s — `project-td` is latency-critical (it feeds the live map directly), the others are correctness-important but not latency-critical, so splitting it out let them lag behind real-time independently without affecting live rendering. Measured again 2026-08-11: even after that split, `project-resolver`'s own internal batch loop (up to 25 batches per invocation) could still starve `project-vstp`/`project-trust` of turns in their shared loop (trust-runs' checkpoint observed advancing roughly every 7-9s instead of every ~1s) — split a second time so resolver latency and TRUST processing cadence can't block each other either.
+Latency-critical vs correctness-important projection work is split into separate loops so backlog
+work can never stall live rendering (measured 2026-08-10: a shared sequential loop stalled live
+berth positions up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR
+0003 the split is:
+
+- **`projector-td-live`** (`project-td-live-daemon`, 100ms tick) — THE hot path. `raw_feed_event`
+  TD CA/CB/CC → one bulk `berth_current_state` upsert → Redis delta publish. Nothing else. ADR
+  0003 / Milestone 16: the previous single projector did ~5–10 sequential single-row queries per
+  event and published deltas only after the whole batch, which put steady-state end-to-end
+  latency at 6–20s; this dedicated loop targets sub-second.
+- **`projector-td`** (`project-td-daemon`, 250ms tick) — everything else TD: `td_berth_event`,
+  `berth_occupancy` history, S-Class, `td_area_summary`, `td_heartbeat`, anomalies. Also writes
+  `berth_current_state` (monotonic-guarded) as the catch-up / `--rebuild` path. Seconds of lag
+  here don't matter.
+- **`ingest-garner`** (ADR 0002) mirrors CORPUS/SMART/CIF-schedule/TRUST from openrail-eps; it
+  self-throttles, skipping a whole tick whenever `projector-td` is stalled or >5000 events behind.
 
 `reference-data-refresh` (2026-08-13) is a separate long-running role (`schedule-reference-refresh`) that re-downloads/re-imports SCHEDULE, SMART and CORPUS once a day at a fixed Europe/London time (`REFERENCE_DATA_REFRESH_TIME`, default `01:00`) — previously this was a manual-only console command (`download-schedule`/`download-smart`/`download-corpus`), gated the same way, behind `SCHEDULE_DOWNLOAD_ENABLED`.
 

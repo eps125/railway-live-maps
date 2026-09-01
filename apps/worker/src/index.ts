@@ -19,6 +19,7 @@ import { runRefreshReferenceData } from "./commands/refreshReferenceData.js";
 import { runScheduleReferenceRefresh } from "./commands/scheduleReferenceRefresh.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
+import { runProjectTdLiveDaemon } from "./commands/projectTdLiveDaemon.js";
 import { runPrunePartitions } from "./commands/prunePartitions.js";
 import { runIngestGarner } from "./commands/ingestGarner.js";
 import { runServe } from "./serve.js";
@@ -72,6 +73,9 @@ async function main(): Promise<void> {
       return;
     case "project-td-daemon":
       await runProjectTdDaemon(config);
+      return;
+    case "project-td-live-daemon":
+      await runProjectTdLiveDaemon(config);
       return;
     case "ingest-garner":
       await runIngestGarner(config);

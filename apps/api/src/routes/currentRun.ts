@@ -30,7 +30,6 @@ export interface CurrentRunRoutesDeps {
  */
 interface CurrentStateRow {
   description: string | null;
-  occupancy_id: string | null;
   occupancy_entered_at: Date | null;
 }
 
@@ -106,13 +105,15 @@ export async function registerCurrentRunRoutes(
       const { tdArea, berth } = request.params;
 
       const stateResult = await pool.query<CurrentStateRow>(
-        `select description, occupancy_id, occupancy_entered_at
+        `select description, occupancy_entered_at
          from berth_current_state
          where projection_version = $1 and td_area = $2 and berth_code = $3`,
         [TD_PROJECTION_VERSION, tdArea, berth],
       );
       const state = stateResult.rows[0];
-      if (!state || !state.occupancy_id || !state.description) {
+      // `description is not null` is the occupied signal — `occupancy_id` is NULL for berths the
+      // fast `project-td-live` projector has touched (ADR 0003) and was vestigial anyway.
+      if (!state || !state.description) {
         reply.code(404);
         return apiError("BERTH_NOT_OCCUPIED", `${tdArea} ${berth} has no current occupancy`);
       }

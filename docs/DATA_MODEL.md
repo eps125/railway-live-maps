@@ -142,11 +142,20 @@ Normalized CA/CB/CC event:
 Projection keyed by `(projection_version, td_area, berth_code)`:
 
 - current description nullable
-- occupancy ID nullable
+- occupancy ID nullable — **NULL in steady state since ADR 0003** (its primary writer, the fast
+  `project-td-live` projector, does not manage `berth_occupancy`). Treat `description IS NOT NULL`
+  as the "occupied" signal; read `berth_occupancy` directly for the occupancy id.
+- occupancy entered at — kept correct by the live projector (the `event_at` of the CA/CC that set
+  the description)
 - event time
 - source event ID
 - source ingestion sequence
 - data-quality state
+
+Two writers (ADR 0003): `project-td-live` (real-time, the hot path) and `project-td` (catch-up /
+`--rebuild`). Both upserts carry the monotonic guard `excluded.source_ingestion_sequence >=
+berth_current_state.source_ingestion_sequence` and sort rows by `(td_area, berth_code)`, so
+neither can regress the other and there is no deadlock cycle.
 
 This table covers every observed TD area, including areas without maps.
 

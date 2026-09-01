@@ -229,14 +229,32 @@ services:
     # requirement as ingest-td and the worker service's own console commands.
     networks: [backend, egress]
 
-  # Live berth-position + map-delta path, as one persistent process (2026-09 live-path
-  # hardening). Replaces the previous `projector-td` and `map-deltas` services, which each ran
-  # `while true; do node dist/index.js <cmd>; sleep 1; done` — a full node cold start (~0.5-1s)
-  # every cycle was the dominant contributor to end-to-end live-map latency, and the two
-  # independent `sleep 1` loops could drift out of phase and stack their waits. `project-td-daemon`
-  # runs runProjectTd then (when LIVE_WS_REDIS_PUBSUB_ENABLED) runProjectMapDeltas back to back
-  # on a 250ms tick in one warm process. `--rebuild` still needs the one-shot: run
-  # `project-td --rebuild` from the `worker` console, then restart this service.
+  # THE HOT PATH (ADR 0003 / Milestone 16). Reads TD CA/CB/CC from raw_feed_event in tiny
+  # batches on a 100ms tick, writes berth_current_state in one bulk upsert, and publishes the
+  # WebSocket layer's Redis deltas — nothing else. This is what makes end-to-end latency
+  # sub-second. Needs LIVE_WS_REDIS_PUBSUB_ENABLED for the delta publish (otherwise it still
+  # keeps berth_current_state fresh for the API's polling fallback).
+  projector-td-live:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment: *worker-env
+    command: ["node", "dist/index.js", "project-td-live-daemon"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      disable: true
+    networks: [backend]
+
+  # The NON-hot-path TD projector (ADR 0003): td_berth_event, berth_occupancy history, S-Class,
+  # anomalies, td_area_summary, td_heartbeat. Seconds of lag here don't matter. It also writes
+  # berth_current_state (monotonic-guarded) as the catch-up / --rebuild path, but no longer
+  # publishes deltas — projector-td-live does that. 250ms tick. `--rebuild` still needs the
+  # one-shot: run `project-td --rebuild` from the `worker` console (it also resets the live
+  # projector's checkpoint), then restart both projector-td services.
   projector-td:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped

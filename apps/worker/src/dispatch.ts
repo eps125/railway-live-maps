@@ -25,7 +25,9 @@ export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
  * day at a fixed Europe/London time — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true.
  * "project-td-daemon" (2026-09 live-path hardening) replaces the `projector-td`/`map-deltas`
  * Portainer services' per-cycle `node ...; sleep 1` shell loops with one persistent process —
- * see runDaemonLoop's doc comment. "ingest-garner" (ADR 0002) mirrors TRUST / VSTP-schedule /
+ * see runDaemonLoop's doc comment. "project-td-live-daemon" (ADR 0003) is the dedicated hot
+ * path — `berth_current_state` + Redis delta publish only, on a 100ms tick.
+ * "ingest-garner" (ADR 0002) mirrors TRUST / VSTP-schedule /
  * CORPUS / SMART from the operator's openrail-eps MariaDB — RLM no longer subscribes to Network
  * Rail for those feeds, so the `ingest-vstp` / `ingest-trust` roles and the `project-vstp` /
  * `project-trust` / `import-schedule` / `download-schedule` commands were removed. (The
@@ -36,6 +38,7 @@ export const LONG_RUNNING_ROLE_NAMES = [
   "ingest-td",
   "schedule-reference-refresh",
   "project-td-daemon",
+  "project-td-live-daemon",
   "ingest-garner",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];

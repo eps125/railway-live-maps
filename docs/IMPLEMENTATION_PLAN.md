@@ -815,6 +815,41 @@ config knobs removed. See ADR 0002 "The berth-run resolver is removed and deferr
 **Milestone 9 (resolver) status changes to: superseded by ADR 0002; to be re-planned as its own
 milestone before any rebuild.**
 
+## Milestone 16 — dedicated fast live-berth-state projector `[done — 2026-09-01]`
+
+See `docs/adr/0003-dedicated-live-berth-state-projector.md`. After the Milestone 15 stability
+work, end-to-end latency (TD frame → visible on the public map) sat at 6–20 s because the single
+`project-td-daemon` did ~5–10 sequential single-row SQL round-trips per event and published
+deltas only after the whole projection batch.
+
+- **`project-td-live-daemon` (new, `projector-td-live` service, 100 ms tick).** The only thing on
+  the hot path: reads `raw_feed_event` (TD, C-Class, CA/CB/CC) in tiny batches, folds each batch
+  to the final `description` per berth (pure `foldLiveBerthState`), writes `berth_current_state`
+  in **one bulk `INSERT … ON CONFLICT`** per tick, publishes the WebSocket Redis deltas itself
+  (bindings cached in-process, 30 s TTL). Seeds `berth_current_state` from the history projector's
+  open `berth_occupancy` rows on a fresh checkpoint, then tails from the history checkpoint
+  position (no replay, no gap).
+- **`project-td-daemon` (existing, `projector-td` service).** Everything else — `td_berth_event`,
+  `berth_occupancy` history, `td_s_*`, `td_area_summary`, `td_heartbeat`, anomalies. No longer
+  publishes deltas.
+- Both write `berth_current_state`; both upserts carry a monotonic guard
+  (`excluded.source_ingestion_sequence >= …`) and sort rows by `(td_area, berth_code)`.
+- `berth_current_state.occupancy_id` is now `NULL` in steady state (the live projector doesn't
+  manage occupancy rows). `GET …/current-run` checks `description IS NOT NULL` for "occupied";
+  `POST …/editor/berths/{a}/{b}/clear` reads `berth_occupancy` directly.
+- `project-td --rebuild` also resets the `td-live-berth-state` checkpoint so the live projector
+  re-seeds.
+
+Expected: `ingest-td` (~0.3 s) + live-projector hop (~0.1–0.3 s) + Redis + WS ≈ sub-second.
+
+## Milestone 17 — synchronous live-state in `ingest-td` (Tier 3) `[optional — only if M16 misses the target]`
+
+Move the `berth_current_state` fold + delta publish **into `ingest-td` itself**, synchronous
+with recording each frame (the garner/`livesig` model), removing `project-td-live` entirely.
+End-to-end becomes NR → parse → 1 bulk upsert → Redis publish → WS ≈ tens of ms + network. The
+cost is a small bounded DB write + Redis publish on the ack-critical path. Only worth doing if
+Milestone 16's ~0.1–0.3 s projector hop is measurably still too slow. See ADR 0003 "Tier 3".
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

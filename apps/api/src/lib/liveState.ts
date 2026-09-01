@@ -47,11 +47,10 @@ export async function computeLiveState(
     td_area: string;
     berth_code: string;
     description: string | null;
-    occupancy_id: string | null;
     occupancy_entered_at: Date | null;
     source_ingestion_sequence: string;
   }>(
-    `select bcs.td_area, bcs.berth_code, bcs.description, bcs.occupancy_id,
+    `select bcs.td_area, bcs.berth_code, bcs.description,
             bcs.occupancy_entered_at, bcs.source_ingestion_sequence
      from berth_current_state bcs
      join (select unnest($1::text[]) as td_area, unnest($2::text[]) as berth_code) wanted

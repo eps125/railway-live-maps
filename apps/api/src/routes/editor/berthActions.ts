@@ -16,23 +16,24 @@ async function findOpenOccupancy(
   tdArea: string,
   berthCode: string,
 ): Promise<{ occupancyId: string; enteredAt: Date; description: string | null } | null> {
+  // Read `berth_occupancy` directly, not `berth_current_state.occupancy_id` — since ADR 0003 the
+  // fast `project-td-live` projector sets `berth_current_state.occupancy_id` to NULL, but
+  // `berth_occupancy` is still fully maintained by `project-td-daemon`.
   const result = await client.query<{
-    occupancy_id: string | null;
-    occupancy_entered_at: Date | null;
+    id: string;
+    entered_at: Date;
     description: string | null;
   }>(
-    `select occupancy_id, occupancy_entered_at, description
-     from berth_current_state
-     where projection_version = $1 and td_area = $2 and berth_code = $3`,
+    `select id, entered_at, description
+     from berth_occupancy
+     where projection_version = $1 and td_area = $2 and berth_code = $3 and left_at is null
+     order by entered_at desc
+     limit 1`,
     [TD_PROJECTION_VERSION, tdArea, berthCode],
   );
   const row = result.rows[0];
-  if (!row || row.occupancy_id === null || row.occupancy_entered_at === null) return null;
-  return {
-    occupancyId: row.occupancy_id,
-    enteredAt: row.occupancy_entered_at,
-    description: row.description,
-  };
+  if (!row) return null;
+  return { occupancyId: row.id, enteredAt: row.entered_at, description: row.description };
 }
 
 /**

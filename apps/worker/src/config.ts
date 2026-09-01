@@ -89,6 +89,24 @@ const baseSchema = z.object({
     .string()
     .default("true")
     .transform((value) => value !== "false"),
+  // Milestone 15 / ADR 0002: the `ingest-garner` bridge reads TRUST/VSTP-schedule/CORPUS/SMART
+  // data from the operator's openrail-eps MariaDB instead of RLM subscribing to Network Rail a
+  // second time. Off by default — same discipline as TD_LIVE_ENABLED. When true, GARNER_DB_* must
+  // all be set (loadConfig fails otherwise) and should point at a read-only user (see
+  // openrail-eps' docker/README "External read access").
+  GARNER_BRIDGE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  GARNER_DB_HOST: z.string().default(""),
+  GARNER_DB_PORT: z.coerce.number().int().positive().default(3306),
+  GARNER_DB_NAME: z.string().default("rail"),
+  GARNER_DB_USER: z.string().default(""),
+  GARNER_DB_PASSWORD: z.string().default(""),
+  /** How far back the bridge's first run backfills each garner source table (by `created`
+   * epoch-seconds). garner keeps ~15 days live before archiving; a bounded initial window keeps
+   * RLM's mirror small (ADR 0002: RLM is not the long-term store for these feeds). */
+  GARNER_BRIDGE_BACKFILL_DAYS: z.coerce.number().int().positive().default(14),
   // Milestone 6: gates the optional `project-map-deltas` Redis pub/sub publisher. Must match
   // apps/api/src/config.ts's flag of the same name — if only the API side is on, it subscribes
   // to a channel nothing publishes to (falls back to nothing, since polling stays the source
@@ -120,6 +138,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     base.SCHEDULE_DOWNLOAD_ENABLED;
   const NR_USERNAME = readSecret(env, "NR_USERNAME", { required: nrCredentialsRequired });
   const NR_PASSWORD = readSecret(env, "NR_PASSWORD", { required: nrCredentialsRequired });
+
+  if (base.GARNER_BRIDGE_ENABLED && (!base.GARNER_DB_HOST || !base.GARNER_DB_USER)) {
+    throw new Error(
+      "Invalid configuration: GARNER_BRIDGE_ENABLED=true requires GARNER_DB_HOST and GARNER_DB_USER (and normally GARNER_DB_PASSWORD)",
+    );
+  }
 
   return { ...base, NR_USERNAME, NR_PASSWORD };
 }

@@ -41,6 +41,7 @@ export const LONG_RUNNING_ROLE_NAMES = [
   "schedule-reference-refresh",
   "project-td-daemon",
   "project-resolver-daemon",
+  "ingest-garner",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];
 

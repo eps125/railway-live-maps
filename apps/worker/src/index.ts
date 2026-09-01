@@ -29,6 +29,7 @@ import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
 import { runProjectResolverDaemon } from "./commands/projectResolverDaemon.js";
 import { runPrunePartitions } from "./commands/prunePartitions.js";
+import { runIngestGarner } from "./commands/ingestGarner.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -101,6 +102,9 @@ async function main(): Promise<void> {
       return;
     case "project-resolver-daemon":
       await runProjectResolverDaemon(config);
+      return;
+    case "ingest-garner":
+      await runIngestGarner(config);
       return;
     case "serve":
       await runServe(config);

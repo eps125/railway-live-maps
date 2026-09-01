@@ -84,6 +84,19 @@ x-worker-env: &worker-env
   # gets pushed deltas over Redis pub/sub instead of polling Postgres, which is what actually
   # makes the map feel live rather than merely "polls a bit faster."
   LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
+  # garner bridge (ADR 0002): the `ingest-garner` service mirrors CORPUS/SMART (and, once wired,
+  # CIF-schedule + TRUST) from the operator's openrail-eps MariaDB instead of RLM subscribing to
+  # Network Rail a second time. Off by default. When true, GARNER_DB_* must be set in Portainer's
+  # stack env and should be a read-only user (openrail-eps docker/README "External read access").
+  GARNER_BRIDGE_ENABLED: ${GARNER_BRIDGE_ENABLED:-false}
+  GARNER_DB_HOST: ${GARNER_DB_HOST:-}
+  GARNER_DB_PORT: ${GARNER_DB_PORT:-3306}
+  GARNER_DB_NAME: ${GARNER_DB_NAME:-rail}
+  GARNER_DB_USER: ${GARNER_DB_USER:-}
+  GARNER_DB_PASSWORD: ${GARNER_DB_PASSWORD:-}
+  GARNER_BRIDGE_BACKFILL_DAYS: ${GARNER_BRIDGE_BACKFILL_DAYS:-14}
+  # Milestone 15 step 5: eager berth-run resolution is scoped to areas a published map binds.
+  RESOLVER_EAGER_MAPPED_AREAS_ONLY: ${RESOLVER_EAGER_MAPPED_AREAS_ONLY:-true}
   # The `project-resolver` live loop only resolves berth occupancies entered within this many
   # hours (default 72). Keeps a RESOLVER_VERSION bump — which starts a fresh resolver checkpoint
   # at 0 — from grinding oldest-first through every retained nationwide day before the live map
@@ -329,6 +342,24 @@ services:
     healthcheck:
       disable: true
     networks: [backend]
+
+  # garner bridge (ADR 0002): mirrors CORPUS/SMART (and, once wired, CIF-schedule + TRUST) from
+  # the operator's openrail-eps MariaDB. The daemon idles cleanly if GARNER_BRIDGE_ENABLED is not
+  # 'true', so this service is a safe no-op left at the default — flip the flag + set GARNER_DB_*
+  # and redeploy to start it. Needs `egress` to reach the openrail-eps host if it's not on the
+  # `backend` network.
+  ingest-garner:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment: *worker-env
+    command: ["node", "dist/index.js", "ingest-garner"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      disable: true
+    networks: [backend, egress]
 
   # Resolver candidate matching, as one persistent process (2026-09 live-path hardening) —
   # replaces the previous `projector-resolver` service's `while true; do node dist/index.js

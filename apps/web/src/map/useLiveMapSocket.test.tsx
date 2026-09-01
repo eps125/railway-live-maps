@@ -39,7 +39,7 @@ const snapshot = {
     mode: "live" as const,
     quality: { status: "ok" as const, gaps: [] },
     berths: {
-      "berth-1": { description: "1A23", enteredAt: "2026-08-05T12:00:00.000Z", runSummary: null },
+      "berth-1": { description: "1A23", enteredAt: "2026-08-05T12:00:00.000Z" },
     },
     signals: {},
   },
@@ -81,58 +81,10 @@ describe("useLiveMapSocket", () => {
         berth: "0001",
         description: "1B99",
         enteredAt: "2026-08-05T12:01:00.000Z",
-        runSummary: null,
       }),
     );
 
     await waitFor(() => expect(result.current.berths?.["berth-1"]?.description).toBe("1B99"));
-  });
-
-  it("run.resolution.updated updates only runSummary, leaving description/enteredAt untouched", async () => {
-    vi.stubGlobal("WebSocket", FakeWebSocket);
-    const { result } = renderHook(() => useLiveMapSocket("lancaster"));
-    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
-    await waitFor(() => expect(result.current.connectionStatus).toBe("live"));
-
-    act(() =>
-      FakeWebSocket.instances[0]!.sendFromServer({
-        type: "run.resolution.updated",
-        sequence: 11,
-        eventAt: "2026-08-05T12:01:00.000Z",
-        elementId: "berth-1",
-        runSummary: { status: "matched", text: "approximately 2 late", trainRunId: "run-x" },
-      }),
-    );
-
-    await waitFor(() =>
-      expect(result.current.berths?.["berth-1"]?.runSummary).toEqual({
-        status: "matched",
-        text: "approximately 2 late",
-        trainRunId: "run-x",
-      }),
-    );
-    expect(result.current.berths?.["berth-1"]?.description).toBe("1A23");
-    expect(result.current.berths?.["berth-1"]?.enteredAt).toBe("2026-08-05T12:00:00.000Z");
-  });
-
-  it("run.resolution.updated for an unknown element is ignored, not crashed on", async () => {
-    vi.stubGlobal("WebSocket", FakeWebSocket);
-    const { result } = renderHook(() => useLiveMapSocket("lancaster"));
-    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
-    await waitFor(() => expect(result.current.connectionStatus).toBe("live"));
-
-    expect(() =>
-      act(() =>
-        FakeWebSocket.instances[0]!.sendFromServer({
-          type: "run.resolution.updated",
-          sequence: 11,
-          eventAt: "2026-08-05T12:01:00.000Z",
-          elementId: "berth-never-seen",
-          runSummary: { status: "matched", text: null, trainRunId: "run-y" },
-        }),
-      ),
-    ).not.toThrow();
-    expect(result.current.berths?.["berth-never-seen"]).toBeUndefined();
   });
 
   it("a resync.required message triggers a reconnect (fresh WebSocket) rather than crashing", async () => {
@@ -171,7 +123,6 @@ describe("useLiveMapSocket", () => {
           berth: "0001",
           description: "SHOULD-NOT-APPLY",
           enteredAt: "2026-08-05T12:01:00.000Z",
-          runSummary: null,
         }),
       ),
     ).not.toThrow();

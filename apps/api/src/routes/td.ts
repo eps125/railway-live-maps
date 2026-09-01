@@ -36,10 +36,6 @@ interface OccupancyIntervalRow {
   description: string;
   entry_reason: string;
   exit_reason: string | null;
-  // Left-joined from berth_run_resolution (migration 0022 dropped the denormalized copy that
-  // used to live directly on berth_occupancy) — null means no resolution attempt has been
-  // recorded for this occupancy yet, distinct from an attempt that came back 'unmatched'.
-  resolution_status: string | null;
   anomaly_flags: string[];
 }
 
@@ -63,7 +59,6 @@ function occupancyToJson(row: OccupancyIntervalRow) {
     description: row.description,
     entryReason: row.entry_reason,
     exitReason: row.exit_reason,
-    resolutionStatus: row.resolution_status,
     anomalyFlags: row.anomaly_flags,
   };
 }
@@ -191,9 +186,8 @@ export async function registerTdRoutes(app: FastifyInstance, deps: TdRoutesDeps)
 
     const result = await pool.query<OccupancyIntervalRow>(
       `select bo.id, bo.entered_at, bo.left_at, bo.description, bo.entry_reason, bo.exit_reason,
-              brr.status as resolution_status, bo.anomaly_flags
+              bo.anomaly_flags
        from berth_occupancy bo
-       left join berth_run_resolution brr on brr.occupancy_id = bo.id
        where bo.projection_version = $1 and bo.td_area = $2 and bo.berth_code = $3
          and bo.entered_at >= $4 and bo.entered_at < $5 and bo.id > $6
        order by bo.entered_at asc, bo.id asc
@@ -229,9 +223,8 @@ export async function registerTdRoutes(app: FastifyInstance, deps: TdRoutesDeps)
 
     const result = await pool.query<OccupancyIntervalRow>(
       `select bo.id, bo.td_area, bo.berth_code, bo.entered_at, bo.left_at, bo.description,
-              bo.entry_reason, bo.exit_reason, brr.status as resolution_status, bo.anomaly_flags
+              bo.entry_reason, bo.exit_reason, bo.anomaly_flags
        from berth_occupancy bo
-       left join berth_run_resolution brr on brr.occupancy_id = bo.id
        where bo.projection_version = $1 and bo.description = $2
          and bo.entered_at >= $3 and bo.entered_at < $4 and bo.id > $5
        order by bo.entered_at asc, bo.id asc

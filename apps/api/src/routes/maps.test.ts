@@ -119,7 +119,6 @@ describe("map routes", () => {
     expect(body.berths["berth-1"]).toEqual({
       description: "2A16",
       enteredAt: "2026-08-04T12:00:00.000Z",
-      runSummary: null,
     });
     expect(body.signals["signal-1"]).toEqual({ state: "blank" });
     expect(body.sourceSequence).toBe(42);

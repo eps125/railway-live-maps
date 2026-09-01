@@ -23,7 +23,6 @@ const berthUpdated: LiveDeltaMessage = {
   berth: "0001",
   description: "1A23",
   enteredAt: "2026-08-05T12:00:00.000Z",
-  runSummary: null,
 };
 
 describe("createRedisDeltaSource", () => {

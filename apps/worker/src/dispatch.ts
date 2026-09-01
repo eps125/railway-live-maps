@@ -19,7 +19,6 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "download-smart",
   "refresh-reference-data",
   "project-trust",
-  "project-resolver",
   "backfill-td-area-summary",
   "prune-partitions",
 ] as const;
@@ -30,9 +29,10 @@ export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
  * own `*_LIVE_ENABLED` flag is true. "schedule-reference-refresh" runs the same work as the
  * `refresh-reference-data` one-shot command, but once a day at a fixed Europe/London time rather
  * than on demand — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true.
- * "project-td-daemon"/"project-resolver-daemon" (2026-09 live-path hardening) replace the
- * `projector-td`/`map-deltas`/`projector-resolver` Portainer services' per-cycle `node ...;
- * sleep 1` shell loops with one persistent process each — see runDaemonLoop's doc comment. */
+ * "project-td-daemon" (2026-09 live-path hardening) replaces the `projector-td`/`map-deltas`
+ * Portainer services' per-cycle `node ...; sleep 1` shell loops with one persistent process —
+ * see runDaemonLoop's doc comment. (The `project-resolver` daemon/commands were removed by
+ * ADR 0002 along with the rest of the berth-run resolver.) */
 export const LONG_RUNNING_ROLE_NAMES = [
   "serve",
   "ingest-td",
@@ -40,7 +40,6 @@ export const LONG_RUNNING_ROLE_NAMES = [
   "ingest-trust",
   "schedule-reference-refresh",
   "project-td-daemon",
-  "project-resolver-daemon",
   "ingest-garner",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];

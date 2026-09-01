@@ -304,6 +304,22 @@ scheduleImporter.ts`'s daily full-file swap, but it has the same class of latent
 `on delete` clause, migration 0015) — flagged, not fixed in this pass, see the spawned follow-up
 task.
 
+## Milestone 15 step 7 — berth-run resolver removed from the live path (2026-09-01)
+
+Per ADR 0002 and the owner's 2026-09-01 scope expansion, the Milestone 9 berth-run resolver was
+removed wholesale from the live path. Deleted `packages/domain/src/resolver/`,
+`apps/worker/src/resolver/`, the `project-resolver` / `project-resolver-daemon` commands and the
+`projector-resolver` Portainer service. The live protocol lost `run.resolution.updated` and the
+`runSummary` berth field; the map-delta projector lost `publishResolutionDeltas` /
+`buildRunResolutionDeltaMessages`; the web renderer lost run-following, matched/ambiguous berth
+shading and the run-lost grace window (a clicked berth's popup is now keyed on the element id).
+`apps/api/src/lib/liveState.ts` no longer computes run summaries, and `apps/api/src/routes/td.ts`
+history endpoints are back to plain `berth_occupancy` reads. `berth_run_resolution`, `train_run`,
+`train_run_event` and `run_schedule_link` still exist and still back `GET /api/v1/runs/{runId}`
+and the `current-run` popup endpoint until migration 0025 drops them in the garner phase.
+Full typecheck / lint / unit tests (292) green. Run↔schedule correlation is deferred to a later
+milestone that will source it from the garner `trust_*` mirror.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

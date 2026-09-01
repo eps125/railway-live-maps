@@ -57,7 +57,7 @@ const state: MapStateResponse = {
   mode: "live",
   quality: { status: "ok", gaps: [] },
   berths: {
-    "berth-1": { description: "2A16", enteredAt: "2026-08-04T11:59:00.000Z", runSummary: null },
+    "berth-1": { description: "2A16", enteredAt: "2026-08-04T11:59:00.000Z" },
   },
   signals: { "signal-1": { state: "blank" } },
 };

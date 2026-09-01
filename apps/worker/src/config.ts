@@ -74,21 +74,6 @@ const baseSchema = z.object({
       message: "REFERENCE_DATA_REFRESH_TIME must be HH:MM 24-hour (e.g. 01:00)",
     }),
   PARTITION_MONTHS_AHEAD: z.coerce.number().int().positive().default(3),
-  // Milestone 9: the `project-resolver` live loop only resolves berth occupancies whose
-  // `entered_at` is within this many hours. Keeps a RESOLVER_VERSION bump (which starts a fresh
-  // checkpoint at 0) from grinding oldest-first through every retained nationwide day before the
-  // live map reflects "now". Not an ingestion/projection filter — ingestion and the
-  // TD/berth-occupancy projections stay fully nationwide; older resolver history is caught up on
-  // demand via `project-resolver --backfill --since <date>`, and `--rebuild` ignores this.
-  RESOLVER_LIVE_WINDOW_HOURS: z.coerce.number().int().positive().default(72),
-  // Milestone 15 step 5 (ADR 0002): the resolver's eager forward scan only resolves occupancies
-  // in a td_area a published map binds — unmapped areas, which no live map/popup reads, are
-  // resolvable on demand via `project-resolver --backfill` instead of accumulating a
-  // berth_run_resolution row forever. Set to "false" to keep eagerly resolving every area.
-  RESOLVER_EAGER_MAPPED_AREAS_ONLY: z
-    .string()
-    .default("true")
-    .transform((value) => value !== "false"),
   // Milestone 15 / ADR 0002: the `ingest-garner` bridge reads TRUST/VSTP-schedule/CORPUS/SMART
   // data from the operator's openrail-eps MariaDB instead of RLM subscribing to Network Rail a
   // second time. Off by default — same discipline as TD_LIVE_ENABLED. When true, GARNER_DB_* must

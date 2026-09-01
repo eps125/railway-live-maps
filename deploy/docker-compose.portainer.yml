@@ -19,13 +19,13 @@
 # Actual live ingestion runs in the three dedicated `ingest-*` services below: each is always
 # running, but its shell wrapper idles (`sleep infinity`) rather than connecting whenever its
 # own `*_LIVE_ENABLED` flag is false, so leaving them at the default is a safe no-op rather
-# than a crash loop. `projector-td` and `projector-resolver` run persistent daemons
-# (`project-td-daemon` / `project-resolver-daemon`, 2026-09 live-path hardening) that tick every
-# 250-500ms in one warm process — no per-cycle `node` cold start. `projector-schedule` still
-# re-runs the one-shot `project-vstp`/`project-trust` commands in a shell loop (there is no
-# built-in scheduler yet). Split into separate services so live berth positions and resolver
-# latency can never be stalled by schedule/TRUST backlog work, or each other (see the comments on
-# each service below).
+# than a crash loop. `projector-td` runs a persistent daemon (`project-td-daemon`, 2026-09
+# live-path hardening) that ticks every 250ms in one warm process — no per-cycle `node` cold
+# start. `projector-schedule` still re-runs the one-shot `project-vstp`/`project-trust` commands
+# in a shell loop (there is no built-in scheduler yet). Split into separate services so live
+# berth positions can never be stalled by schedule/TRUST backlog work (see the comments on each
+# service below). (The berth-run resolver and its `projector-resolver` service were removed with
+# ADR 0002.)
 #
 # Postgres/Redis/archive are published to the host below for direct testing access — this
 # is a deliberate departure from docs/ARCHITECTURE.md §12 ("only the reverse proxy/web entry
@@ -95,16 +95,9 @@ x-worker-env: &worker-env
   GARNER_DB_USER: ${GARNER_DB_USER:-}
   GARNER_DB_PASSWORD: ${GARNER_DB_PASSWORD:-}
   GARNER_BRIDGE_BACKFILL_DAYS: ${GARNER_BRIDGE_BACKFILL_DAYS:-14}
-  # Milestone 15 step 5: eager berth-run resolution is scoped to areas a published map binds.
-  RESOLVER_EAGER_MAPPED_AREAS_ONLY: ${RESOLVER_EAGER_MAPPED_AREAS_ONLY:-true}
-  # The `project-resolver` live loop only resolves berth occupancies entered within this many
-  # hours (default 72). Keeps a RESOLVER_VERSION bump — which starts a fresh resolver checkpoint
-  # at 0 — from grinding oldest-first through every retained nationwide day before the live map
-  # reflects "now". Not an ingestion filter: ingestion and the TD/berth-occupancy projections
-  # stay fully nationwide; older resolver history is caught up on demand with
-  # `project-resolver --backfill --since <YYYY-MM-DD>` (its own advisory lock, so it runs
-  # alongside the 1s loop). `project-resolver --rebuild` ignores this window.
-  RESOLVER_LIVE_WINDOW_HOURS: ${RESOLVER_LIVE_WINDOW_HOURS:-72}
+  # The berth-run resolver was removed with ADR 0002 (2026-09-01); its RESOLVER_* knobs
+  # (RESOLVER_EAGER_MAPPED_AREAS_ONLY, RESOLVER_LIVE_WINDOW_HOURS) are gone. Drop them from any
+  # existing stack .env.
 
 services:
   web:
@@ -315,12 +308,7 @@ services:
   # Schedule/TRUST backlog work, deliberately isolated from projector-td (see above) so it can
   # take as long as it needs — large nationwide backlogs, deferred TRUST relinking — without ever
   # blocking live berth positions. vstp and trust are kept together because they have a real
-  # sequencing dependency (trust correlates against project-td's output); project-resolver was
-  # split out into its own projector-resolver service below on 2026-08-11: resolver's own
-  # internal batch loop (up to 25 batches per invocation) could run long enough that vstp/trust
-  # barely got a turn in a shared loop — trust-runs' checkpoint was observed advancing roughly
-  # every 7-9s instead of every ~1s, risking a resolver pass finding "no candidate yet" for a
-  # just-activated train, on top of adding straightforward resolution latency. Each project-*
+  # sequencing dependency (trust correlates against project-td's output). Each project-*
   # command is checkpointed and incremental, so an idle backlog returns instantly — harmless to
   # leave running even with every *_LIVE_ENABLED flag false.
   projector-schedule:
@@ -361,25 +349,11 @@ services:
       disable: true
     networks: [backend, egress]
 
-  # Resolver candidate matching, as one persistent process (2026-09 live-path hardening) —
-  # replaces the previous `projector-resolver` service's `while true; do node dist/index.js
-  # project-resolver; sleep 1; done` loop for the same reason projector-td was daemonised: no
-  # per-cycle node cold start. `project-resolver-daemon` runs the normal live loop (forward scan
-  # + retry pass, both bounded by RESOLVER_LIVE_WINDOW_HOURS) on a 500ms tick. `--rebuild` /
-  # `--backfill` still need the one-shot `project-resolver` command from the `worker` console;
-  # both take their own advisory locks so they're safe to run alongside this daemon.
-  projector-resolver:
-    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
-    restart: unless-stopped
-    environment: *worker-env
-    command: ["node", "dist/index.js", "project-resolver-daemon"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-    stop_grace_period: 15s
-    healthcheck:
-      disable: true
-    networks: [backend]
+  # The berth-run resolver (`projector-resolver` / `project-resolver-daemon`) was removed with
+  # ADR 0002 (2026-09-01). Run<->schedule correlation on the live map is deferred to a later
+  # phase that will source it from the garner (openrail-eps) `trust_*` mirror. If a
+  # `projector-resolver` service from an earlier stack version is still defined in Portainer,
+  # delete it on the next redeploy.
 
   archive:
     # Development default only. Replace with a tested immutable tag/digest before relying

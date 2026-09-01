@@ -800,6 +800,22 @@ sections; CLAUDE.md non-negotiables 5/6/7 are held in abeyance. Migrations: 0024
 garner shape), 0025 (drop `berth_run_resolution` + `train_run*` + `run_schedule_link`, add
 garner-shaped `trust_*`).
 
+**Step 7 (new) — remove the berth-run resolver from the live path. `[done — this change]`**
+Deleted `packages/domain/src/resolver/` (`resolveBerthRun` + `RESOLVER_VERSION` + candidate
+types), `apps/worker/src/resolver/`, `apps/worker/src/commands/projectResolver*.ts`, the
+`project-resolver` / `project-resolver-daemon` roles and their Portainer service wiring.
+Stripped the `run.resolution.updated` WS message and the `runSummary` field from the live
+protocol (`packages/protocol`), the map-delta projector (`publishResolutionDeltas`,
+`buildRunResolutionDeltaMessages`) and the web renderer (run-following, matched-vs-ambiguous
+berth shading, the run-lost grace window — a clicked berth's popup is now keyed purely on the
+element). Stripped `computeRunSummaries` and `runSummary` from `apps/api/src/lib/liveState.ts`
+so the snapshot / `/state` responses no longer query `berth_run_resolution` / `train_run_event`;
+reverted `apps/api/src/routes/td.ts`'s history endpoints to plain `berth_occupancy` reads (no
+`resolution_status`). `berth_run_resolution`, `train_run`, `train_run_event` and
+`run_schedule_link` still exist and still back `GET /api/v1/runs/{runId}` and the
+`current-run` popup endpoint until migration 0025 drops them in the garner phase; `RESOLVER_*`
+config knobs removed. See ADR 0002 "The berth-run resolver is removed and deferred".
+
 **Milestone 9 (resolver) status changes to: superseded by ADR 0002; to be re-planned as its own
 milestone before any rebuild.**
 

@@ -101,37 +101,6 @@ export function buildDeltaMessages(
             berth: change.berth,
             description: change.description,
             enteredAt: change.eventAt,
-            // Not resolved per-delta here — a berth step fires the instant td_berth_event is
-            // written, before the resolver (its own decoupled loop) can have decided anything
-            // about the new occupancy yet. publishResolutionDeltas is what carries a real
-            // RunSummary once the resolver actually decides.
-            runSummary: null,
           },
-  }));
-}
-
-export interface RunSummaryValue {
-  status: "matched" | "ambiguous" | "unmatched";
-  text: string | null;
-  trainRunId: string | null;
-}
-
-/** Pure: turns one resolver decision into the run.resolution.updated message for every map that
- * binds the occupancy's berth. Mirrors buildDeltaMessages' one-row-per-binding shape. */
-export function buildRunResolutionDeltaMessages(
-  eventAt: string,
-  runSummary: RunSummaryValue,
-  bindings: MapBinding[],
-  sequence: number,
-): Array<{ mapSlug: string; message: LiveDeltaMessage }> {
-  return bindings.map(({ mapSlug, elementId }) => ({
-    mapSlug,
-    message: {
-      type: "run.resolution.updated" as const,
-      sequence,
-      eventAt,
-      elementId,
-      runSummary,
-    },
   }));
 }

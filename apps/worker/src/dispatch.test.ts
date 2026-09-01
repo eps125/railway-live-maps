@@ -21,7 +21,6 @@ describe("parseCommand", () => {
     "reparse-vstp-archive",
     "ingest-td",
     "project-trust",
-    "project-resolver",
     "refresh-reference-data",
     "schedule-reference-refresh",
   ])("accepts the known command %s", (name) => {

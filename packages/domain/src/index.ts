@@ -78,10 +78,6 @@ export {
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,
 } from "./trust/trustNormalizationVersion.js";
-export {
-  resolveBerthRun,
-  RESOLVER_VERSION,
-  type RunCandidate,
-  type ScoredCandidate,
-  type ResolveBerthRunResult,
-} from "./resolver/resolveBerthRun.js";
+// The berth-run resolver (`./resolver/`) was removed by ADR 0002 (2026-09-01) — run↔schedule
+// correlation is deferred to a later phase built on garner's data. See docs/adr/0002 and
+// docs/IMPLEMENTATION_PLAN.md Milestone 15.

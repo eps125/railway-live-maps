@@ -179,7 +179,7 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
         state: {
           mode: "live",
           quality: { status: "unknown", gaps: [] },
-          berths: { "berth-a": { description: null, enteredAt: null, runSummary: null } },
+          berths: { "berth-a": { description: null, enteredAt: null } },
           signals: {},
         },
       });

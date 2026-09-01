@@ -97,7 +97,6 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
           [message.elementId]: {
             description: message.description,
             enteredAt: message.enteredAt,
-            runSummary: message.runSummary,
           },
         }));
         return;
@@ -105,7 +104,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
       if (message.type === "berth.cleared") {
         setBerths((prev) => ({
           ...prev,
-          [message.elementId]: { description: null, enteredAt: null, runSummary: null },
+          [message.elementId]: { description: null, enteredAt: null },
         }));
         return;
       }
@@ -113,17 +112,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         setQuality(message.quality);
         return;
       }
-      if (message.type === "run.resolution.updated") {
-        // Only ever updates runSummary — description/enteredAt come from berth.updated/cleared,
-        // which the server keeps ordered ahead of this within the same publish cycle (see
-        // apps/worker/src/mapProjector/projector.ts's publishResolutionDeltas doc comment). If
-        // this element isn't known yet (snapshot hasn't landed), there's nothing to merge into.
-        setBerths((prev) => {
-          const existing = prev?.[message.elementId];
-          if (!prev || !existing) return prev;
-          return { ...prev, [message.elementId]: { ...existing, runSummary: message.runSummary } };
-        });
-      }
+      // `run.resolution.updated` was removed with the berth-run resolver (ADR 0002).
     }
 
     function connect(): void {

@@ -1,17 +1,11 @@
 import type { CompiledMapBundle } from "@railway/map-schema";
 
-export interface RunSummary {
-  status: "matched" | "ambiguous" | "unmatched";
-  text: string | null;
-  /** The resolver's selected train_run id, only ever set when `status === "matched"` — lets the
-   * map follow this specific run across berth steps instead of the berth it happened to enter. */
-  trainRunId: string | null;
-}
+// `RunSummary` and run-following were removed with the berth-run resolver (ADR 0002, 2026-09-01);
+// run<->schedule correlation is deferred to a later phase.
 
 export interface BerthState {
   description: string | null;
   enteredAt: string | null;
-  runSummary: RunSummary | null;
 }
 
 export interface SignalState {

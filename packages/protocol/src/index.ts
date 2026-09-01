@@ -14,8 +14,6 @@ export {
   type HeartbeatMessage,
   ResyncRequiredMessageSchema,
   type ResyncRequiredMessage,
-  RunResolutionUpdatedMessageSchema,
-  type RunResolutionUpdatedMessage,
   LiveWsMessageSchema,
   type LiveWsMessage,
   type LiveDeltaMessage,

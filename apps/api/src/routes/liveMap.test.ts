@@ -183,7 +183,6 @@ describe("GET /api/v1/maps/:slug/live — snapshot/subscribe ordering", () => {
       expect(snapshot.state.berths["berth-1"]).toEqual({
         description: "2A16",
         enteredAt: "2026-08-07T14:00:00.000Z",
-        runSummary: null,
       });
 
       const delta = await reader.next();
@@ -263,7 +262,6 @@ describe("GET /api/v1/maps/:slug/live — snapshot/subscribe ordering", () => {
         berth: "0512",
         description: "2A16",
         enteredAt: "2026-08-07T14:00:00Z",
-        runSummary: null,
       });
       releaseBerthQuery();
 

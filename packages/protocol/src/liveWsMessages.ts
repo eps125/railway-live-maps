@@ -5,25 +5,15 @@ import { z } from "zod";
  * an unexpected version rather than silently misreading deltas. */
 export const LIVE_PROTOCOL_VERSION = 1;
 
-/** Milestone 9: matches apps/api/src/lib/liveState.ts's `RunSummary` exactly — `text` and
- * `trainRunId` are only ever set when `status === "matched"` and real TRUST/resolver data
- * supplies them, never fabricated (docs/PROJECT_SPEC.md §5). `trainRunId` (added 2026-08-11)
- * lets a client track this specific run across berth steps rather than re-deriving identity from
- * the four-character description alone (CLAUDE.md rule 5). */
-const RunSummarySchema = z
-  .object({
-    status: z.enum(["matched", "ambiguous", "unmatched"]),
-    text: z.string().nullable(),
-    trainRunId: z.string().nullable(),
-  })
-  .nullable();
+// The `RunSummary` shape / `run.resolution.updated` message were removed with the berth-run
+// resolver (ADR 0002, 2026-09-01). Run<->schedule correlation is deferred to a later phase; the
+// live protocol no longer carries any resolution field.
 
 /** A berth's state within a full snapshot — vacant berths are represented (nulls), unlike
  * `berth.updated` deltas which are only ever emitted for an occupied berth. */
 const SnapshotBerthStateSchema = z.object({
   description: z.string().nullable(),
   enteredAt: z.string().nullable(),
-  runSummary: RunSummarySchema,
 });
 
 const SignalStateSchema = z.object({
@@ -66,11 +56,6 @@ export const BerthUpdatedMessageSchema = z.object({
   berth: z.string(),
   description: z.string(),
   enteredAt: z.string(),
-  // Still never resolved per-delta here — a berth step fires the instant td_berth_event is
-  // written, before the resolver (its own decoupled loop) can have decided anything about the
-  // new occupancy yet. Every producer sends `null`; run.resolution.updated is what carries a
-  // real RunSummary once the resolver actually decides.
-  runSummary: RunSummarySchema,
 });
 export type BerthUpdatedMessage = z.infer<typeof BerthUpdatedMessageSchema>;
 
@@ -112,20 +97,6 @@ export const ResyncRequiredMessageSchema = z.object({
 });
 export type ResyncRequiredMessage = z.infer<typeof ResyncRequiredMessageSchema>;
 
-/** Emitted by apps/worker/src/mapProjector/projector.ts whenever a resolution decided on
- * `berth_run_resolution` (added 2026-08-11) is still the current occupancy of its berth —
- * `berth.updated`/`berth.cleared` fire the instant a berth steps, before the resolver (its own
- * decoupled loop) has necessarily decided anything, so `runSummary` on those is only ever a
- * best-effort snapshot value; this is what keeps it live in between. */
-export const RunResolutionUpdatedMessageSchema = z.object({
-  type: z.literal("run.resolution.updated"),
-  sequence: z.number().int().nonnegative(),
-  eventAt: z.string(),
-  elementId: z.string(),
-  runSummary: RunSummarySchema,
-});
-export type RunResolutionUpdatedMessage = z.infer<typeof RunResolutionUpdatedMessageSchema>;
-
 export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   SnapshotMessageSchema,
   BerthUpdatedMessageSchema,
@@ -133,7 +104,6 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   QualityUpdatedMessageSchema,
   HeartbeatMessageSchema,
   ResyncRequiredMessageSchema,
-  RunResolutionUpdatedMessageSchema,
 ]);
 export type LiveWsMessage = z.infer<typeof LiveWsMessageSchema>;
 
@@ -141,5 +111,4 @@ export type LiveWsMessage = z.infer<typeof LiveWsMessageSchema>;
  * (each carries a `sequence`) — excludes `snapshot` (sent once, directly by the route),
  * `heartbeat` and `resync.required` (both synthesized directly by the route, not sourced from
  * projected state). */
-export type LiveDeltaMessage =
-  BerthUpdatedMessage | BerthClearedMessage | QualityUpdatedMessage | RunResolutionUpdatedMessage;
+export type LiveDeltaMessage = BerthUpdatedMessage | BerthClearedMessage | QualityUpdatedMessage;

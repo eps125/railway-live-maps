@@ -1,28 +1,15 @@
 import type { Pool } from "pg";
-import {
-  TD_PROJECTION_VERSION,
-  extractMovementReport,
-  runningIndicationText,
-} from "@railway/domain";
+import { TD_PROJECTION_VERSION } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { liveDataStatus, tdAreasFromBundle } from "./mapVersion.js";
 
-export interface RunSummary {
-  status: "matched" | "ambiguous" | "unmatched";
-  /** A short Vail-like running-indication string, only ever set when `status === "matched"` and
-   * a real TRUST movement report supplies it — never fabricated (docs/PROJECT_SPEC.md §5). */
-  text: string | null;
-  /** The resolver's selected train_run id, only ever set when `status === "matched"` — lets a
-   * client track this specific run across berth steps instead of re-resolving by description
-   * (which rule 5 forbids treating as a stable identity on its own). Added 2026-08-11 for the
-   * live map's "follow the headcode, not the berth" popup behavior. */
-  trainRunId: string | null;
-}
+// The berth-run resolver was removed with ADR 0002 (2026-09-01); run<->schedule correlation
+// (and any `runSummary` on berth state) is deferred to a later phase that will source it from
+// the garner (openrail-eps) `trust_*` mirror rather than a bespoke RLM resolver.
 
 export interface BerthState {
   description: string | null;
   enteredAt: string | null;
-  runSummary: RunSummary | null;
 }
 
 export interface SignalState {
@@ -75,10 +62,6 @@ export async function computeLiveState(
   const stateByKey = new Map(
     currentStateResult.rows.map((row) => [`${row.td_area}|${row.berth_code}`, row]),
   );
-  const occupancyIds = currentStateResult.rows
-    .map((row) => row.occupancy_id)
-    .filter((id): id is string => id !== null);
-  const runSummaryByOccupancyId = await computeRunSummaries(pool, occupancyIds);
 
   let sourceSequence = 0;
   const berths: Record<string, BerthState> = {};
@@ -87,9 +70,6 @@ export async function computeLiveState(
     berths[elementId] = {
       description: state?.description ?? null,
       enteredAt: state?.occupancy_entered_at ? state.occupancy_entered_at.toISOString() : null,
-      runSummary: state?.occupancy_id
-        ? (runSummaryByOccupancyId.get(state.occupancy_id) ?? null)
-        : null,
     };
     if (state) {
       sourceSequence = Math.max(sourceSequence, Number(state.source_ingestion_sequence));
@@ -111,58 +91,4 @@ export async function computeLiveState(
   };
 
   return { sourceSequence, berths, signals, quality };
-}
-
-/**
- * Milestone 9: `berth_run_resolution` is the resolver's stored per-occupancy outcome
- * (`apps/worker/src/resolver/projector.ts`); this only ever reads it. The short running-
- * indication `text` is looked up from the matched run's *latest* movement-type
- * `train_run_event` — `ambiguous`/`unmatched` occupancies get a status but never a fabricated
- * text (docs/PROJECT_SPEC.md §5: "TRUST is not a prediction feed").
- */
-async function computeRunSummaries(
-  pool: Pool,
-  occupancyIds: string[],
-): Promise<Map<string, RunSummary>> {
-  const result = new Map<string, RunSummary>();
-  if (occupancyIds.length === 0) return result;
-
-  const resolutions = await pool.query<{
-    occupancy_id: string;
-    status: RunSummary["status"];
-    selected_train_run_id: string | null;
-  }>(
-    `select occupancy_id, status, selected_train_run_id
-     from berth_run_resolution where occupancy_id = any($1::bigint[])`,
-    [occupancyIds],
-  );
-
-  const matchedRunIds = resolutions.rows
-    .map((row) => row.selected_train_run_id)
-    .filter((id): id is string => id !== null);
-  const reportByRunId = new Map<string, ReturnType<typeof extractMovementReport>>();
-  if (matchedRunIds.length > 0) {
-    const events = await pool.query<{ train_run_id: string; raw_event_json: unknown }>(
-      `select distinct on (train_run_id) train_run_id, raw_event_json
-       from train_run_event
-       where train_run_id = any($1::uuid[]) and trust_message_type = 'movement'
-       order by train_run_id, event_at desc`,
-      [matchedRunIds],
-    );
-    for (const row of events.rows) {
-      reportByRunId.set(row.train_run_id, extractMovementReport(row.raw_event_json));
-    }
-  }
-
-  for (const row of resolutions.rows) {
-    const report = row.selected_train_run_id
-      ? reportByRunId.get(row.selected_train_run_id)
-      : undefined;
-    result.set(row.occupancy_id, {
-      status: row.status,
-      text: report ? runningIndicationText(report) : null,
-      trainRunId: row.selected_train_run_id,
-    });
-  }
-  return result;
 }

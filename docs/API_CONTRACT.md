@@ -29,8 +29,7 @@ Response outline:
   "berths": {
     "berth-element-id": {
       "description": "1S97",
-      "enteredAt": "2026-08-04T12:15:28Z",
-      "runSummary": { "status": "matched", "text": "approximately 1 late" }
+      "enteredAt": "2026-08-04T12:15:28Z"
     }
   },
   "signals": {
@@ -39,11 +38,10 @@ Response outline:
 }
 ```
 
-`runSummary` (implemented Milestone 9) is `null` until the occupancy's berth-run resolution
-exists. `status` is `matched`/`ambiguous`/`unmatched` (`GET
-/api/v1/td/areas/{tdArea}/berths/{berth}/current-run` has the full detail); `text` is a short
-Vail-like running-indication string built only from the matched run's latest real TRUST movement
-report, `null` otherwise — never fabricated or predicted.
+> The berth-run resolver was removed (ADR 0002, 2026-09-01). Berth state no longer carries a
+> `runSummary`, and there is no `run.resolution.updated` live message. Run↔schedule correlation
+> is deferred to a later phase that will source it from the garner (openrail-eps) `trust_*`
+> mirror rather than a bespoke RLM resolver.
 
 ### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
 
@@ -51,7 +49,8 @@ Compact map-relevant events for playback buffering. Cursor pagination; bounded r
 
 ### `GET /api/v1/berths/{tdArea}/{berth}/history?from=&to=&after=&limit=`
 
-Occupancy intervals with resolution summary and playback link data.
+Occupancy intervals and playback link data. (The per-occupancy `resolutionStatus` field was
+dropped with the berth-run resolver — ADR 0002.)
 
 ### `GET /api/v1/descriptions/{description}/history?from=&to=&after=&limit=`
 
@@ -332,22 +331,17 @@ Then ordered deltas:
   "tdArea": "${CONFIRMED_PRESTON_AREA_ID}",
   "berth": "1008",
   "description": "1S97",
-  "enteredAt": "2026-08-04T12:15:38Z",
-  "runSummary": null
+  "enteredAt": "2026-08-04T12:15:38Z"
 }
 ```
 
-`berth.updated`'s `runSummary` is always `null` (Milestone 9 scope decision — resolving it per
-delta would mean an extra query on every changed row on the hot delta path). The snapshot sent on
-connect/reconnect and the REST `/state` poll fallback both carry a real `runSummary` via
-`computeLiveState`; deltas just don't refresh it in between. `run.resolution.updated` is declared
-in the wire-format union for forward-compatibility but nothing emits it yet — that needs the
-map-delta projector to also watch `berth_run_resolution`, not just `td_berth_event`.
+`berth.updated` no longer carries a `runSummary` and there is no `run.resolution.updated`
+message — both were removed with the berth-run resolver (ADR 0002, 2026-09-01). Run↔schedule
+correlation on the live map is deferred to a later garner-sourced phase.
 
 Other messages:
 
 - `berth.cleared`
-- `run.resolution.updated` (declared, not yet emitted — see above)
 - `quality.updated`
 - future `signal.updated`
 - `heartbeat`

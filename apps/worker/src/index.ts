@@ -24,10 +24,8 @@ import { runRefreshReferenceData } from "./commands/refreshReferenceData.js";
 import { runScheduleReferenceRefresh } from "./commands/scheduleReferenceRefresh.js";
 import { runIngestTrust } from "./commands/ingestTrust.js";
 import { runProjectTrustCommand } from "./commands/projectTrust.js";
-import { runProjectResolverCommand } from "./commands/projectResolver.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
-import { runProjectResolverDaemon } from "./commands/projectResolverDaemon.js";
 import { runPrunePartitions } from "./commands/prunePartitions.js";
 import { runIngestGarner } from "./commands/ingestGarner.js";
 import { runServe } from "./serve.js";
@@ -79,8 +77,6 @@ async function main(): Promise<void> {
       return runRefreshReferenceData(config);
     case "project-trust":
       return runProjectTrustCommand(config, argvRest);
-    case "project-resolver":
-      return runProjectResolverCommand(config, argvRest);
     case "backfill-td-area-summary":
       return runBackfillTdAreaSummary(config);
     case "prune-partitions":
@@ -99,9 +95,6 @@ async function main(): Promise<void> {
       return;
     case "project-td-daemon":
       await runProjectTdDaemon(config);
-      return;
-    case "project-resolver-daemon":
-      await runProjectResolverDaemon(config);
       return;
     case "ingest-garner":
       await runIngestGarner(config);

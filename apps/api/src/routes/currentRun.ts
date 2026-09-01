@@ -140,14 +140,18 @@ export async function registerCurrentRunRoutes(
       const candidateRows = candidateResult.rows;
       const scheduleIds = candidateRows.map((row) => row.id);
 
-      // TRUST activations for any candidate schedule since the start of today (London).
+      // TRUST activations for any candidate schedule since the start of today (London). The
+      // cutoff has to be the *instant* midnight-London occurs — `($2::date)::timestamp at time
+      // zone 'Europe/London'` — not `today` reinterpreted in the DB session's zone: under BST,
+      // between 23:00 and 00:00 UTC `today` is already tomorrow's date and `($2::date)::timestamptz`
+      // in a UTC session lands an hour in the future, wrongly excluding a just-created activation.
       const activationRows = scheduleIds.length
         ? (
             await pool.query<ActivationRow>(
               `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
                from trust_activation
                where cif_schedule_id = any($1::bigint[])
-                 and created >= ($2::date)::timestamptz
+                 and created >= ($2::date)::timestamp at time zone 'Europe/London'
                order by created desc`,
               [scheduleIds, today],
             )

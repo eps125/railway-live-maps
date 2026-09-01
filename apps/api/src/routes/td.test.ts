@@ -14,7 +14,7 @@ function fakePool(handler: QueryHandler): Pool {
 describe("td routes", () => {
   it("GET /api/v1/td/areas merges area summaries with last heartbeat", async () => {
     const pool = fakePool((text) => {
-      if (text.includes("from raw_feed_event")) {
+      if (text.includes("from td_area_summary")) {
         return {
           rows: [
             {

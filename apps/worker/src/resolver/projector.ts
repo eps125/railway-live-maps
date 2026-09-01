@@ -14,7 +14,7 @@ import {
   TD_PROJECTION_VERSION,
   type RunCandidate,
 } from "@railway/domain";
-import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
+import { advisoryLockKey } from "../shared/advisoryLock.js";
 
 export { RESOLVER_VERSION };
 export const RESOLVER_PROJECTION_NAME = "berth-run-resolver";
@@ -92,10 +92,10 @@ const MOVEMENT_CORRELATION_WINDOW_MS = 8 * 60 * 1000;
 
 /** Advisory-lock name suffix for the backfill phase — a *separate* self-exclusion lock from the
  * normal loop's, so an operator-invoked `project-resolver --backfill` runs alongside the
- * 1-second Portainer `projector-resolver` loop instead of losing every turn to it. Their
- * per-batch berth_occupancy writes are still serialized by BERTH_OCCUPANCY_WRITE_LOCK_KEY, so
- * concurrency here is safe; it just means history catch-up makes progress in the gaps rather
- * than being starved. Two backfills still can't overlap each other (same suffix). */
+ * 1-second Portainer `projector-resolver` loop instead of losing every turn to it. Both only ever
+ * write `berth_run_resolution` (idempotent per-occupancy upserts), so running concurrently is
+ * safe regardless — it just means history catch-up makes progress in the gaps rather than being
+ * starved. Two backfills still can't overlap each other (same suffix). */
 const BACKFILL_LOCK_SUFFIX = ":backfill";
 
 export interface ProjectResolverOptions {
@@ -168,23 +168,11 @@ function computeConfigHash(): string {
   return createHash("sha256").update(`resolver-v${RESOLVER_VERSION}`).digest("hex");
 }
 
+// `berth_occupancy.resolved_run_id`/`resolution_status` were dropped by migration 0022
+// (2026-09-01) — `berth_run_resolution` is the only place a resolution is ever recorded now, so
+// clearing it for a rebuild is a single statement, not a cross-table reset.
 async function clearProjectionRows(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    await client.query("delete from berth_run_resolution");
-    await client.query(
-      `update berth_occupancy set resolved_run_id = null, resolution_status = 'unmatched'
-       where projection_version = $1`,
-      [TD_PROJECTION_VERSION],
-    );
-    await client.query("commit");
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally {
-    client.release();
-  }
+  await pool.query("delete from berth_run_resolution");
 }
 
 interface TrainRunCandidateRow {
@@ -540,11 +528,6 @@ async function resolveOne(
     ],
   );
 
-  await client.query(
-    `update berth_occupancy set resolved_run_id = $2, resolution_status = $3 where id = $1`,
-    [occupancy.id, selectedRunId, result.status],
-  );
-
   return { status: result.status, selectedRunId };
 }
 
@@ -565,15 +548,9 @@ async function resolveBatch(
     serviceDate: computeServiceDate(row.entered_at.toISOString()),
   }));
   const data = await fetchBatchCandidateData(client, withServiceDates);
-  // Only take the shared cross-projector lock now, right before the actual berth_occupancy
-  // writes below — fetchBatchCandidateData above is pure reads and never touches berth_occupancy
-  // via UPDATE, so it doesn't need it. Confirmed 2026-08-27 in production that acquiring this lock
-  // any earlier (immediately after BEGIN, before this read) seriously throttled project-td: under
-  // real backlog load fetchBatchCandidateData's continuity-seed query can run for many seconds of
-  // disk I/O, during which project-td's own batches were blocked waiting on a lock they had no
-  // actual need to wait for yet — checkpoint commits went from sub-second apart to 16+ seconds
-  // apart. See apps/worker/src/shared/advisoryLock.ts's doc comment for what this lock protects.
-  await client.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
+  // No lock needed here since migration 0022 (2026-09-01): this loop only ever writes
+  // berth_run_resolution, a table project-td never touches, so there's no cross-projector row
+  // ordering to protect against — see apps/worker/src/shared/advisoryLock.ts's removal note.
   for (const { row, serviceDate } of withServiceDates) {
     const { status, selectedRunId } = await resolveOne(client, row, serviceDate, data);
     summary[countAs] += 1;
@@ -598,8 +575,7 @@ async function resolveBatch(
  * with the current `resolver_version` by `resolveOne`, so it drops out of the next query),
  * which makes this naturally resumable across invocations and self-terminating once the range is
  * fully current. Bounded per invocation by `maxBatchesPerRun`, same as the main loop; re-run
- * until `moreBacklogRemains` is false. Writes still serialize with the live loop via
- * `BERTH_OCCUPANCY_WRITE_LOCK_KEY` inside `resolveBatch`.
+ * until `moreBacklogRemains` is false.
  */
 async function runBackfillPhase(
   pool: Pool,
@@ -703,20 +679,12 @@ export async function seedFreshResolverCheckpoint(
  * connections were observed all running this function's own batch-select query at once. The lock
  * makes that structurally impossible regardless of what triggers the overlap.
  *
- * Each batch (both phases, via `resolveBatch`) DOES take `BERTH_OCCUPANCY_WRITE_LOCK_KEY`
- * (`pg_advisory_xact_lock`) before writing to `berth_occupancy` — a real production deadlock
- * (40P01) on 2026-08-14 against project-td, both updating overlapping `berth_occupancy` rows in
- * different orders within their own multi-row transactions (this projector's main-phase batch
- * updates in ascending `id` order; the retry phase below in `decided_at` order — neither matches
- * project-td's TD-message-arrival order). Postgres deadlocks are possible here even with zero
- * logical dependency between the rows, purely from row-lock acquisition order — see
- * `apps/worker/src/shared/advisoryLock.ts`'s doc comment.
- *
- * The lock is taken inside `resolveBatch`, *after* `fetchBatchCandidateData` rather than at the
- * top of the transaction — confirmed 2026-08-27 in production that acquiring it any earlier
- * seriously throttles project-td, since `fetchBatchCandidateData`'s continuity-seed query can run
- * for many seconds of disk I/O under real backlog load and doesn't touch `berth_occupancy` via
- * UPDATE at all, so it never needed the lock's protection in the first place.
+ * Each batch (both phases, via `resolveBatch`) previously also took `BERTH_OCCUPANCY_WRITE_LOCK_KEY`
+ * before writing to `berth_occupancy`, to prevent a real production deadlock (40P01) on 2026-08-14
+ * against project-td. Migration 0022 (2026-09-01) dropped `berth_occupancy.resolved_run_id`/
+ * `resolution_status` — this projector's only writes now are idempotent upserts into
+ * `berth_run_resolution`, a table project-td never touches, so there's no longer any overlapping
+ * write for a lock to protect. See `apps/worker/src/shared/advisoryLock.ts`'s removal note.
  */
 export async function runProjectResolver(
   pool: Pool,

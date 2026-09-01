@@ -20,6 +20,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "refresh-reference-data",
   "project-trust",
   "project-resolver",
+  "backfill-td-area-summary",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

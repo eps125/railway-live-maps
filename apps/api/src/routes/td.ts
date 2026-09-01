@@ -36,7 +36,10 @@ interface OccupancyIntervalRow {
   description: string;
   entry_reason: string;
   exit_reason: string | null;
-  resolution_status: string;
+  // Left-joined from berth_run_resolution (migration 0022 dropped the denormalized copy that
+  // used to live directly on berth_occupancy) — null means no resolution attempt has been
+  // recorded for this occupancy yet, distinct from an attempt that came back 'unmatched'.
+  resolution_status: string | null;
   anomaly_flags: string[];
 }
 
@@ -73,15 +76,13 @@ export async function registerTdRoutes(app: FastifyInstance, deps: TdRoutesDeps)
 
   app.get("/api/v1/td/areas", async () => {
     const [areas, heartbeats] = await Promise.all([
+      // Reads the rollup td_area_summary (migration 0023) maintained incrementally by
+      // project-td, not a live `group by td_area` scan of raw_feed_event — that scan took 11+
+      // minutes once the table reached tens of millions of nationwide rows (production incident,
+      // 2026-09-01).
       pool.query<AreaSummaryRow>(
-        `select td_area,
-                min(normalized_event_at_utc) as first_event_at,
-                max(normalized_event_at_utc) as last_event_at,
-                count(*) filter (where message_class = 'C') as c_class_count,
-                count(*) filter (where message_class = 'S') as s_class_count
-         from raw_feed_event
-         where feed_name = 'TD' and td_area is not null
-         group by td_area
+        `select td_area, first_event_at, last_event_at, c_class_count, s_class_count
+         from td_area_summary
          order by td_area`,
       ),
       pool.query<HeartbeatRow>(
@@ -189,11 +190,13 @@ export async function registerTdRoutes(app: FastifyInstance, deps: TdRoutesDeps)
     const after = request.query.after ?? "0";
 
     const result = await pool.query<OccupancyIntervalRow>(
-      `select id, entered_at, left_at, description, entry_reason, exit_reason, resolution_status, anomaly_flags
-       from berth_occupancy
-       where projection_version = $1 and td_area = $2 and berth_code = $3
-         and entered_at >= $4 and entered_at < $5 and id > $6
-       order by entered_at asc, id asc
+      `select bo.id, bo.entered_at, bo.left_at, bo.description, bo.entry_reason, bo.exit_reason,
+              brr.status as resolution_status, bo.anomaly_flags
+       from berth_occupancy bo
+       left join berth_run_resolution brr on brr.occupancy_id = bo.id
+       where bo.projection_version = $1 and bo.td_area = $2 and bo.berth_code = $3
+         and bo.entered_at >= $4 and bo.entered_at < $5 and bo.id > $6
+       order by bo.entered_at asc, bo.id asc
        limit $7`,
       [
         TD_PROJECTION_VERSION,
@@ -225,12 +228,13 @@ export async function registerTdRoutes(app: FastifyInstance, deps: TdRoutesDeps)
     const after = request.query.after ?? "0";
 
     const result = await pool.query<OccupancyIntervalRow>(
-      `select id, td_area, berth_code, entered_at, left_at, description, entry_reason, exit_reason,
-              resolution_status, anomaly_flags
-       from berth_occupancy
-       where projection_version = $1 and description = $2
-         and entered_at >= $3 and entered_at < $4 and id > $5
-       order by entered_at asc, id asc
+      `select bo.id, bo.td_area, bo.berth_code, bo.entered_at, bo.left_at, bo.description,
+              bo.entry_reason, bo.exit_reason, brr.status as resolution_status, bo.anomaly_flags
+       from berth_occupancy bo
+       left join berth_run_resolution brr on brr.occupancy_id = bo.id
+       where bo.projection_version = $1 and bo.description = $2
+         and bo.entered_at >= $3 and bo.entered_at < $4 and bo.id > $5
+       order by bo.entered_at asc, bo.id asc
        limit $6`,
       [
         TD_PROJECTION_VERSION,

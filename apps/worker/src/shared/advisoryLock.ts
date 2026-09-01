@@ -7,20 +7,13 @@ export function advisoryLockKey(name: string): bigint {
   return createHash("sha256").update(`worker-advisory-lock:${name}`).digest().readBigInt64BE(0);
 }
 
-/**
- * Shared transaction-scoped mutex between `project-td` and `project-resolver`'s `berth_occupancy`
- * writes. 2026-08-14 production incident: a real Postgres `deadlock detected` (40P01) between the
- * two — `project-td`'s per-batch transaction updates several `berth_occupancy` rows in TD message
- * arrival order (unrelated to row id), while `project-resolver`'s batches update rows in `id` or
- * `decided_at` order; two concurrent transactions touching overlapping rows in different orders
- * can deadlock even though neither has any *logical* dependency on the other's data (see both
- * projectors' own `runProjectTd`/`runProjectResolver` doc comments for the full mechanism).
- *
- * Both acquire this via `pg_advisory_xact_lock` immediately after `BEGIN`, before touching any
- * `berth_occupancy` row — transaction-scoped, so it releases itself on commit or rollback with no
- * explicit unlock needed. This only ever serializes the two loops for the duration of one short
- * batch transaction, not for their whole run, so it doesn't reintroduce the latency coupling that
- * `projector-td`/`projector-resolver` were originally split into separate services to avoid
- * (docs/ARCHITECTURE.md's "initial containers" section).
- */
-export const BERTH_OCCUPANCY_WRITE_LOCK_KEY = advisoryLockKey("berth-occupancy-write");
+// `BERTH_OCCUPANCY_WRITE_LOCK_KEY` (a shared mutex between project-td and project-resolver's
+// berth_occupancy writes, added 2026-08-14 after a real 40P01 deadlock between the two) was
+// removed 2026-09-01: migration 0022 dropped `berth_occupancy.resolved_run_id`/
+// `resolution_status`, so project-resolver no longer writes to `berth_occupancy` at all — only
+// `berth_run_resolution`, its own table, which project-td never touches. With only one writer
+// left, the two transactions can no longer deadlock on overlapping rows, so the lock had nothing
+// left to protect. Also removed the throttling it caused: under resolver backlog load, project-td
+// batches were observed queuing behind it, stalling live berth positions (2026-08-31/09-01
+// incidents). If a genuine cross-projector `berth_occupancy` writer reappears, reintroduce a
+// lock scoped to that specific case rather than resurrecting this one wholesale.

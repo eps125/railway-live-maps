@@ -17,7 +17,7 @@ import {
   type OpenOccupancySnapshot,
   type BerthEffect,
 } from "@railway/domain";
-import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
+import { advisoryLockKey } from "../shared/advisoryLock.js";
 
 export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION, advisoryLockKey };
 
@@ -456,6 +456,39 @@ async function projectSClassRow(
   );
 }
 
+/** One upsert for the whole batch (via `unnest`, same pattern as
+ * apps/worker/src/resolver/projector.ts's batch-candidate queries) — `GET /api/v1/td/areas`
+ * (migration 0023) reads this instead of scanning `raw_feed_event`. `least`/`greatest` extend the
+ * area's known first/last-seen bounds; counts accumulate additively, safe because each row is
+ * counted here exactly once (this function only ever runs on rows this same transaction is about
+ * to commit as newly processed — never on a replay, since replayed rows are skipped upstream by
+ * `td_berth_event`/`td_s_event`'s own `on conflict do nothing`). */
+async function upsertAreaSummary(
+  client: PoolClient,
+  areaSummary: Map<string, { firstAt: Date; lastAt: Date; cCount: number; sCount: number }>,
+): Promise<void> {
+  if (areaSummary.size === 0) return;
+  const areas = [...areaSummary.keys()];
+  const firstAts = areas.map((area) => areaSummary.get(area)!.firstAt);
+  const lastAts = areas.map((area) => areaSummary.get(area)!.lastAt);
+  const cCounts = areas.map((area) => areaSummary.get(area)!.cCount);
+  const sCounts = areas.map((area) => areaSummary.get(area)!.sCount);
+
+  await client.query(
+    `insert into td_area_summary (td_area, first_event_at, last_event_at, c_class_count, s_class_count, updated_at)
+     select t.td_area, t.first_at, t.last_at, t.c_count, t.s_count, now()
+     from unnest($1::text[], $2::timestamptz[], $3::timestamptz[], $4::bigint[], $5::bigint[])
+       as t(td_area, first_at, last_at, c_count, s_count)
+     on conflict (td_area) do update set
+       first_event_at = least(td_area_summary.first_event_at, excluded.first_event_at),
+       last_event_at = greatest(td_area_summary.last_event_at, excluded.last_event_at),
+       c_class_count = td_area_summary.c_class_count + excluded.c_class_count,
+       s_class_count = td_area_summary.s_class_count + excluded.s_class_count,
+       updated_at = now()`,
+    [areas, firstAts, lastAts, cCounts, sCounts],
+  );
+}
+
 /**
  * Turns nationwide raw TD events into current-state/history projections
  * (docs/IMPLEMENTATION_PLAN.md Milestone 4). Processes strictly in `ingestion_sequence` order —
@@ -476,14 +509,13 @@ async function projectSClassRow(
  * lock makes that interleaving impossible: a second concurrent invocation fails to acquire it and
  * returns immediately rather than racing.
  *
- * Each per-batch transaction also takes `BERTH_OCCUPANCY_WRITE_LOCK_KEY` (`pg_advisory_xact_lock`,
- * transaction-scoped) before touching any `berth_occupancy` row — a real production deadlock
- * (40P01) on 2026-08-14 between this projector and `project-resolver`, both updating overlapping
- * `berth_occupancy` rows in different orders within their own multi-row transactions. See
- * `apps/worker/src/shared/advisoryLock.ts`'s doc comment for the full mechanism and why this is
- * scoped to one batch transaction rather than a lock held for the whole run (which would
- * reintroduce the latency coupling `projector-td`/`projector-resolver` were split into separate
- * services to avoid).
+ * Each per-batch transaction previously also took a shared `BERTH_OCCUPANCY_WRITE_LOCK_KEY`
+ * before touching any `berth_occupancy` row, to prevent a real production deadlock (40P01,
+ * 2026-08-14) against `project-resolver`'s own `berth_occupancy` writes. Migration 0022
+ * (2026-09-01) removed project-resolver as a `berth_occupancy` writer entirely — it now only
+ * writes `berth_run_resolution`, which this projector never touches — so this projector is the
+ * table's only writer again and the lock has nothing left to protect. See
+ * `apps/worker/src/shared/advisoryLock.ts`'s doc comment for the removal note.
  */
 export async function runProjectTd(
   pool: Pool,
@@ -537,11 +569,11 @@ export async function runProjectTd(
       const client = await pool.connect();
       try {
         await client.query("begin");
-        // Prevents a real 40P01 deadlock against project-resolver's own berth_occupancy writes —
-        // see this function's doc comment and apps/worker/src/shared/advisoryLock.ts. Released
-        // automatically on commit/rollback below, never needs an explicit unlock.
-        await client.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
         let maxSequence = BigInt(lastSequence);
+        const areaSummary = new Map<
+          string,
+          { firstAt: Date; lastAt: Date; cCount: number; sCount: number }
+        >();
 
         for (const row of batch.rows) {
           summary.processedEvents += 1;
@@ -557,9 +589,28 @@ export async function runProjectTd(
             await projectCClassRow(client, row, summary);
           } else if (row.message_class === "S") {
             await projectSClassRow(client, row, summary);
+          } else {
+            continue;
+          }
+
+          const existing = areaSummary.get(row.td_area);
+          const at = row.normalized_event_at_utc;
+          if (existing) {
+            if (at < existing.firstAt) existing.firstAt = at;
+            if (at > existing.lastAt) existing.lastAt = at;
+            if (row.message_class === "C") existing.cCount += 1;
+            else existing.sCount += 1;
+          } else {
+            areaSummary.set(row.td_area, {
+              firstAt: at,
+              lastAt: at,
+              cCount: row.message_class === "C" ? 1 : 0,
+              sCount: row.message_class === "S" ? 1 : 0,
+            });
           }
         }
 
+        await upsertAreaSummary(client, areaSummary);
         await advanceCheckpoint(client, definitionId, maxSequence.toString());
         await client.query("commit");
       } catch (error) {

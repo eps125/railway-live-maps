@@ -13,11 +13,7 @@ import {
   seedFreshResolverCheckpoint,
   RESOLVER_PROJECTION_NAME,
 } from "./projector.js";
-import { advisoryLockKey, BERTH_OCCUPANCY_WRITE_LOCK_KEY } from "../shared/advisoryLock.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { advisoryLockKey } from "../shared/advisoryLock.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -234,15 +230,6 @@ describe("runProjectResolver (integration)", () => {
 
     const row = await resolution(occupancyId);
     expect(row).toMatchObject({ status: "matched", selected_train_run_id: runId });
-
-    const occupancy = await pool.query(
-      `select resolved_run_id, resolution_status from berth_occupancy where id = $1`,
-      [occupancyId],
-    );
-    expect(occupancy.rows[0]).toMatchObject({
-      resolved_run_id: runId,
-      resolution_status: "matched",
-    });
   });
 
   it("bridges SMART/STANOX evidence via CORPUS's tiploc when the schedule's own location has no stanox (the real shape of every VSTP-sourced schedule)", async () => {
@@ -755,39 +742,6 @@ describe("runProjectResolver (integration)", () => {
 
     const resolvedAfterSecond = await Promise.all(occupancyIds.map((id) => resolution(id)));
     expect(resolvedAfterSecond.every((row) => row !== undefined)).toBe(true);
-  });
-
-  it("blocks on the shared berth_occupancy write lock instead of risking a deadlock with project-td", async () => {
-    // Regression test for a real production deadlock (40P01, 2026-08-14): project-td and
-    // project-resolver each update several berth_occupancy rows per transaction, in different
-    // orders, and Postgres can deadlock two such transactions even with no logical dependency
-    // between the rows. apps/worker/src/shared/advisoryLock.ts's BERTH_OCCUPANCY_WRITE_LOCK_KEY
-    // fixes this by making the two projectors' batch transactions take turns. This proves
-    // runProjectResolver's main-phase batch actually acquires that lock (not just documents the
-    // intent) by holding it externally and confirming the run genuinely blocks until released.
-    const area = uniqueArea();
-    const occupancyId = await seedOccupancy(area, "0900", uniqueSignallingId(), ENTERED_AT, null);
-
-    const lockHolder = await pool.connect();
-    await lockHolder.query("begin");
-    await lockHolder.query("select pg_advisory_xact_lock($1)", [BERTH_OCCUPANCY_WRITE_LOCK_KEY]);
-
-    try {
-      const runPromise = runProjectResolver(pool);
-
-      const outcome = await Promise.race([
-        runPromise.then(() => "done" as const),
-        sleep(300).then(() => "still-pending" as const),
-      ]);
-      expect(outcome).toBe("still-pending");
-
-      await lockHolder.query("commit");
-      await runPromise;
-    } finally {
-      lockHolder.release();
-    }
-
-    expect((await resolution(occupancyId))?.status).toBe("unmatched");
   });
 
   it("skips instead of racing when another run already holds the self-exclusion advisory lock", async () => {

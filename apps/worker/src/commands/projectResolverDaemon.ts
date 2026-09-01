@@ -27,14 +27,18 @@ export async function runProjectResolverDaemon(config: Config): Promise<void> {
   const liveWindowMs = config.RESOLVER_LIVE_WINDOW_HOURS * 60 * 60 * 1000;
 
   console.log(
-    `project-resolver-daemon: starting (tick ${TICK_INTERVAL_MS}ms, live window ${config.RESOLVER_LIVE_WINDOW_HOURS}h)`,
+    `project-resolver-daemon: starting (tick ${TICK_INTERVAL_MS}ms, live window ` +
+      `${config.RESOLVER_LIVE_WINDOW_HOURS}h, mapped-areas-only ${config.RESOLVER_EAGER_MAPPED_AREAS_ONLY})`,
   );
 
   await runDaemonLoop({
     label: "project-resolver-daemon",
     intervalMs: TICK_INTERVAL_MS,
     tick: async () => {
-      const summary = await runProjectResolver(pool, { liveWindowMs });
+      const summary = await runProjectResolver(pool, {
+        liveWindowMs,
+        mappedAreasOnly: config.RESOLVER_EAGER_MAPPED_AREAS_ONLY,
+      });
       if (
         summary.newlyResolved > 0 ||
         summary.retried > 0 ||

@@ -81,6 +81,14 @@ const baseSchema = z.object({
   // TD/berth-occupancy projections stay fully nationwide; older resolver history is caught up on
   // demand via `project-resolver --backfill --since <date>`, and `--rebuild` ignores this.
   RESOLVER_LIVE_WINDOW_HOURS: z.coerce.number().int().positive().default(72),
+  // Milestone 15 step 5 (ADR 0002): the resolver's eager forward scan only resolves occupancies
+  // in a td_area a published map binds — unmapped areas, which no live map/popup reads, are
+  // resolvable on demand via `project-resolver --backfill` instead of accumulating a
+  // berth_run_resolution row forever. Set to "false" to keep eagerly resolving every area.
+  RESOLVER_EAGER_MAPPED_AREAS_ONLY: z
+    .string()
+    .default("true")
+    .transform((value) => value !== "false"),
   // Milestone 6: gates the optional `project-map-deltas` Redis pub/sub publisher. Must match
   // apps/api/src/config.ts's flag of the same name — if only the API side is on, it subscribes
   // to a channel nothing publishes to (falls back to nothing, since polling stays the source

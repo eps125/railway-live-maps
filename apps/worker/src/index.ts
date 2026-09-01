@@ -28,6 +28,7 @@ import { runProjectResolverCommand } from "./commands/projectResolver.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
 import { runProjectResolverDaemon } from "./commands/projectResolverDaemon.js";
+import { runPrunePartitions } from "./commands/prunePartitions.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
       return runProjectResolverCommand(config, argvRest);
     case "backfill-td-area-summary":
       return runBackfillTdAreaSummary(config);
+    case "prune-partitions":
+      return runPrunePartitions(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
       return;

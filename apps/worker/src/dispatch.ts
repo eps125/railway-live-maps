@@ -21,6 +21,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "project-trust",
   "project-resolver",
   "backfill-td-area-summary",
+  "prune-partitions",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

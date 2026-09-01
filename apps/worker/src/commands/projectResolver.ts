@@ -44,6 +44,9 @@ export async function runProjectResolverCommand(config: Config, argv: string[]):
     const summary = await runProjectResolver(pool, {
       rebuild,
       liveWindowMs: config.RESOLVER_LIVE_WINDOW_HOURS * 60 * 60 * 1000,
+      // No effect in --rebuild / --backfill mode (those bypass the forward scan); matches the
+      // daemon's behaviour for a plain manual `project-resolver` run.
+      mappedAreasOnly: config.RESOLVER_EAGER_MAPPED_AREAS_ONLY,
       ...(backfillSince ? { backfillSince } : {}),
     });
     const mode = backfill ? " (backfill)" : rebuild ? " (rebuild)" : "";

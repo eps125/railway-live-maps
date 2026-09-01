@@ -153,6 +153,27 @@ async function seedSmartBerthStep(tdArea: string, toBerth: string, stanox: strin
   );
 }
 
+/** A currently-published (effective_to is null) map version binding one td_berth in `tdArea` —
+ * enough for fetchMappedTdAreas() to treat `tdArea` as mapped. */
+async function seedPublishedMapBinding(tdArea: string, berth: string): Promise<void> {
+  const map = await pool.query<{ id: string }>(
+    `insert into map (slug, name) values ($1, $1) returning id`,
+    [`test-${randomUUID().replace(/-/g, "").slice(0, 12)}`],
+  );
+  const version = await pool.query<{ id: string }>(
+    `insert into map_version (
+       map_id, version_number, canonical_document, compiled_runtime_bundle,
+       effective_from, published_by, schema_version, checksum
+     ) values ($1, 1, '{}', '{}', now(), 'test', 1, $2) returning id`,
+    [map.rows[0]!.id, randomUUID()],
+  );
+  await pool.query(
+    `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, berth)
+     values ($1, 'berth-x', 'td_berth', $2, $3)`,
+    [version.rows[0]!.id, tdArea, berth],
+  );
+}
+
 /** A single TRUST movement `train_run_event` for `trainRunId` reporting `locStanox` at `eventAt`
  * — the raw material for the resolver's movement-correlation (#3b) signal. Creates the backing
  * raw_archive_object/feed_frame/raw_feed_event lineage the composite FK requires, same pattern as
@@ -439,6 +460,33 @@ describe("runProjectResolver (integration)", () => {
       await seedFreshResolverCheckpoint(pool, defId2, new Date("2000-01-01T00:00:00Z")),
     ).toBeNull();
     expect((await getCheckpoint(pool, defId2))?.lastIngestionSequence).toBe("0");
+  });
+
+  it("mappedAreasOnly: eagerly resolves occupancies in a mapped area but skips unmapped areas", async () => {
+    const mappedArea = uniqueArea();
+    const unmappedArea = uniqueArea();
+    await seedPublishedMapBinding(mappedArea, "0001");
+
+    const mappedOccId = await seedOccupancy(
+      mappedArea,
+      "0001",
+      uniqueSignallingId(),
+      ENTERED_AT,
+      null,
+    );
+    const unmappedOccId = await seedOccupancy(
+      unmappedArea,
+      "0001",
+      uniqueSignallingId(),
+      ENTERED_AT,
+      null,
+    );
+
+    // liveWindowMs unbounded (ENTERED_AT is historical) so only the area filter is in play.
+    await runProjectResolver(pool, { mappedAreasOnly: true });
+
+    expect((await resolution(mappedOccId))?.status).toBe("unmatched"); // resolved (no candidate → unmatched)
+    expect(await resolution(unmappedOccId)).toBeUndefined(); // never looked at
   });
 
   it("no candidates at all resolves as unmatched", async () => {

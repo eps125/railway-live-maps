@@ -129,6 +129,17 @@ export interface ProjectResolverOptions {
    * `moreBacklogRemains` is false. Runs under its own advisory lock (see BACKFILL_LOCK_SUFFIX).
    */
   backfillSince?: Date;
+  /**
+   * When true (the daemon's default, from `RESOLVER_EAGER_MAPPED_AREAS_ONLY`), the forward scan
+   * only eagerly resolves occupancies in a `td_area` that a currently-published `map_version`
+   * actually binds. Occupancies in unmapped areas — which no live map or popup ever reads —
+   * accumulate a `berth_run_resolution` row for nothing; scoping the eager pass to mapped areas
+   * caps that table's growth (docs/adr/0002, Milestone 15 step 5). Unmapped-area history is still
+   * resolvable on demand via `--backfill`. The mapped-area set is fetched once per invocation
+   * (a handful of rows) and passed to the scan as an array. No effect when no map is published,
+   * or on the retry pass (which only revisits rows that already have a resolution) or `--backfill`.
+   */
+  mappedAreasOnly?: boolean;
 }
 
 export interface ProjectResolverSummary {
@@ -627,6 +638,20 @@ async function runBackfillPhase(
  * has ever advanced, and no-op when there is no pre-window history (fresh/small database).
  * Returns the id it seeded to, or null if it didn't seed. Exported for its own integration test.
  */
+/** Distinct `td_area`s bound by any currently-published map version (`effective_to is null`),
+ * for the forward scan's mapped-area filter (`ProjectResolverOptions.mappedAreasOnly`). Same
+ * join `apps/worker/src/mapProjector/projector.ts` uses to decide which berths to publish deltas
+ * for. A handful of rows; fetched once per `runProjectResolver` invocation. */
+async function fetchMappedTdAreas(pool: Pool): Promise<string[]> {
+  const { rows } = await pool.query<{ td_area: string }>(
+    `select distinct mbi.td_area
+     from map_binding_index mbi
+     join map_version mv on mv.id = mbi.map_version_id
+     where mbi.binding_type = 'td_berth' and mv.effective_to is null`,
+  );
+  return rows.map((row) => row.td_area);
+}
+
 export async function seedFreshResolverCheckpoint(
   pool: Pool,
   definitionId: string,
@@ -748,6 +773,10 @@ export async function runProjectResolver(
 
     const summary: ProjectResolverSummary = { ...EMPTY_SUMMARY };
 
+    // Mapped-area scoping (docs/adr/0002, Milestone 15 step 5) — fetched once, empty ⇒ no filter.
+    const mappedAreas = options.mappedAreasOnly ? await fetchMappedTdAreas(pool) : [];
+    const areaFilter = mappedAreas.length > 0 ? mappedAreas : null;
+
     for (let batchesProcessed = 0; batchesProcessed < maxBatchesPerRun; batchesProcessed++) {
       const checkpoint = await getCheckpoint(pool, definitionId);
       const lastId = checkpoint?.lastIngestionSequence ?? "0";
@@ -756,14 +785,15 @@ export async function runProjectResolver(
       // oldest-first through every retained nationwide day before reaching "now" — see
       // ProjectResolverOptions.liveWindowMs. Rows older than the window below an already-advanced
       // checkpoint stay on whatever resolver version last decided them until `--backfill` picks
-      // them up; nothing is deleted.
+      // them up; nothing is deleted. `$5` (when set) restricts to areas a published map binds.
       const batch = await pool.query<OccupancyRow>(
         `select id, entered_at, td_area, berth_code, description
          from berth_occupancy
          where projection_version = $1 and id > $2 and entered_at >= $4
+           and ($5::text[] is null or td_area = any($5::text[]))
          order by id
          limit $3`,
-        [TD_PROJECTION_VERSION, lastId, batchSize, windowCutoff],
+        [TD_PROJECTION_VERSION, lastId, batchSize, windowCutoff, areaFilter],
       );
       if (batch.rows.length === 0) break;
 

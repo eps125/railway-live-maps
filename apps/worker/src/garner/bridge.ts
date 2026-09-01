@@ -18,10 +18,12 @@ import {
  *  - CORPUS  -> location_reference   (full re-sync; small, changes at most daily)
  *  - SMART   -> smart_berth_step     (full re-sync)
  *  - cif_schedules / cif_schedule_locations -> cif_schedules / cif_schedule_locations
- *                                    (near-verbatim mirror; two watermarks — `created` for new/
- *                                    amended rows, `garner-cif_schedules-deleted` for withdrawals.
- *                                    A live garner row's `deleted` is the GARNER_NOT_DELETED
- *                                    sentinel, so it must never drive a watermark.)
+ *                                    (near-verbatim mirror; two watermarks —
+ *                                    `garner-cif_schedules-id` on the auto-increment `id` for
+ *                                    new/amended rows, `garner-cif_schedules-deleted` on `deleted`
+ *                                    for withdrawals. `created` is NOT a watermark key — a full
+ *                                    CIF reload gives ~300k rows one identical `created`. A live
+ *                                    garner row's `deleted` is the GARNER_NOT_DELETED sentinel.)
  *  - trust_activation / trust_activation_extra / trust_movement / trust_cancellation /
  *    trust_changeorigin / trust_changeid / trust_changelocation -> same-named RLM tables
  *                                    (near-verbatim mirror, watermarked by `created`)
@@ -382,16 +384,24 @@ async function syncCifSchedules(
   pg: PgPool,
   deletedWatermarkFloorEpoch: number,
 ): Promise<{ upserted: number; touchedIds: number[] }> {
-  const insDefId = await watermarkDefId(pg, "garner-cif_schedules");
+  // The insert watermark is garner's auto-increment `id`, NOT `created`: a full CIF reload stamps
+  // every one of ~300k rows with the same `created`, so a `created > wm` cursor skips the rest of
+  // that cluster the instant one 20k-row batch touches the value and freezes the sync. `id` is
+  // strictly monotonic and unique. Every in-place `UPDATE cif_schedules` in openrail cifdb
+  // (`BX`/deduced-headcode) runs back-to-back with the row's own INSERT before it settles, so an
+  // id cursor never misses a field change — only withdrawals (`SET deleted=...`) land later, and
+  // the `-deleted` watermark below catches those. Checkpoint name has an `-id` suffix so it
+  // starts fresh (the old `garner-cif_schedules` epoch checkpoint is left orphaned).
+  const insDefId = await watermarkDefId(pg, "garner-cif_schedules-id");
   const delDefId = await watermarkDefId(pg, "garner-cif_schedules-deleted");
   await seedWatermarkIfFresh(pg, delDefId, deletedWatermarkFloorEpoch);
-  const sinceCreated = await readWatermark(pg, insDefId);
+  const sinceId = await readWatermark(pg, insDefId);
   const sinceDeleted = await readWatermark(pg, delDefId);
 
   const [newRows] = await garner.query<CifScheduleRow[]>(
     `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules
-     where created > ? order by created asc limit 20000`,
-    [sinceCreated],
+     where id > ? order by id asc limit 20000`,
+    [sinceId],
   );
   const [deletedRows] = await garner.query<CifScheduleRow[]>(
     `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules
@@ -450,7 +460,7 @@ async function syncCifSchedules(
   );
 
   if (newRows.length > 0) {
-    const hi = newRows.reduce((max, row) => Math.max(max, row.created), sinceCreated);
+    const hi = newRows.reduce((max, row) => Math.max(max, row.id), sinceId);
     await advanceCheckpoint(pg, insDefId, String(hi));
   }
   if (deletedRows.length > 0) {
@@ -858,8 +868,8 @@ export async function runGarnerScheduleSync(
   pg: PgPool,
   backfillDays: number,
 ): Promise<GarnerScheduleSyncSummary> {
-  // The `created` watermark is *not* seeded forward — every currently-valid schedule must be
-  // mirrored regardless of how long ago it entered the CIF extract. Only the `deleted` watermark
+  // The `id` watermark is *not* seeded forward — every currently-valid schedule must be mirrored
+  // regardless of how long ago it entered the CIF extract. Only the `deleted` watermark
   // (withdrawal history nobody queries) gets the backfill floor.
   const { upserted, touchedIds } = await syncCifSchedules(garner, pg, floorEpoch(backfillDays));
   const scheduleLocationsUpserted = await syncCifScheduleLocations(garner, pg, touchedIds);

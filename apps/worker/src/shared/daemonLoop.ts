@@ -9,6 +9,9 @@ export interface DaemonLoopOptions {
    * restarted by the shell's `while` loop, but inside one long-lived process instead of paying a
    * fresh node startup (~0.5-1s) on every single cycle. */
   tick: () => Promise<void>;
+  /** Minimum wait after a *failed* tick before the next one (default 5000ms). Stops a
+   * persistently-down dependency from being retried at the full tick rate with a log line each. */
+  errorBackoffMs?: number;
   /** Called once, after the loop has stopped accepting new ticks, to release resources
    * (DB pools, Redis clients) before this function's promise resolves. */
   onShutdown?: () => Promise<void>;
@@ -36,17 +39,27 @@ export async function runDaemonLoop(options: DaemonLoopOptions): Promise<void> {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 
+  // After a failed tick, wait at least this long before the next one — a persistently-down
+  // dependency (Postgres restarting, network partition) then retries every few seconds with a
+  // log line each, instead of spinning at the full tick rate. Recovery is automatic: the pool
+  // reconnects on the next successful query (see `createPool`'s `error` listener — a missing one
+  // is what actually crashed `project-td-daemon` on a `57P03`, 2026-09-01).
+  const errorBackoffMs = options.errorBackoffMs ?? 5_000;
+
   try {
     while (!stopping) {
       const startedAt = Date.now();
+      let failed = false;
       try {
         await options.tick();
       } catch (error) {
+        failed = true;
         console.error(`${options.label}: tick failed`, error);
       }
       if (stopping) break;
       const elapsed = Date.now() - startedAt;
-      const waitMs = Math.max(0, options.intervalMs - elapsed);
+      const minWait = failed ? Math.max(options.intervalMs, errorBackoffMs) : options.intervalMs;
+      const waitMs = Math.max(0, minWait - elapsed);
       if (waitMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
       }

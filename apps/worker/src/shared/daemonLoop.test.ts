@@ -34,6 +34,7 @@ describe("runDaemonLoop", () => {
     await runDaemonLoop({
       label: "test",
       intervalMs: 1,
+      errorBackoffMs: 1, // keep the test fast — the real default is 5s
       tick: async () => {
         ticks += 1;
         if (ticks === 1) throw new Error("boom");
@@ -43,6 +44,33 @@ describe("runDaemonLoop", () => {
 
     expect(ticks).toBe(2);
     expect(errorSpy).toHaveBeenCalledWith("test: tick failed", expect.any(Error));
+    errorSpy.mockRestore();
+  });
+
+  it("waits errorBackoffMs (not intervalMs) after a failing tick before retrying", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const tickAt: number[] = [];
+
+    const loop = runDaemonLoop({
+      label: "test",
+      intervalMs: 10,
+      errorBackoffMs: 2000,
+      tick: async () => {
+        tickAt.push(Date.now());
+        if (tickAt.length === 1) throw new Error("boom");
+        process.emit("SIGTERM");
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(50); // past intervalMs, well short of errorBackoffMs
+    expect(tickAt).toHaveLength(1); // still backing off — not retried after only 10ms
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await loop;
+    expect(tickAt).toHaveLength(2);
+    expect(tickAt[1]! - tickAt[0]!).toBeGreaterThanOrEqual(2000);
+
     errorSpy.mockRestore();
   });
 

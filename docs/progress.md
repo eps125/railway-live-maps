@@ -354,6 +354,36 @@ from the operator's openrail-eps ("garner") MariaDB by the `ingest-garner` daemo
 link), which would let the popup show a single-winner identification for the ambiguous case.
 Part of the resolver-rebuild phase.
 
+## Milestone 15 — live-path robustness fixes from the garner rollout (2026-09-01)
+
+Three bugs surfaced running the garner mirror against the real openrail-eps instance for the
+first time; fixed in one commit.
+
+- **`createPool` (`packages/database/src/pool.ts`) now attaches a `pool.on('error')` listener.**
+  Without one, an idle pooled client whose connection is dropped server-side (a Postgres
+  restart) makes Node throw an uncaught exception and kill the process — which is how
+  `project-td-daemon` died with a `57P03` when Postgres was restarted for tuning. With the
+  listener the pool discards the client and the next query reconnects. Added `onConnectSql`
+  (used by `ingest-garner` for `set synchronous_commit = off`) and a `poolConfig` passthrough.
+- **`runDaemonLoop` now backs off after a failing tick** (`errorBackoffMs`, default 5s) so a
+  persistently-down dependency retries every few seconds with one log line each, not at the full
+  250ms tick rate.
+- **`StompConnection` silent-stall watchdog.** Once CONNECTED, if nothing at all arrives from
+  the broker (not even a heartbeat LF) for `staleTimeoutMs` (default `max(heartbeatMs*3, 90s)`),
+  the socket is force-closed so the reconnect loop takes over. Catches the case where the feed
+  goes dead but the TCP socket stays open — `ingest-td` sat on a dead connection twice during
+  the incident with the container still "Up".
+- **`ingest-garner` self-throttles.** Per-batch caps cut to `SCHEDULE_BATCH=2000` /
+  `TRUST_BATCH=5000`; the pg pool runs `synchronous_commit = off` (all mirror data is
+  rebuildable); and every tick it reads `td-berth-and-s-class`'s checkpoint lag and **skips the
+  schedule + reference sync entirely while `projector-td` is more than 8s behind** — the
+  incremental trust tail still runs. The unthrottled initial backfill (~11M `cif_schedule_locations`
+  rows) had saturated disk write bandwidth and starved the live projector.
+
+Operational: Postgres was also tuned live via `ALTER SYSTEM` (`shared_buffers` 128MB → 2GB,
+`wal_compression=on`, bigger `max_wal_size`) — not in the repo; fold into the compose `command`
+flags when convenient.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

@@ -19,8 +19,11 @@ async function stopAndAdvance(connection: { stop: () => Promise<void> }): Promis
  * indistinguishable from a slow-but-working connection.
  */
 class FakeSocket extends EventEmitter {
+  destroyed = false;
   write = vi.fn();
-  destroy = vi.fn();
+  destroy = vi.fn(() => {
+    this.destroyed = true;
+  });
   end = vi.fn();
 }
 
@@ -181,6 +184,79 @@ describe("StompConnection heartbeat", () => {
     const writesAfterClose = socket.write.mock.calls.length;
     await vi.advanceTimersByTimeAsync(5000);
     expect(socket.write.mock.calls.length).toBe(writesAfterClose);
+
+    await stopAndAdvance(connection);
+  });
+});
+
+describe("StompConnection stale-feed watchdog", () => {
+  it("force-closes the socket when nothing arrives from the broker for staleTimeoutMs", async () => {
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      staleTimeoutMs: 9000,
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Total silence from the broker (no MESSAGE, no heartbeat LF) well past the stale window
+    // (watchdog polls every ~staleTimeoutMs/3, so give it two poll cycles past the threshold).
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith(expect.stringMatching(/feed stalled/i));
+
+    socket.emit("close");
+    consoleError.mockRestore();
+    await stopAndAdvance(connection);
+  });
+
+  it("keeps a connection alive as long as any data (even a heartbeat) keeps arriving", async () => {
+    vi.useFakeTimers();
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      staleTimeoutMs: 9000,
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A bare-LF heartbeat every 4s for 20s — well past staleTimeoutMs in aggregate, but never
+    // 9s of continuous silence.
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(4000);
+      socket.emit("data", Buffer.from("\n"));
+    }
+
+    expect(socket.destroy).not.toHaveBeenCalled();
 
     await stopAndAdvance(connection);
   });

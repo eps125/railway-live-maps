@@ -25,6 +25,12 @@ export interface StompConnectionConfig {
    * refusing it) hangs the returned promise forever with nothing ever logged — indistinguishable
    * from a slow-but-working connection. Defaults to 20s. */
   connectTimeoutMs?: number;
+  /** Once CONNECTED, if nothing at all arrives from the broker (not even a heartbeat LF) for
+   * this long, the socket is force-closed so the reconnect loop takes over. Catches the
+   * "silent stall" — the broker stops delivering but the TCP socket stays open, so neither
+   * `error` nor `close` ever fires and the feed just goes dead with the container still "Up"
+   * (observed twice, 2026-09-01). Defaults to `max(heartbeatMs * 3, 90s)`. */
+  staleTimeoutMs?: number;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -80,14 +86,21 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       const clientId = `railway-live-maps-${randomUUID()}`;
       const heartbeatMs = this.config.heartbeatMs ?? 15_000;
       const connectTimeoutMs = this.config.connectTimeoutMs ?? 20_000;
+      const staleTimeoutMs = this.config.staleTimeoutMs ?? Math.max(heartbeatMs * 3, 90_000);
       let sessionId: string | null = null;
       let settled = false;
       let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+      let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+      let lastInboundAt = Date.now();
 
-      const stopHeartbeat = (): void => {
+      const stopTimers = (): void => {
         if (heartbeatTimer) {
           clearInterval(heartbeatTimer);
           heartbeatTimer = undefined;
+        }
+        if (watchdogTimer) {
+          clearInterval(watchdogTimer);
+          watchdogTimer = undefined;
         }
       };
 
@@ -95,7 +108,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
         if (settled) return;
         settled = true;
         clearTimeout(connectTimer);
-        stopHeartbeat();
+        stopTimers();
         if (error) reject(error);
         else resolve();
       };
@@ -129,6 +142,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       this.socket = socket;
 
       socket.on("data", (chunk: Buffer) => {
+        lastInboundAt = Date.now();
         void this.handleChunk(decoder, chunk, socket, options, clientId, {
           getSessionId: () => sessionId,
           setSessionId: (id) => {
@@ -137,6 +151,26 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
           onFatalError: finish,
           onConnected: () => {
             clearTimeout(connectTimer);
+            lastInboundAt = Date.now();
+            // Silent-stall watchdog: NR's broker promised bidirectional heartbeats in the
+            // CONNECT frame, so *something* (a MESSAGE, an ACK receipt, or a bare LF) must
+            // arrive well within `heartbeatMs`. If nothing does for `staleTimeoutMs`, the feed
+            // is dead even though the socket is still open — tear it down so `start()`'s loop
+            // reconnects instead of the process sitting on a corpse.
+            watchdogTimer = setInterval(
+              () => {
+                const idleMs = Date.now() - lastInboundAt;
+                if (idleMs > staleTimeoutMs && !socket.destroyed) {
+                  console.error(
+                    `${this.config.feedName} feed stalled: no inbound data for ${idleMs}ms ` +
+                      `(> ${staleTimeoutMs}ms) — forcing reconnect`,
+                  );
+                  this.state = "reconnecting";
+                  socket.destroy();
+                }
+              },
+              Math.max(1000, Math.floor(staleTimeoutMs / 3)),
+            );
             // STOMP 1.2 heartbeat: a lone LF on the wire. The CONNECT frame above promised
             // `heartbeatMs` via the heart-beat header, but nothing was actually sending one —
             // ACK frames happened to cover for it on busy feeds (TD), but a quiet one (VSTP,

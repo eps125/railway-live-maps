@@ -36,6 +36,14 @@ import {
 
 const GARNER_SYNC_VERSION = 1;
 
+/** Per-tick row caps. Kept small so a single batch is a light unit of work — the initial
+ * backfill grinds through in more, cheaper steps rather than a few disk-saturating ones that
+ * starve the live projector (production incident, 2026-09-01). `ingest-garner` also skips the
+ * whole schedule/reference sync entirely while `projector-td` is lagging — see
+ * `apps/worker/src/commands/ingestGarner.ts`. */
+const SCHEDULE_BATCH = 2000;
+const TRUST_BATCH = 5000;
+
 // ---------------------------------------------------------------------------
 // value conversion helpers (garner stores every timestamp as INT UNSIGNED epoch-seconds,
 // 0 meaning "absent"; BOOLEAN columns come back as 0/1)
@@ -400,12 +408,12 @@ async function syncCifSchedules(
 
   const [newRows] = await garner.query<CifScheduleRow[]>(
     `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules
-     where id > ? order by id asc limit 20000`,
+     where id > ? order by id asc limit ${SCHEDULE_BATCH}`,
     [sinceId],
   );
   const [deletedRows] = await garner.query<CifScheduleRow[]>(
     `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules
-     where deleted > ? and deleted < ${GARNER_NOT_DELETED} order by deleted asc limit 20000`,
+     where deleted > ? and deleted < ${GARNER_NOT_DELETED} order by deleted asc limit ${SCHEDULE_BATCH}`,
     [sinceDeleted],
   );
   const rows = [...newRows, ...deletedRows];
@@ -666,7 +674,7 @@ async function syncTrustAll(
   const activation = await syncTrustTable<TrustActivationRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_activation",
     selectSql: `select created, trust_id, cif_schedule_id, deduced from trust_activation
-                where created >= ? order by created asc limit 50000`,
+                where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_activation",
     cols: ["trust_id", "created", "cif_schedule_id", "deduced"],
     conflictTail: "on conflict (trust_id, created) do nothing",
@@ -685,7 +693,7 @@ async function syncTrustAll(
                        origin_dep_timestamp, train_service_code, toc_id, d1266_record_number,
                        train_call_type, train_uid, train_call_mode, schedule_type,
                        sched_origin_stanox, schedule_wtt_id, schedule_start_date
-                from trust_activation_extra where created >= ? order by created asc limit 50000`,
+                from trust_activation_extra where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_activation_extra",
     cols: [
       "trust_id",
@@ -737,7 +745,7 @@ async function syncTrustAll(
     selectSql: `select created, trust_id, platform, loc_stanox, actual_timestamp, gbtt_timestamp,
                        planned_timestamp, timetable_variation, next_report_stanox,
                        next_report_run_time, flags
-                from trust_movement where created >= ? order by created asc limit 100000`,
+                from trust_movement where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_movement",
     cols: [
       "trust_id",
@@ -771,7 +779,7 @@ async function syncTrustAll(
   const cancellation = await syncTrustTable<TrustCancellationRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_cancellation",
     selectSql: `select created, trust_id, reason, type, loc_stanox, reinstate
-                from trust_cancellation where created >= ? order by created asc limit 50000`,
+                from trust_cancellation where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_cancellation",
     cols: ["trust_id", "created", "reason", "type", "loc_stanox", "reinstate"],
     conflictTail: "on conflict (trust_id, created) do nothing",
@@ -788,7 +796,7 @@ async function syncTrustAll(
   const changeOrigin = await syncTrustTable<TrustChangeOriginRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_changeorigin",
     selectSql: `select created, trust_id, reason, loc_stanox
-                from trust_changeorigin where created >= ? order by created asc limit 50000`,
+                from trust_changeorigin where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_changeorigin",
     cols: ["trust_id", "created", "reason", "loc_stanox"],
     conflictTail: "on conflict (trust_id, created) do nothing",
@@ -803,7 +811,7 @@ async function syncTrustAll(
   const changeId = await syncTrustTable<TrustChangeIdRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_changeid",
     selectSql: `select created, trust_id, new_trust_id
-                from trust_changeid where created >= ? order by created asc limit 50000`,
+                from trust_changeid where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_changeid",
     cols: ["trust_id", "created", "new_trust_id"],
     conflictTail: "on conflict (trust_id, created) do nothing",
@@ -813,7 +821,7 @@ async function syncTrustAll(
   const changeLocation = await syncTrustTable<TrustChangeLocationRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_changelocation",
     selectSql: `select created, trust_id, original_stanox, stanox
-                from trust_changelocation where created >= ? order by created asc limit 50000`,
+                from trust_changelocation where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_changelocation",
     cols: ["trust_id", "created", "original_stanox", "stanox"],
     conflictTail: "on conflict (trust_id, created) do nothing",

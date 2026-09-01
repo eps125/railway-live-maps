@@ -18,13 +18,18 @@ import {
  *  - CORPUS  -> location_reference   (full re-sync; small, changes at most daily)
  *  - SMART   -> smart_berth_step     (full re-sync)
  *  - cif_schedules / cif_schedule_locations -> cif_schedules / cif_schedule_locations
- *                                    (near-verbatim mirror, watermarked by GREATEST(created, deleted))
+ *                                    (near-verbatim mirror; two watermarks — `created` for new/
+ *                                    amended rows, `garner-cif_schedules-deleted` for withdrawals.
+ *                                    A live garner row's `deleted` is the GARNER_NOT_DELETED
+ *                                    sentinel, so it must never drive a watermark.)
  *  - trust_activation / trust_activation_extra / trust_movement / trust_cancellation /
  *    trust_changeorigin / trust_changeid / trust_changelocation -> same-named RLM tables
  *                                    (near-verbatim mirror, watermarked by `created`)
  *
  * Watermarks live in `projection_checkpoint` under `garner-<table>` names, storing the last
- * synced `created` epoch-seconds value in `last_ingestion_sequence`.
+ * synced epoch-seconds value in `last_ingestion_sequence`. A fresh watermark is seeded forward to
+ * `now - GARNER_BRIDGE_BACKFILL_DAYS` (except the schedule `created` watermark — every live
+ * schedule must be mirrored regardless of age).
  */
 
 const GARNER_SYNC_VERSION = 1;
@@ -34,8 +39,19 @@ const GARNER_SYNC_VERSION = 1;
 // 0 meaning "absent"; BOOLEAN columns come back as 0/1)
 // ---------------------------------------------------------------------------
 
+/** openrail cifdb `#define NOT_DELETED 0xffffffffL` — a *live* `cif_schedules` / `cif_tiplocs`
+ * row carries this sentinel in its `deleted` column; a withdrawn row carries the real epoch it
+ * was withdrawn at. (Distinct from the `trust_*` tables, which have no `deleted` column.) */
+export const GARNER_NOT_DELETED = 4294967295;
+
 function epochToTs(value: number | null | undefined): Date | null {
   return value && value > 0 ? new Date(value * 1000) : null;
+}
+
+/** garner's `cif_schedules.deleted`: `GARNER_NOT_DELETED` (or 0) means "live" -> NULL on the RLM
+ * side; anything else is the real withdrawal timestamp. */
+export function garnerDeletedToTs(value: number | null | undefined): Date | null {
+  return value && value > 0 && value < GARNER_NOT_DELETED ? new Date(value * 1000) : null;
 }
 
 function epochToDateString(value: number | null | undefined): string | null {
@@ -69,6 +85,17 @@ async function watermarkDefId(pg: PgPool, name: string): Promise<string> {
 async function readWatermark(pg: PgPool, defId: string): Promise<number> {
   const cp = await getCheckpoint(pg, defId);
   return Number(cp?.lastIngestionSequence ?? "0");
+}
+
+/** Seed a never-run watermark forward to `epochFloor` so the bridge's first pass doesn't grind
+ * from the Unix epoch through data garner no longer even retains. Only fires when the checkpoint
+ * is genuinely fresh (`0` and never completed) — after that `advanceCheckpoint`'s own monotonic
+ * `greatest(...)` takes over. */
+async function seedWatermarkIfFresh(pg: PgPool, defId: string, epochFloor: number): Promise<void> {
+  const cp = await getCheckpoint(pg, defId);
+  if (cp && cp.lastIngestionSequence === "0" && cp.lastCompletedAt === null) {
+    await advanceCheckpoint(pg, defId, String(Math.max(0, Math.floor(epochFloor))));
+  }
 }
 
 /** Insert `rows` into `table` (columns `cols`) in chunks, with an `on conflict` tail. Each row is
@@ -336,39 +363,49 @@ const CIF_SCHEDULE_CONFLICT = `on conflict (id) do update set
   deduced_headcode_status = excluded.deduced_headcode_status,
   synced_at = now()`;
 
-/** Mirrors garner `cif_schedules` rows whose `GREATEST(created, deleted)` is past the watermark —
- * so both newly-created schedules and newly-deleted ones (garner stamps `deleted` in place, it
- * does not remove the row) are picked up. Returns the set of `id`s touched so their locations
- * can be re-synced. */
+const CIF_SCHEDULE_SELECT_COLS = `id, update_id, created, deleted, CIF_bank_holiday_running,
+        CIF_stp_indicator, CIF_train_uid, applicable_timetable, atoc_code, uic_code,
+        runs_mo, runs_tu, runs_we, runs_th, runs_fr, runs_sa, runs_su,
+        schedule_start_date, schedule_end_date, signalling_id, CIF_train_category, CIF_headcode,
+        CIF_train_service_code, CIF_business_sector, CIF_power_type, CIF_timing_load, CIF_speed,
+        CIF_operating_characteristics, CIF_train_class, CIF_sleepers, CIF_reservations,
+        CIF_connection_indicator, CIF_catering_code, CIF_service_branding,
+        train_status, deduced_headcode, deduced_headcode_status`;
+
+/** Mirrors garner `cif_schedules`. Two watermarks: `garner-cif_schedules` tracks `created` (new
+ * and amended schedules), `garner-cif_schedules-deleted` tracks `deleted` for withdrawals —
+ * garner stamps `deleted` in place with the real withdrawal epoch (a *live* row's `deleted` is
+ * the `GARNER_NOT_DELETED` sentinel, which must not drive the watermark or it jumps to the year
+ * 2106 and freezes the sync). Returns every `id` touched so its locations can be re-synced. */
 async function syncCifSchedules(
   garner: MysqlPool,
   pg: PgPool,
+  deletedWatermarkFloorEpoch: number,
 ): Promise<{ upserted: number; touchedIds: number[] }> {
-  const defId = await watermarkDefId(pg, "garner-cif_schedules");
-  const since = await readWatermark(pg, defId);
+  const insDefId = await watermarkDefId(pg, "garner-cif_schedules");
+  const delDefId = await watermarkDefId(pg, "garner-cif_schedules-deleted");
+  await seedWatermarkIfFresh(pg, delDefId, deletedWatermarkFloorEpoch);
+  const sinceCreated = await readWatermark(pg, insDefId);
+  const sinceDeleted = await readWatermark(pg, delDefId);
 
-  const [rows] = await garner.query<CifScheduleRow[]>(
-    `select id, update_id, created, deleted, CIF_bank_holiday_running, CIF_stp_indicator,
-            CIF_train_uid, applicable_timetable, atoc_code, uic_code,
-            runs_mo, runs_tu, runs_we, runs_th, runs_fr, runs_sa, runs_su,
-            schedule_start_date, schedule_end_date, signalling_id, CIF_train_category, CIF_headcode,
-            CIF_train_service_code, CIF_business_sector, CIF_power_type, CIF_timing_load, CIF_speed,
-            CIF_operating_characteristics, CIF_train_class, CIF_sleepers, CIF_reservations,
-            CIF_connection_indicator, CIF_catering_code, CIF_service_branding,
-            train_status, deduced_headcode, deduced_headcode_status
-     from cif_schedules
-     where greatest(created, deleted) > ?
-     order by greatest(created, deleted) asc
-     limit 20000`,
-    [since],
+  const [newRows] = await garner.query<CifScheduleRow[]>(
+    `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules
+     where created > ? order by created asc limit 20000`,
+    [sinceCreated],
   );
+  const [deletedRows] = await garner.query<CifScheduleRow[]>(
+    `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules
+     where deleted > ? and deleted < ${GARNER_NOT_DELETED} order by deleted asc limit 20000`,
+    [sinceDeleted],
+  );
+  const rows = [...newRows, ...deletedRows];
   if (rows.length === 0) return { upserted: 0, touchedIds: [] };
 
   const tuples = rows.map((row) => [
     row.id,
     row.update_id,
     epochToTs(row.created),
-    epochToTs(row.deleted),
+    garnerDeletedToTs(row.deleted),
     nonEmpty(row.CIF_bank_holiday_running),
     row.CIF_stp_indicator ?? "",
     row.CIF_train_uid ?? "",
@@ -412,8 +449,14 @@ async function syncCifSchedules(
     CIF_SCHEDULE_CONFLICT,
   );
 
-  const highWater = rows.reduce((max, row) => Math.max(max, row.created, row.deleted || 0), since);
-  await advanceCheckpoint(pg, defId, String(highWater));
+  if (newRows.length > 0) {
+    const hi = newRows.reduce((max, row) => Math.max(max, row.created), sinceCreated);
+    await advanceCheckpoint(pg, insDefId, String(hi));
+  }
+  if (deletedRows.length > 0) {
+    const hi = deletedRows.reduce((max, row) => Math.max(max, row.deleted), sinceDeleted);
+    await advanceCheckpoint(pg, delDefId, String(hi));
+  }
 
   return { upserted, touchedIds: rows.map((row) => row.id) };
 }
@@ -511,10 +554,13 @@ interface CreatedKeyedRow extends RowDataPacket {
 }
 
 /** Shared shape: pull garner rows with `created` past the watermark, map, chunked-insert with
- * `on conflict do nothing`, advance the watermark to the max `created` seen. */
+ * `on conflict do nothing`, advance the watermark to the max `created` seen. A fresh watermark is
+ * seeded to `floorEpoch` first, so the initial pass starts near "now" rather than grinding from
+ * the Unix epoch through data garner has already archived. */
 async function syncTrustTable<R extends CreatedKeyedRow>(
   pg: PgPool,
   garner: MysqlPool,
+  floorEpoch: number,
   opts: {
     watermarkName: string;
     selectSql: string;
@@ -525,6 +571,7 @@ async function syncTrustTable<R extends CreatedKeyedRow>(
   },
 ): Promise<number> {
   const defId = await watermarkDefId(pg, opts.watermarkName);
+  await seedWatermarkIfFresh(pg, defId, floorEpoch);
   const since = await readWatermark(pg, defId);
 
   const [rows] = await garner.query<R[]>(opts.selectSql, [since]);
@@ -601,8 +648,12 @@ interface TrustChangeLocationRow extends CreatedKeyedRow {
   stanox: string;
 }
 
-async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<string, number>> {
-  const activation = await syncTrustTable<TrustActivationRow>(pg, garner, {
+async function syncTrustAll(
+  garner: MysqlPool,
+  pg: PgPool,
+  floorEpoch: number,
+): Promise<Record<string, number>> {
+  const activation = await syncTrustTable<TrustActivationRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_activation",
     selectSql: `select created, trust_id, cif_schedule_id, deduced from trust_activation
                 where created >= ? order by created asc limit 50000`,
@@ -617,7 +668,7 @@ async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<strin
     ],
   });
 
-  const activationExtra = await syncTrustTable<TrustActivationExtraRow>(pg, garner, {
+  const activationExtra = await syncTrustTable<TrustActivationExtraRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_activation_extra",
     selectSql: `select created, trust_id, schedule_source, train_file_address, schedule_end_date,
                        tp_origin_timestamp, creation_timestamp, tp_origin_stanox,
@@ -671,7 +722,7 @@ async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<strin
     ],
   });
 
-  const movement = await syncTrustTable<TrustMovementRow>(pg, garner, {
+  const movement = await syncTrustTable<TrustMovementRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_movement",
     selectSql: `select created, trust_id, platform, loc_stanox, actual_timestamp, gbtt_timestamp,
                        planned_timestamp, timetable_variation, next_report_stanox,
@@ -707,7 +758,7 @@ async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<strin
     ],
   });
 
-  const cancellation = await syncTrustTable<TrustCancellationRow>(pg, garner, {
+  const cancellation = await syncTrustTable<TrustCancellationRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_cancellation",
     selectSql: `select created, trust_id, reason, type, loc_stanox, reinstate
                 from trust_cancellation where created >= ? order by created asc limit 50000`,
@@ -724,7 +775,7 @@ async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<strin
     ],
   });
 
-  const changeOrigin = await syncTrustTable<TrustChangeOriginRow>(pg, garner, {
+  const changeOrigin = await syncTrustTable<TrustChangeOriginRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_changeorigin",
     selectSql: `select created, trust_id, reason, loc_stanox
                 from trust_changeorigin where created >= ? order by created asc limit 50000`,
@@ -739,7 +790,7 @@ async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<strin
     ],
   });
 
-  const changeId = await syncTrustTable<TrustChangeIdRow>(pg, garner, {
+  const changeId = await syncTrustTable<TrustChangeIdRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_changeid",
     selectSql: `select created, trust_id, new_trust_id
                 from trust_changeid where created >= ? order by created asc limit 50000`,
@@ -749,7 +800,7 @@ async function syncTrustAll(garner: MysqlPool, pg: PgPool): Promise<Record<strin
     map: (row) => [row.trust_id, epochToTs(row.created), row.new_trust_id ?? ""],
   });
 
-  const changeLocation = await syncTrustTable<TrustChangeLocationRow>(pg, garner, {
+  const changeLocation = await syncTrustTable<TrustChangeLocationRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_changelocation",
     selectSql: `select created, trust_id, original_stanox, stanox
                 from trust_changelocation where created >= ? order by created asc limit 50000`,
@@ -798,11 +849,19 @@ export interface GarnerScheduleSyncSummary {
   scheduleLocationsUpserted: number;
 }
 
+function floorEpoch(backfillDays: number): number {
+  return Math.floor(Date.now() / 1000) - Math.max(0, backfillDays) * 86400;
+}
+
 export async function runGarnerScheduleSync(
   garner: MysqlPool,
   pg: PgPool,
+  backfillDays: number,
 ): Promise<GarnerScheduleSyncSummary> {
-  const { upserted, touchedIds } = await syncCifSchedules(garner, pg);
+  // The `created` watermark is *not* seeded forward — every currently-valid schedule must be
+  // mirrored regardless of how long ago it entered the CIF extract. Only the `deleted` watermark
+  // (withdrawal history nobody queries) gets the backfill floor.
+  const { upserted, touchedIds } = await syncCifSchedules(garner, pg, floorEpoch(backfillDays));
   const scheduleLocationsUpserted = await syncCifScheduleLocations(garner, pg, touchedIds);
   return { schedulesUpserted: upserted, scheduleLocationsUpserted };
 }
@@ -810,6 +869,7 @@ export async function runGarnerScheduleSync(
 export async function runGarnerTrustSync(
   garner: MysqlPool,
   pg: PgPool,
+  backfillDays: number,
 ): Promise<Record<string, number>> {
-  return syncTrustAll(garner, pg);
+  return syncTrustAll(garner, pg, floorEpoch(backfillDays));
 }

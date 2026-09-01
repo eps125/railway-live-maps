@@ -51,12 +51,16 @@ export async function runIngestGarner(config: Config): Promise<void> {
     tick: async () => {
       tick += 1;
 
-      const trust = await runGarnerTrustSync(garner, pg);
+      const trust = await runGarnerTrustSync(garner, pg, config.GARNER_BRIDGE_BACKFILL_DAYS);
       const trustTotal = Object.values(trust).reduce((sum, n) => sum + n, 0);
       if (trustTotal > 0) console.log("ingest-garner: trust sync", trust);
 
       if (tick % SCHEDULE_EVERY_N_TICKS === 0) {
-        const schedule = await runGarnerScheduleSync(garner, pg);
+        const schedule = await runGarnerScheduleSync(
+          garner,
+          pg,
+          config.GARNER_BRIDGE_BACKFILL_DAYS,
+        );
         if (schedule.schedulesUpserted > 0 || schedule.scheduleLocationsUpserted > 0) {
           console.log("ingest-garner: schedule sync", schedule);
         }

@@ -279,9 +279,12 @@ own `id` so the bridge is a pure upsert-by-id. Notable columns:
 - `cif_train_uid`, `cif_stp_indicator` (`C`/`N`/`O`/`P`), `signalling_id`
 - `schedule_start_date` / `schedule_end_date` — `date`, converted from garner's epoch INTs
 - `runs_mo`..`runs_su` booleans + generated `days_runs_bitmask` (7-char Mon..Sun `1`/`0`)
-- `created` / `deleted` — `timestamptz`; garner stamps `deleted` in place (soft delete), the
-  bridge writes NULL for garner's `0`. Every "candidates for matching" query filters
-  `deleted is null`.
+- `created` / `deleted` — `timestamptz`; garner (openrail cifdb) marks a _live_ row with
+  `deleted = 0xffffffff` (its `NOT_DELETED` sentinel) and a withdrawn row with the real epoch.
+  The bridge writes NULL for the sentinel and the real timestamp otherwise; every "candidates
+  for matching" query filters `deleted is null`. The bridge keeps two watermarks — `created` for
+  new/amended rows (never seeded forward — every live schedule must be mirrored) and
+  `garner-cif_schedules-deleted` for withdrawals.
 - `atoc_code`, `cif_train_service_code`, `cif_train_category`, `train_status`, `cif_power_type`,
   `deduced_headcode` (garner's own headcode deduction for schedules lacking a signalling id)
 

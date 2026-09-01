@@ -24,7 +24,10 @@ create table cif_schedules (
   id bigint primary key,
   update_id integer,
   created timestamptz not null,
-  -- garner stores `deleted` as an epoch INT, 0 meaning "not deleted"; the bridge writes NULL for 0.
+  -- garner (openrail cifdb) marks a *live* row with `deleted = 0xffffffff` (the NOT_DELETED
+  -- sentinel) and a withdrawn row with the real withdrawal epoch. The bridge writes NULL for the
+  -- sentinel (and 0), and the real timestamp otherwise; every "candidate for matching" query
+  -- filters `deleted is null`.
   deleted timestamptz,
   cif_bank_holiday_running text,
   cif_stp_indicator text not null,

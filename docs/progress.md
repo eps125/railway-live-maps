@@ -427,9 +427,34 @@ projection batch, so a queue of ~1500 events ≈ 15 s of lag.
   binding-scoped deltas, monotonic guard). typecheck / lint / prettier / 315 unit tests green.
 
 **Deploy:** add the `projector-td-live` service (in the updated compose) and redeploy. It creates
-its own `td-live-berth-state` projection on first run and seeds from `berth_occupancy` — no
-migration. Milestone 17 (Tier 3: fold into `ingest-td`) is documented as optional, only if this
-still misses sub-second.
+its own `td-live-berth-state` projection on first run and seeds from `berth_occupancy`.
+Milestone 17 (Tier 3: fold into `ingest-td`) is documented as optional, only if this still
+misses sub-second.
+
+### Milestone 16 hotfix — the seed wedged the live checkpoint (2026-09-02)
+
+On the live stack `projector-td-live` crash-looped every tick with `canceling statement due to
+statement timeout` inside `seedFromHistory`: `berth_occupancy` is partitioned by `entered_at`
+with no `left_at` index, so `where projection_version = $1 and left_at is null` was a
+sequential scan of every monthly partition and blew the daemon's 10s `statement_timeout`.
+Because the seed ran *before* the checkpoint advance, each failure left the checkpoint in its
+"fresh" state, so the next tick re-attempted the same doomed seed — the live projector never
+processed an event and never published a WebSocket delta, so the public map only updated on a
+manual refresh (the REST `/state` snapshot).
+
+- **`0026_berth_occupancy_open_idx.sql`** — partial index
+  `berth_occupancy (projection_version, td_area, berth_code) where left_at is null`. The open
+  intervals are a tiny fraction of the table, so the seed is now an index scan regardless of
+  how much closed history has accumulated. Propagates to future partitions automatically.
+- **`liveProjector.ts`** — on a fresh checkpoint, advance to the history projector's position
+  **first and unconditionally**, then run the baseline fill **best-effort** (its own
+  `try/catch`, logs and continues). A slow or failing fill can no longer pin the checkpoint.
+  `project-td-daemon` also maintains `berth_current_state`, so a skipped fill only means
+  currently-stationary berths lag until their next CA/CB/CC. New `options.seedBaseline` seam so
+  a test can inject a throwing stub.
+- Integration test: a failing baseline fill still advances the checkpoint and processes the
+  event; the second run is a clean no-op. typecheck / lint / 315 unit tests green (migration +
+  live-projector integration tests run in CI).
 
 ## Next smallest task
 

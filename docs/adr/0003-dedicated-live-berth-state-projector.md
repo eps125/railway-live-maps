@@ -58,11 +58,22 @@ that used it as an "is this berth occupied?" check (`GET …/current-run`) now c
 the `event_at` of the CA/CC that put the description there.
 
 **Fresh-start / gap handling.** On a fresh `td-live-berth-state` checkpoint the live projector
-seeds `berth_current_state` from the history projector's open `berth_occupancy` rows (one
-`INSERT … SELECT`), then sets its checkpoint to the history projector's current position and
-tails forward — no 14-day replay, no gap. If `ingest-td` is down, NR does not replay, so the
-gap is permanent regardless; the history projector still catches `berth_occupancy` up from
-`raw_feed_event` and the live projector re-seeds on its next fresh start.
+sets its checkpoint to the history projector's current position **first and unconditionally**,
+then best-effort seeds `berth_current_state` from the history projector's open `berth_occupancy`
+rows (one `INSERT … SELECT`), then tails forward — no 14-day replay, no gap. If `ingest-td` is
+down, NR does not replay, so the gap is permanent regardless; the history projector still
+catches `berth_occupancy` up from `raw_feed_event` and the live projector re-seeds on its next
+fresh start.
+
+**Hotfix 2026-09-02 (migration 0026).** The seed originally ran *before* the checkpoint
+advance. `berth_occupancy` is partitioned by `entered_at` with no `left_at` index, so
+`where projection_version = $1 and left_at is null` was a seq-scan of every partition and blew
+the daemon's 10 s `statement_timeout` on the live stack. Because the failure left the checkpoint
+"fresh", every subsequent tick re-attempted the same doomed seed and the projector never
+processed an event or published a delta — the public map only updated on manual refresh. Fixed
+by (a) partial index `berth_occupancy (projection_version, td_area, berth_code) where left_at is
+null`, and (b) advancing the checkpoint first + running the seed best-effort (`try/catch`, log
+and continue) since `project-td-daemon` also maintains `berth_current_state`.
 
 ### Expected latency
 

@@ -185,6 +185,42 @@ describe("runProjectTdLive (integration)", () => {
     expect(redis.published.some((p) => JSON.stringify(p.message).includes("9Z99"))).toBe(false);
   });
 
+  it("a failing baseline fill on a fresh checkpoint does not wedge the projector", async () => {
+    // Regression: seedFromHistory ran before the checkpoint advance, so when its berth_occupancy
+    // scan blew the statement_timeout the checkpoint stayed "fresh" and every tick re-attempted
+    // the doomed seed — the live projector never processed an event (migration 0026 / ADR 0003).
+    await pool.query(
+      `delete from projection_checkpoint where projection_definition_id in (
+         select id from projection_definition where name = 'td-live-berth-state'
+       )`,
+    );
+
+    const area = uniqueArea();
+    const t = Date.now();
+    await seedCEvent(
+      area,
+      "CC",
+      { area_id: area, time: String(t), to: "0042", descr: "1W88" },
+      new Date(t),
+    );
+
+    const summary = await runProjectTdLive(pool, new CapturingRedis(), {
+      bindings: new BindingsCache(pool, 0),
+      seedBaseline: () => Promise.reject(new Error("simulated slow berth_occupancy scan")),
+    });
+
+    expect(summary.seeded).toBe(true);
+    expect(await currentDescription(area, "0042")).toBe("1W88"); // event still processed
+
+    // Checkpoint is no longer "fresh" — a second run is a clean no-op, not another seed attempt.
+    const again = await runProjectTdLive(pool, new CapturingRedis(), {
+      bindings: new BindingsCache(pool, 0),
+      seedBaseline: () => Promise.reject(new Error("must not be called again")),
+    });
+    expect(again.seeded).toBe(false);
+    expect(again.processedEvents).toBe(0);
+  });
+
   it("does not regress a berth another writer already advanced past (monotonic guard)", async () => {
     const area = uniqueArea();
     const t = Date.now();

@@ -304,6 +304,37 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-railway}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: UTC
+    # Tuning (2026-09-01): the stock image ships `shared_buffers=128MB`, which on this
+    # single-box deployment (RLM + openrail-eps + MinIO sharing ~8GB) meant the live-path
+    # working set and the garner `cif_schedule_locations` mirror couldn't stay cached together,
+    # so a bulk write starved `projector-td`. These `-c` flags override any `ALTER SYSTEM`
+    # (`postgresql.auto.conf`) settings, so change values HERE from now on, not via SQL. Every
+    # value is env-overridable for a box with more/less RAM — bump SHARED_BUFFERS to ~4GB and
+    # EFFECTIVE_CACHE_SIZE to ~10GB on a 16GB host. RANDOM_PAGE_COST / EFFECTIVE_IO_CONCURRENCY
+    # assume SSD/NVMe — raise RANDOM_PAGE_COST back to 4 and drop the concurrency on spinning disk.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-2GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-5GB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-512MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-48MB}
+      - -c
+      - wal_compression=${PG_WAL_COMPRESSION:-on}
+      - -c
+      - max_wal_size=${PG_MAX_WAL_SIZE:-4GB}
+      - -c
+      - min_wal_size=${PG_MIN_WAL_SIZE:-1GB}
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=${PG_RANDOM_PAGE_COST:-1.1}
+      - -c
+      - effective_io_concurrency=${PG_EFFECTIVE_IO_CONCURRENCY:-200}
+    shm_size: ${PG_SHM_SIZE:-512mb}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:

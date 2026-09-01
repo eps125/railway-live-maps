@@ -26,6 +26,8 @@ import { runIngestTrust } from "./commands/ingestTrust.js";
 import { runProjectTrustCommand } from "./commands/projectTrust.js";
 import { runProjectResolverCommand } from "./commands/projectResolver.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
+import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
+import { runProjectResolverDaemon } from "./commands/projectResolverDaemon.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -90,6 +92,12 @@ async function main(): Promise<void> {
       return;
     case "schedule-reference-refresh":
       await runScheduleReferenceRefresh(config);
+      return;
+    case "project-td-daemon":
+      await runProjectTdDaemon(config);
+      return;
+    case "project-resolver-daemon":
+      await runProjectResolverDaemon(config);
       return;
     case "serve":
       await runServe(config);

@@ -19,11 +19,13 @@
 # Actual live ingestion runs in the three dedicated `ingest-*` services below: each is always
 # running, but its shell wrapper idles (`sleep infinity`) rather than connecting whenever its
 # own `*_LIVE_ENABLED` flag is false, so leaving them at the default is a safe no-op rather
-# than a crash loop. `projector-td`, `projector-schedule` and `projector-resolver` periodically
-# re-run the one-shot `project-*` commands (there is no built-in scheduler yet) so ingested data
-# actually becomes queryable without needing to run those commands by hand after every test —
-# split into three loops so live berth positions and resolver latency can never be stalled by
-# schedule/TRUST backlog work, or each other (see the comments on each service below).
+# than a crash loop. `projector-td` and `projector-resolver` run persistent daemons
+# (`project-td-daemon` / `project-resolver-daemon`, 2026-09 live-path hardening) that tick every
+# 250-500ms in one warm process — no per-cycle `node` cold start. `projector-schedule` still
+# re-runs the one-shot `project-vstp`/`project-trust` commands in a shell loop (there is no
+# built-in scheduler yet). Split into separate services so live berth positions and resolver
+# latency can never be stalled by schedule/TRUST backlog work, or each other (see the comments on
+# each service below).
 #
 # Postgres/Redis/archive are published to the host below for direct testing access — this
 # is a deliberate departure from docs/ARCHITECTURE.md §12 ("only the reverse proxy/web entry
@@ -76,10 +78,11 @@ x-worker-env: &worker-env
   # download-schedule/download-smart/download-corpus at, once a day. Only takes effect while
   # SCHEDULE_DOWNLOAD_ENABLED is true — see that service's own comment.
   REFERENCE_DATA_REFRESH_TIME: ${REFERENCE_DATA_REFRESH_TIME:-01:00}
-  # Must match the `api` service's own copy of this flag below — see the map-deltas service
-  # and docs/ARCHITECTURE.md's Milestone 6 note. On: the WebSocket layer gets pushed deltas
-  # over Redis pub/sub instead of polling Postgres, which is what actually makes the map feel
-  # live rather than merely "polls a bit faster."
+  # Must match the `api` service's own copy of this flag below — and gates whether
+  # `project-td-daemon` publishes map deltas to Redis after each projection tick (see the
+  # projector-td service and docs/ARCHITECTURE.md's Milestone 6 note). On: the WebSocket layer
+  # gets pushed deltas over Redis pub/sub instead of polling Postgres, which is what actually
+  # makes the map feel live rather than merely "polls a bit faster."
   LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
   # The `project-resolver` live loop only resolves berth occupancies entered within this many
   # hours (default 72). Keeps a RESOLVER_VERSION bump — which starts a fresh resolver checkpoint
@@ -273,32 +276,25 @@ services:
     # requirement as ingest-td/vstp/trust and the worker service's own console commands.
     networks: [backend, egress]
 
-  # Fast lane: re-runs project-td in its own tight loop. project-td is checkpointed and
-  # incremental (a single indexed query against its own checkpoint), so an idle backlog returns
-  # instantly — this loop's sleep is one of the two things that set the map's actual end-to-end
-  # update latency (the other is map-deltas below). Deliberately its own service rather than
-  # sharing a loop with projector-schedule/projector-resolver below: those can each take many
-  # seconds per invocation while working through backlog, and when project-td shared one
-  # sequential loop with them, live berth positions stalled for as long as schedule/TRUST
-  # resolution stayed busy — confirmed 2026-08-10 as the dominant cause of live-map lag (up to
-  # ~25s, matching project-resolver's own per-invocation cap). Split so berth position updates
-  # are never gated behind schedule/TRUST resolution, which has a completely different latency
-  # requirement.
+  # Live berth-position + map-delta path, as one persistent process (2026-09 live-path
+  # hardening). Replaces the previous `projector-td` and `map-deltas` services, which each ran
+  # `while true; do node dist/index.js <cmd>; sleep 1; done` — a full node cold start (~0.5-1s)
+  # every cycle was the dominant contributor to end-to-end live-map latency, and the two
+  # independent `sleep 1` loops could drift out of phase and stack their waits. `project-td-daemon`
+  # runs runProjectTd then (when LIVE_WS_REDIS_PUBSUB_ENABLED) runProjectMapDeltas back to back
+  # on a 250ms tick in one warm process. `--rebuild` still needs the one-shot: run
+  # `project-td --rebuild` from the `worker` console, then restart this service.
   projector-td:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped
     environment: *worker-env
-    command:
-      - sh
-      - -c
-      - |
-        while true; do
-          node dist/index.js project-td
-          sleep 1
-        done
+    command: ["node", "dist/index.js", "project-td-daemon"]
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 15s
     healthcheck:
       disable: true
     networks: [backend]
@@ -334,59 +330,22 @@ services:
       disable: true
     networks: [backend]
 
-  # Resolver candidate matching, its own loop since 2026-08-11 (see projector-schedule's comment
-  # above for why). project-resolver batches its reads per project-td batch rather than per
-  # occupancy specifically so an idle-vs-large backlog both stay fast — a per-occupancy version of
-  # it previously hung this whole loop indefinitely (see apps/worker/src/resolver/projector.ts's
-  # module doc comment).
+  # Resolver candidate matching, as one persistent process (2026-09 live-path hardening) —
+  # replaces the previous `projector-resolver` service's `while true; do node dist/index.js
+  # project-resolver; sleep 1; done` loop for the same reason projector-td was daemonised: no
+  # per-cycle node cold start. `project-resolver-daemon` runs the normal live loop (forward scan
+  # + retry pass, both bounded by RESOLVER_LIVE_WINDOW_HOURS) on a 500ms tick. `--rebuild` /
+  # `--backfill` still need the one-shot `project-resolver` command from the `worker` console;
+  # both take their own advisory locks so they're safe to run alongside this daemon.
   projector-resolver:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped
     environment: *worker-env
-    command:
-      - sh
-      - -c
-      - |
-        while true; do
-          node dist/index.js project-resolver
-          sleep 1
-        done
+    command: ["node", "dist/index.js", "project-resolver-daemon"]
     depends_on:
       postgres:
         condition: service_healthy
-    healthcheck:
-      disable: true
-    networks: [backend]
-
-  # Publishes real-time berth deltas to Redis (railway:live:{slug} channels) the instant
-  # project-td writes new td_berth_event rows, which apps/api's redisDeltaSource then pushes
-  # straight to connected WebSocket clients — no polling on the delivery side at all. Only
-  # runs when LIVE_WS_REDIS_PUBSUB_ENABLED=true (matches the api service's own copy of the
-  # flag); idles otherwise, same pattern as the ingest-* services. This is what makes the
-  # public map feel genuinely live rather than "polls a bit faster" — without it, the
-  # WebSocket layer still works, just by polling Postgres every ~1s as a fallback.
-  map-deltas:
-    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
-    restart: unless-stopped
-    environment: *worker-env
-    command:
-      - sh
-      - -c
-      - |
-        if [ "$$LIVE_WS_REDIS_PUBSUB_ENABLED" = "true" ]; then
-          while true; do
-            node dist/index.js project-map-deltas
-            sleep 1
-          done
-        else
-          echo "map-deltas: LIVE_WS_REDIS_PUBSUB_ENABLED is not true, idling"
-          exec sleep infinity
-        fi
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    stop_grace_period: 15s
     healthcheck:
       disable: true
     networks: [backend]

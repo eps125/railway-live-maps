@@ -28,13 +28,18 @@ export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
  * "ingest-vstp"/"ingest-trust" are the live feed connectors — each refuses to start unless its
  * own `*_LIVE_ENABLED` flag is true. "schedule-reference-refresh" runs the same work as the
  * `refresh-reference-data` one-shot command, but once a day at a fixed Europe/London time rather
- * than on demand — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true. */
+ * than on demand — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true.
+ * "project-td-daemon"/"project-resolver-daemon" (2026-09 live-path hardening) replace the
+ * `projector-td`/`map-deltas`/`projector-resolver` Portainer services' per-cycle `node ...;
+ * sleep 1` shell loops with one persistent process each — see runDaemonLoop's doc comment. */
 export const LONG_RUNNING_ROLE_NAMES = [
   "serve",
   "ingest-td",
   "ingest-vstp",
   "ingest-trust",
   "schedule-reference-refresh",
+  "project-td-daemon",
+  "project-resolver-daemon",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];
 

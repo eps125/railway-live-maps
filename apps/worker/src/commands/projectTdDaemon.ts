@@ -10,6 +10,13 @@ import { runDaemonLoop } from "../shared/daemonLoop.js";
  * to pay (see runDaemonLoop's doc comment). */
 const TICK_INTERVAL_MS = 250;
 
+/** Cap on `runProjectTd` batches per tick (× DEFAULT_BATCH_SIZE 500 = ~10k events). Without it,
+ * a large catch-up (e.g. the ~95k-event / 18-min backlog after the 2026-09-01 incident) runs
+ * `runProjectTd` for minutes in one call, during which `runProjectMapDeltas` below never gets a
+ * turn — so the WS delta stream goes silent and the live map "sticks" until F5. With the cap the
+ * two interleave: the map keeps flowing deltas even while berth history catches up. */
+const PROJECT_TD_MAX_BATCHES_PER_TICK = 20;
+
 /**
  * `project-td-daemon` — long-running replacement for the `projector-td` and `map-deltas`
  * Portainer services (2026-09 live-path hardening, docs/IMPLEMENTATION_PLAN.md). Each tick runs
@@ -44,7 +51,7 @@ export async function runProjectTdDaemon(config: Config): Promise<void> {
     label: "project-td-daemon",
     intervalMs: TICK_INTERVAL_MS,
     tick: async () => {
-      await runProjectTd(pool);
+      await runProjectTd(pool, { maxBatches: PROJECT_TD_MAX_BATCHES_PER_TICK });
       if (redis) {
         await runProjectMapDeltas(pool, redis);
       }

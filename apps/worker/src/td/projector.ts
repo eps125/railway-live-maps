@@ -29,6 +29,10 @@ export interface ProjectTdOptions {
    * td_s_event normalized mirrors, which aren't independently versioned) and reprocesses from
    * ingestion_sequence 0. */
   rebuild?: boolean;
+  /** Stop after this many batches even if more events are waiting, so a caller that also has
+   * other work to do each cycle (project-td-daemon runs `runProjectMapDeltas` right after this)
+   * isn't blocked for minutes draining a large backlog in one call. Unset = drain fully. */
+  maxBatches?: number;
 }
 
 export interface ProjectTdSummary {
@@ -559,6 +563,7 @@ export async function runProjectTd(
         break;
       }
       summary.batches += 1;
+      // (maxBatches check happens after this batch commits — see end of loop)
 
       const client = await pool.connect();
       try {
@@ -612,6 +617,13 @@ export async function runProjectTd(
         throw error;
       } finally {
         client.release();
+      }
+
+      // Yield after `maxBatches` so the daemon can publish deltas / check its other work rather
+      // than stay blocked here for minutes on a large catch-up. The checkpoint is committed per
+      // batch, so the next call resumes exactly where this left off.
+      if (options.maxBatches !== undefined && summary.batches >= options.maxBatches) {
+        break;
       }
     }
 

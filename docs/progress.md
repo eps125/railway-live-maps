@@ -375,10 +375,19 @@ first time; fixed in one commit.
   the incident with the container still "Up".
 - **`ingest-garner` self-throttles.** Per-batch caps cut to `SCHEDULE_BATCH=2000` /
   `TRUST_BATCH=5000`; the pg pool runs `synchronous_commit = off` (all mirror data is
-  rebuildable); and every tick it reads `td-berth-and-s-class`'s checkpoint lag and **skips the
-  schedule + reference sync entirely while `projector-td` is more than 8s behind** — the
-  incremental trust tail still runs. The unthrottled initial backfill (~11M `cif_schedule_locations`
-  rows) had saturated disk write bandwidth and starved the live projector.
+  rebuildable); and every tick it **skips _all_ garner sync when `projector-td` is stalled
+  (>8s since last batch) OR more than 5000 TD events behind the newest ingested one**. The
+  first cut only checked "time since last batch", which stayed ~3s during the post-incident
+  catch-up while the projector was ~95k events / 18 min behind — hence the event-backlog check.
+  The unthrottled initial backfill (~11M `cif_schedule_locations` rows) had saturated disk write
+  bandwidth and starved the live projector.
+- **`runProjectTd` gained `maxBatches`; `project-td-daemon` caps it at 20 batches (~10k events)
+  per tick.** `runProjectTd`'s `for(;;)` loop drains the whole backlog in one call — so a large
+  catch-up blocked the daemon for minutes, during which `runProjectMapDeltas` (which runs right
+  after it in the same tick) never fired, the WS delta stream went silent, and the live map
+  "stuck" until a manual F5 (the REST `/state` snapshot stayed fresh). With the cap the two
+  interleave and deltas keep flowing during a catch-up. The one-shot `project-td` /
+  `--rebuild` commands still drain fully (unset = old behaviour).
 
 Operational: Postgres was also tuned live via `ALTER SYSTEM` (`shared_buffers` 128MB → 2GB,
 `wal_compression=on`, bigger `max_wal_size`) — not in the repo; fold into the compose `command`

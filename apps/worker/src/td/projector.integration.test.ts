@@ -261,6 +261,31 @@ describe("runProjectTd (integration)", () => {
     expect(historyAfter).toHaveLength(1);
   });
 
+  it("maxBatches: stops after the batch cap so the daemon can publish deltas, resumes next call", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    for (let i = 0; i < 5; i++) {
+      await record([cc(area, `07${i}0`, `MB${i}`, t + i * 1000)], new Date(t + i * 1000));
+    }
+
+    // batchSize 1 + maxBatches 2 → at most 2 of this area's 5 berths projected per call.
+    await runProjectTd(pool, { batchSize: 1, maxBatches: 2 });
+    const seen = async (): Promise<number> => {
+      const r = await pool.query<{ n: string }>(
+        `select count(*)::text as n from berth_current_state
+         where projection_version = $1 and td_area = $2 and description is not null`,
+        [TD_PROJECTION_VERSION, area],
+      );
+      return Number(r.rows[0]!.n);
+    };
+    expect(await seen()).toBe(2);
+
+    // A subsequent call resumes from the committed checkpoint and finishes the rest.
+    await runProjectTd(pool, { batchSize: 1, maxBatches: 2 });
+    await runProjectTd(pool, { batchSize: 1, maxBatches: 2 });
+    expect(await seen()).toBe(5);
+  });
+
   it("month partition boundary: occupancy spans two monthly partitions without error", async () => {
     await ensureMonthlyPartitions(
       pool,

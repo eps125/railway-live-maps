@@ -62,28 +62,49 @@ event-sourcing fight each other.
    daemonising removes the dominant latency without touching the ack-critical recorder path. It
    remains an available follow-up.
 
-### Data source (Milestone 15, step "2 new")
+### Data source — full mirror, not a mapping layer (Milestone 15 step "2 new"; scope expanded 2026-09-01)
 
 Railway Live Maps will **source TRUST, VSTP, SCHEDULE, CORPUS and SMART data from the operator's
-openrail-eps MariaDB** instead of subscribing to Network Rail a second time:
+openrail-eps MariaDB** instead of subscribing to Network Rail a second time. The owner agreed
+(2026-09-01) to **discard RLM's existing VSTP/CIF/schedule data and reshape those tables to
+mirror garner's schema near-verbatim** — the bridge becomes a plain upsert-by-id + a `deleted`
+sweep, not a schema-mapping layer with its own impedance mismatch and mapping bugs.
 
 - openrail-eps publishes its `db` service port and the operator creates a **read-only**
   `GRANT SELECT` user for the bridge (never the admin credentials).
-- A new flag-gated `ingest-garner` daemon (`GARNER_BRIDGE_ENABLED`, off by default, same
-  discipline as `TD_LIVE_ENABLED`) reads garner's tables via `mysql2` and writes into RLM's
-  **existing** Postgres shapes (`schedule`/`schedule_location`/`location_reference`/
-  `smart_berth_step`/`train_run`/`train_run_event`), tagged `source = 'GARNER'`, each source table
-  watermarked by its `created`/auto-increment id in `projection_checkpoint`.
-- TRUST movement/cancellation/change events reuse the existing pure reducer
-  (`packages/domain/src/trust/runReducer.ts`) — only the garner-row → identity/effect extraction
-  layer is new; the NR-direct TRUST projector is untouched and retained for fallback.
-- garner's own `trust_activation.cif_schedule_id` / `deduced` (its single-winner schedule guess)
-  is **not** consumed. RLM keeps its own `resolveScheduleForTrainUid` / STP-precedence logic so
-  ambiguity stays honestly reported (CLAUDE.md rule 7). `deduced` may be used as one additional
-  evidence input, cross-checked.
-- `train_run.origin_departure_at` and other fields RLM's TRUST projector hardcodes `null` can be
-  populated from garner's richer `trust_activation_extra` (`origin_dep_timestamp`, `train_uid`,
-  `schedule_wtt_id`, …).
+- `ingest-garner` daemon (`GARNER_BRIDGE_ENABLED`, off by default, same discipline as
+  `TD_LIVE_ENABLED`) reads garner via `mysql2`. Each source table is watermarked by its
+  `created` epoch / auto-increment `id` in `projection_checkpoint` under a `garner-<table>` name.
+- **CORPUS → `location_reference`, SMART → `smart_berth_step`** — full re-sync (small, ~daily).
+  Implemented (commit 43f56ac).
+- **`cif_schedules` / `cif_schedule_locations` → `schedule` / `schedule_location`** — RLM's tables
+  are dropped and recreated in garner shape (garner's column names, garner's `id` as the PK so
+  the mirror is a pure upsert, garner's `deleted` epoch column instead of `withdrawn_at`, dates
+  converted from garner's epoch INTs, a generated `days_runs_bitmask` from garner's `runs_*`
+  booleans so `resolveStpPrecedence.ts` needs no change). Migration 0024.
+- **`trust_activation` (+`_extra`) / `trust_movement` / `trust_cancellation` / `trust_changeorigin`
+  / `trust_changeid` / `trust_changelocation` → new garner-shaped RLM tables**. RLM's bespoke
+  `train_run` / `train_run_event` / `run_schedule_link` model and `runReducer.ts` are **dropped**
+  — a bespoke run model with its own reducer is exactly the impedance layer being removed.
+  RLM's mirror still accumulates its own long-term history (it keeps synced rows after garner
+  archives them at 15 days). Migration 0025.
+- The NR-direct `ingest-trust` / `ingest-vstp` / `download-schedule` / `import-schedule` paths
+  and their code (`apps/worker/src/{trust,vstp,schedule}/`, `packages/domain/src/{trust,schedule}/`
+  where garner-superseded) are retired.
+
+### The berth-run resolver is removed and deferred (2026-09-01)
+
+RLM's Milestone 9 resolver (`packages/domain/src/resolver/`, `apps/worker/src/resolver/`,
+`berth_run_resolution` — a 23 GB table — the `project-resolver` daemon/`--backfill`/version-bump
+machinery, `computeRunSummaries`, `publishResolutionDeltas`, the `run.resolution.updated` WS
+message and `runSummary` delta field) was the single largest source of production incidents this
+session and is **removed wholesale**. It is to be **rebuilt in a later phase** on top of garner's
+own correlation work — garner's `trust_activation.cif_schedule_id` link, its
+`deduced_headcode`/`deduced_headcode_status`, and its SMART berth-offset tracking (what drives
+`livesig`) already do most of the job. Interim, the click-a-berth popup shows: the TD headcode,
+and — matched on headcode + service date against the mirrored garner `trust_activation` — garner's
+linked schedule and latest `trust_movement` report, **labelled as garner's deduction**, not
+RLM's own `matched`/`ambiguous`/`unmatched` verdict.
 
 ### CLAUDE.md rule 1 exception
 

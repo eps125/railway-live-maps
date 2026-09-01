@@ -23,9 +23,9 @@ Do not repeatedly load every document when one or two are sufficient.
 2. A Network Rail broker message is acknowledged only after its complete original frame has been archived and every child event has been durably indexed, including unsupported or malformed children with a recorded parse outcome.
 3. Current state, history and playback are derived projections and must be rebuildable.
 4. Store raw and normalized timestamps. Store canonical timestamps in UTC and render user-facing times in `Europe/London`.
-5. Never assume a four-character berth description uniquely identifies a train run.
-6. TRUST activation is the authoritative link between a run and a schedule when available.
-7. Resolver results must be `matched`, `ambiguous` or `unmatched`; never hide ambiguity.
+5. Never assume a four-character berth description uniquely identifies a train run. **(Held in abeyance — ADR 0002, 2026-09-01: RLM's own berth-run resolver is removed; run↔schedule correlation is deferred to a later phase built on garner's data. Reinstate when that phase starts.)**
+6. TRUST activation is the authoritative link between a run and a schedule when available. **(As of ADR 0002, this link comes from garner's `trust_activation.cif_schedule_id`, mirrored — not RLM's own activation-linking.)**
+7. Resolver results must be `matched`, `ambiguous` or `unmatched`; never hide ambiguity. **(Held in abeyance with #5. Interim: the popup shows garner's single-winner deduction, honestly labelled as garner's, not an RLM verdict.)**
 8. Lancaster/Preston has no usable S-Class data. Lancaster signal symbols remain blank, while S-Class events from other areas are still captured and retained.
 9. Future signals use only `blank`, `on` and `off`. Red means on; green means off. Never calculate or claim yellow, double-yellow or green physical aspects.
 10. Never infer signal state from train movements, routes, occupation, timetable data or adjacent signals.

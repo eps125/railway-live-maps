@@ -787,6 +787,22 @@ a verification pass of the C-source schema (documented in ADR 0002) against the 
 openrail-eps instance. Until they land, `ingest-trust` / `ingest-vstp` / `download-schedule` stay
 the source for TRUST and CIF-schedule data.
 
+**Scope expanded 2026-09-01 (owner):** discard RLM's VSTP/CIF/schedule data and reshape those
+tables to **mirror garner's schema near-verbatim**; drop RLM's bespoke `train_run` /
+`train_run_event` / `run_schedule_link` model + `runReducer.ts` and mirror garner's `trust_*`
+tables instead; **remove RLM's Milestone 9 berth-run resolver wholesale** (`berth_run_resolution`,
+`packages/domain/src/resolver/`, `apps/worker/src/resolver/`, the `project-resolver` daemon and
+all its machinery, `computeRunSummaries`, `publishResolutionDeltas`, the `run.resolution.updated`
+WS message + `runSummary` delta field) and rebuild it in a later phase on garner's correlation
+data. Interim the click-a-berth popup shows garner's deduced schedule + latest movement, labelled
+as garner's. See ADR 0002's "full mirror" and "berth-run resolver is removed and deferred"
+sections; CLAUDE.md non-negotiables 5/6/7 are held in abeyance. Migrations: 0024 (schedule →
+garner shape), 0025 (drop `berth_run_resolution` + `train_run*` + `run_schedule_link`, add
+garner-shaped `trust_*`).
+
+**Milestone 9 (resolver) status changes to: superseded by ADR 0002; to be re-planned as its own
+milestone before any rebuild.**
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

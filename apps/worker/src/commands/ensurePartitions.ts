@@ -8,7 +8,9 @@ const PARTITIONED_TABLES = [
   "td_s_event",
   "berth_occupancy",
   "td_s_bit_transition",
-  "train_run_event",
+  // `train_run_event` was dropped with RLM's bespoke run model (ADR 0002, migration 0025). The
+  // garner `trust_*` mirror tables are unpartitioned for now; partitioning `trust_movement` on
+  // `created` is a deferred follow-up (docs/IMPLEMENTATION_PLAN.md Milestone 15 step 4).
 ] as const;
 
 /** Shared by the standalone `ensure-partitions` command and `migrate` (which tops up

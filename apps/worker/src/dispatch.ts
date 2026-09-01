@@ -9,35 +9,31 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "publish-map",
   "backfill-map-bindings",
   "project-map-deltas",
-  "project-vstp",
-  "reparse-vstp-archive",
-  "import-schedule",
-  "download-schedule",
   "import-corpus",
   "download-corpus",
   "import-smart",
   "download-smart",
   "refresh-reference-data",
-  "project-trust",
   "backfill-td-area-summary",
   "prune-partitions",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 
-/** Long-running worker roles. "serve" is the default (no argv) idle daemon; "ingest-td"/
- * "ingest-vstp"/"ingest-trust" are the live feed connectors — each refuses to start unless its
- * own `*_LIVE_ENABLED` flag is true. "schedule-reference-refresh" runs the same work as the
- * `refresh-reference-data` one-shot command, but once a day at a fixed Europe/London time rather
- * than on demand — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true.
+/** Long-running worker roles. "serve" is the default (no argv) idle daemon; "ingest-td" is the
+ * live TD feed connector — refuses to start unless `TD_LIVE_ENABLED` is true.
+ * "schedule-reference-refresh" runs the `refresh-reference-data` one-shot (CORPUS/SMART) once a
+ * day at a fixed Europe/London time — refuses to start unless SCHEDULE_DOWNLOAD_ENABLED is true.
  * "project-td-daemon" (2026-09 live-path hardening) replaces the `projector-td`/`map-deltas`
  * Portainer services' per-cycle `node ...; sleep 1` shell loops with one persistent process —
- * see runDaemonLoop's doc comment. (The `project-resolver` daemon/commands were removed by
- * ADR 0002 along with the rest of the berth-run resolver.) */
+ * see runDaemonLoop's doc comment. "ingest-garner" (ADR 0002) mirrors TRUST / VSTP-schedule /
+ * CORPUS / SMART from the operator's openrail-eps MariaDB — RLM no longer subscribes to Network
+ * Rail for those feeds, so the `ingest-vstp` / `ingest-trust` roles and the `project-vstp` /
+ * `project-trust` / `import-schedule` / `download-schedule` commands were removed. (The
+ * `project-resolver` daemon/commands went the same way, with the rest of the berth-run
+ * resolver.) */
 export const LONG_RUNNING_ROLE_NAMES = [
   "serve",
   "ingest-td",
-  "ingest-vstp",
-  "ingest-trust",
   "schedule-reference-refresh",
   "project-td-daemon",
   "ingest-garner",

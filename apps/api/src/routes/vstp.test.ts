@@ -14,29 +14,30 @@ function fakePool(handler: QueryHandler): Pool {
 function row(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "10",
-    train_uid: "Z12345",
+    cif_train_uid: "Z12345",
     schedule_start_date: "2026-08-07",
     schedule_end_date: "2026-08-07",
-    stp_indicator: "N",
+    cif_stp_indicator: "N",
     days_runs_bitmask: "1111100",
     signalling_id: "1A23",
-    operator_code: "GW",
-    train_service_code: "12345600",
-    train_category: "XX",
+    atoc_code: "GW",
+    cif_train_service_code: "12345600",
+    cif_train_category: "XX",
     train_status: "P",
-    power_type: "EMU",
+    cif_power_type: "EMU",
     origin_tiploc: "PADTON",
     destination_tiploc: "BRSTLTM",
-    created_at: new Date("2026-08-07T12:00:00Z"),
+    created: new Date("2026-08-07T12:00:00Z"),
     ...overrides,
   };
 }
 
 describe("vstp routes", () => {
-  it("GET /api/v1/vstp/schedules lists VSTP-sourced schedules most-recent-first", async () => {
+  it("GET /api/v1/vstp/schedules lists non-permanent (STP) cif_schedules most-recent-first", async () => {
     const pool = fakePool((text, values) => {
-      expect(text).toContain("source = 'VSTP'");
-      expect(text).not.toContain("operator_code =");
+      expect(text).toContain("cif_stp_indicator <> 'P'");
+      expect(text).toContain("from cif_schedules");
+      expect(text).not.toContain("s.atoc_code = $");
       expect(values).toEqual([100]);
       return { rows: [row()] };
     });
@@ -72,9 +73,9 @@ describe("vstp routes", () => {
 
   it("filters by atocCode when supplied", async () => {
     const pool = fakePool((text, values) => {
-      expect(text).toContain("operator_code = $1");
+      expect(text).toContain("s.atoc_code = $1");
       expect(values).toEqual(["GW", 100]);
-      return { rows: [row({ operator_code: "GW" })] };
+      return { rows: [row({ atoc_code: "GW" })] };
     });
 
     const app = Fastify();
@@ -90,13 +91,13 @@ describe("vstp routes", () => {
 
   it("paginates backward in time via before/nextCursor once a full page comes back", async () => {
     const pool = fakePool((text, values) => {
-      if (!text.includes("id <")) {
+      if (!text.includes("s.id < $")) {
         // First page: a full page (limit=1) comes back, so nextCursor should be set.
         expect(values).toEqual([1]);
         return { rows: [row({ id: "10" })] };
       }
       // Second page, following nextCursor via `before`.
-      expect(text).toContain("id < $1");
+      expect(text).toContain("s.id < $1");
       expect(values).toEqual(["10", 1]);
       return { rows: [row({ id: "9" })] };
     });

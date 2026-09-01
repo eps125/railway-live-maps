@@ -9,22 +9,22 @@ import type { Config } from "../config.js";
  * guard against fat-fingering a recent date).
  *
  * Partitions are dropped in foreign-key-safe order — referencing partitioned tables before the
- * tables they reference, and the non-partitioned `berth_run_resolution` rows for the pruned
- * occupancy range before `berth_occupancy`:
+ * tables they reference:
  *
- *   train_run_event → (td_berth_event, td_s_event, td_s_bit_transition) → berth_run_resolution
- *   rows → berth_occupancy → raw_feed_event
+ *   (td_berth_event, td_s_event, td_s_bit_transition) → berth_occupancy → raw_feed_event
  *
  * This deletes retained data and is irreversible from Postgres — the raw NR frames still live in
  * the S3/MinIO archive (raw_archive_object), so a pruned month can be rehydrated/reprojected from
  * there if ever needed. Run it deliberately, off-peak, and read the dry-run output first.
+ *
+ * `train_run_event` was removed from this list when RLM's bespoke run model was dropped (ADR
+ * 0002, migration 0025). The garner `trust_*` mirror tables are unpartitioned and so not pruned
+ * here yet — see docs/IMPLEMENTATION_PLAN.md Milestone 15 step 4.
  */
 const PRUNE_MIN_AGE_DAYS = 14;
 
-// Referencing side first, referenced side last. berth_run_resolution (not partitioned) is handled
-// as a row DELETE between the berth_occupancy and its own referencing partitions.
+// Referencing side first, referenced side last.
 const DROP_ORDER = [
-  "train_run_event",
   "td_berth_event",
   "td_s_event",
   "td_s_bit_transition",
@@ -118,27 +118,17 @@ export async function runPrunePartitions(config: Config, argv: string[]): Promis
     }
 
     if (!execute) {
-      console.log(
-        "prune-partitions: dry run — re-run with --execute to drop. --execute also deletes " +
-          `berth_run_resolution rows with occupancy_entered_at < ${before.toISOString().slice(0, 10)}.`,
-      );
+      console.log("prune-partitions: dry run — re-run with --execute to drop.");
       return;
     }
 
-    // One transaction: DROP TABLE and DELETE are transactional in Postgres, so a foreign-key
-    // blocker (a referencing table not in DROP_ORDER) rolls the whole prune back cleanly rather
-    // than leaving it half-applied. The error names the constraint/table to add next.
+    // One transaction: DROP TABLE is transactional in Postgres, so a foreign-key blocker (a
+    // referencing table not in DROP_ORDER) rolls the whole prune back cleanly rather than
+    // leaving it half-applied. The error names the constraint/table to add next.
     const client = await pool.connect();
     try {
       await client.query("begin");
       for (const parent of DROP_ORDER) {
-        if (parent === "berth_occupancy") {
-          const del = await client.query(
-            `delete from berth_run_resolution where occupancy_entered_at < $1`,
-            [before],
-          );
-          console.log(`  deleted ${del.rowCount ?? 0} berth_run_resolution row(s)`);
-        }
         for (const p of toDrop.filter((x) => x.parent === parent)) {
           await client.query(`drop table if exists "${p.partition}"`);
           console.log(`  dropped ${p.partition}`);

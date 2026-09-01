@@ -17,12 +17,10 @@ describe("parseCommand", () => {
     "publish-map",
     "backfill-map-bindings",
     "project-map-deltas",
-    "project-vstp",
-    "reparse-vstp-archive",
     "ingest-td",
-    "project-trust",
     "refresh-reference-data",
     "schedule-reference-refresh",
+    "ingest-garner",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);
   });

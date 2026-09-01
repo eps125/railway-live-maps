@@ -6,58 +6,54 @@ export interface VstpRoutesDeps {
   pool: Pool;
 }
 
-interface VstpScheduleRow {
+/**
+ * Since ADR 0002 (2026-09-01) there is no separate RLM VSTP store — short-term-planning schedule
+ * changes live in the garner `cif_schedules` mirror (migration 0024) alongside the permanent
+ * WTT, distinguished by `cif_stp_indicator` (`O` overlay / `N` new / `C` cancel, vs `P`
+ * permanent). This endpoint surfaces those non-permanent rows, most-recent first.
+ */
+interface StpScheduleRow {
   id: string;
-  train_uid: string;
+  cif_train_uid: string;
   schedule_start_date: string;
   schedule_end_date: string;
-  stp_indicator: "C" | "N" | "O" | "P";
+  cif_stp_indicator: string;
   days_runs_bitmask: string | null;
   signalling_id: string | null;
-  operator_code: string | null;
-  train_service_code: string | null;
-  train_category: string | null;
+  atoc_code: string | null;
+  cif_train_service_code: string | null;
+  cif_train_category: string | null;
   train_status: string | null;
-  power_type: string | null;
+  cif_power_type: string | null;
   origin_tiploc: string | null;
   destination_tiploc: string | null;
-  created_at: Date;
+  created: Date;
 }
 
-function vstpScheduleToJson(row: VstpScheduleRow) {
+function stpScheduleToJson(row: StpScheduleRow) {
   return {
     id: row.id,
-    trainUid: row.train_uid,
+    trainUid: row.cif_train_uid,
     scheduleStartDate: row.schedule_start_date,
     scheduleEndDate: row.schedule_end_date,
-    stpIndicator: row.stp_indicator,
+    stpIndicator: row.cif_stp_indicator,
     daysRunsBitmask: row.days_runs_bitmask,
     signallingId: row.signalling_id,
-    // "ATOC code" (the query param and NR's own CIF/VSTP field name) and this API's existing
-    // `operatorCode` (see routes/schedule.ts) are the same value — apps/worker/src/vstp/
-    // projector.ts populates the operator_code column directly from the BS record's atoc_code
-    // field. Kept as `operatorCode` here for consistency with GET /api/v1/schedule/:trainUid.
-    operatorCode: row.operator_code,
-    trainServiceCode: row.train_service_code,
-    trainCategory: row.train_category,
+    operatorCode: row.atoc_code,
+    trainServiceCode: row.cif_train_service_code,
+    trainCategory: row.cif_train_category,
     trainStatus: row.train_status,
-    powerType: row.power_type,
+    powerType: row.cif_power_type,
     originTiploc: row.origin_tiploc,
     destinationTiploc: row.destination_tiploc,
-    createdAt: row.created_at.toISOString(),
+    createdAt: row.created.toISOString(),
   };
 }
 
 /**
- * `GET /api/v1/vstp/schedules` — nationwide VSTP discovery, mirroring what
- * `/api/v1/td/areas`/`/api/v1/td/areas/{area}/berths` give TD (docs/API_CONTRACT.md §1's
- * "map-authoring and diagnostics" intent, extended to VSTP): browse everything captured, not
- * just a single known train_uid the way `GET /api/v1/schedule/:trainUid` requires. Backed by
- * nationwide ingestion, never a configured allow-list.
- *
- * Ordered most-recent-first (`id desc`) since the point of this endpoint is "what's come in
- * recently", not exhaustive enumeration — `nextCursor`/`before` page backward in time from
- * there, the opposite direction of the `after`-based cursors elsewhere in this API.
+ * `GET /api/v1/vstp/schedules?atocCode=&before=&limit=` — nationwide short-term-planning schedule
+ * discovery, mirroring what `/api/v1/td/areas` gives TD (docs/API_CONTRACT.md §1). Ordered
+ * `id desc` (most recent first); `before` pages backward in time.
  */
 export async function registerVstpRoutes(
   app: FastifyInstance,
@@ -71,32 +67,37 @@ export async function registerVstpRoutes(
       const { atocCode, before } = request.query;
       const limit = parseLimit(request.query.limit);
 
-      const conditions = ["source = 'VSTP'"];
+      const conditions = ["s.cif_stp_indicator <> 'P'", "s.deleted is null"];
       const values: unknown[] = [];
       if (atocCode) {
         values.push(atocCode);
-        conditions.push(`operator_code = $${values.length}`);
+        conditions.push(`s.atoc_code = $${values.length}`);
       }
       if (before) {
         values.push(before);
-        conditions.push(`id < $${values.length}`);
+        conditions.push(`s.id < $${values.length}`);
       }
       values.push(limit);
 
-      const result = await pool.query<VstpScheduleRow>(
-        `select id, train_uid, schedule_start_date::text as schedule_start_date,
-                schedule_end_date::text as schedule_end_date, stp_indicator,
-                days_runs_bitmask, signalling_id, operator_code, train_service_code,
-                train_category, train_status, power_type, origin_tiploc, destination_tiploc,
-                created_at
-         from schedule
+      const result = await pool.query<StpScheduleRow>(
+        `select s.id, s.cif_train_uid,
+                s.schedule_start_date::text as schedule_start_date,
+                s.schedule_end_date::text as schedule_end_date,
+                s.cif_stp_indicator, s.days_runs_bitmask, s.signalling_id, s.atoc_code,
+                s.cif_train_service_code, s.cif_train_category, s.train_status, s.cif_power_type,
+                s.created,
+                (select l.tiploc_code from cif_schedule_locations l
+                  where l.cif_schedule_id = s.id order by l.seq_no asc limit 1) as origin_tiploc,
+                (select l.tiploc_code from cif_schedule_locations l
+                  where l.cif_schedule_id = s.id order by l.seq_no desc limit 1) as destination_tiploc
+         from cif_schedules s
          where ${conditions.join(" and ")}
-         order by id desc
+         order by s.id desc
          limit $${values.length}`,
         values,
       );
 
-      const schedules = result.rows.map(vstpScheduleToJson);
+      const schedules = result.rows.map(stpScheduleToJson);
       const last = schedules.at(-1);
 
       reply.send({

@@ -253,9 +253,15 @@ The system stores bit facts only. Signal meaning comes from an explicit versione
 
 ## 6. Schedule and reference data
 
+> **ADR 0002 (2026-09-01):** RLM no longer runs its own SCHEDULE/VSTP importer. `schedule` /
+> `schedule_location` are replaced by `cif_schedules` / `cif_schedule_locations` — a near-verbatim
+> mirror of the operator's openrail-eps ("garner") tables, populated by `ingest-garner`
+> (`apps/worker/src/garner/bridge.ts`), migration 0024. garner is the NR-subscribed retention
+> layer for this feed; "raw with lineage" here is the garner row + `(cif_schedules.id, created)`.
+
 ### `source_file_import`
 
-Tracks complete downloaded files:
+Tracks complete downloaded files (CORPUS/SMART only, since ADR 0002):
 
 - source kind
 - archive object ID
@@ -265,38 +271,32 @@ Tracks complete downloaded files:
 - row counts
 - status and error summary
 
-### `schedule`
+### `cif_schedules`
 
-Natural uniqueness includes:
+Near-verbatim mirror of garner `cif_schedules` (column names lowercased). Primary key is garner's
+own `id` so the bridge is a pure upsert-by-id. Notable columns:
 
-- `train_uid`
-- `schedule_start_date`
-- `schedule_end_date`
-- STP indicator/schedule type
-- source/version as required
+- `cif_train_uid`, `cif_stp_indicator` (`C`/`N`/`O`/`P`), `signalling_id`
+- `schedule_start_date` / `schedule_end_date` — `date`, converted from garner's epoch INTs
+- `runs_mo`..`runs_su` booleans + generated `days_runs_bitmask` (7-char Mon..Sun `1`/`0`)
+- `created` / `deleted` — `timestamptz`; garner stamps `deleted` in place (soft delete), the
+  bridge writes NULL for garner's `0`. Every "candidates for matching" query filters
+  `deleted is null`.
+- `atoc_code`, `cif_train_service_code`, `cif_train_category`, `train_status`, `cif_power_type`,
+  `deduced_headcode` (garner's own headcode deduction for schedules lacking a signalling id)
 
-Retain:
+Origin/destination TIPLOC are **not** stored — derived from the first/last calling point.
 
-- signalling ID/headcode where supplied
-- operator/business code
-- train service code
-- train category/status/power type fields
-- cached origin/destination
-- source `SCHEDULE` or `VSTP`
-- raw source lineage
+### `cif_schedule_locations`
 
-Import the complete available dataset, not only schedules that traverse published maps.
+Near-verbatim mirror of garner `cif_schedule_locations`. `(cif_schedule_id, seq_no)` primary key,
+`seq_no` assigned by the bridge in garner's `sort_time` order (garner has no ordering column).
 
-### `schedule_location`
-
-- `schedule_id`
-- ordered sequence
-- TIPLOC
-- STANOX where resolved
-- arrival/departure/pass times, public and working
-- platform, path and line
-- activity codes
-- day offset
+- `record_identity` (`LO`/`LI`/`LT`), `location_type` (garner's misnamed column — actually the
+  packed CIF activity string), `tiploc_code`
+- `arrival` / `departure` / `pass` (working) + `public_arrival` / `public_departure` — raw
+  CIF HHMM(H) strings exactly as garner supplies them
+- `platform`, `path`, `line`, `next_day`, `sort_time`
 
 ### `location_reference`
 
@@ -310,63 +310,39 @@ Retain complete permitted SMART fields and source version. Use as evidence, not 
 
 File-based ingestion has no per-message ack to hang lineage off the way STOMP frames do (`raw_feed_event`'s per-child `parse_status` serves that role there) — this table is the equivalent for SCHEDULE/CORPUS/SMART file imports: every record type outside an importer's modeled scope (e.g. `AssociationV1`/`TiplocV1` lines inside a SCHEDULE extract) and every malformed line is retained here with `source_file_import_id`/`record_type`/`seq_no_in_file`/`raw_json`, never silently discarded (CLAUDE.md rule 18).
 
-## 7. Nationwide train-run model
+## 7. Nationwide TRUST model
 
-### `train_run`
+> **ADR 0002 (2026-09-01):** RLM's bespoke `train_run` / `train_run_event` / `run_schedule_link`
+> model was **dropped** (migration 0025). TRUST data is now a near-verbatim mirror of garner's
+> `trust_*` tables, populated by `ingest-garner`, watermarked by each table's `created` column in
+> `projection_checkpoint` under `garner-<table>` names. RLM keeps its synced rows after garner
+> archives them at ~15 days, so the mirror is still RLM's own long-term nationwide TRUST history.
 
-A single operational run:
+- **`trust_activation`** — `trust_id`, `created`, `cif_schedule_id` (garner's link to
+  `cif_schedules.id`; NULL when garner could not deduce one — deliberately not an FK),
+  `deduced` flag.
+- **`trust_activation_extra`** — the full activation payload: `train_uid`, `toc_id`,
+  `schedule_wtt_id`, `schedule_type`, `origin_dep_timestamp`, origin STANOX, etc.
+- **`trust_movement`** — `trust_id`, `created`, `loc_stanox`, `platform`, `actual_timestamp` /
+  `gbtt_timestamp` / `planned_timestamp`, `timetable_variation` (unsigned magnitude in minutes),
+  `flags` (bit-field: event kind + early/on-time/late/off-route + terminated + correction, decoded
+  by `packages/domain/src/trust/garnerMovement.ts`), `next_report_stanox` / `next_report_run_time`.
+- **`trust_cancellation`** / **`trust_changeorigin`** / **`trust_changeid`** /
+  **`trust_changelocation`** — mirrored as-is.
 
-- internal UUID
-- `trust_train_id` unique within appropriate source/date scope
-- extracted four-character signalling description
-- service date
-- linked schedule ID nullable
-- activation time
-- origin departure timestamp
-- call type/mode where supplied
-- operator/service code
-- lifecycle state
-- last event time
+## 8. Berth-to-run correlation
 
-### `train_run_event`
-
-Every normalized nationwide TRUST message with raw lineage. Partition/index by event time and train run. Do not filter to map corridors.
-
-### `run_schedule_link`
-
-Normally created from activation. Retain exact activation fields and outcome if the referenced schedule is temporarily missing and linked later.
-
-### `berth_run_resolution`
-
-- occupancy ID
-- selected train run nullable
-- status: `matched`, `ambiguous`, `unmatched`
-- confidence score
-- resolver version
-- decision time
-- candidate/evidence JSON
-- manual override metadata if later supported
-
-## 8. Run resolver
-
-A four-character description is only a candidate key.
-
-Evidence in descending importance:
-
-1. Exact active TRUST run with matching signalling identity.
-2. Activation directly linked to a valid schedule for the service date.
-3. Temporal plausibility around booked and actual times. The strongest form of this, when
-   present, is live correlation of a candidate run's own TRUST movement reports (by reported
-   STANOX) against the specific berth around the occupancy time — actual reported position at
-   an actual reported time, not a day-level plausibility window.
-4. Continuity from preceding berth occupancy/run links.
-5. SMART berth/STANOX evidence.
-6. A selected map or queried corridor's TIPLOC/STANOX coverage.
-7. Operator and direction consistency where known.
-
-Output all plausible candidates and evidence. Thresholds belong in versioned resolver configuration and tests.
-
-Map/corridor evidence improves a decision but never controls whether a run or event is stored.
+> **ADR 0002 (2026-09-01):** RLM's Milestone 9 berth-run resolver (`berth_run_resolution`,
+> `packages/domain/src/resolver/`, `apps/worker/src/resolver/`, `project-resolver`) was **removed
+> wholesale** — it was the single largest source of production incidents. It is to be **rebuilt in
+> a later phase** on top of garner's own correlation work (`trust_activation.cif_schedule_id`,
+> `deduced_headcode`, SMART berth-offset tracking).
+>
+> Interim, the click-a-berth popup (`GET .../current-run`) shows the TD headcode plus every
+> mirrored `cif_schedules` row matching that headcode today, with the STP-effective one (or the
+> one a `trust_activation` today confirms) expanded — explicitly labelled as garner's data, not an
+> RLM `matched`/`ambiguous`/`unmatched` verdict. CLAUDE.md non-negotiables 5/6/7 are held in
+> abeyance until the rebuild.
 
 ## 9. Map tables
 
@@ -460,8 +436,11 @@ Create time partitions from the first nationwide-capable migration for:
 - `td_berth_event`
 - `td_s_event`
 - `td_s_bit_transition`
-- `train_run_event`
 - `berth_occupancy`
+
+(`train_run_event` was partitioned until it was dropped with RLM's bespoke run model — ADR 0002,
+migration 0025. Partitioning the garner `trust_movement` mirror on `created` is a deferred
+follow-up — see docs/IMPLEMENTATION_PLAN.md Milestone 15 step 4.)
 
 Recommended initial partition key is normalized event month, with a safe default partition for malformed/unresolved timestamps. Partition creation must be automated ahead of time and tested across month boundaries.
 

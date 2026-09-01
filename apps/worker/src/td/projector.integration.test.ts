@@ -327,36 +327,11 @@ describe("runProjectTd (integration)", () => {
     expect(history).toHaveLength(1);
   });
 
-  it("rebuild still works once an occupancy has a berth_run_resolution row (Milestone 9)", async () => {
-    // Regression test: berth_run_resolution's FK into berth_occupancy (added by the resolver
-    // projector) previously made this delete fail with a foreign key violation the instant any
-    // occupancy had ever been resolved — which in a real deployment is "always," once the
-    // resolver runs regularly.
-    const area = uniqueArea();
-    const t = Date.now();
-    await record([cc(area, "0910", "RSLV", t)], new Date(t));
-    await runProjectTd(pool);
-
-    const occupancy = await pool.query<{ id: string; entered_at: Date }>(
-      `select id, entered_at from berth_occupancy where td_area = $1 and berth_code = $2`,
-      [area, "0910"],
-    );
-    expect(occupancy.rows).toHaveLength(1);
-    await pool.query(
-      `insert into berth_run_resolution (occupancy_id, occupancy_entered_at, status, resolver_version)
-       values ($1, $2, 'unmatched', 1)`,
-      [occupancy.rows[0]!.id, occupancy.rows[0]!.entered_at],
-    );
-
-    await expect(runProjectTd(pool, { rebuild: true })).resolves.toBeDefined();
-    expect((await currentState(area, "0910"))?.description).toBe("RSLV");
-  });
-
   it("rebuild still works once an occupancy has been manually cleared, preserving the audit row", async () => {
     // Regression test: operator_berth_action's FK into berth_occupancy (added by the manual
-    // berth-clear feature) previously made this delete fail the same way berth_run_resolution's
-    // did — but unlike that pure derived-state table, this one is a permanent audit trail, so
-    // the fix nulls out its dangling occupancy reference instead of deleting the audit row.
+    // berth-clear feature) previously made this rebuild delete fail with a foreign key violation.
+    // Unlike pure derived-state tables, this one is a permanent audit trail, so the fix nulls out
+    // its dangling occupancy reference instead of deleting the audit row.
     const area = uniqueArea();
     const t = Date.now();
     await record([cc(area, "0911", "MCLR", t)], new Date(t));

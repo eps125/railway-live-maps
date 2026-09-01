@@ -6,149 +6,147 @@ function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 
+const NOTE =
+  "Candidate schedules for this headcode running today, mirrored from openrail-eps (garner). " +
+  "RLM's berth-to-run resolver is being rebuilt (ADR 0002) — this is garner's data, not a " +
+  "confirmed RLM identification.";
+
+function baseBody(overrides: Record<string, unknown> = {}) {
+  return {
+    tdArea: "PX",
+    berth: "0512",
+    description: "2A16",
+    headcode: "2A16",
+    occupancyEnteredAt: "2026-08-10T10:00:00.000Z",
+    note: NOTE,
+    effective: null,
+    candidateSchedules: [],
+    ...overrides,
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("RunPopup", () => {
-  it("renders full run detail when matched", async () => {
+  it("renders the effective schedule, its activation and its latest movement", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         Promise.resolve(
-          jsonResponse({
-            tdArea: "PX",
-            berth: "0512",
-            description: "2A16",
-            occupancyEnteredAt: "2026-08-10T10:00:00.000Z",
-            resolution: { status: "matched", confidence: 0.9, resolverVersion: 1, candidates: [] },
-            run: {
-              runId: "run-1",
-              trustTrainId: "2A1612AA26",
-              signallingId: "2A16",
-              serviceDate: "2026-08-10",
-              activatedAt: "2026-08-10T09:30:00.000Z",
-              operatorCode: "NT",
-              serviceCode: "22222000",
-              lifecycleState: "activated",
-              scheduleLink: { matchOutcome: "matched", scheduleId: "42" },
-            },
-            schedule: {
-              scheduleId: "42",
-              trainUid: "U12345",
-              stpIndicator: "P",
-              source: "SCHEDULE",
-              originTiploc: "PRST",
-              originName: "Preston",
-              destinationTiploc: "LANCSTR",
-              destinationName: "Lancaster",
-              locations: [
-                {
-                  seqNo: 1,
-                  locationType: "origin",
-                  tiploc: "PRST",
-                  locationName: "Preston",
-                  arrivalPublic: null,
-                  arrivalWorking: null,
-                  departurePublic: "1000",
-                  departureWorking: "0958",
-                  passPublic: null,
-                  passWorking: null,
+          jsonResponse(
+            baseBody({
+              effective: {
+                scheduleId: "42",
+                trainUid: "U12345",
+                stpIndicator: "P",
+                operatorCode: "NT",
+                trainStatus: "P",
+                serviceCode: "22222000",
+                category: "OO",
+                originTiploc: "PRST",
+                originName: "Preston",
+                destinationTiploc: "LANCSTR",
+                destinationName: "Lancaster",
+                selectedBy: "trust_activation",
+                activation: {
+                  trustId: "729S93MT10",
+                  deduced: false,
+                  activatedAt: "2026-08-10T09:30:00.000Z",
+                  trainUid: "U12345",
+                  tocId: "NT",
+                  scheduleWttId: "U12345",
+                  scheduleType: "P",
+                  originDepartureAt: "2026-08-10T10:00:00.000Z",
+                },
+                latestMovement: {
+                  trustId: "729S93MT10",
+                  locStanox: "11224",
+                  locName: "Preston",
                   platform: "4",
-                  path: null,
-                  line: "UF",
+                  actualTimestamp: "2026-08-10T10:01:00.000Z",
+                  plannedTimestamp: "2026-08-10T09:58:00.000Z",
+                  gbttTimestamp: "2026-08-10T10:00:00.000Z",
+                  eventKind: "departure",
+                  variationStatus: "late",
+                  variationMinutes: 3,
+                  terminated: false,
+                  offRoute: false,
+                  manual: false,
+                  correction: false,
+                  nextReportStanox: "11225",
                 },
+                locations: [
+                  {
+                    seqNo: 1,
+                    locationType: "origin",
+                    tiploc: "PRST",
+                    locationName: "Preston",
+                    arrivalPublic: null,
+                    arrivalWorking: null,
+                    departurePublic: "1000",
+                    departureWorking: "0958",
+                    passWorking: null,
+                    platform: "4",
+                    path: null,
+                    line: "UF",
+                    dayOffset: 0,
+                  },
+                  {
+                    seqNo: 2,
+                    locationType: "pass",
+                    tiploc: "WRKGJN",
+                    locationName: "Working Junction",
+                    arrivalPublic: null,
+                    arrivalWorking: null,
+                    departurePublic: null,
+                    departureWorking: null,
+                    passWorking: "1215",
+                    platform: null,
+                    path: "DS",
+                    line: "DF",
+                    dayOffset: 0,
+                  },
+                  {
+                    seqNo: 3,
+                    locationType: "destination",
+                    tiploc: "LANCSTR",
+                    locationName: "Lancaster",
+                    arrivalPublic: "1030",
+                    arrivalWorking: "1029",
+                    departurePublic: null,
+                    departureWorking: null,
+                    passWorking: null,
+                    platform: "3",
+                    path: null,
+                    line: null,
+                    dayOffset: 0,
+                  },
+                ],
+              },
+              candidateSchedules: [
                 {
-                  seqNo: 2,
-                  locationType: "pass",
-                  tiploc: "OXHEYJN",
-                  locationName: "Oxheys Junction",
-                  arrivalPublic: null,
-                  arrivalWorking: null,
-                  departurePublic: null,
-                  departureWorking: null,
-                  passPublic: "1006",
-                  passWorking: null,
-                  platform: null,
-                  path: null,
-                  line: null,
-                },
-                {
-                  // The realistic case (confirmed against real production data 2026-08-13): CIF
-                  // essentially never populates a *public* pass time for a junction — only the
-                  // working one. Proves the fallback, not just the rarely-populated public field.
-                  seqNo: 3,
-                  locationType: "pass",
-                  tiploc: "WRKGJN",
-                  locationName: "Working Junction",
-                  arrivalPublic: null,
-                  arrivalWorking: null,
-                  departurePublic: null,
-                  departureWorking: null,
-                  passPublic: null,
-                  passWorking: "1215",
-                  platform: null,
-                  path: "DS",
-                  line: "DF",
-                },
-                {
-                  // A freight/parcels-style genuine stop (2026-08-13, real 4S44 example): never
-                  // has public times at all, but is a real stop (distinct booked working
-                  // arrival/departure) — must be classified as a call, not a muted pass.
-                  seqNo: 4,
-                  locationType: "intermediate",
-                  tiploc: "STAFFJN",
-                  locationName: null,
-                  arrivalPublic: null,
-                  arrivalWorking: "1351",
-                  departurePublic: null,
-                  departureWorking: "1356",
-                  passPublic: null,
-                  passWorking: null,
-                  platform: null,
-                  path: null,
-                  line: null,
-                },
-                {
-                  seqNo: 5,
-                  locationType: "intermediate",
-                  tiploc: "UNTIMEDJ",
-                  locationName: null,
-                  arrivalPublic: null,
-                  arrivalWorking: null,
-                  departurePublic: null,
-                  departureWorking: null,
-                  passPublic: null,
-                  passWorking: null,
-                  platform: null,
-                  path: null,
-                  line: null,
-                },
-                {
-                  seqNo: 6,
-                  locationType: "destination",
-                  tiploc: "LANCSTR",
-                  locationName: "Lancaster",
-                  arrivalPublic: "1030",
-                  arrivalWorking: "1029",
-                  departurePublic: null,
-                  departureWorking: null,
-                  passPublic: null,
-                  passWorking: null,
-                  platform: "3",
-                  path: null,
-                  line: null,
+                  scheduleId: "42",
+                  trainUid: "U12345",
+                  stpIndicator: "P",
+                  operatorCode: "NT",
+                  trainStatus: "P",
+                  serviceCode: "22222000",
+                  category: "OO",
+                  signallingId: "2A16",
+                  scheduleStartDate: "2026-01-01",
+                  scheduleEndDate: "2026-12-31",
+                  originTiploc: "PRST",
+                  destinationTiploc: "LANCSTR",
+                  activatedToday: true,
+                  trustId: "729S93MT10",
+                  activationDeduced: false,
+                  isEffective: true,
                 },
               ],
-            },
-            latestMovement: {
-              eventType: "DEPARTURE",
-              locationStanox: "11224",
-              platform: "4",
-              variationStatus: "LATE",
-              timetableVariationMinutes: 3,
-            },
-          }),
+            }),
+          ),
         ),
       ),
     );
@@ -163,72 +161,73 @@ describe("RunPopup", () => {
       />,
     );
 
-    expect(await screen.findByText("2A1612AA26")).toBeInTheDocument();
-    expect(screen.getByText("U12345")).toBeInTheDocument();
-    expect(screen.getByText(/Matched/)).toBeInTheDocument();
-    // Origin/destination resolved via CORPUS, raw TIPLOC kept alongside rather than hidden — each
-    // appears twice (once in the summary dl, once as that calling point's own row).
-    expect(screen.getAllByText("Preston (PRST)")).toHaveLength(2);
-    expect(screen.getAllByText("Lancaster (LANCSTR)")).toHaveLength(2);
-    // A calling point (destination) shows its own arrival.
+    expect(
+      (await screen.findAllByText(/U12345 · Permanent \(WTT\)/)).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("TRUST activation today")).toBeInTheDocument();
+    expect(screen.getByText("729S93MT10")).toBeInTheDocument();
+    expect(screen.getAllByText("Preston (PRST)").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Lancaster (LANCSTR)").length).toBeGreaterThanOrEqual(1);
+    // late by 3 min
+    expect(screen.getByText(/late \(3 min\)/)).toBeInTheDocument();
+    // a calling point shows its arrival; a passing point shows its working pass time
     expect(screen.getByText("10:30")).toBeInTheDocument();
-    // A passing point shows its pass time, prefixed and distinguishable from a call.
-    expect(screen.getByText("pass 10:06")).toBeInTheDocument();
-    // No public pass time (the realistic case) falls back to the working pass time rather than
-    // showing a blank dash — real train-time sites show exactly this working time.
     expect(screen.getByText("pass 12:15")).toBeInTheDocument();
-    // A freight-style stop with only working times (no public times at all) is classified as a
-    // real call, not lumped in with the muted passing points.
-    expect(screen.getByText("13:51")).toBeInTheDocument();
-    expect(screen.getByText("13:56")).toBeInTheDocument();
-    // Path/Line codes are shown alongside the location.
-    expect(screen.getByText("DS/DF")).toBeInTheDocument();
-    // An untimed structural TIPLOC (no name, no times at all) still gets a row, not silently
-    // dropped, and falls back to the raw TIPLOC when CORPUS has no name for it.
-    expect(screen.getByText("UNTIMEDJ")).toBeInTheDocument();
+    // the honesty note is always shown verbatim
+    expect(screen.getByText(NOTE)).toBeInTheDocument();
   });
 
-  it("shows candidates without picking one when ambiguous", async () => {
+  it("lists candidate schedules without an effective pick when the headcode is ambiguous", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         Promise.resolve(
-          jsonResponse({
-            tdArea: "PX",
-            berth: "0513",
-            description: "3A16",
-            occupancyEnteredAt: null,
-            resolution: {
-              status: "ambiguous",
-              confidence: null,
-              resolverVersion: 1,
-              candidates: [
+          jsonResponse(
+            baseBody({
+              berth: "0513",
+              description: "3A16",
+              headcode: "3A16",
+              effective: null,
+              candidateSchedules: [
                 {
-                  trainRunId: "run-a",
-                  score: 40,
-                  confidence: 0.4,
-                  reasons: ["schedule-linked"],
-                  signallingId: "3A16",
-                  trustTrainId: "723A16MG11",
+                  scheduleId: "100",
                   trainUid: "C17206",
+                  stpIndicator: "P",
+                  operatorCode: "NT",
+                  trainStatus: "P",
+                  serviceCode: "1",
+                  category: "OO",
+                  signallingId: "3A16",
+                  scheduleStartDate: "2026-01-01",
+                  scheduleEndDate: "2026-12-31",
+                  originTiploc: null,
+                  destinationTiploc: null,
+                  activatedToday: false,
+                  trustId: null,
+                  activationDeduced: false,
+                  isEffective: false,
                 },
-                // No identity resolved (edge case — e.g. the train_run has since been deleted):
-                // falls back to the raw id rather than showing nothing.
                 {
-                  trainRunId: "run-b",
-                  score: 40,
-                  confidence: 0.4,
-                  reasons: ["schedule-linked"],
-                  signallingId: null,
-                  trustTrainId: null,
-                  trainUid: null,
+                  scheduleId: "101",
+                  trainUid: "C17207",
+                  stpIndicator: "O",
+                  operatorCode: "NT",
+                  trainStatus: "P",
+                  serviceCode: "1",
+                  category: "OO",
+                  signallingId: "3A16",
+                  scheduleStartDate: "2026-01-01",
+                  scheduleEndDate: "2026-12-31",
+                  originTiploc: null,
+                  destinationTiploc: null,
+                  activatedToday: true,
+                  trustId: "723A16MG11",
+                  activationDeduced: true,
+                  isEffective: false,
                 },
               ],
-            },
-            run: null,
-            schedule: null,
-            latestMovement: null,
-          }),
+            }),
+          ),
         ),
       ),
     );
@@ -243,34 +242,21 @@ describe("RunPopup", () => {
       />,
     );
 
-    expect(await screen.findByText(/Ambiguous/)).toBeInTheDocument();
-    // Human-readable identity (UID · headcode · TRUST id), not the bare UUID — a raw id is
-    // useless to someone reading the popup (confirmed feedback, 2026-08-11).
-    expect(screen.getByText(/C17206 · 3A16 · 723A16MG11/)).toBeInTheDocument();
-    // No identity resolved at all: falls back to the raw trainRunId rather than an empty label.
-    expect(screen.getByText(/run-b/)).toBeInTheDocument();
+    expect(await screen.findByText(/2 schedules match headcode 3A16 today/)).toBeInTheDocument();
+    expect(screen.getByText(/C17206 · Permanent \(WTT\)/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/C17207 · STP overlay — activated \(deduced\) as 723A16MG11/),
+    ).toBeInTheDocument();
+    // no effective section
+    expect(screen.queryByText("Picked by")).not.toBeInTheDocument();
   });
 
-  it("shows the exact spec'd message when unmatched, without fabricating a run", async () => {
+  it("says so plainly when no garner schedule matches the headcode today", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         Promise.resolve(
-          jsonResponse({
-            tdArea: "PX",
-            berth: "0514",
-            description: "4A16",
-            occupancyEnteredAt: null,
-            resolution: {
-              status: "unmatched",
-              confidence: null,
-              resolverVersion: 1,
-              candidates: [],
-            },
-            run: null,
-            schedule: null,
-            latestMovement: null,
-          }),
+          jsonResponse(baseBody({ berth: "0514", description: "4A16", headcode: "4A16" })),
         ),
       ),
     );
@@ -285,31 +271,15 @@ describe("RunPopup", () => {
       />,
     );
 
-    expect(await screen.findByText("No matching activated schedule found.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("No garner schedule matches headcode 4A16 today."),
+    ).toBeInTheDocument();
   });
 
   it("has a close button that calls onClose", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() =>
-        Promise.resolve(
-          jsonResponse({
-            tdArea: "PX",
-            berth: "0515",
-            description: "5A16",
-            occupancyEnteredAt: null,
-            resolution: {
-              status: "unmatched",
-              confidence: null,
-              resolverVersion: 1,
-              candidates: [],
-            },
-            run: null,
-            schedule: null,
-            latestMovement: null,
-          }),
-        ),
-      ),
+      vi.fn(() => Promise.resolve(jsonResponse(baseBody()))),
     );
 
     const onClose = vi.fn();
@@ -328,43 +298,45 @@ describe("RunPopup", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("picks up a resolution that lands after the popup was already open (regression)", async () => {
-    // Real-world case, 2026-08-10: a berth clicked right as a train arrived showed "unmatched"
-    // forever because the old implementation fetched exactly once — the resolver matched it 15s
-    // later and the popup never found out. The popup must poll, not fetch-once.
+  it("polls, so an activation that lands after the popup opened still shows up (regression)", async () => {
     vi.useFakeTimers();
-    const unmatchedBody = {
-      tdArea: "PX",
+    const before = baseBody({ berth: "0226", description: "9S93", headcode: "9S93" });
+    const after = baseBody({
       berth: "0226",
       description: "9S93",
-      occupancyEnteredAt: "2026-08-10T19:46:33.000Z",
-      resolution: { status: "unmatched", confidence: null, resolverVersion: 2, candidates: [] },
-      run: null,
-      schedule: null,
-      latestMovement: null,
-    };
-    const matchedBody = {
-      ...unmatchedBody,
-      resolution: { status: "matched", confidence: 0.75, resolverVersion: 2, candidates: [] },
-      run: {
-        runId: "run-9s93",
-        trustTrainId: "729S93MT10",
-        signallingId: "9S93",
-        serviceDate: "2026-08-10",
-        activatedAt: "2026-08-10T15:40:21.000Z",
+      headcode: "9S93",
+      effective: {
+        scheduleId: "1",
+        trainUid: "U99999",
+        stpIndicator: "P",
         operatorCode: "GW",
+        trainStatus: "P",
         serviceCode: "9S93000",
-        lifecycleState: "activated",
-        scheduleLink: { matchOutcome: "matched", scheduleId: "1" },
+        category: "XX",
+        originTiploc: null,
+        originName: null,
+        destinationTiploc: null,
+        destinationName: null,
+        selectedBy: "trust_activation",
+        activation: {
+          trustId: "729S93MT10",
+          deduced: false,
+          activatedAt: "2026-08-10T15:40:21.000Z",
+          trainUid: "U99999",
+          tocId: "GW",
+          scheduleWttId: "U99999",
+          scheduleType: "P",
+          originDepartureAt: null,
+        },
+        latestMovement: null,
+        locations: [],
       },
-      schedule: null,
-      latestMovement: null,
-    };
+    });
 
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(unmatchedBody))
-      .mockResolvedValue(jsonResponse(matchedBody));
+      .mockResolvedValueOnce(jsonResponse(before))
+      .mockResolvedValue(jsonResponse(after));
     vi.stubGlobal("fetch", fetchMock);
 
     render(
@@ -380,10 +352,10 @@ describe("RunPopup", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(screen.getByText("No matching activated schedule found.")).toBeInTheDocument();
+    expect(screen.getByText("No garner schedule matches headcode 9S93 today.")).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     expect(screen.getByText("729S93MT10")).toBeInTheDocument();
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);

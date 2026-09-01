@@ -320,6 +320,40 @@ and the `current-run` popup endpoint until migration 0025 drops them in the garn
 Full typecheck / lint / unit tests (292) green. Run↔schedule correlation is deferred to a later
 milestone that will source it from the garner `trust_*` mirror.
 
+## Milestone 15 step 2(new) — garner CIF + TRUST mirror (2026-09-01)
+
+RLM stopped subscribing to Network Rail for VSTP / TRUST / SCHEDULE. Those feeds are now mirrored
+from the operator's openrail-eps ("garner") MariaDB by the `ingest-garner` daemon.
+
+- **Migrations 0024 / 0025**: dropped `schedule` / `schedule_location` / staging and `train_run` /
+  `train_run_event` / `run_schedule_link` / `berth_run_resolution`; created garner-shaped
+  `cif_schedules` / `cif_schedule_locations` (mirror of garner `cif_schedules` with epoch→date
+  conversion + generated `days_runs_bitmask`) and `trust_activation` / `trust_activation_extra` /
+  `trust_movement` / `trust_cancellation` / `trust_changeorigin` / `trust_changeid` /
+  `trust_changelocation`. Schema taken from the C-source DDL in `openrail-master/database.c`.
+- **`apps/worker/src/garner/bridge.ts`**: added `runGarnerScheduleSync` (upsert-by-id,
+  watermarked by `GREATEST(created, deleted)`) and `runGarnerTrustSync` (per-table `created`
+  watermark, `on conflict do nothing`). `ingestGarner.ts` now ticks every 20s (trust every tick,
+  schedules every 3rd, CORPUS/SMART every 15th).
+- **`packages/domain/src/trust/garnerMovement.ts`** (new, tested): decodes garner's
+  `trust_movement.flags` bit-field → event kind + early/on-time/late/off-route + terminated.
+- **API**: `GET /api/v1/schedule/:trainUid` and `GET /api/v1/vstp/schedules` repointed at the
+  garner mirror; `currentRun.ts` (the click-a-berth popup) rewritten to show candidate schedules
+  by headcode + STP-effective pick + latest `trust_movement`, labelled as garner's data;
+  `GET /api/v1/runs/{runId}` (+`/schedule`) and `routes/runs.ts` removed.
+- **Removed**: `apps/worker/src/{trust,vstp,schedule}/`, the `project-vstp` / `project-trust` /
+  `import-schedule` / `download-schedule` / `ingest-vstp` / `ingest-trust` / `reparse-vstp-archive`
+  commands and roles, and the `ingest-vstp` / `ingest-trust` / `projector-schedule` /
+  `projector-resolver` Portainer services. The pure feed parsers and superseded domain reducers
+  (`runReducer.ts`, `mapToScheduleRow.ts`, `serviceDate.ts`) are left as now-unused code.
+- typecheck / lint / prettier / 299 unit tests green. Integration tests (`currentRun`, `schedule`,
+  `td/projector`) rewritten for the new schema but **not run here** (need a live Postgres) — the
+  user runs them in the stack.
+
+**Deferred**: mirroring garner's own TD-berth → `trust_id` deduction (`td_states` / `livesig`
+link), which would let the popup show a single-winner identification for the ambiguous case.
+Part of the resolver-rebuild phase.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

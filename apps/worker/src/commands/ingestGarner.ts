@@ -1,27 +1,30 @@
 import { createPool } from "@railway/database";
 import type { Config } from "../config.js";
 import { createGarnerPool } from "../garner/garnerPool.js";
-import { runGarnerReferenceSync } from "../garner/bridge.js";
+import {
+  runGarnerReferenceSync,
+  runGarnerScheduleSync,
+  runGarnerTrustSync,
+} from "../garner/bridge.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
 
-/** Reference data (CORPUS/SMART) changes at most daily — a full re-sync every few minutes is
- * plenty and cheap (~40-60k small rows). */
-const REFERENCE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+/** The daemon ticks on the TRUST cadence (the most time-sensitive feed — it backs the popup's
+ * "latest report"). Schedule changes are incremental and infrequent, reference data (CORPUS/
+ * SMART) changes at most daily, so those run on every Nth tick. */
+const TICK_INTERVAL_MS = 20 * 1000;
+const SCHEDULE_EVERY_N_TICKS = 3; // ~1 min
+const REFERENCE_EVERY_N_TICKS = 15; // ~5 min
 
 /**
  * `ingest-garner` — long-running bridge that mirrors the operator's openrail-eps (`garner`)
  * MariaDB into Railway Live Maps' Postgres instead of RLM subscribing to Network Rail a second
- * time (ADR 0002 / docs/IMPLEMENTATION_PLAN.md Milestone 15 step "2 new"). Refuses to start
- * unless `GARNER_BRIDGE_ENABLED=true` (and `loadConfig` has already checked GARNER_DB_* are set),
- * same discipline as `ingest-td`.
+ * time for TRUST / VSTP / SCHEDULE / CORPUS / SMART (ADR 0002). Refuses to start unless
+ * `GARNER_BRIDGE_ENABLED=true` (and `loadConfig` has already checked GARNER_DB_* are set), same
+ * discipline as `ingest-td`.
  *
- * Implemented: CORPUS → `location_reference`, SMART → `smart_berth_step` (full re-sync, `source =
- * 'GARNER'`). **Not yet wired** (own follow-up — needs migration widening `schedule.source`'s
- * CHECK to include 'GARNER', plus an STP-indicator mapping and the reducer glue): cif_schedules /
- * cif_schedule_locations → schedule / schedule_location, and trust_movement / trust_activation_extra
- * / trust_* → train_run / train_run_event via `packages/domain/src/trust/runReducer.ts`. Until
- * those land, keep `ingest-trust` / `ingest-vstp` / the `download-*` schedule commands running as
- * the source for TRUST and CIF-schedule data.
+ *  - CORPUS  -> location_reference,  SMART -> smart_berth_step   (full re-sync)
+ *  - cif_schedules / cif_schedule_locations -> same-named RLM tables (watermarked mirror)
+ *  - trust_* -> same-named RLM tables (watermarked mirror)
  */
 export async function runIngestGarner(config: Config): Promise<void> {
   if (!config.GARNER_BRIDGE_ENABLED) {
@@ -35,15 +38,34 @@ export async function runIngestGarner(config: Config): Promise<void> {
 
   console.log(
     `ingest-garner: starting (garner ${config.GARNER_DB_HOST}:${config.GARNER_DB_PORT}/${config.GARNER_DB_NAME}, ` +
-      `reference sync every ${REFERENCE_SYNC_INTERVAL_MS / 60_000}min)`,
+      `trust every ${TICK_INTERVAL_MS / 1000}s, schedule every ${
+        (TICK_INTERVAL_MS * SCHEDULE_EVERY_N_TICKS) / 1000
+      }s, reference every ${(TICK_INTERVAL_MS * REFERENCE_EVERY_N_TICKS) / 60000}min)`,
   );
+
+  let tick = 0;
 
   await runDaemonLoop({
     label: "ingest-garner",
-    intervalMs: REFERENCE_SYNC_INTERVAL_MS,
+    intervalMs: TICK_INTERVAL_MS,
     tick: async () => {
-      const summary = await runGarnerReferenceSync(garner, pg);
-      console.log("ingest-garner: reference sync", summary);
+      tick += 1;
+
+      const trust = await runGarnerTrustSync(garner, pg);
+      const trustTotal = Object.values(trust).reduce((sum, n) => sum + n, 0);
+      if (trustTotal > 0) console.log("ingest-garner: trust sync", trust);
+
+      if (tick % SCHEDULE_EVERY_N_TICKS === 0) {
+        const schedule = await runGarnerScheduleSync(garner, pg);
+        if (schedule.schedulesUpserted > 0 || schedule.scheduleLocationsUpserted > 0) {
+          console.log("ingest-garner: schedule sync", schedule);
+        }
+      }
+
+      if (tick % REFERENCE_EVERY_N_TICKS === 0) {
+        const reference = await runGarnerReferenceSync(garner, pg);
+        console.log("ingest-garner: reference sync", reference);
+      }
     },
     onShutdown: async () => {
       await garner.end();

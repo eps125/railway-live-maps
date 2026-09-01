@@ -74,6 +74,13 @@ export {
   type MovementReport,
 } from "./trust/runningIndication.js";
 export {
+  decodeTrustMovementFlags,
+  signedVariationMinutes,
+  type DecodedTrustMovementFlags,
+  type TrustMovementEventKind,
+  type TrustMovementVariation,
+} from "./trust/garnerMovement.js";
+export {
   TRUST_NORMALIZATION_VERSION,
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,

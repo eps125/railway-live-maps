@@ -1,80 +1,106 @@
 import { useEffect, useState } from "react";
 
-interface ScoredCandidateJson {
-  trainRunId: string;
-  score: number;
-  confidence: number;
-  reasons: string[];
-  signallingId: string | null;
-  trustTrainId: string | null;
-  trainUid: string | null;
-}
+/**
+ * The live map's click-a-berth popup (docs/PROJECT_SPEC.md §5).
+ *
+ * Since ADR 0002 (2026-09-01) RLM has no berth-run resolver: the popup does not claim a single
+ * train identity for a berth. It shows the TD headcode plus every openrail-eps ("garner")
+ * schedule that shares that headcode and runs today — with the STP-effective one (and its TRUST
+ * activation / latest movement) expanded when one can be picked. The `note` from the API is
+ * shown verbatim so it is always clear this is garner's data, not an RLM identification.
+ */
 
-interface CurrentRunResolution {
-  status: "matched" | "ambiguous" | "unmatched";
-  confidence: number | null;
-  resolverVersion: number;
-  decidedAt: string;
-  candidates: ScoredCandidateJson[];
-}
-
-interface CurrentRunRunDetail {
-  runId: string;
-  trustTrainId: string;
-  signallingId: string | null;
-  serviceDate: string;
-  activatedAt: string | null;
+interface CandidateSchedule {
+  scheduleId: string;
+  trainUid: string;
+  stpIndicator: "C" | "N" | "O" | "P";
   operatorCode: string | null;
+  trainStatus: string | null;
   serviceCode: string | null;
-  lifecycleState: string;
-  scheduleLink: { matchOutcome: string; scheduleId: string | null } | null;
+  category: string | null;
+  signallingId: string | null;
+  scheduleStartDate: string;
+  scheduleEndDate: string;
+  originTiploc: string | null;
+  destinationTiploc: string | null;
+  activatedToday: boolean;
+  trustId: string | null;
+  activationDeduced: boolean;
+  isEffective: boolean;
 }
 
-interface CurrentRunScheduleLocation {
+interface EffectiveLocation {
   seqNo: number;
-  locationType: string;
+  locationType: "origin" | "intermediate" | "pass" | "destination";
   tiploc: string;
   locationName: string | null;
   arrivalPublic: string | null;
   arrivalWorking: string | null;
   departurePublic: string | null;
   departureWorking: string | null;
-  passPublic: string | null;
   passWorking: string | null;
   platform: string | null;
   path: string | null;
   line: string | null;
+  dayOffset: number;
 }
 
-interface CurrentRunSchedule {
+interface EffectiveActivation {
+  trustId: string;
+  deduced: boolean;
+  activatedAt: string;
+  trainUid: string | null;
+  tocId: string | null;
+  scheduleWttId: string | null;
+  scheduleType: string | null;
+  originDepartureAt: string | null;
+}
+
+interface EffectiveMovement {
+  trustId: string;
+  locStanox: string | null;
+  locName: string | null;
+  platform: string | null;
+  actualTimestamp: string | null;
+  plannedTimestamp: string | null;
+  gbttTimestamp: string | null;
+  eventKind: "departure" | "arrival" | "arrival_destination" | "unknown";
+  variationStatus: "early" | "on_time" | "late" | "off_route";
+  variationMinutes: number | null;
+  terminated: boolean;
+  offRoute: boolean;
+  manual: boolean;
+  correction: boolean;
+  nextReportStanox: string | null;
+}
+
+interface EffectiveSchedule {
   scheduleId: string;
   trainUid: string;
-  stpIndicator: string;
-  source: string;
+  stpIndicator: "C" | "N" | "O" | "P";
+  operatorCode: string | null;
+  trainStatus: string | null;
+  serviceCode: string | null;
+  category: string | null;
   originTiploc: string | null;
   originName: string | null;
   destinationTiploc: string | null;
   destinationName: string | null;
-  locations: CurrentRunScheduleLocation[];
-}
-
-interface CurrentRunMovement {
-  eventType: string | null;
-  locationStanox: string | null;
-  platform: string | null;
-  variationStatus: "EARLY" | "LATE" | "ON TIME" | "OFF ROUTE" | null;
-  timetableVariationMinutes: number | null;
+  selectedBy: "stp_precedence" | "trust_activation";
+  activation: EffectiveActivation | null;
+  latestMovement: EffectiveMovement | null;
+  locations: EffectiveLocation[];
 }
 
 interface CurrentRunResponse {
   tdArea: string;
   berth: string;
   description: string | null;
+  headcode: string;
   occupancyEnteredAt: string | null;
-  resolution: CurrentRunResolution | null;
-  run: CurrentRunRunDetail | null;
-  schedule: CurrentRunSchedule | null;
-  latestMovement: CurrentRunMovement | null;
+  note: string;
+  effective: EffectiveSchedule | null;
+  candidateSchedules: CandidateSchedule[];
 }
 
 export interface RunPopupProps {
@@ -86,43 +112,47 @@ export interface RunPopupProps {
 }
 
 const STP_LABELS: Record<string, string> = {
-  C: "Cancellation",
-  O: "Overlay",
-  N: "New",
-  P: "Permanent",
+  C: "STP cancellation",
+  O: "STP overlay",
+  N: "STP new",
+  P: "Permanent (WTT)",
 };
 
-function formatTime(publicTime: string | null): string {
-  // Raw CIF-style HHMM(H) text, exactly as supplied (docs/DATA_MODEL.md: never derive a
-  // normalized time from a missing one) — just insert a colon for readability, nothing more.
-  if (!publicTime) return "—";
-  const digits = publicTime.replace(/H$/, "");
-  if (digits.length < 4) return publicTime;
-  return `${digits.slice(0, 2)}:${digits.slice(2, 4)}${publicTime.endsWith("H") ? "½" : ""}`;
+const VARIATION_LABELS: Record<EffectiveMovement["variationStatus"], string> = {
+  early: "early",
+  on_time: "on time",
+  late: "late",
+  off_route: "off route",
+};
+
+/** How often the popup re-fetches while open — garner's mirror advances every ~20s, and a berth
+ * clicked right as a train arrives can genuinely have no activation yet. */
+const POLL_INTERVAL_MS = 5000;
+
+function formatTime(raw: string | null): string {
+  if (!raw) return "—";
+  const digits = raw.replace(/H$/, "");
+  if (digits.length < 4) return raw;
+  return `${digits.slice(0, 2)}:${digits.slice(2, 4)}${raw.endsWith("H") ? "½" : ""}`;
 }
 
-/** CORPUS's location_reference has no entry for every TIPLOC (import coverage gaps, or CORPUS
- * simply not imported yet) — always fall back to the raw TIPLOC rather than showing nothing. */
+function formatIso(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toISOString().replace("T", " ").slice(0, 16);
+}
+
 function formatLocation(tiploc: string | null, name: string | null): string {
   if (!tiploc) return "—";
   return name ? `${name} (${tiploc})` : tiploc;
 }
 
-/** How often the popup re-fetches while open. Resolution isn't necessarily settled the instant a
- * berth is clicked — project-resolver runs its own decoupled loop (deploy/docker-compose.
- * portainer.yml's `projector-resolver` service), so a berth clicked right as a train arrives can
- * genuinely still be `unmatched` for a few seconds. A one-shot fetch would then never update even
- * after the backend resolves it moments later — confirmed 2026-08-10 against a real occupancy
- * that matched 15s after entering while the popup, opened at entry, kept showing "no match". */
-const POLL_INTERVAL_MS = 2000;
+function variationText(m: EffectiveMovement): string {
+  const status = VARIATION_LABELS[m.variationStatus];
+  if (m.variationMinutes === null || m.variationMinutes === 0) return status;
+  return `${status} (${Math.abs(m.variationMinutes)} min)`;
+}
 
-/**
- * The live map's click-a-berth popup (docs/PROJECT_SPEC.md §5 "Train/run popup", Milestone 9).
- * Polls `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` every POLL_INTERVAL_MS while
- * open, so a resolution decided after the popup was opened still reaches it. Renders the full
- * spec'd field list, and — critically — never silently picks a run when the resolver reports
- * `ambiguous`, and never fabricates schedule/operator data when `unmatched`.
- */
 export function RunPopup({
   elementId,
   displayName,
@@ -145,9 +175,7 @@ export function RunPopup({
         `/api/v1/td/areas/${encodeURIComponent(tdArea)}/berths/${encodeURIComponent(berth)}/current-run`,
       )
         .then(async (response) => {
-          if (!response.ok) {
-            throw new Error(`Failed to load run detail (${response.status})`);
-          }
+          if (!response.ok) throw new Error(`Failed to load run detail (${response.status})`);
           return (await response.json()) as CurrentRunResponse;
         })
         .then((body) => {
@@ -168,12 +196,13 @@ export function RunPopup({
 
     fetchOnce();
     const intervalId = setInterval(fetchOnce, POLL_INTERVAL_MS);
-
     return () => {
       cancelled = true;
       clearInterval(intervalId);
     };
   }, [tdArea, berth]);
+
+  const effective = data?.effective ?? null;
 
   return (
     <div role="status" className="map-inspector map-inspector--run">
@@ -196,59 +225,85 @@ export function RunPopup({
       {!loading && !error && data ? (
         <>
           <dl>
-            <dt>Description</dt>
+            <dt>Headcode</dt>
             <dd>{data.description ?? "(empty)"}</dd>
             <dt>Entered</dt>
-            <dd>{data.occupancyEnteredAt ?? "—"}</dd>
+            <dd>{formatIso(data.occupancyEnteredAt)}</dd>
           </dl>
 
-          {data.resolution?.status === "matched" && data.run ? (
+          <p className="map-inspector__note">{data.note}</p>
+
+          {effective ? (
             <>
               <dl>
-                <dt>Match status</dt>
+                <dt>Schedule</dt>
                 <dd>
-                  Matched
-                  {data.resolution.confidence !== null
-                    ? ` (${Math.round(data.resolution.confidence * 100)}% confidence)`
-                    : ""}
+                  {effective.trainUid} ·{" "}
+                  {STP_LABELS[effective.stpIndicator] ?? effective.stpIndicator}
                 </dd>
-                <dt>TRUST train ID</dt>
-                <dd>{data.run.trustTrainId}</dd>
-                <dt>Activated</dt>
-                <dd>{data.run.activatedAt ?? "—"}</dd>
+                <dt>Picked by</dt>
+                <dd>
+                  {effective.selectedBy === "stp_precedence"
+                    ? "STP precedence"
+                    : "TRUST activation today"}
+                </dd>
                 <dt>Operator</dt>
-                <dd>{data.run.operatorCode ?? "—"}</dd>
+                <dd>{effective.operatorCode ?? "—"}</dd>
                 <dt>Service code</dt>
-                <dd>{data.run.serviceCode ?? "—"}</dd>
-                <dt>Lifecycle</dt>
-                <dd>{data.run.lifecycleState}</dd>
+                <dd>{effective.serviceCode ?? "—"}</dd>
+                <dt>Origin</dt>
+                <dd>{formatLocation(effective.originTiploc, effective.originName)}</dd>
+                <dt>Destination</dt>
+                <dd>{formatLocation(effective.destinationTiploc, effective.destinationName)}</dd>
               </dl>
 
-              {data.schedule ? (
+              {effective.activation ? (
                 <dl>
-                  <dt>Schedule UID</dt>
-                  <dd>{data.schedule.trainUid}</dd>
-                  <dt>Schedule type</dt>
+                  <dt>TRUST ID</dt>
                   <dd>
-                    {STP_LABELS[data.schedule.stpIndicator] ?? data.schedule.stpIndicator} (
-                    {data.schedule.source})
+                    {effective.activation.trustId}
+                    {effective.activation.deduced ? " (deduced)" : ""}
                   </dd>
-                  <dt>Origin</dt>
-                  <dd>{formatLocation(data.schedule.originTiploc, data.schedule.originName)}</dd>
-                  <dt>Destination</dt>
-                  <dd>
-                    {formatLocation(data.schedule.destinationTiploc, data.schedule.destinationName)}
-                  </dd>
+                  <dt>Activated</dt>
+                  <dd>{formatIso(effective.activation.activatedAt)}</dd>
+                  <dt>TOC</dt>
+                  <dd>{effective.activation.tocId ?? "—"}</dd>
+                  <dt>WTT ID</dt>
+                  <dd>{effective.activation.scheduleWttId ?? "—"}</dd>
                 </dl>
               ) : (
                 <p className="map-inspector__note">
-                  Run matched, but its activation has no linked schedule.
+                  No TRUST activation seen for this schedule today.
                 </p>
               )}
 
-              {data.schedule && data.schedule.locations.length > 0 ? (
+              {effective.latestMovement ? (
+                <dl>
+                  <dt>Latest report</dt>
+                  <dd>
+                    {effective.latestMovement.eventKind.replace("_", " ")}
+                    {effective.latestMovement.locName || effective.latestMovement.locStanox
+                      ? ` at ${
+                          effective.latestMovement.locName ?? effective.latestMovement.locStanox
+                        }`
+                      : ""}
+                    {effective.latestMovement.platform
+                      ? ` (platform ${effective.latestMovement.platform})`
+                      : ""}
+                  </dd>
+                  <dt>When</dt>
+                  <dd>{formatIso(effective.latestMovement.actualTimestamp)}</dd>
+                  <dt>Variation</dt>
+                  <dd>
+                    {variationText(effective.latestMovement)}
+                    {effective.latestMovement.terminated ? " · terminated" : ""}
+                  </dd>
+                </dl>
+              ) : null}
+
+              {effective.locations.length > 0 ? (
                 <details className="map-inspector__schedule">
-                  <summary>Full schedule ({data.schedule.locations.length} calling points)</summary>
+                  <summary>Full schedule ({effective.locations.length} calling points)</summary>
                   <div className="map-inspector__schedule-scroll">
                     <table>
                       <thead>
@@ -260,24 +315,11 @@ export function RunPopup({
                         </tr>
                       </thead>
                       <tbody>
-                        {data.schedule.locations.map((loc) => {
-                          // A "call" (real stop) has a booked arrival and/or departure — public if
-                          // published, but freight/parcels workings essentially never have public
-                          // times at all (confirmed 2026-08-13 against a real freight service on
-                          // realtimetrains.co.uk: every genuine stop there, e.g. a staffing/pathing
-                          // stop, only ever carries *working* arrival/departure), so working times
-                          // are the fallback rather than an edge case. A location with only a pass
-                          // time is never actually visited long enough to board — greyed out and
-                          // shown as a single time, no arrow, same distinction other public
-                          // train-time sites draw between calling and passing points. A location
-                          // with neither (a structural/junction TIPLOC CIF includes for route
-                          // continuity, not a timed point at all) gets the same muted treatment
-                          // since there's nothing booked there either.
+                        {effective.locations.map((loc) => {
                           const arrival = loc.arrivalPublic ?? loc.arrivalWorking;
                           const departure = loc.departurePublic ?? loc.departureWorking;
                           const isCall = arrival !== null || departure !== null;
                           const muted = !isCall;
-                          const passTime = loc.passPublic ?? loc.passWorking;
                           const pathLine = [loc.path, loc.line].filter(Boolean).join("/");
                           return (
                             <tr
@@ -298,7 +340,9 @@ export function RunPopup({
                                 </>
                               ) : (
                                 <td className="map-inspector__schedule-time" colSpan={3}>
-                                  {passTime !== null ? `pass ${formatTime(passTime)}` : "—"}
+                                  {loc.passWorking !== null
+                                    ? `pass ${formatTime(loc.passWorking)}`
+                                    : "—"}
                                 </td>
                               )}
                               <td className="map-inspector__schedule-pathline">{pathLine}</td>
@@ -310,54 +354,36 @@ export function RunPopup({
                   </div>
                 </details>
               ) : null}
-
-              {data.latestMovement ? (
-                <dl>
-                  <dt>Latest report</dt>
-                  <dd>
-                    {data.latestMovement.eventType ?? "—"}
-                    {data.latestMovement.platform
-                      ? ` (platform ${data.latestMovement.platform})`
-                      : ""}
-                  </dd>
-                  <dt>Variation</dt>
-                  <dd>
-                    {data.latestMovement.variationStatus
-                      ? `${data.latestMovement.variationStatus}${
-                          data.latestMovement.timetableVariationMinutes !== null
-                            ? ` (${data.latestMovement.timetableVariationMinutes} min)`
-                            : ""
-                        }`
-                      : "—"}
-                  </dd>
-                </dl>
-              ) : null}
             </>
           ) : null}
 
-          {data.resolution?.status === "ambiguous" ? (
+          {data.candidateSchedules.length > 0 ? (
             <>
               <p className="map-inspector__note">
-                Ambiguous — {data.resolution.candidates.length} plausible candidates, none clearly
-                strongest:
+                {data.candidateSchedules.length} schedule
+                {data.candidateSchedules.length === 1 ? "" : "s"} match headcode {data.headcode}{" "}
+                today:
               </p>
               <ul className="map-inspector__candidates">
-                {data.resolution.candidates.map((candidate) => (
-                  <li key={candidate.trainRunId}>
-                    {[candidate.trainUid, candidate.signallingId, candidate.trustTrainId]
-                      .filter((part): part is string => Boolean(part))
-                      .join(" · ") || candidate.trainRunId}{" "}
-                    — {Math.round(candidate.confidence * 100)}%
-                    {candidate.reasons.length > 0 ? ` (${candidate.reasons.join(", ")})` : ""}
+                {data.candidateSchedules.map((candidate) => (
+                  <li key={candidate.scheduleId}>
+                    {candidate.trainUid} ·{" "}
+                    {STP_LABELS[candidate.stpIndicator] ?? candidate.stpIndicator}
+                    {candidate.isEffective ? " — effective" : ""}
+                    {candidate.activatedToday
+                      ? ` — activated${candidate.activationDeduced ? " (deduced)" : ""} as ${
+                          candidate.trustId
+                        }`
+                      : ""}
                   </li>
                 ))}
               </ul>
             </>
-          ) : null}
-
-          {!data.resolution || data.resolution.status === "unmatched" ? (
-            <p className="map-inspector__note">No matching activated schedule found.</p>
-          ) : null}
+          ) : (
+            <p className="map-inspector__note">
+              No garner schedule matches headcode {data.headcode} today.
+            </p>
+          )}
         </>
       ) : null}
     </div>

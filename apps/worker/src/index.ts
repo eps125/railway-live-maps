@@ -11,19 +11,12 @@ import { runPublishMap } from "./commands/publishMap.js";
 import { runBackfillMapBindings } from "./commands/backfillMapBindings.js";
 import { runProjectMapDeltasCommand } from "./commands/projectMapDeltas.js";
 import { runIngestTd } from "./commands/ingestTd.js";
-import { runIngestVstp } from "./commands/ingestVstp.js";
-import { runProjectVstpCommand } from "./commands/projectVstp.js";
-import { runReparseVstpArchive } from "./commands/reparseVstpArchive.js";
-import { runImportScheduleCommand } from "./commands/importSchedule.js";
-import { runDownloadSchedule } from "./commands/downloadSchedule.js";
 import { runImportCorpusCommand } from "./commands/importCorpus.js";
 import { runDownloadCorpus } from "./commands/downloadCorpus.js";
 import { runImportSmartCommand } from "./commands/importSmart.js";
 import { runDownloadSmart } from "./commands/downloadSmart.js";
 import { runRefreshReferenceData } from "./commands/refreshReferenceData.js";
 import { runScheduleReferenceRefresh } from "./commands/scheduleReferenceRefresh.js";
-import { runIngestTrust } from "./commands/ingestTrust.js";
-import { runProjectTrustCommand } from "./commands/projectTrust.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
 import { runPrunePartitions } from "./commands/prunePartitions.js";
@@ -57,14 +50,6 @@ async function main(): Promise<void> {
       return runBackfillMapBindings(config);
     case "project-map-deltas":
       return runProjectMapDeltasCommand(config);
-    case "project-vstp":
-      return runProjectVstpCommand(config, argvRest);
-    case "reparse-vstp-archive":
-      return runReparseVstpArchive(config, argvRest);
-    case "import-schedule":
-      return runImportScheduleCommand(config, argvRest);
-    case "download-schedule":
-      return runDownloadSchedule(config);
     case "import-corpus":
       return runImportCorpusCommand(config, argvRest);
     case "download-corpus":
@@ -75,20 +60,12 @@ async function main(): Promise<void> {
       return runDownloadSmart(config);
     case "refresh-reference-data":
       return runRefreshReferenceData(config);
-    case "project-trust":
-      return runProjectTrustCommand(config, argvRest);
     case "backfill-td-area-summary":
       return runBackfillTdAreaSummary(config);
     case "prune-partitions":
       return runPrunePartitions(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
-      return;
-    case "ingest-vstp":
-      await runIngestVstp(config);
-      return;
-    case "ingest-trust":
-      await runIngestTrust(config);
       return;
     case "schedule-reference-refresh":
       await runScheduleReferenceRefresh(config);

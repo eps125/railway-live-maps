@@ -1,24 +1,25 @@
 import type { Config } from "../config.js";
-import { runDownloadSchedule } from "./downloadSchedule.js";
 import { runDownloadSmart } from "./downloadSmart.js";
 import { runDownloadCorpus } from "./downloadCorpus.js";
 
 interface StepResult {
-  step: "schedule" | "smart" | "corpus";
+  step: "smart" | "corpus";
   ok: boolean;
   error?: string;
 }
 
 /**
- * `refresh-reference-data` — runs download-schedule, download-smart and download-corpus back to
- * back. Each step runs regardless of the others' outcome (a bad CORPUS fetch must not block a
- * good SCHEDULE refresh, or vice versa); failures are collected and thrown together at the end so
- * a manual console run still exits non-zero. `schedule-reference-refresh`'s daily loop catches
- * around the whole call instead, so one bad night logs rather than crash-loops the container.
+ * `refresh-reference-data` — runs download-smart and download-corpus back to back. Each step runs
+ * regardless of the other's outcome (a bad CORPUS fetch must not block a good SMART refresh);
+ * failures are collected and thrown together at the end so a manual console run still exits
+ * non-zero. `schedule-reference-refresh`'s daily loop catches around the whole call instead, so
+ * one bad night logs rather than crash-loops the container.
+ *
+ * The CIF SCHEDULE step was removed with RLM's own schedule model (ADR 0002, 2026-09-01) —
+ * schedule data is now mirrored from the operator's openrail-eps instance by `ingest-garner`.
  */
 export async function runRefreshReferenceData(config: Config): Promise<void> {
   const steps: Array<{ step: StepResult["step"]; run: () => Promise<void> }> = [
-    { step: "schedule", run: () => runDownloadSchedule(config) },
     { step: "smart", run: () => runDownloadSmart(config) },
     { step: "corpus", run: () => runDownloadCorpus(config) },
   ];

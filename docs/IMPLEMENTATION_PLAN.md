@@ -749,43 +749,39 @@ every projector/bridge query carries an explicit bounded range or reads a rollup
 unbounded scan of a table that grows without limit.
 
 **Step 2 (new) — garner bridge: source TRUST / VSTP / SCHEDULE / CORPUS / SMART from the owner's
-openrail-eps instance instead of subscribing to Network Rail a second time. `[partial —
-CORPUS/SMART done (commit 43f56ac); CIF-schedule + TRUST deferred]`**
+openrail-eps instance instead of subscribing to Network Rail a second time. `[done — 2026-09-01]`**
 See `docs/adr/0002-garner-integration-and-live-path.md`.
-
-Done:
 
 - openrail-eps side: MariaDB port exposed (`eps125/openrail-eps` commit 549d4af) with a
   documented read-only `GRANT SELECT` user.
 - RLM side: `mysql2` dependency, `createGarnerPool` (read-only, fail-fast), `GARNER_BRIDGE_ENABLED`
-  - `GARNER_DB_*` config (off by default like every `*_LIVE_ENABLED`; `loadConfig` fails fast if
-    enabled without host/user), and the `ingest-garner` long-running role on the shared
-    `daemonLoop` harness with its own Portainer service (safe no-op at the default).
-- `runGarnerReferenceSync`: full re-sync of garner `corpus` → `location_reference` and `smart` →
-  `smart_berth_step` (`source = 'GARNER'`), upsert on the existing natural keys, every 5 min.
-  This retires the need for `download-corpus`/`import-corpus`/`download-smart`/`import-smart` once
-  the flag is turned on.
+  - `GARNER_DB_*` config (off by default; `loadConfig` fails fast if enabled without host/user),
+    and the `ingest-garner` long-running role on the shared `daemonLoop` harness with its own
+    Portainer service (safe no-op at the default). Ticks every 20s: TRUST every tick, schedules
+    every 3rd, CORPUS/SMART every 15th.
+- `runGarnerReferenceSync`: full re-sync of `corpus` → `location_reference` and `smart` →
+  `smart_berth_step` (`source = 'GARNER'`).
+- `runGarnerScheduleSync`: `cif_schedules` → `cif_schedules` (garner-shaped, migration 0024;
+  upsert-by-id, watermarked by `GREATEST(created, deleted)` so soft-deletes are caught) and
+  `cif_schedule_locations` → `cif_schedule_locations` (delete + re-insert per touched schedule,
+  `seq_no` assigned in `sort_time` order).
+- `runGarnerTrustSync`: `trust_activation` / `trust_activation_extra` / `trust_movement` /
+  `trust_cancellation` / `trust_changeorigin` / `trust_changeid` / `trust_changelocation` →
+  same-named garner-shaped RLM tables (migration 0025), watermarked by `created` in
+  `projection_checkpoint` under `garner-<table>` names, `on conflict do nothing`.
+- Schema reshaped from the C-source DDL in `openrail-master/database.c` (verified 2026-09-01):
+  epoch INT columns → `timestamptz`/`date`, `runs_*` booleans kept + generated
+  `days_runs_bitmask`, `trust_movement.flags` decoded by
+  `packages/domain/src/trust/garnerMovement.ts`.
+- Retired: `apps/worker/src/{trust,vstp,schedule}/`, the `project-vstp` / `project-trust` /
+  `import-schedule` / `download-schedule` / `ingest-vstp` / `ingest-trust` / `reparse-vstp-archive`
+  commands+roles, the `ingest-vstp` / `ingest-trust` / `projector-schedule` Portainer services,
+  and `GET /api/v1/runs/{runId}`. `GET /api/v1/schedule/:trainUid`, `GET /api/v1/vstp/schedules`
+  and the click-a-berth popup (`GET .../current-run`) were repointed at the garner mirror.
 
-Deferred (own follow-up, each a clean separable piece):
-
-- **CIF schedules**: `cif_schedules` / `cif_schedule_locations` → `schedule` / `schedule_location`.
-  Needs a migration widening `schedule.source`'s CHECK from `('SCHEDULE','VSTP')` to also allow
-  `'GARNER'`, an STP-indicator pass-through (garner's `CIF_stp_indicator` is already `C/N/O/P`),
-  and mapping garner's `deleted` epoch column onto RLM's `withdrawn_at` (migration 0021). garner
-  merges VSTP overlays into `cif_schedules` too, so this covers VSTP as well.
-- **TRUST events**: `trust_movement` / `trust_cancellation` / `trust_changeorigin` /
-  `trust_changeid` / `trust_changelocation` + `trust_activation_extra` → `train_run` /
-  `train_run_event` / `run_schedule_link`, reusing `packages/domain/src/trust/runReducer.ts`'s
-  pure `applyActivation`/`applyMovement`/… functions — only a garner-row → `ExtractedIdentity`/
-  effect adapter is new. garner's own `trust_activation.cif_schedule_id` / `deduced` is **not**
-  consumed; RLM keeps `resolveScheduleForTrainUid` so ambiguity stays honestly reported (rule 7).
-  Each source table watermarked by its `created` epoch / auto-increment `id` in
-  `projection_checkpoint` under a `garner-<table>` name.
-
-**Blocked on** for the deferred pieces: the operator supplying real `GARNER_DB_*` credentials and
-a verification pass of the C-source schema (documented in ADR 0002) against the running
-openrail-eps instance. Until they land, `ingest-trust` / `ingest-vstp` / `download-schedule` stay
-the source for TRUST and CIF-schedule data.
+**Still deferred:** consuming garner's own TD-berth → `trust_id` deduction (its `td_states` /
+`livesig` link is not mirrored), which would let the popup show a single-winner identification
+for the ambiguous, no-activation-today case. That is part of the resolver-rebuild phase.
 
 **Scope expanded 2026-09-01 (owner):** discard RLM's VSTP/CIF/schedule data and reshape those
 tables to **mirror garner's schema near-verbatim**; drop RLM's bespoke `train_run` /

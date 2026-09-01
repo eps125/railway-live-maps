@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted (2026-09-01). Live-path steps implemented incrementally under Milestone 15; the garner
-bridge is in progress, blocked on live-schema verification.
+Accepted (2026-09-01). Live-path hardening (steps 1–6) and the resolver removal implemented under
+Milestone 15. The garner bridge — CORPUS/SMART, CIF schedules and TRUST — is implemented against
+the openrail-eps C-source schema (`openrail-master/database.c`); still to run against a live
+instance with real `GARNER_DB_*` credentials.
 
 ## Context
 
@@ -77,20 +79,25 @@ sweep, not a schema-mapping layer with its own impedance mismatch and mapping bu
   `created` epoch / auto-increment `id` in `projection_checkpoint` under a `garner-<table>` name.
 - **CORPUS → `location_reference`, SMART → `smart_berth_step`** — full re-sync (small, ~daily).
   Implemented (commit 43f56ac).
-- **`cif_schedules` / `cif_schedule_locations` → `schedule` / `schedule_location`** — RLM's tables
-  are dropped and recreated in garner shape (garner's column names, garner's `id` as the PK so
-  the mirror is a pure upsert, garner's `deleted` epoch column instead of `withdrawn_at`, dates
-  converted from garner's epoch INTs, a generated `days_runs_bitmask` from garner's `runs_*`
-  booleans so `resolveStpPrecedence.ts` needs no change). Migration 0024.
+- **`cif_schedules` / `cif_schedule_locations`** — RLM's `schedule` / `schedule_location` tables
+  are dropped and recreated as `cif_schedules` / `cif_schedule_locations` in garner shape
+  (garner's column names lowercased, garner's `id` as the PK so the mirror is a pure upsert-by-id,
+  garner's `deleted` epoch column instead of `withdrawn_at`, dates converted from garner's epoch
+  INTs, a generated `days_runs_bitmask` from garner's `runs_*` booleans so `resolveStpPrecedence.ts`
+  needs no change). Watermarked by `GREATEST(created, deleted)` so deletions are caught. Migration 0024. **Implemented 2026-09-01.**
 - **`trust_activation` (+`_extra`) / `trust_movement` / `trust_cancellation` / `trust_changeorigin`
-  / `trust_changeid` / `trust_changelocation` → new garner-shaped RLM tables**. RLM's bespoke
-  `train_run` / `train_run_event` / `run_schedule_link` model and `runReducer.ts` are **dropped**
-  — a bespoke run model with its own reducer is exactly the impedance layer being removed.
-  RLM's mirror still accumulates its own long-term history (it keeps synced rows after garner
-  archives them at 15 days). Migration 0025.
-- The NR-direct `ingest-trust` / `ingest-vstp` / `download-schedule` / `import-schedule` paths
-  and their code (`apps/worker/src/{trust,vstp,schedule}/`, `packages/domain/src/{trust,schedule}/`
-  where garner-superseded) are retired.
+  / `trust_changeid` / `trust_changelocation` → new garner-shaped RLM tables**, watermarked by
+  `created`. RLM's bespoke `train_run` / `train_run_event` / `run_schedule_link` model and
+  `runReducer.ts` are **dropped** — a bespoke run model with its own reducer is exactly the
+  impedance layer being removed. RLM's mirror still accumulates its own long-term history (it keeps
+  synced rows after garner archives them at 15 days). Migration 0025. **Implemented 2026-09-01.**
+- The NR-direct `ingest-trust` / `ingest-vstp` / `download-schedule` / `import-schedule` /
+  `project-trust` / `project-vstp` / `reparse-vstp-archive` commands and roles, their Portainer
+  services (`ingest-vstp`, `ingest-trust`, `projector-schedule`), and the worker code
+  `apps/worker/src/{trust,vstp,schedule}/` are **removed**. The pure feed parsers
+  (`packages/feed-parsers/src/{vstp,trust}/`, `parseScheduleFileStream`) and domain helpers
+  (`runReducer.ts`, `mapToScheduleRow.ts`, `serviceDate.ts`, the `*_NORMALIZATION_VERSION`
+  constants) are left in place as now-unused code rather than chased down. **Implemented 2026-09-01.**
 
 ### The berth-run resolver is removed and deferred (2026-09-01)
 
@@ -101,10 +108,21 @@ message and `runSummary` delta field) was the single largest source of productio
 session and is **removed wholesale**. It is to be **rebuilt in a later phase** on top of garner's
 own correlation work — garner's `trust_activation.cif_schedule_id` link, its
 `deduced_headcode`/`deduced_headcode_status`, and its SMART berth-offset tracking (what drives
-`livesig`) already do most of the job. Interim, the click-a-berth popup shows: the TD headcode,
-and — matched on headcode + service date against the mirrored garner `trust_activation` — garner's
-linked schedule and latest `trust_movement` report, **labelled as garner's deduction**, not
-RLM's own `matched`/`ambiguous`/`unmatched` verdict.
+`livesig`) already do most of the job.
+
+**Interim popup (implemented 2026-09-01):** the click-a-berth popup shows the TD headcode, then
+every mirrored `cif_schedules` row whose `signalling_id` equals that headcode and that runs
+today. `selectEffectiveSchedule` (STP precedence) picks one; if that is ambiguous but exactly one
+candidate has a `trust_activation` today, that one is picked instead (garner's own confirmation
+breaks the tie). For the effective schedule the popup shows its calling points, its
+`trust_activation` (+`_extra`), and the latest `trust_movement` (late/early/off-route + event
+kind decoded from garner's `flags` bit-field via `packages/domain/src/trust/garnerMovement.ts`).
+A fixed `note` on every response states this is garner's data, not an RLM identification. What is
+**not** yet done: consuming garner's own TD→trust_id deduction (garner's `td_states`/`livesig`
+link is not mirrored), so the popup cannot show garner's single-winner pick for the ambiguous
+no-activation case — that waits for the rebuild phase. `GET /api/v1/runs/{runId}` (the Milestone
+8 `train_run` endpoint) is **removed** with no replacement — nothing consumed it after
+run-following left the web client.
 
 ### CLAUDE.md rule 1 exception
 

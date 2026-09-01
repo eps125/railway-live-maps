@@ -75,24 +75,19 @@ async function clearProjectionRows(pool: Pool, projectionVersion: number): Promi
   const client = await pool.connect();
   try {
     await client.query("begin");
-    // Child-before-parent for the FKs into berth_occupancy: berth_current_state and
-    // berth_run_resolution (Milestone 9's resolver) are pure derived state, safe to delete
-    // outright; operator_berth_action (the manual berth-clear audit trail) is a permanent record
-    // that must survive a rebuild, so its now-dangling occupancy reference is nulled out instead
-    // of the row being deleted — without handling this first, the delete below fails with a
-    // foreign key violation the instant any occupancy has ever been resolved or manually cleared,
-    // which in practice is "always" in a real deployment.
+    // Child-before-parent for the FKs into berth_occupancy: berth_current_state is pure derived
+    // state, safe to delete outright; operator_berth_action (the manual berth-clear audit trail)
+    // is a permanent record that must survive a rebuild, so its now-dangling occupancy reference
+    // is nulled out instead of the row being deleted — without handling this first, the delete
+    // below fails with a foreign key violation the instant any occupancy has ever been manually
+    // cleared. (The berth-run resolver's `berth_run_resolution` FK was removed with the resolver
+    // itself — ADR 0002, migrations 0022/0025.)
     await client.query("delete from td_projection_anomaly where projection_version = $1", [
       projectionVersion,
     ]);
     await client.query("delete from berth_current_state where projection_version = $1", [
       projectionVersion,
     ]);
-    await client.query(
-      `delete from berth_run_resolution
-       where occupancy_id in (select id from berth_occupancy where projection_version = $1)`,
-      [projectionVersion],
-    );
     await client.query(
       `update operator_berth_action set closed_occupancy_id = null, closed_occupancy_entered_at = null
        where closed_occupancy_id in (select id from berth_occupancy where projection_version = $1)`,
@@ -511,10 +506,9 @@ async function upsertAreaSummary(
  *
  * Each per-batch transaction previously also took a shared `BERTH_OCCUPANCY_WRITE_LOCK_KEY`
  * before touching any `berth_occupancy` row, to prevent a real production deadlock (40P01,
- * 2026-08-14) against `project-resolver`'s own `berth_occupancy` writes. Migration 0022
- * (2026-09-01) removed project-resolver as a `berth_occupancy` writer entirely — it now only
- * writes `berth_run_resolution`, which this projector never touches — so this projector is the
- * table's only writer again and the lock has nothing left to protect. See
+ * 2026-08-14) against `project-resolver`'s own `berth_occupancy` writes. The berth-run resolver
+ * was removed entirely (ADR 0002, migrations 0022/0025), so this projector is `berth_occupancy`'s
+ * only writer again and the lock has nothing left to protect. See
  * `apps/worker/src/shared/advisoryLock.ts`'s doc comment for the removal note.
  */
 export async function runProjectTd(

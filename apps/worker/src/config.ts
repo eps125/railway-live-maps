@@ -24,30 +24,10 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
-  NR_VSTP_TOPIC: z.string().default("/topic/VSTP_ALL"),
-  // Same credential-gated discipline as TD_LIVE_ENABLED — see docs/IMPLEMENTATION_PLAN.md
-  // Milestone 7's "live enablement checkpoint": only flip on after fixture replay + the
-  // integration suite pass.
-  VSTP_LIVE_ENABLED: z
-    .string()
-    .default("false")
-    .transform((value) => value === "true"),
-  NR_TRUST_TOPIC: z.string().default("/topic/TRAIN_MVT_ALL_TOC"),
-  // Same credential-gated discipline, per Milestone 8's "live enablement checkpoint".
-  TRUST_LIVE_ENABLED: z
-    .string()
-    .default("false")
-    .transform((value) => value === "true"),
-  // CORPUS/SMART confirmed correct against the live NR file service (2026-08-10 — both
-  // downloaded and imported successfully). SCHEDULE originally pointed at
-  // SupportingFileAuthenticate (a 404 in production, confirmed 2026-08-10) — the real CIF full
-  // extract lives at a different endpoint, CifFileAuthenticate, and requires an additional
-  // `day=toc-full` query param that SupportingFileAuthenticate's downloads never needed.
-  NR_SCHEDULE_DOWNLOAD_URL: z
-    .string()
-    .default(
-      "https://publicdatafeeds.networkrail.co.uk/ntrod/CifFileAuthenticate?type=CIF_ALL_FULL_DAILY&day=toc-full",
-    ),
+  // VSTP_LIVE_ENABLED / TRUST_LIVE_ENABLED / NR_VSTP_TOPIC / NR_TRUST_TOPIC / NR_SCHEDULE_DOWNLOAD_URL
+  // were removed with ADR 0002 (2026-09-01): RLM no longer subscribes to NR for VSTP/TRUST/SCHEDULE.
+  // That data is mirrored from openrail-eps via the GARNER_* config below.
+  // CORPUS/SMART confirmed correct against the live NR file service (2026-08-10).
   NR_CORPUS_DOWNLOAD_URL: z
     .string()
     .default(
@@ -58,15 +38,16 @@ const baseSchema = z.object({
     .default(
       "https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART",
     ),
-  // Off by default, same discipline as TD/VSTP_LIVE_ENABLED: only the file-path `import-*`
-  // commands are exercised until this is explicitly turned on.
+  // Off by default. Gates the download-{corpus,smart} commands and the schedule-reference-refresh
+  // role. Still named SCHEDULE_DOWNLOAD_ENABLED for env compatibility; the CIF SCHEDULE download
+  // was removed with ADR 0002.
   SCHEDULE_DOWNLOAD_ENABLED: z
     .string()
     .default("false")
     .transform((value) => value === "true"),
   // Europe/London wall-clock time (HH:MM, 24h) the schedule-reference-refresh long-running role
-  // runs download-schedule/download-smart/download-corpus at, once a day. Only takes effect when
-  // SCHEDULE_DOWNLOAD_ENABLED=true — same gate every download-* command already enforces.
+  // runs download-smart / download-corpus at, once a day. Only takes effect when
+  // SCHEDULE_DOWNLOAD_ENABLED=true.
   REFERENCE_DATA_REFRESH_TIME: z
     .string()
     .default("01:00")
@@ -116,11 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const base = result.data;
 
-  const nrCredentialsRequired =
-    base.TD_LIVE_ENABLED ||
-    base.VSTP_LIVE_ENABLED ||
-    base.TRUST_LIVE_ENABLED ||
-    base.SCHEDULE_DOWNLOAD_ENABLED;
+  const nrCredentialsRequired = base.TD_LIVE_ENABLED || base.SCHEDULE_DOWNLOAD_ENABLED;
   const NR_USERNAME = readSecret(env, "NR_USERNAME", { required: nrCredentialsRequired });
   const NR_PASSWORD = readSecret(env, "NR_PASSWORD", { required: nrCredentialsRequired });
 

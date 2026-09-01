@@ -9,23 +9,20 @@
 # deploy) — NR_USERNAME/NR_PASSWORD are plain environment variables (Portainer's stack
 # environment editor) instead of mounted secret files. Weaker than a mounted secret (visible
 # via `docker inspect`/the Portainer UI to anyone with stack access) — see deploy/DEPLOYMENT.md
-# §4's caveat. Every `*_LIVE_ENABLED` flag below now defaults to `true` (deploy/.env.example)
-# — also a deliberate owner choice once TD/VSTP/TRUST were confirmed working against real NR
-# feeds; NR_USERNAME/NR_PASSWORD must still be set in Portainer's stack environment editor for
-# any of the three to actually connect (loadConfig fails fast otherwise).
+# §4's caveat. `TD_LIVE_ENABLED` defaults to `true` (deploy/.env.example) — a deliberate owner
+# choice once the TD feed was confirmed working against real NR; NR_USERNAME/NR_PASSWORD must
+# still be set in Portainer's stack environment editor for it to connect (loadConfig fails fast
+# otherwise).
 #
 # `worker` itself stays an idle daemon (its default command) — it's the stable target for
 # Portainer's "Console" one-off commands (migrate, ensure-archive-bucket, publish-map, ...).
-# Actual live ingestion runs in the three dedicated `ingest-*` services below: each is always
-# running, but its shell wrapper idles (`sleep infinity`) rather than connecting whenever its
-# own `*_LIVE_ENABLED` flag is false, so leaving them at the default is a safe no-op rather
-# than a crash loop. `projector-td` runs a persistent daemon (`project-td-daemon`, 2026-09
-# live-path hardening) that ticks every 250ms in one warm process — no per-cycle `node` cold
-# start. `projector-schedule` still re-runs the one-shot `project-vstp`/`project-trust` commands
-# in a shell loop (there is no built-in scheduler yet). Split into separate services so live
-# berth positions can never be stalled by schedule/TRUST backlog work (see the comments on each
-# service below). (The berth-run resolver and its `projector-resolver` service were removed with
-# ADR 0002.)
+# Live TD capture runs in the `ingest-td` service; it idles (`sleep infinity`) unless
+# TD_LIVE_ENABLED is true, so leaving it at the default is a safe no-op rather than a crash loop.
+# `projector-td` runs a persistent daemon (`project-td-daemon`, 2026-09 live-path hardening) that
+# ticks every 250ms in one warm process — no per-cycle `node` cold start. `ingest-garner`
+# (ADR 0002) mirrors CORPUS / SMART / CIF-schedule / TRUST from the operator's openrail-eps
+# MariaDB — RLM no longer subscribes to Network Rail for VSTP or TRUST, and the `ingest-vstp` /
+# `ingest-trust` / `projector-schedule` / `projector-resolver` services were removed.
 #
 # Postgres/Redis/archive are published to the host below for direct testing access — this
 # is a deliberate departure from docs/ARCHITECTURE.md §12 ("only the reverse proxy/web entry
@@ -35,10 +32,11 @@
 # a production deployment without reconsidering that tradeoff.
 #
 # `backend` is `internal: true` (no route to the outside world at all — not even DNS), which
-# is right for Postgres/Redis/archive/api/web but would silently break `worker` and the three
-# `ingest-*` services: they need to actually reach publicdatafeeds.networkrail.co.uk. Those
-# services are additionally attached to `egress`, a normal (non-internal) network that grants
-# outbound internet without publishing anything new inbound — see its definition below.
+# is right for Postgres/Redis/archive/api/web but would silently break `worker`, `ingest-td`,
+# `reference-data-refresh` and `ingest-garner`: they need to actually reach
+# publicdatafeeds.networkrail.co.uk (or the openrail-eps host). Those services are additionally
+# attached to `egress`, a normal (non-internal) network that grants outbound internet without
+# publishing anything new inbound — see its definition below.
 
 name: railway-live-maps
 
@@ -53,29 +51,21 @@ x-worker-env: &worker-env
   RAW_ARCHIVE_SECRET_KEY: ${RAW_ARCHIVE_SECRET_KEY}
   RAW_ARCHIVE_REGION: ${RAW_ARCHIVE_REGION:-us-east-1}
   NR_TD_TOPIC: ${NR_TD_TOPIC:-/topic/TD_ALL_SIG_AREA}
-  NR_TRUST_TOPIC: ${NR_TRUST_TOPIC:-/topic/TRAIN_MVT_ALL_TOC}
-  NR_VSTP_TOPIC: ${NR_VSTP_TOPIC:-/topic/VSTP_ALL}
   # Real values go in Portainer's stack environment editor, never in this file or Git.
   NR_USERNAME: ${NR_USERNAME:-}
   NR_PASSWORD: ${NR_PASSWORD:-}
   TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-true}
-  VSTP_LIVE_ENABLED: ${VSTP_LIVE_ENABLED:-true}
-  TRUST_LIVE_ENABLED: ${TRUST_LIVE_ENABLED:-true}
-  # SCHEDULE/CORPUS/SMART full-extract download support (docs/IMPLEMENTATION_PLAN.md
-  # Milestone 7) — previously missing from this anchor entirely, so setting
-  # SCHEDULE_DOWNLOAD_ENABLED in Portainer's stack environment editor silently had no effect
-  # (docker compose only injects env vars a service's `environment:` block actually
-  # references). Gates both the manual download-{schedule,smart,corpus} console commands AND
-  # the always-running `reference-data-refresh` service below, which calls all three
-  # automatically once a day at REFERENCE_DATA_REFRESH_TIME — same on/off discipline as
-  # TD/VSTP/TRUST_LIVE_ENABLED (2026-08-13: previously this flag really did trigger nothing on
-  # its own, before that service existed).
-  NR_SCHEDULE_DOWNLOAD_URL: ${NR_SCHEDULE_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/CifFileAuthenticate?type=CIF_ALL_FULL_DAILY&day=toc-full}
+  # VSTP_LIVE_ENABLED / TRUST_LIVE_ENABLED / NR_VSTP_TOPIC / NR_TRUST_TOPIC / NR_SCHEDULE_DOWNLOAD_URL
+  # were removed with ADR 0002 (2026-09-01): RLM no longer subscribes to NR for VSTP/TRUST/SCHEDULE
+  # — that data is mirrored from openrail-eps by `ingest-garner`. Drop them from any existing stack .env.
+  # CORPUS/SMART full-extract download is still supported as the non-garner fallback.
   NR_CORPUS_DOWNLOAD_URL: ${NR_CORPUS_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS}
   NR_SMART_DOWNLOAD_URL: ${NR_SMART_DOWNLOAD_URL:-https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART}
+  # Gates the manual download-{corpus,smart} console commands AND the daily reference-data-refresh
+  # service below. (Still named SCHEDULE_DOWNLOAD_ENABLED for compatibility; the SCHEDULE part is gone.)
   SCHEDULE_DOWNLOAD_ENABLED: ${SCHEDULE_DOWNLOAD_ENABLED:-true}
-  # Europe/London wall-clock time (24h HH:MM) the reference-data-refresh service below runs
-  # download-schedule/download-smart/download-corpus at, once a day. Only takes effect while
+  # Europe/London wall-clock time (24h HH:MM) the reference-data-refresh service runs
+  # download-smart / download-corpus at, once a day. Only takes effect while
   # SCHEDULE_DOWNLOAD_ENABLED is true — see that service's own comment.
   REFERENCE_DATA_REFRESH_TIME: ${REFERENCE_DATA_REFRESH_TIME:-01:00}
   # Must match the `api` service's own copy of this flag below — and gates whether
@@ -201,62 +191,19 @@ services:
     # unable to resolve any hostname at all (DNS EAI_AGAIN), not merely blocked.
     networks: [backend, egress]
 
-  ingest-vstp:
-    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
-    restart: unless-stopped
-    environment: *worker-env
-    command:
-      - sh
-      - -c
-      - |
-        if [ "$$VSTP_LIVE_ENABLED" = "true" ]; then
-          exec node dist/index.js ingest-vstp
-        else
-          echo "ingest-vstp: VSTP_LIVE_ENABLED is not true, idling"
-          exec sleep infinity
-        fi
-    depends_on:
-      postgres:
-        condition: service_healthy
-      archive:
-        condition: service_started
-    healthcheck:
-      disable: true
-    # See ingest-td above: needs real internet access to reach Network Rail.
-    networks: [backend, egress]
+  # The `ingest-vstp` and `ingest-trust` services were removed with ADR 0002 (2026-09-01): RLM no
+  # longer subscribes to Network Rail for VSTP or TRUST. VSTP-schedule and TRUST data are mirrored
+  # from the operator's openrail-eps ("garner") MariaDB by the `ingest-garner` service below. If
+  # `ingest-vstp` / `ingest-trust` from an earlier stack version are still defined in Portainer,
+  # delete them on the next redeploy.
 
-  ingest-trust:
-    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
-    restart: unless-stopped
-    environment: *worker-env
-    command:
-      - sh
-      - -c
-      - |
-        if [ "$$TRUST_LIVE_ENABLED" = "true" ]; then
-          exec node dist/index.js ingest-trust
-        else
-          echo "ingest-trust: TRUST_LIVE_ENABLED is not true, idling"
-          exec sleep infinity
-        fi
-    depends_on:
-      postgres:
-        condition: service_healthy
-      archive:
-        condition: service_started
-    healthcheck:
-      disable: true
-    # See ingest-td above: needs real internet access to reach Network Rail.
-    networks: [backend, egress]
-
-  # Automatically re-downloads/re-imports SCHEDULE, SMART and CORPUS once a day at
-  # REFERENCE_DATA_REFRESH_TIME (Europe/London, default 01:00) — previously the only way to
-  # refresh reference data was running download-schedule/download-smart/download-corpus by hand
-  # via Portainer's Console (docs/IMPLEMENTATION_PLAN.md Milestone 7). Idles (sleep infinity)
-  # unless SCHEDULE_DOWNLOAD_ENABLED=true, same pattern as ingest-td/vstp/trust above — flip the
-  # flag and redeploy to start automatic daily refreshes. A failed night is logged and retried the
-  # following day rather than crash-looping the container (apps/worker/src/commands/
-  # scheduleReferenceRefresh.ts).
+  # Automatically re-downloads/re-imports SMART and CORPUS once a day at
+  # REFERENCE_DATA_REFRESH_TIME (Europe/London, default 01:00). Idles (sleep infinity) unless
+  # SCHEDULE_DOWNLOAD_ENABLED=true, same pattern as ingest-td above — flip the flag and redeploy
+  # to start automatic daily refreshes. A failed night is logged and retried the following day
+  # rather than crash-looping the container (apps/worker/src/commands/scheduleReferenceRefresh.ts).
+  # (When GARNER_BRIDGE_ENABLED, `ingest-garner` mirrors CORPUS/SMART from openrail-eps too — this
+  # service is then redundant but harmless.)
   reference-data-refresh:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped
@@ -279,7 +226,7 @@ services:
     healthcheck:
       disable: true
     # `egress` (not `internal`): reaches publicdatafeeds.networkrail.co.uk directly, same
-    # requirement as ingest-td/vstp/trust and the worker service's own console commands.
+    # requirement as ingest-td and the worker service's own console commands.
     networks: [backend, egress]
 
   # Live berth-position + map-delta path, as one persistent process (2026-09 live-path
@@ -305,37 +252,15 @@ services:
       disable: true
     networks: [backend]
 
-  # Schedule/TRUST backlog work, deliberately isolated from projector-td (see above) so it can
-  # take as long as it needs — large nationwide backlogs, deferred TRUST relinking — without ever
-  # blocking live berth positions. vstp and trust are kept together because they have a real
-  # sequencing dependency (trust correlates against project-td's output). Each project-*
-  # command is checkpointed and incremental, so an idle backlog returns instantly — harmless to
-  # leave running even with every *_LIVE_ENABLED flag false.
-  projector-schedule:
-    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
-    restart: unless-stopped
-    environment: *worker-env
-    command:
-      - sh
-      - -c
-      - |
-        while true; do
-          node dist/index.js project-vstp
-          node dist/index.js project-trust
-          sleep 1
-        done
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      disable: true
-    networks: [backend]
+  # The `projector-schedule` service (which ran `project-vstp` / `project-trust` in a shell loop)
+  # was removed with ADR 0002 (2026-09-01) along with RLM's own VSTP/TRUST projectors. Delete it
+  # from Portainer on the next redeploy if an earlier stack version still defines it.
 
-  # garner bridge (ADR 0002): mirrors CORPUS/SMART (and, once wired, CIF-schedule + TRUST) from
-  # the operator's openrail-eps MariaDB. The daemon idles cleanly if GARNER_BRIDGE_ENABLED is not
-  # 'true', so this service is a safe no-op left at the default — flip the flag + set GARNER_DB_*
-  # and redeploy to start it. Needs `egress` to reach the openrail-eps host if it's not on the
-  # `backend` network.
+  # garner bridge (ADR 0002): mirrors CORPUS / SMART / cif_schedules / cif_schedule_locations /
+  # trust_* from the operator's openrail-eps MariaDB — RLM no longer subscribes to Network Rail
+  # for those feeds. The daemon idles cleanly if GARNER_BRIDGE_ENABLED is not 'true', so this
+  # service is a safe no-op left at the default — flip the flag + set GARNER_DB_* and redeploy to
+  # start it. Needs `egress` to reach the openrail-eps host if it's not on the `backend` network.
   ingest-garner:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
     restart: unless-stopped
@@ -415,8 +340,8 @@ networks:
   frontend:
   backend:
     internal: true
-  # Outbound-only path to the real internet for the services that must reach Network Rail's
-  # public endpoints (ingest-td/vstp/trust, and worker for the download-* console commands).
-  # Not `internal`, but nothing is published on it either — it grants egress, not any new
-  # inbound surface. Postgres/Redis/archive/api/web deliberately stay off this network.
+  # Outbound-only path to the real internet for the services that must reach external endpoints
+  # (ingest-td and worker for the download-* console commands → Network Rail; ingest-garner →
+  # the openrail-eps host). Not `internal`, but nothing is published on it either — it grants
+  # egress, not any new inbound surface. Postgres/Redis/archive/api/web stay off this network.
   egress:

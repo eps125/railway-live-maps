@@ -56,62 +56,10 @@ dropped with the berth-run resolver — ADR 0002.)
 
 Occurrences across all retained TD areas.
 
-### `GET /api/v1/runs/{runId}` (implemented Milestone 8; `resolverEvidence` implemented Milestone 9)
-
-Run identity, activation, latest status, resolver evidence and links. `resolverEvidence` is the
-most recent `berth_run_resolution` row that selected this run (a run occupies several berths
-over its journey, each resolved independently — this is "why the resolver most recently linked a
-berth to this run," not one fixed fact) — `null` when no occupancy has ever resolved to this run.
-404 with `error.code: "RUN_NOT_FOUND"` for an unknown `runId`.
-
-```json
-{
-  "runId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "trustTrainId": "2A1612AA26",
-  "signallingId": "2A16",
-  "serviceDate": "2026-08-10",
-  "scheduleId": "42",
-  "activatedAt": "2026-08-10T10:00:00.000Z",
-  "originDepartureAt": "2026-08-10T10:01:00.000Z",
-  "callType": "AUTOMATIC",
-  "callMode": "NORMAL",
-  "operatorCode": "NT",
-  "serviceCode": "22222000",
-  "lifecycleState": "activated",
-  "supersededByTrainRunId": null,
-  "lastEventAt": "2026-08-10T10:15:00.000Z",
-  "scheduleLink": {
-    "matchOutcome": "matched",
-    "scheduleId": "42",
-    "resolvedAt": "2026-08-10T10:00:00.000Z"
-  },
-  "resolverEvidence": {
-    "status": "matched",
-    "confidence": 0.79,
-    "resolverVersion": 1,
-    "decidedAt": "2026-08-10T10:15:05.000Z",
-    "candidates": [
-      {
-        "trainRunId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-        "score": 75,
-        "confidence": 0.79,
-        "reasons": [
-          "activation linked to a matched schedule",
-          "occupancy time falls within the schedule's plausible window"
-        ]
-      }
-    ]
-  }
-}
-```
-
-### `GET /api/v1/runs/{runId}/schedule` (implemented Milestone 8)
-
-Ordered schedule locations for the run's linked schedule (same location shape as
-`GET /api/v1/schedule/{trainUid}`'s `locations` array). 404 with `error.code: "RUN_NOT_FOUND"`
-for an unknown `runId`; 404 with `error.code: "RUN_SCHEDULE_NOT_LINKED"` when the run exists
-but has no matched schedule (activation resolver outcome was `ambiguous`/`unmatched`, or the
-run has no activation at all — e.g. an Unidentified Train run).
+> `GET /api/v1/runs/{runId}` and `GET /api/v1/runs/{runId}/schedule` (Milestone 8) were **removed**
+> with RLM's bespoke `train_run` model (ADR 0002, 2026-09-01). Nothing consumed them after
+> run-following left the web client. Run↔schedule detail now comes from the garner mirror via the
+> `current-run` popup endpoint below.
 
 ### `GET /api/v1/status`
 
@@ -125,59 +73,78 @@ List every observed TD area with first/last event times, C-Class/S-Class counts,
 
 List observed berth identifiers and basic activity statistics for map-authoring and diagnostics.
 
-### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (implemented Milestone 9)
+### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9; reworked by ADR 0002)
 
 The live map's click-a-berth popup, one round trip (`docs/PROJECT_SPEC.md` §5 "Train/run
 popup"). 404 with `error.code: "BERTH_NOT_OCCUPIED"` when the berth has no current occupancy —
-matches "click a **populated** berth." `resolution`/`run`/`schedule`/`latestMovement` are all
-`null` until the resolver has processed the occupancy, or stay partially `null` per the match
-outcome (`run`/`schedule`/`latestMovement` are only ever populated when `resolution.status ===
-"matched"` — an `ambiguous` result surfaces its full `candidates` list instead of a chosen run,
-never a silent pick).
+matches "click a **populated** berth."
+
+Since ADR 0002 (2026-09-01) RLM has **no berth-run resolver** and does not claim a single train
+identity for a berth. The response instead carries, all sourced from the garner (openrail-eps)
+mirror: the TD headcode, every `cif_schedules` row whose `signalling_id` equals that headcode and
+that runs today (`candidateSchedules`), and — when one can be picked (STP precedence, or a single
+`trust_activation` today breaking an STP tie) — the `effective` schedule with its calling points,
+`trust_activation` and latest `trust_movement`. `effective` is `null` when the headcode is
+ambiguous and nothing is TRUST-activated today. A fixed `note` states this is garner's data, not
+an RLM identification.
 
 ```json
 {
   "tdArea": "PX",
   "berth": "0512",
   "description": "2A16",
+  "headcode": "2A16",
   "occupancyEnteredAt": "2026-08-10T10:14:58.000Z",
-  "resolution": {
-    "status": "matched",
-    "confidence": 0.79,
-    "resolverVersion": 1,
-    "decidedAt": "2026-08-10T10:15:05.000Z",
-    "candidates": [
-      {
-        "trainRunId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-        "score": 75,
-        "confidence": 0.79,
-        "reasons": ["..."],
-        "signallingId": "2A16",
-        "trustTrainId": "2A1612AA26",
-        "trainUid": "U12345"
-      }
-    ]
-  },
-  "run": {
-    "runId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "trustTrainId": "2A1612AA26",
-    "signallingId": "2A16",
-    "serviceDate": "2026-08-10",
-    "activatedAt": "2026-08-10T10:00:00.000Z",
-    "operatorCode": "NT",
-    "serviceCode": "22222000",
-    "lifecycleState": "activated",
-    "scheduleLink": { "matchOutcome": "matched", "scheduleId": "42" }
-  },
-  "schedule": {
-    "scheduleId": "42",
+  "note": "Candidate schedules for this headcode running today, mirrored from openrail-eps ...",
+  "candidateSchedules": [
+    {
+      "scheduleId": "4210031",
+      "trainUid": "U12345",
+      "stpIndicator": "P",
+      "source": "GARNER",
+      "operatorCode": "NT",
+      "signallingId": "2A16",
+      "scheduleStartDate": "2026-01-01",
+      "scheduleEndDate": "2026-12-31",
+      "activatedToday": true,
+      "trustId": "729S93MT10",
+      "activationDeduced": false,
+      "isEffective": true
+    }
+  ],
+  "effective": {
+    "scheduleId": "4210031",
     "trainUid": "U12345",
     "stpIndicator": "P",
-    "source": "SCHEDULE",
+    "source": "GARNER",
+    "operatorCode": "NT",
     "originTiploc": "PRST",
     "originName": "Preston",
     "destinationTiploc": "LANCSTR",
     "destinationName": "Lancaster",
+    "selectedBy": "trust_activation",
+    "activation": {
+      "trustId": "729S93MT10",
+      "deduced": false,
+      "activatedAt": "2026-08-10T09:30:00.000Z",
+      "trainUid": "U12345",
+      "tocId": "NT",
+      "scheduleWttId": "U12345",
+      "scheduleType": "P",
+      "originDepartureAt": "2026-08-10T10:00:00.000Z"
+    },
+    "latestMovement": {
+      "trustId": "729S93MT10",
+      "locStanox": "11224",
+      "locName": "Preston",
+      "platform": "4",
+      "actualTimestamp": "2026-08-10T10:01:00.000Z",
+      "eventKind": "departure",
+      "variationStatus": "late",
+      "variationMinutes": 3,
+      "terminated": false,
+      "offRoute": false
+    },
     "locations": [
       {
         "seqNo": 1,
@@ -187,13 +154,6 @@ never a silent pick).
         "...": "..."
       }
     ]
-  },
-  "latestMovement": {
-    "eventType": "DEPARTURE",
-    "locationStanox": "11224",
-    "platform": "4",
-    "variationStatus": "LATE",
-    "timetableVariationMinutes": 3
   }
 }
 ```
@@ -202,10 +162,12 @@ never a silent pick).
 
 Protected/diagnostic endpoint for retained S-Class source events. Lancaster may return data absence while other areas remain available. Apply strict range limits.
 
-### `GET /api/v1/schedule/{trainUid}?date=YYYY-MM-DD` (added Milestone 7)
+### `GET /api/v1/schedule/{trainUid}?date=YYYY-MM-DD` (Milestone 7; garner-backed since ADR 0002)
 
 Resolves the STP-effective schedule for a `train_uid` on a given traffic day, via
-`packages/domain`'s `resolveStpPrecedence` (`C` > `O` > `N` > `P`). `date` is required. Per
+`packages/domain`'s `resolveStpPrecedence` (`C` > `O` > `N` > `P`). Backed by the garner
+`cif_schedules` / `cif_schedule_locations` mirror (`source` is always `GARNER`);
+origin/destination TIPLOC are derived from the first/last calling point. `date` is required. Per
 CLAUDE.md rule 7, the response's top-level `outcome` is always exactly one of `matched`,
 `ambiguous` or `unmatched` — never silently resolved.
 
@@ -228,7 +190,7 @@ CLAUDE.md rule 7, the response's top-level `outcome` is always exactly one of `m
     "powerType": "EMU",
     "originTiploc": "PRST",
     "destinationTiploc": "LANCSTR",
-    "source": "SCHEDULE"
+    "source": "GARNER"
   },
   "locations": [
     {
@@ -269,14 +231,15 @@ A `train_uid` never seen at all is a plain 404 with the standard error envelope
 (`error.code: "SCHEDULE_NOT_FOUND"`), distinct from a seen-but-not-running-that-day
 `unmatched` result.
 
-### `GET /api/v1/vstp/schedules?atocCode=&before=&limit=` (added Milestone 7)
+### `GET /api/v1/vstp/schedules?atocCode=&before=&limit=` (Milestone 7; garner-backed since ADR 0002)
 
-Nationwide VSTP discovery/diagnostics, mirroring what `GET /api/v1/td/areas` gives TD: browse
-everything captured (`schedule` rows with `source = 'VSTP'`) rather than needing an already-known
-`train_uid`. Ordered most-recent-first; `before` (an opaque `id` cursor from the previous
-response's `nextCursor`) pages backward in time — the reverse of the `after`-based cursors used
-elsewhere in this API. `atocCode` filters to a single operator (NR's own CIF/VSTP field name for
-what this API otherwise calls `operatorCode`, e.g. on the schedule endpoint above — same value).
+Nationwide short-term-planning schedule discovery/diagnostics, mirroring what
+`GET /api/v1/td/areas` gives TD: browse everything captured rather than needing an already-known
+`train_uid`. Backed by the garner `cif_schedules` mirror, filtered to `cif_stp_indicator <> 'P'`
+(STP overlays/new/cancellations — garner merges NR VSTP into `cif_schedules`, so there is no
+separate `source = 'VSTP'` marker any more). Ordered most-recent-first by `id`; `before` (an
+opaque `id` cursor from the previous response's `nextCursor`) pages backward in time. `atocCode`
+filters to a single operator (garner's `atoc_code`).
 
 ```json
 {

@@ -7,93 +7,133 @@ export interface ScheduleRoutesDeps {
   pool: Pool;
 }
 
-interface ScheduleRow {
+/**
+ * Since ADR 0002 (2026-09-01) RLM mirrors the operator's openrail-eps ("garner")
+ * `cif_schedules` / `cif_schedule_locations` near-verbatim (migration 0024) instead of running
+ * its own SCHEDULE/VSTP importer. These routes read that mirror. `source` is always `GARNER`.
+ */
+interface CifScheduleRow {
   id: string;
-  train_uid: string;
-  // Cast to text in SQL below — node-postgres parses `date` columns into a Date constructed in
-  // the server's local timezone, which silently shifts a single-day range by a day whenever the
-  // process timezone isn't UTC. Casting sidesteps that entirely: Postgres's `date` type has no
-  // timezone of its own, so `::text` always yields the exact stored YYYY-MM-DD.
+  cif_train_uid: string;
+  // Cast to text in SQL — node-postgres parses `date` into a Date in the process timezone,
+  // which can shift a single-day range by a day. Postgres `date` has no timezone; `::text`
+  // yields the exact stored YYYY-MM-DD.
   schedule_start_date: string;
   schedule_end_date: string;
-  stp_indicator: "C" | "N" | "O" | "P";
+  cif_stp_indicator: string;
   days_runs_bitmask: string | null;
   signalling_id: string | null;
-  operator_code: string | null;
-  train_service_code: string | null;
-  train_category: string | null;
+  atoc_code: string | null;
+  cif_train_service_code: string | null;
+  cif_train_category: string | null;
   train_status: string | null;
-  power_type: string | null;
+  cif_power_type: string | null;
   origin_tiploc: string | null;
   destination_tiploc: string | null;
-  source: "SCHEDULE" | "VSTP";
 }
 
-interface LocationRow {
+export interface CifLocationRowLike {
   seq_no: number;
-  location_type: string;
-  tiploc: string;
-  stanox: string | null;
-  arrival_public: string | null;
-  arrival_working: string | null;
-  departure_public: string | null;
-  departure_working: string | null;
-  pass_public: string | null;
-  pass_working: string | null;
+  record_identity: string;
+  location_type: string | null;
+  tiploc_code: string;
+  arrival: string | null;
+  departure: string | null;
+  pass: string | null;
+  public_arrival: string | null;
+  public_departure: string | null;
   platform: string | null;
   path: string | null;
   line: string | null;
-  activity_codes: string[];
-  day_offset: number;
+  next_day: boolean;
 }
 
-function scheduleToJson(row: ScheduleRow) {
+const STP: ReadonlySet<string> = new Set(["C", "N", "O", "P"]);
+function normalizeStp(value: string): "C" | "N" | "O" | "P" {
+  return STP.has(value) ? (value as "C" | "N" | "O" | "P") : "P";
+}
+
+/** garner's misnamed `cif_schedule_locations.location_type` holds the CIF activity field: up to
+ * six packed 2-char codes. Split it back into a list, dropping blanks. */
+export function parseCifActivity(value: string | null): string[] {
+  if (!value) return [];
+  const codes: string[] = [];
+  for (let i = 0; i < value.length; i += 2) {
+    const code = value.slice(i, i + 2).trim();
+    if (code) codes.push(code);
+  }
+  return codes;
+}
+
+/** LO -> origin, LT -> destination, LI with only a pass time -> pass, else intermediate. */
+export function locationTypeFor(
+  row: CifLocationRowLike,
+): "origin" | "intermediate" | "pass" | "destination" {
+  if (row.record_identity === "LO") return "origin";
+  if (row.record_identity === "LT") return "destination";
+  const hasCall = row.arrival !== null || row.departure !== null;
+  return !hasCall && row.pass !== null ? "pass" : "intermediate";
+}
+
+export function scheduleToJson(row: CifScheduleRow) {
   return {
-    trainUid: row.train_uid,
+    scheduleId: row.id,
+    trainUid: row.cif_train_uid,
     scheduleStartDate: row.schedule_start_date,
     scheduleEndDate: row.schedule_end_date,
-    stpIndicator: row.stp_indicator,
+    stpIndicator: normalizeStp(row.cif_stp_indicator),
     daysRunsBitmask: row.days_runs_bitmask,
     signallingId: row.signalling_id,
-    operatorCode: row.operator_code,
-    trainServiceCode: row.train_service_code,
-    trainCategory: row.train_category,
+    operatorCode: row.atoc_code,
+    trainServiceCode: row.cif_train_service_code,
+    trainCategory: row.cif_train_category,
     trainStatus: row.train_status,
-    powerType: row.power_type,
+    powerType: row.cif_power_type,
     originTiploc: row.origin_tiploc,
     destinationTiploc: row.destination_tiploc,
-    source: row.source,
+    source: "GARNER" as const,
   };
 }
 
-function locationToJson(row: LocationRow) {
+export function locationToJson(row: CifLocationRowLike) {
   return {
     seqNo: row.seq_no,
-    locationType: row.location_type,
-    tiploc: row.tiploc,
-    stanox: row.stanox,
-    arrivalPublic: row.arrival_public,
-    arrivalWorking: row.arrival_working,
-    departurePublic: row.departure_public,
-    departureWorking: row.departure_working,
-    passPublic: row.pass_public,
-    passWorking: row.pass_working,
+    recordIdentity: row.record_identity,
+    locationType: locationTypeFor(row),
+    tiploc: row.tiploc_code,
+    stanox: null,
+    arrivalPublic: row.public_arrival,
+    arrivalWorking: row.arrival,
+    departurePublic: row.public_departure,
+    departureWorking: row.departure,
+    passPublic: null,
+    passWorking: row.pass,
     platform: row.platform,
     path: row.path,
     line: row.line,
-    activityCodes: row.activity_codes,
-    dayOffset: row.day_offset,
+    activityCodes: parseCifActivity(row.location_type),
+    dayOffset: row.next_day ? 1 : 0,
   };
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+const SCHEDULE_SELECT = `select s.id, s.cif_train_uid,
+        s.schedule_start_date::text as schedule_start_date,
+        s.schedule_end_date::text as schedule_end_date,
+        s.cif_stp_indicator, s.days_runs_bitmask, s.signalling_id, s.atoc_code,
+        s.cif_train_service_code, s.cif_train_category, s.train_status, s.cif_power_type,
+        (select l.tiploc_code from cif_schedule_locations l
+          where l.cif_schedule_id = s.id order by l.seq_no asc limit 1) as origin_tiploc,
+        (select l.tiploc_code from cif_schedule_locations l
+          where l.cif_schedule_id = s.id order by l.seq_no desc limit 1) as destination_tiploc
+   from cif_schedules s`;
+
 /**
- * `GET /api/v1/schedule/{trainUid}?date=YYYY-MM-DD` (docs/API_CONTRACT.md, Milestone 7).
- * Resolves the STP-effective schedule for a train_uid on a given traffic day via
- * `resolveStpPrecedence` (CLAUDE.md rule 7: resolver results must be `matched`, `ambiguous` or
- * `unmatched` — this endpoint always returns one of exactly those three `outcome` values,
- * never silently picking a candidate or omitting ambiguity).
+ * `GET /api/v1/schedule/{trainUid}?date=YYYY-MM-DD` (docs/API_CONTRACT.md). Resolves the
+ * STP-effective schedule for a train_uid on a given traffic day via `selectEffectiveSchedule`
+ * (CLAUDE.md rule 7: the `outcome` is always exactly `matched`/`ambiguous`/`unmatched`, never a
+ * silent pick).
  */
 export async function registerScheduleRoutes(
   app: FastifyInstance,
@@ -112,13 +152,8 @@ export async function registerScheduleRoutes(
         return apiError("INVALID_DATE", "date must be supplied as YYYY-MM-DD");
       }
 
-      const result = await pool.query<ScheduleRow>(
-        `select id, train_uid, schedule_start_date::text as schedule_start_date,
-                schedule_end_date::text as schedule_end_date, stp_indicator,
-                days_runs_bitmask, signalling_id, operator_code, train_service_code,
-                train_category, train_status, power_type, origin_tiploc, destination_tiploc, source
-         from schedule
-         where train_uid = $1 and withdrawn_at is null`,
+      const result = await pool.query<CifScheduleRow>(
+        `${SCHEDULE_SELECT} where s.cif_train_uid = $1 and s.deleted is null`,
         [trainUid],
       );
 
@@ -127,13 +162,15 @@ export async function registerScheduleRoutes(
         return apiError("SCHEDULE_NOT_FOUND", `no schedule found for train_uid ${trainUid}`);
       }
 
-      const candidates: (ScheduleCandidate & { row: ScheduleRow })[] = result.rows.map((row) => ({
-        stpIndicator: row.stp_indicator,
-        scheduleStartDate: row.schedule_start_date,
-        scheduleEndDate: row.schedule_end_date,
-        daysRunsBitmask: row.days_runs_bitmask,
-        row,
-      }));
+      const candidates: (ScheduleCandidate & { row: CifScheduleRow })[] = result.rows.map(
+        (row) => ({
+          stpIndicator: normalizeStp(row.cif_stp_indicator),
+          scheduleStartDate: row.schedule_start_date,
+          scheduleEndDate: row.schedule_end_date,
+          daysRunsBitmask: row.days_runs_bitmask,
+          row,
+        }),
+      );
 
       const outcome = selectEffectiveSchedule(candidates, date);
 
@@ -150,12 +187,11 @@ export async function registerScheduleRoutes(
       }
 
       const selectedRow = outcome.selected.row;
-      const locations = await pool.query<LocationRow>(
-        `select seq_no, location_type, tiploc, stanox, arrival_public, arrival_working,
-                departure_public, departure_working, pass_public, pass_working, platform, path,
-                line, activity_codes, day_offset
-         from schedule_location
-         where schedule_id = $1
+      const locations = await pool.query<CifLocationRowLike>(
+        `select seq_no, record_identity, location_type, tiploc_code, arrival, departure, "pass",
+                public_arrival, public_departure, platform, path, line, next_day
+         from cif_schedule_locations
+         where cif_schedule_id = $1
          order by seq_no`,
         [selectedRow.id],
       );

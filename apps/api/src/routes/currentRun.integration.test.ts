@@ -13,15 +13,17 @@ function requireEnv(name: string): string {
 
 const pool = createPool({ connectionString: requireEnv("DATABASE_URL") });
 const createdOccupancyIds: string[] = [];
-const createdRunIds: string[] = [];
-const createdScheduleIds: string[] = [];
+const createdScheduleIds: number[] = [];
+const createdTrustIds: string[] = [];
 const createdLocationReferenceTiplocs: string[] = [];
+
+let nextScheduleId = Date.now();
+function newScheduleId(): number {
+  return nextScheduleId++;
+}
 
 afterAll(async () => {
   if (createdOccupancyIds.length > 0) {
-    await pool.query("delete from berth_run_resolution where occupancy_id = any($1::bigint[])", [
-      createdOccupancyIds,
-    ]);
     await pool.query("delete from berth_current_state where occupancy_id = any($1::bigint[])", [
       createdOccupancyIds,
     ]);
@@ -29,14 +31,21 @@ afterAll(async () => {
       createdOccupancyIds,
     ]);
   }
-  if (createdRunIds.length > 0) {
-    await pool.query("delete from run_schedule_link where train_run_id = any($1::uuid[])", [
-      createdRunIds,
-    ]);
-    await pool.query("delete from train_run where id = any($1::uuid[])", [createdRunIds]);
-  }
   if (createdScheduleIds.length > 0) {
-    await pool.query("delete from schedule where id = any($1::bigint[])", [createdScheduleIds]);
+    await pool.query("delete from cif_schedules where id = any($1::bigint[])", [
+      createdScheduleIds,
+    ]);
+  }
+  if (createdTrustIds.length > 0) {
+    await pool.query("delete from trust_movement where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
+    await pool.query("delete from trust_activation_extra where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
+    await pool.query("delete from trust_activation where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
   }
   if (createdLocationReferenceTiplocs.length > 0) {
     await pool.query("delete from location_reference where tiploc = any($1::text[])", [
@@ -119,113 +128,81 @@ async function seedOccupiedBerth(
   return { occupancyId };
 }
 
-async function seedTrainRun(
-  signallingId: string,
-  scheduleId: string | null = null,
-): Promise<string> {
-  const trustTrainId = `T${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-  const result = await pool.query<{ id: string }>(
-    `insert into train_run (trust_train_id, signalling_id, service_date, schedule_id, last_event_at)
-     values ($1, $2, '2026-08-10', $3, now())
-     returning id`,
-    [trustTrainId, signallingId, scheduleId],
-  );
-  const runId = result.rows[0]!.id;
-  createdRunIds.push(runId);
-  return runId;
-}
-
-/** source: 'VSTP', not 'SCHEDULE' — apps/worker/src/schedule/scheduleImporter.ts's full-file
- * swap unconditionally deletes every source='SCHEDULE' row, which would collide with these
- * test fixtures outliving this test run (same reasoning as the resolver integration suite's
- * own seedSchedule helper). */
+/** garner-shaped `cif_schedules` row (migration 0024) covering "today" every day of the week. */
 async function seedSchedule(
-  trainUid: string,
-  originDestination: { originTiploc?: string; destinationTiploc?: string } = {},
-): Promise<string> {
-  const result = await pool.query<{ id: string }>(
-    `insert into schedule (
-       train_uid, schedule_start_date, schedule_end_date, stp_indicator, source, origin_tiploc,
-       destination_tiploc, raw_source_json
-     ) values ($1, '2026-01-01', '2026-12-31', 'P', 'VSTP', $2, $3, '{}')
-     returning id`,
-    [trainUid, originDestination.originTiploc ?? null, originDestination.destinationTiploc ?? null],
+  signallingId: string,
+  stpIndicator: "C" | "N" | "O" | "P",
+): Promise<number> {
+  const id = newScheduleId();
+  await pool.query(
+    `insert into cif_schedules (
+       id, created, cif_stp_indicator, cif_train_uid,
+       runs_mo, runs_tu, runs_we, runs_th, runs_fr, runs_sa, runs_su,
+       schedule_start_date, schedule_end_date, signalling_id, atoc_code, cif_train_service_code
+     ) values ($1, now(), $2, $3, true,true,true,true,true,true,true,
+       (now() - interval '30 days')::date, (now() + interval '30 days')::date, $4, 'NT', '11111000')`,
+    [id, stpIndicator, `U${id}`, signallingId],
   );
-  const scheduleId = result.rows[0]!.id;
-  createdScheduleIds.push(scheduleId);
-  return scheduleId;
+  createdScheduleIds.push(id);
+  return id;
 }
 
 async function seedScheduleLocation(
-  scheduleId: string,
-  overrides: {
-    seqNo: number;
-    locationType: string;
-    tiploc: string;
-    arrivalPublic?: string;
-    departurePublic?: string;
-    passPublic?: string;
-    platform?: string;
-  },
+  scheduleId: number,
+  seqNo: number,
+  tiploc: string,
+  recordIdentity: string,
+  times: { arrival?: string; departure?: string } = {},
 ): Promise<void> {
   await pool.query(
-    `insert into schedule_location (
-       schedule_id, seq_no, location_type, tiploc, arrival_public, departure_public, pass_public,
-       platform
-     ) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      scheduleId,
-      overrides.seqNo,
-      overrides.locationType,
-      overrides.tiploc,
-      overrides.arrivalPublic ?? null,
-      overrides.departurePublic ?? null,
-      overrides.passPublic ?? null,
-      overrides.platform ?? null,
-    ],
+    `insert into cif_schedule_locations (
+       cif_schedule_id, seq_no, record_identity, tiploc_code, public_arrival, public_departure
+     ) values ($1, $2, $3, $4, $5, $6)`,
+    [scheduleId, seqNo, recordIdentity, tiploc, times.arrival ?? null, times.departure ?? null],
   );
 }
 
-async function seedLocationReference(tiploc: string, name: string): Promise<void> {
+async function seedActivation(scheduleId: number, signallingId: string): Promise<string> {
+  const trustId = `T${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+  createdTrustIds.push(trustId);
   await pool.query(
-    `insert into location_reference (tiploc, name, raw_source_json) values ($1, $2, '{}')`,
-    [tiploc, name],
+    `insert into trust_activation (trust_id, created, cif_schedule_id, deduced)
+     values ($1, now(), $2, 0)`,
+    [trustId, scheduleId],
+  );
+  await pool.query(
+    `insert into trust_activation_extra (trust_id, created, train_uid, toc_id, schedule_wtt_id)
+     values ($1, now(), $2, 'NT', $3)`,
+    [trustId, `U${scheduleId}`, `W${scheduleId}`],
+  );
+  void signallingId;
+  return trustId;
+}
+
+async function seedMovement(
+  trustId: string,
+  locStanox: string,
+  flags: number,
+  timetableVariation: number,
+): Promise<void> {
+  await pool.query(
+    `insert into trust_movement (
+       trust_id, created, platform, loc_stanox, actual_timestamp, timetable_variation, flags
+     ) values ($1, now(), '4', $2, now(), $3, $4)`,
+    [trustId, locStanox, timetableVariation, flags],
+  );
+}
+
+async function seedLocationReference(
+  tiploc: string,
+  name: string,
+  stanox: string | null = null,
+): Promise<void> {
+  await pool.query(
+    `insert into location_reference (tiploc, name, stanox, raw_source_json) values ($1, $2, $3, '{}')`,
+    [tiploc, name, stanox],
   );
   createdLocationReferenceTiplocs.push(tiploc);
-}
-
-async function seedRunScheduleLink(trainRunId: string, scheduleId: string): Promise<void> {
-  await pool.query(
-    `insert into run_schedule_link (train_run_id, activation_at, schedule_id, match_outcome)
-     values ($1, now(), $2, 'matched')`,
-    [trainRunId, scheduleId],
-  );
-}
-
-async function seedResolution(
-  occupancyId: string,
-  status: "matched" | "ambiguous" | "unmatched",
-  selectedTrainRunId: string | null,
-  candidates: unknown[] = [],
-): Promise<void> {
-  const occupancy = await pool.query<{ entered_at: Date }>(
-    `select entered_at from berth_occupancy where id = $1`,
-    [occupancyId],
-  );
-  await pool.query(
-    `insert into berth_run_resolution (
-       occupancy_id, occupancy_entered_at, status, selected_train_run_id, confidence,
-       resolver_version, candidates
-     ) values ($1, $2, $3, $4, $5, 1, $6)`,
-    [
-      occupancyId,
-      occupancy.rows[0]!.entered_at,
-      status,
-      selectedTrainRunId,
-      selectedTrainRunId ? 1 : null,
-      JSON.stringify(candidates),
-    ],
-  );
 }
 
 async function buildApp() {
@@ -250,7 +227,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
     }
   });
 
-  it("returns description-only when the berth is occupied but not yet resolved", async () => {
+  it("returns the headcode and honesty note with no candidates when garner has no matching schedule", async () => {
     const area = uniqueArea();
     await seedOccupiedBerth(area, "0001", "1A23");
     const app = await buildApp();
@@ -261,19 +238,19 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.description).toBe("1A23");
-      expect(body.resolution).toBeNull();
-      expect(body.run).toBeNull();
+      expect(body.headcode).toBe("1A23");
+      expect(body.effective).toBeNull();
+      expect(body.candidateSchedules).toEqual([]);
+      expect(body.note).toContain("ADR 0002");
     } finally {
       await app.close();
     }
   });
 
-  it("returns full run detail when matched", async () => {
+  it("picks the single STP-effective schedule for the headcode and marks it effective", async () => {
     const area = uniqueArea();
-    const { occupancyId } = await seedOccupiedBerth(area, "0002", "2A16");
-    const runId = await seedTrainRun("2A16");
-    await seedResolution(occupancyId, "matched", runId);
+    await seedOccupiedBerth(area, "0002", "2A16");
+    const scheduleId = await seedSchedule("2A16", "P");
 
     const app = await buildApp();
     try {
@@ -283,17 +260,27 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.resolution).toMatchObject({ status: "matched", confidence: 1 });
-      expect(body.run).toMatchObject({ runId, signallingId: "2A16" });
+      expect(body.candidateSchedules).toHaveLength(1);
+      expect(body.candidateSchedules[0]).toMatchObject({
+        scheduleId: String(scheduleId),
+        isEffective: true,
+        activatedToday: false,
+      });
+      expect(body.effective).toMatchObject({
+        scheduleId: String(scheduleId),
+        selectedBy: "stp_precedence",
+        activation: null,
+      });
     } finally {
       await app.close();
     }
   });
 
-  it("returns the candidate list without picking a run when ambiguous, never fabricating a match", async () => {
+  it("leaves `effective` null when two same-precedence schedules share the headcode and neither is activated", async () => {
     const area = uniqueArea();
-    const { occupancyId } = await seedOccupiedBerth(area, "0003", "3A16");
-    await seedResolution(occupancyId, "ambiguous", null);
+    await seedOccupiedBerth(area, "0003", "3A16");
+    await seedSchedule("3A16", "P");
+    await seedSchedule("3A16", "P");
 
     const app = await buildApp();
     try {
@@ -303,23 +290,25 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.resolution.status).toBe("ambiguous");
-      expect(body.run).toBeNull();
+      expect(body.candidateSchedules).toHaveLength(2);
+      expect(body.effective).toBeNull();
+      expect(body.candidateSchedules.every((c: { isEffective: boolean }) => !c.isEffective)).toBe(
+        true,
+      );
     } finally {
       await app.close();
     }
   });
 
-  it("enriches ambiguous candidates with headcode/UID/TRUST id looked up fresh, not stored stale", async () => {
+  it("breaks an STP tie using a TRUST activation seen today and surfaces its latest movement", async () => {
     const area = uniqueArea();
-    const { occupancyId } = await seedOccupiedBerth(area, "0004", "2T37");
-    const scheduleId = await seedSchedule("C17206");
-    const linkedRunId = await seedTrainRun("2T37", scheduleId);
-    const unlinkedRunId = await seedTrainRun("2T37", null);
-    await seedResolution(occupancyId, "ambiguous", null, [
-      { trainRunId: linkedRunId, score: 58, confidence: 0.58, reasons: ["schedule-linked"] },
-      { trainRunId: unlinkedRunId, score: 40, confidence: 0.4, reasons: ["description-only"] },
-    ]);
+    await seedOccupiedBerth(area, "0004", "4A16");
+    await seedSchedule("4A16", "P");
+    const activatedId = await seedSchedule("4A16", "P");
+    const trustId = await seedActivation(activatedId, "4A16");
+    // flags: departure (0x01) + LATE (0x10); 3 minutes late.
+    await seedMovement(trustId, "11224", 0x01 | 0x10, 3);
+    await seedLocationReference(`LR${activatedId}`, "Test Loc", "11224");
 
     const app = await buildApp();
     try {
@@ -329,60 +318,36 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      const candidates = body.resolution.candidates as Array<{
-        trainRunId: string;
-        signallingId: string | null;
-        trustTrainId: string | null;
-        trainUid: string | null;
-      }>;
-
-      const linked = candidates.find((c) => c.trainRunId === linkedRunId);
-      expect(linked).toMatchObject({ signallingId: "2T37", trainUid: "C17206" });
-      expect(linked?.trustTrainId).toEqual(expect.any(String));
-
-      const unlinked = candidates.find((c) => c.trainRunId === unlinkedRunId);
-      expect(unlinked).toMatchObject({ signallingId: "2T37", trainUid: null });
-      expect(unlinked?.trustTrainId).toEqual(expect.any(String));
+      expect(body.effective).toMatchObject({
+        scheduleId: String(activatedId),
+        selectedBy: "trust_activation",
+      });
+      expect(body.effective.activation).toMatchObject({ trustId, deduced: false, tocId: "NT" });
+      expect(body.effective.latestMovement).toMatchObject({
+        trustId,
+        eventKind: "departure",
+        variationStatus: "late",
+        variationMinutes: 3,
+        locName: "Test Loc",
+      });
     } finally {
       await app.close();
     }
   });
 
-  it("resolves TIPLOCs to CORPUS location names for origin/destination and each calling point", async () => {
+  it("resolves TIPLOCs to CORPUS names for origin/destination and each calling point", async () => {
     const area = uniqueArea();
     const originTiploc = `OR${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
     const destTiploc = `DE${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
     const untimedTiploc = `UN${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
     await seedLocationReference(originTiploc, "Test Origin");
     await seedLocationReference(destTiploc, "Test Destination");
-    // Deliberately no location_reference row for untimedTiploc — proves the fallback to the raw
-    // TIPLOC when CORPUS has no matching entry, rather than the whole response failing.
 
-    const { occupancyId } = await seedOccupiedBerth(area, "0005", "3Y01");
-    const scheduleId = await seedSchedule("C99999", {
-      originTiploc,
-      destinationTiploc: destTiploc,
-    });
-    await seedScheduleLocation(scheduleId, {
-      seqNo: 1,
-      locationType: "origin",
-      tiploc: originTiploc,
-      departurePublic: "0900",
-    });
-    await seedScheduleLocation(scheduleId, {
-      seqNo: 2,
-      locationType: "intermediate",
-      tiploc: untimedTiploc,
-    });
-    await seedScheduleLocation(scheduleId, {
-      seqNo: 3,
-      locationType: "destination",
-      tiploc: destTiploc,
-      arrivalPublic: "0930",
-    });
-    const runId = await seedTrainRun("3Y01", scheduleId);
-    await seedRunScheduleLink(runId, scheduleId);
-    await seedResolution(occupancyId, "matched", runId);
+    await seedOccupiedBerth(area, "0005", "5Y01");
+    const scheduleId = await seedSchedule("5Y01", "P");
+    await seedScheduleLocation(scheduleId, 1, originTiploc, "LO", { departure: "0900" });
+    await seedScheduleLocation(scheduleId, 2, untimedTiploc, "LI");
+    await seedScheduleLocation(scheduleId, 3, destTiploc, "LT", { arrival: "0930" });
 
     const app = await buildApp();
     try {
@@ -392,9 +357,9 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.schedule.originName).toBe("Test Origin");
-      expect(body.schedule.destinationName).toBe("Test Destination");
-      const locations = body.schedule.locations as Array<{
+      expect(body.effective.originName).toBe("Test Origin");
+      expect(body.effective.destinationName).toBe("Test Destination");
+      const locations = body.effective.locations as Array<{
         tiploc: string;
         locationName: string | null;
       }>;

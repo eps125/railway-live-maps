@@ -456,6 +456,18 @@ manual refresh (the REST `/state` snapshot).
   event; the second run is a clean no-op. typecheck / lint / 315 unit tests green (migration +
   live-projector integration tests run in CI).
 
+### Unrelated CI fix — `currentRun` "activated today" cutoff crossed the BST midnight boundary (2026-09-02)
+
+Surfaced on the same CI run but independent of the above. `apps/api/src/routes/currentRun.ts`
+filtered TRUST activations with `created >= ($2::date)::timestamptz`, casting the
+`Europe/London` calendar date to an instant in the DB session's zone (UTC). Under BST, between
+23:00 and 00:00 UTC `londonToday()` already returns tomorrow's date, so the cutoff sat up to an
+hour in the future and excluded an activation that had only just been inserted — the STP
+tie-break saw zero activations and `effective` came back `null`. The integration test "breaks an
+STP tie using a TRUST activation seen today" failed whenever CI ran in that hour. Fixed to
+`($2::date)::timestamp at time zone 'Europe/London'` (the actual instant London midnight
+occurs). Only occurrence of the pattern in `apps/api/src/routes`.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

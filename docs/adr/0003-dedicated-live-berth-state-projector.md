@@ -121,16 +121,23 @@ upsert + Redis publish + WS ≈ sub-200 ms server-side, ~1–1.3 s including NR'
 **median 1.1 s, min 0.9 s** (mean 1.9 s, inflated by duplicate re-sends). Down from Tier 2's
 3.9 s median. The ~1 s floor is NR's whole-second `eventAt` truncation + wire lag, matching OTT.
 
-**Known: every delta is published ~2×.** All three `berth_current_state` writers derive the same
-value for the same event, and two of them (`ingest-td` inline, `projector-td-live`) publish, so
-each berth step goes out once ~1 s in and again ~80 ms–7 s later with an identical payload —
-idempotent, invisible on the map, but wasteful. A first attempt (`forwardWritesOnly`: publish
-only if this write strictly advances the stored `source_ingestion_sequence`) was **reverted the
-same day** — the third writer, `project-td`, updates `berth_current_state` without ever
-publishing, so when it won the race both publishers skipped and the delta was **dropped** (stuck
-berths on the live map; a refresh fixed them). The correct dedupe needs a per-berth "last
-published sequence" the _publishers_ own (e.g. a Redis hash, checked+advanced in the same Lua as
-the `PUBLISH`), so a silent writer can't suppress a real delta — deferred, not blocking.
+**Delta dedupe (2026-09-03, `apps/worker/src/td/deltaPublisher.ts`).** Two publishers
+(`ingest-td` inline, `projector-td-live`) derive the same value for the same event, so a naive
+"publish after you write" double-sends every berth step (~1 s in, then again ~80 ms–7 s later,
+identical payload — idempotent, invisible, but wasteful). A first attempt (`forwardWritesOnly`:
+publish only if this write strictly advances `berth_current_state.source_ingestion_sequence`)
+was **reverted** — the _third_ writer, `project-td`, advances that row without ever publishing,
+so when it won the race both publishers skipped and the delta was **dropped** (stuck berths;
+a refresh fixed them).
+
+The fix keys the dedupe off state the **publishers** own, not `berth_current_state`:
+`publishDeltaIfNewer(mapSlug, berthKey, sequence, message)` runs a Redis Lua script that, in one
+atomic call replacing the plain `PUBLISH`, checks a per-berth "last published sequence" hash
+(`railway:live:<slug>:pubseq`, 1-day EXPIRE), and publishes + advances it only if `sequence` is
+newer. Whichever publisher reaches an event first sends it; the other's call returns 0.
+`project-td` never calls it, so it cannot suppress anything. One round-trip, no latency cost.
+Redis is memory-only here, so a Redis restart re-seeds the watermark on the next delta per berth
+— at worst one duplicate per berth, once.
 
 ## Consequences
 

@@ -1,1 +1,0 @@
-{"root":["./src/checkpoint.integration.test.ts","./src/checkpoint.ts","./src/cli.ts","./src/index.ts","./src/migrate.test.ts","./src/migrate.ts","./src/migrationsdir.ts","./src/partitions.integration.test.ts","./src/partitions.test.ts","./src/partitions.ts","./src/pool.test.ts","./src/pool.ts"],"version":"5.9.3"}

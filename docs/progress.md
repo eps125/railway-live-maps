@@ -513,7 +513,7 @@ The sniffer showed every berth step published **twice**: once by the `ingest-td`
 the map, but wasted Redis/WS traffic.
 
 First attempt `forwardWritesOnly` (`c0e7643`): publish only if the write strictly advances the
-stored `source_ingestion_sequence`. **Reverted (`<this commit>`)** — it dropped real deltas.
+stored `source_ingestion_sequence`. **Reverted (`7ad3f44`)** — it dropped real deltas.
 `berth_current_state` has a _third_ writer, `project-td-daemon`, which updates the row but never
 publishes; when it won the race it advanced the sequence, so both publishers then saw "already
 past" and skipped — the berth froze on the live map until a manual refresh (observed live:
@@ -521,10 +521,27 @@ past" and skipped — the berth froze on the live map until a manual refresh (ob
 separators in `liveProjector.ts` (internally consistent, so harmless, but `git` saw the file as
 binary) — now plain spaces.
 
-Correct dedupe (deferred, not blocking sub-second latency which is already met): a per-berth
-"last published sequence" that the _publishers_ own — e.g. a Redis hash per map slug, checked
-and advanced in the same Lua script as the `PUBLISH`, replacing the plain publish (no extra
-round-trip). A silent writer like `project-td` then can't suppress a delta.
+### Delta dedupe — done (2026-09-03)
+
+`apps/worker/src/td/deltaPublisher.ts`: `publishDeltaIfNewer(mapSlug, berthKey, sequence,
+message)` runs one Redis Lua script (`PUBLISH_IF_NEWER_LUA`) that atomically checks a per-berth
+"last published sequence" hash (`railway:live:<slug>:pubseq`, 1-day EXPIRE refreshed each
+publish), and publishes + advances it only if `sequence` is newer — replacing the plain
+`PUBLISH` in `publishBerthDeltas`, so **no extra round-trip**. Whichever of the two publishers
+(`ingest-td` inline, `projector-td-live`) reaches an event first sends it; the other's call
+returns 0. `project-td` never calls it, so it can't suppress a real delta (the flaw that sank
+`forwardWritesOnly`). Redis here is memory-only, so a Redis restart re-seeds the watermark on
+the next delta per berth — at worst one duplicate per berth, once.
+
+- `liveProjector.ts`: `RedisPublisher` interface replaced by `DeltaPublisher` (re-exported from
+  `deltaPublisher.ts`); `publishBerthDeltas` calls `publishDeltaIfNewer` and returns the real
+  publish count (a suppressed dup counts 0).
+- `projectTdLiveDaemon.ts` / `ingestTd.ts`: keep the raw ioredis client for shutdown
+  `.disconnect()` + an `.on("error")` handler; wrap it with `createRedisDeltaPublisher(...)` for
+  the projectors.
+- Integration test: both live writers process the same event through one shared Redis stand-in →
+  the bound berth publishes **exactly once**.
+- Full repo typecheck + lint + 315 unit tests green; worker integration tests run in CI.
 
 ## Next smallest task
 

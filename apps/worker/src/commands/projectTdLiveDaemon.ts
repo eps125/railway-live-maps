@@ -2,6 +2,7 @@ import { Redis } from "ioredis";
 import { createPool } from "@railway/database";
 import type { Config } from "../config.js";
 import { BindingsCache, runProjectTdLive } from "../td/liveProjector.js";
+import { createRedisDeltaPublisher } from "../td/deltaPublisher.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
 
 /** The hot path ticks fast — the whole point is sub-second end-to-end (ADR 0003). Each tick is
@@ -24,13 +25,20 @@ const MAX_BATCHES_PER_TICK = 30;
  */
 export async function runProjectTdLiveDaemon(config: Config): Promise<void> {
   const pool = createPool({ connectionString: config.DATABASE_URL, statementTimeoutMs: 10_000 });
-  const redis = config.LIVE_WS_REDIS_PUBSUB_ENABLED
+  const redisClient = config.LIVE_WS_REDIS_PUBSUB_ENABLED
     ? new Redis(config.REDIS_URL, {
         connectTimeout: 5000,
         maxRetriesPerRequest: 1,
         retryStrategy: () => null,
       })
     : null;
+  redisClient?.on("error", (error) => {
+    console.error(
+      "project-td-live-daemon: redis client error (delta publish may be degraded):",
+      error,
+    );
+  });
+  const redis = redisClient ? createRedisDeltaPublisher(redisClient) : null;
 
   const bindings = new BindingsCache(pool);
 
@@ -46,7 +54,7 @@ export async function runProjectTdLiveDaemon(config: Config): Promise<void> {
       await runProjectTdLive(pool, redis, { maxBatches: MAX_BATCHES_PER_TICK, bindings });
     },
     onShutdown: async () => {
-      redis?.disconnect();
+      redisClient?.disconnect();
       await pool.end();
     },
   });

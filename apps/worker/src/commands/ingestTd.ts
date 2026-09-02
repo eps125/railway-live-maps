@@ -5,6 +5,7 @@ import type { Config } from "../config.js";
 import { StompTdConnection } from "../td/connection/stomp/stompConnection.js";
 import { recordFrame, markFrameAcked } from "../td/recorder.js";
 import { applyLiveFromEvents, BindingsCache } from "../td/liveProjector.js";
+import { createRedisDeltaPublisher } from "../td/deltaPublisher.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
 import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
 
@@ -41,16 +42,17 @@ export async function runIngestTd(config: Config): Promise<never> {
   // separate projector-td-live poll. That projector stays running as the catch-up / rebuild
   // path. Without LIVE_WS_REDIS_PUBSUB_ENABLED the upsert still runs (keeps berth_current_state
   // fresh for the API's polling delta source); only the Redis publish is skipped.
-  const redis = config.LIVE_WS_REDIS_PUBSUB_ENABLED
+  const redisClient = config.LIVE_WS_REDIS_PUBSUB_ENABLED
     ? new Redis(config.REDIS_URL, {
         connectTimeout: 5000,
         maxRetriesPerRequest: 1,
         retryStrategy: () => null,
       })
     : null;
-  redis?.on("error", (error) => {
+  redisClient?.on("error", (error) => {
     console.error("ingest-td: redis client error (inline delta publish may be degraded):", error);
   });
+  const redis = redisClient ? createRedisDeltaPublisher(redisClient) : null;
   const bindings = new BindingsCache(pool);
 
   const connection = new StompTdConnection({
@@ -123,6 +125,6 @@ export async function runIngestTd(config: Config): Promise<never> {
 
   return runUntilShutdownSignal(async () => {
     await connection.stop();
-    redis?.disconnect();
+    redisClient?.disconnect();
   });
 }

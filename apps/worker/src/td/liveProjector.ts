@@ -12,6 +12,9 @@ import {
   buildDeltaMessages,
   type MapBinding,
 } from "../mapProjector/deltaBuilder.js";
+import type { DeltaPublisher } from "./deltaPublisher.js";
+
+export type { DeltaPublisher } from "./deltaPublisher.js";
 
 /**
  * The hot path (ADR 0003). Reads `raw_feed_event` (TD, C-Class, CA/CB/CC only) in tiny batches,
@@ -29,10 +32,6 @@ export const TD_LIVE_PROJECTION_VERSION = 1;
 
 const DEFAULT_BATCH_SIZE = 100;
 const BINDINGS_TTL_MS = 10_000;
-
-export interface RedisPublisher {
-  publish(channel: string, message: string): Promise<number>;
-}
 
 export interface RunProjectTdLiveOptions {
   batchSize?: number;
@@ -226,11 +225,12 @@ export async function bulkUpsertCurrentState(pool: Pool, writes: BerthStateWrite
   );
 }
 
-/** Publish the Redis deltas for a folded batch — one `railway:live:<slug>` message per
- * (berth change × map that binds it). Returns how many were published. Shared by the
- * `projector-td-live` daemon and the `ingest-td` inline path (ADR 0003 Tier 3). */
+/** Publish the deltas for a folded batch — one `railway:live:<slug>` message per (berth change ×
+ * map that binds it), each through `publishDeltaIfNewer` so the two live publishers
+ * (`projector-td-live` daemon + `ingest-td` inline path, ADR 0003 Tier 3) never double-send the
+ * same berth step. Returns how many were actually published (a suppressed duplicate counts 0). */
 export async function publishBerthDeltas(
-  redis: RedisPublisher,
+  redis: DeltaPublisher,
   bindings: BindingsCache,
   writes: BerthStateWrite[],
 ): Promise<number> {
@@ -238,6 +238,8 @@ export async function publishBerthDeltas(
   for (const write of writes) {
     const bound = await bindings.get(write.tdArea, write.berth);
     if (bound.length === 0) continue;
+    const sequence = Number(write.sourceSeq);
+    const berthKey = `${write.tdArea} ${write.berth}`;
     const messages = buildDeltaMessages(
       {
         tdArea: write.tdArea,
@@ -246,11 +248,15 @@ export async function publishBerthDeltas(
         eventAt: write.eventAt,
       },
       bound,
-      Number(write.sourceSeq),
+      sequence,
     );
     for (const { mapSlug, message } of messages) {
-      await redis.publish(`railway:live:${mapSlug}`, JSON.stringify(message));
-      published += 1;
+      published += await redis.publishDeltaIfNewer(
+        mapSlug,
+        berthKey,
+        sequence,
+        JSON.stringify(message),
+      );
     }
   }
   return published;
@@ -271,7 +277,7 @@ export async function publishBerthDeltas(
  */
 export async function applyLiveFromEvents(
   pool: Pool,
-  redis: RedisPublisher | null,
+  redis: DeltaPublisher | null,
   bindings: BindingsCache,
   rows: RawCClassRow[],
 ): Promise<{ berthsUpdated: number; deltasPublished: number }> {
@@ -290,7 +296,7 @@ export async function applyLiveFromEvents(
 
 export async function runProjectTdLive(
   pool: Pool,
-  redis: RedisPublisher | null,
+  redis: DeltaPublisher | null,
   options: RunProjectTdLiveOptions = {},
 ): Promise<ProjectTdLiveSummary> {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;

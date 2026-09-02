@@ -325,32 +325,6 @@ describe("applyLiveFromEvents — the ingest-td inline path (integration)", () =
     expect(await currentDescription(area, "0301")).toBe("NEWER");
   });
 
-  it("re-applying the same event is a silent no-op — no second upsert, no duplicate delta", async () => {
-    // Regression: post-Tier-3 both ingest-td (inline) and projector-td-live derive the same value
-    // for the same event, so without forwardWritesOnly every berth step published twice.
-    const area = uniqueArea();
-    const slug = `dedupe-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-    await publishMapBinding(slug, "berth-dd", area, "0400");
-    const t = Date.now();
-    await seedCEvent(
-      area,
-      "CC",
-      { area_id: area, time: String(t), to: "0400", descr: "4D44" },
-      new Date(t),
-    );
-    const row = await lastCClassRow(area);
-    const bindings = new BindingsCache(pool, 0);
-
-    const first = await applyLiveFromEvents(pool, new CapturingRedis(), bindings, [row]);
-    expect(first).toMatchObject({ berthsUpdated: 1, deltasPublished: 1 });
-
-    const redis2 = new CapturingRedis();
-    const second = await applyLiveFromEvents(pool, redis2, bindings, [row]);
-    expect(second).toEqual({ berthsUpdated: 0, deltasPublished: 0 });
-    expect(redis2.published).toHaveLength(0);
-    expect(await currentDescription(area, "0400")).toBe("4D44");
-  });
-
   it("ignores non-CA/CB/CC rows", async () => {
     const summary = await applyLiveFromEvents(
       pool,

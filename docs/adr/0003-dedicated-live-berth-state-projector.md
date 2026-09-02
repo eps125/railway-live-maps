@@ -118,16 +118,19 @@ Expected end-to-end: NR → `ingest-td` parse + `recordFrame` (S3 PUT + ~5 DB ro
 upsert + Redis publish + WS ≈ sub-200 ms server-side, ~1–1.3 s including NR's own wire lag.
 
 **Measured after deploy (2026-09-02, WebSocket sniffer, n=18):** NR `eventAt` → browser
-**median 1.1 s, min 0.9 s** (mean 1.9 s, inflated by duplicates — see below). Down from Tier 2's
+**median 1.1 s, min 0.9 s** (mean 1.9 s, inflated by duplicate re-sends). Down from Tier 2's
 3.9 s median. The ~1 s floor is NR's whole-second `eventAt` truncation + wire lag, matching OTT.
 
-**Duplicate-delta fix (same day).** With three writers deriving the same value for the same
-event, `projector-td-live` re-wrote and re-published every berth step ~80 ms–7 s behind
-`ingest-td` (identical payload, so invisible on the map but wasteful). `forwardWritesOnly` in
-`liveProjector.ts` now pre-reads `berth_current_state` and drops any write whose berth is
-already at/past that `source_ingestion_sequence`, so whichever writer reaches an event first
-writes and publishes it and the others are true no-ops. The `>=` upsert guard stays as the
-same-instant-race backstop.
+**Known: every delta is published ~2×.** All three `berth_current_state` writers derive the same
+value for the same event, and two of them (`ingest-td` inline, `projector-td-live`) publish, so
+each berth step goes out once ~1 s in and again ~80 ms–7 s later with an identical payload —
+idempotent, invisible on the map, but wasteful. A first attempt (`forwardWritesOnly`: publish
+only if this write strictly advances the stored `source_ingestion_sequence`) was **reverted the
+same day** — the third writer, `project-td`, updates `berth_current_state` without ever
+publishing, so when it won the race both publishers skipped and the delta was **dropped** (stuck
+berths on the live map; a refresh fixed them). The correct dedupe needs a per-berth "last
+published sequence" the _publishers_ own (e.g. a Redis hash, checked+advanced in the same Lua as
+the `PUBLISH`), so a silent writer can't suppress a real delta — deferred, not blocking.
 
 ## Consequences
 

@@ -86,22 +86,30 @@ One image may run different commands/roles:
 
 For the first implementation, one worker process may host several modules. Split roles into separate containers only when measured throughput, restart isolation or operational control requires it.
 
-Latency-critical vs correctness-important projection work is split into separate loops so backlog
-work can never stall live rendering (measured 2026-08-10: a shared sequential loop stalled live
-berth positions up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR
-0003 the split is:
+Latency-critical vs correctness-important projection work is split so backlog work can never
+stall live rendering (measured 2026-08-10: a shared sequential loop stalled live berth positions
+up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR 0003 the split is:
 
-- **`projector-td-live`** (`project-td-live-daemon`, 100ms tick) — THE hot path. `raw_feed_event`
-  TD CA/CB/CC → one bulk `berth_current_state` upsert → Redis delta publish. Nothing else. ADR
-  0003 / Milestone 16: the previous single projector did ~5–10 sequential single-row queries per
-  event and published deltas only after the whole batch, which put steady-state end-to-end
-  latency at 6–20s; this dedicated loop targets sub-second.
+- **The live hot path is inline in `ingest-td`** (ADR 0003 Tier 3 / Milestone 17, 2026-09-02).
+  Right after a frame is archived and acked, `ingest-td` folds the C-class rows it just inserted
+  into one guarded `berth_current_state` upsert and publishes the Redis deltas — no projector
+  poll between the frame arriving and the delta going out. Tier 2 (a dedicated 100ms projector,
+  below) still measured mean 3.9s NR→browser because it re-scanned all nationwide C-class events
+  and ran a rolling backlog. Inline is strictly post-ack (rule 2 intact) and `try/catch`
+  non-fatal.
+- **`projector-td-live`** (`project-td-live-daemon`, 100ms tick) — now the catch-up / `--rebuild`
+  / restart-gap path, not the hot path. Same `raw_feed_event` TD CA/CB/CC → `berth_current_state`
+  → Redis logic; in steady state its upserts are guard-rejected no-ops because `ingest-td` is
+  ahead. Keeps its own checkpoint so it can fill any gap if `ingest-td` restarts.
 - **`projector-td`** (`project-td-daemon`, 250ms tick) — everything else TD: `td_berth_event`,
   `berth_occupancy` history, S-Class, `td_area_summary`, `td_heartbeat`, anomalies. Also writes
   `berth_current_state` (monotonic-guarded) as the catch-up / `--rebuild` path. Seconds of lag
   here don't matter.
 - **`ingest-garner`** (ADR 0002) mirrors CORPUS/SMART/CIF-schedule/TRUST from openrail-eps; it
   self-throttles, skipping a whole tick whenever `projector-td` is stalled or >5000 events behind.
+
+`berth_current_state` therefore has three monotonic-guarded writers (`ingest-td` inline wins at
+the feed head; both projectors are no-ops in steady state).
 
 `reference-data-refresh` (2026-08-13) is a separate long-running role (`schedule-reference-refresh`) that re-downloads/re-imports SCHEDULE, SMART and CORPUS once a day at a fixed Europe/London time (`REFERENCE_DATA_REFRESH_TIME`, default `01:00`) — previously this was a manual-only console command (`download-schedule`/`download-smart`/`download-corpus`), gated the same way, behind `SCHEDULE_DOWNLOAD_ENABLED`.
 

@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted (2026-09-01). Implemented as Milestone 16. Tier 3 (below) is deferred as an optional
-milestone.
+Accepted (2026-09-01). Tier 2 implemented as Milestone 16. **Tier 3 implemented 2026-09-02 as
+Milestone 17** — measured Tier 2 end-to-end latency (NR `eventAt` → browser) was mean 3.9 s
+(0.98–7.5 s, n=16) against a target of ~500 ms, so the deferred option was taken.
 
 ## Context
 
@@ -80,15 +81,41 @@ and continue) since `project-td-daemon` also maintains `berth_current_state`.
 `ingest-td` (~0.3 s) + live-projector tick lag (~0.1–0.3 s while it keeps pace) + Redis publish +
 WebSocket push ≈ **sub-second**, most of the remainder being browser/network.
 
-## Tier 3 (deferred — Milestone 17, optional)
+## Tier 3 (Milestone 17 — implemented 2026-09-02)
 
-If Tier 2's ~0.1–0.3 s projector hop is still too much, move the live-state update **into
-`ingest-td` itself**, synchronous with recording the frame (the garner/`livesig` model): when
-`ingest-td` records a TD frame it also applies the berth fold to `berth_current_state` and
-publishes the deltas, before moving to the next frame. `project-td-live` then goes away; the
-history projector is unchanged. End-to-end becomes NR → parse → 1 bulk upsert → Redis publish →
-WS ≈ tens of ms + network. The cost is putting a (small, bounded) DB write + Redis publish on
-the ack-critical path; it is only worth doing if Tier 2 measurably misses the target.
+Tier 2 still ran a rolling few-second backlog: `projector-td-live` re-scans **all** nationwide
+C-Class `raw_feed_event` rows on its 100 ms tick, with ~4 checkpoint-framework round-trips per
+cycle, so each event sat in `raw_feed_event` for 1–7 s before the projector's checkpoint reached
+it (measured on the live stack: mean 3.9 s NR→browser).
+
+Tier 3 moves the live-state update **into `ingest-td` itself**. In `onFrame`, immediately after
+`recordFrame` has run the full archive-before-ack sequence and the broker frame is acked,
+`ingest-td` takes the C-Class rows it just inserted (`recordBrokerFrame` now returns their
+identities in `insertedEvents`), folds them with the same pure `foldLiveBerthState`, does one
+guarded `bulkUpsertCurrentState`, and publishes the same Redis deltas — reusing
+`applyLiveFromEvents` in `apps/worker/src/td/liveProjector.ts`. No projector poll, tick,
+checkpoint round-trip, or nationwide re-scan between the frame arriving and the delta going out.
+
+Ordering and invariants:
+
+- **Strictly after the ack.** Rule 2 (archive the frame + durably index every child before
+  acking) is untouched — the inline work is extra, after. A crash between ack and the inline
+  upsert just means `projector-td-live` re-derives that berth from its checkpoint on the next
+  tick or a restart; `berth_current_state` is a rebuildable projection.
+- **Non-fatal.** `ingest-td` wraps the call in `try/catch` — a live-path or Redis failure can
+  neither block ingestion nor delay acks.
+- **`projector-td-live` stays running** as the catch-up / `--rebuild` path and the restart-gap
+  filler. It is no longer the hot path; in steady state its upserts are guard-rejected no-ops.
+- **`berth_current_state` now has three writers** (`ingest-td` inline, `projector-td-live`,
+  `projector-td`). All use the `source_ingestion_sequence` monotonic guard and the
+  `(td_area, berth_code)` sort order. `ingest-td` is at the feed head so it almost always holds
+  the highest sequence and wins; the projectors' later writes for the same event are no-ops.
+- The S3/MinIO PUT inside `recordFrame` is still ahead of the inline publish (~10–30 ms to local
+  MinIO). Taking it off the path would mean reordering archive-before-ack — a separate ADR call,
+  only if this still misses the target.
+
+Expected end-to-end: NR → `ingest-td` parse + `recordFrame` (S3 PUT + ~5 DB round-trips) + 1
+upsert + Redis publish + WS ≈ sub-200 ms server-side, ~1–1.3 s including NR's own wire lag.
 
 ## Consequences
 
@@ -100,3 +127,8 @@ the ack-critical path; it is only worth doing if Tier 2 measurably misses the ta
   it as the occupancy signal — use `description`.
 - `--rebuild` must run against both projectors (or the live projector re-seeds from history,
   which the daemon does automatically on a fresh checkpoint).
+- **(Tier 3)** `berth_current_state` has three writers; `ingest-td` now depends on Redis (gated
+  by `LIVE_WS_REDIS_PUBSUB_ENABLED`, degrades to upsert-only without it) and on
+  `map_binding_index` via an in-process `BindingsCache`.
+- **(Tier 3)** `recordBrokerFrame` does a `RETURNING` on the `raw_feed_event` insert it already
+  ran — no extra round-trip, just a wider result.

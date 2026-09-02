@@ -842,13 +842,25 @@ deltas only after the whole projection batch.
 
 Expected: `ingest-td` (~0.3 s) + live-projector hop (~0.1–0.3 s) + Redis + WS ≈ sub-second.
 
-## Milestone 17 — synchronous live-state in `ingest-td` (Tier 3) `[optional — only if M16 misses the target]`
+## Milestone 17 — synchronous live-state in `ingest-td` (Tier 3) `[done — 2026-09-02]`
 
-Move the `berth_current_state` fold + delta publish **into `ingest-td` itself**, synchronous
-with recording each frame (the garner/`livesig` model), removing `project-td-live` entirely.
-End-to-end becomes NR → parse → 1 bulk upsert → Redis publish → WS ≈ tens of ms + network. The
-cost is a small bounded DB write + Redis publish on the ack-critical path. Only worth doing if
-Milestone 16's ~0.1–0.3 s projector hop is measurably still too slow. See ADR 0003 "Tier 3".
+Milestone 16 was measured on the live stack at mean 3.9 s NR→browser (0.98–7.5 s, n=16) — the
+100 ms projector re-scans all nationwide C-Class events and runs a rolling few-second backlog.
+
+Implemented: `ingest-td`'s `onFrame`, **after** `recordFrame` + ack, folds the C-Class rows it
+just inserted (`recordBrokerFrame` now returns them in `insertedEvents`) via the shared
+`applyLiveFromEvents` — one guarded `bulkUpsertCurrentState` + the same Redis deltas — so
+`berth_current_state` is current and the delta is on the wire within the frame handler, no
+projector poll in between. `project-td-live` stays as the catch-up / `--rebuild` / restart-gap
+path (its steady-state upserts are now guard-rejected no-ops). Rule 2's archive-before-ack is
+untouched (inline work is strictly after the ack) and the inline call is `try/catch` non-fatal.
+`berth_current_state` now has three monotonic-guarded writers. See ADR 0003 "Tier 3".
+
+Files: `apps/worker/src/shared/recordBrokerFrame.ts` (`insertedEvents` via `RETURNING`),
+`apps/worker/src/td/liveProjector.ts` (`applyLiveFromEvents`, `publishBerthDeltas`,
+`bulkUpsertCurrentState` exported), `apps/worker/src/commands/ingestTd.ts` (Redis client +
+`BindingsCache` + inline call). Not-yet-done follow-up: take the S3 PUT off the path (needs an
+ADR call on reordering archive-before-ack).
 
 ## Later milestones
 

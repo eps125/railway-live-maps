@@ -1,8 +1,10 @@
+import { Redis } from "ioredis";
 import { createPool } from "@railway/database";
 import { createArchiveClient } from "@railway/archive";
 import type { Config } from "../config.js";
 import { StompTdConnection } from "../td/connection/stomp/stompConnection.js";
 import { recordFrame, markFrameAcked } from "../td/recorder.js";
+import { applyLiveFromEvents, BindingsCache } from "../td/liveProjector.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
 import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
 
@@ -33,6 +35,23 @@ export async function runIngestTd(config: Config): Promise<never> {
     accessKeyId: config.RAW_ARCHIVE_ACCESS_KEY,
     secretAccessKey: config.RAW_ARCHIVE_SECRET_KEY,
   });
+
+  // ADR 0003 Tier 3: fold each frame's C-Class rows into berth_current_state + publish the
+  // WebSocket deltas inline here, right after recordFrame durably stores them — no wait for the
+  // separate projector-td-live poll. That projector stays running as the catch-up / rebuild
+  // path. Without LIVE_WS_REDIS_PUBSUB_ENABLED the upsert still runs (keeps berth_current_state
+  // fresh for the API's polling delta source); only the Redis publish is skipped.
+  const redis = config.LIVE_WS_REDIS_PUBSUB_ENABLED
+    ? new Redis(config.REDIS_URL, {
+        connectTimeout: 5000,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+      })
+    : null;
+  redis?.on("error", (error) => {
+    console.error("ingest-td: redis client error (inline delta publish may be degraded):", error);
+  });
+  const bindings = new BindingsCache(pool);
 
   const connection = new StompTdConnection({
     host: NR_TD_HOST,
@@ -72,11 +91,38 @@ export async function runIngestTd(config: Config): Promise<never> {
       await markFrameAcked(pool, result.frameId);
       await handle.ack();
       stats.record(handle.frame.receivedAt, result.newestNormalizedEventAtUtc);
+
+      // Tier 3 inline live path — strictly after the ack, so archive-before-ack (non-negotiable
+      // rule 2) is untouched and a failure here can neither block ingestion nor lose durability
+      // (projector-td-live catches up from its checkpoint on the next tick / a restart).
+      const cClassRows = result.insertedEvents
+        .filter((e) => e.messageClass === "C" && ["CA", "CB", "CC"].includes(e.eventType))
+        .map((e) => ({
+          id: e.id,
+          normalized_event_at_utc: new Date(e.normalizedEventAtUtc),
+          ingestion_sequence: e.ingestionSequence,
+          event_type: e.eventType as "CA" | "CB" | "CC",
+          td_area: e.tdArea ?? "",
+          raw_event_json: (e.rawEventJson ?? {}) as Record<string, unknown>,
+        }));
+      if (cClassRows.length > 0) {
+        try {
+          await applyLiveFromEvents(pool, redis, bindings, cClassRows);
+        } catch (error) {
+          console.error(
+            "ingest-td: inline live projection failed (non-fatal; projector-td-live will catch up):",
+            error,
+          );
+        }
+      }
     },
     onError: (error) => {
       console.error("TD connection error:", error);
     },
   });
 
-  return runUntilShutdownSignal(() => connection.stop());
+  return runUntilShutdownSignal(async () => {
+    await connection.stop();
+    redis?.disconnect();
+  });
 }

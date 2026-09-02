@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import type { LiveDeltaMessage } from "@railway/protocol";
-import { BindingsCache, runProjectTdLive, type RedisPublisher } from "./liveProjector.js";
+import {
+  applyLiveFromEvents,
+  BindingsCache,
+  runProjectTdLive,
+  type RawCClassRow,
+  type RedisPublisher,
+} from "./liveProjector.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -252,5 +258,89 @@ describe("runProjectTdLive (integration)", () => {
     );
     await runProjectTdLive(pool, new CapturingRedis(), { bindings: new BindingsCache(pool, 0) });
     expect(await currentDescription(area, "0007")).toBe("AHEAD");
+  });
+});
+
+/** Fetch the raw_feed_event row seedCEvent just inserted, shaped as applyLiveFromEvents wants it. */
+async function lastCClassRow(tdArea: string): Promise<RawCClassRow> {
+  const r = await pool.query<RawCClassRow>(
+    `select id::text, normalized_event_at_utc, ingestion_sequence::text, event_type, td_area, raw_event_json
+     from raw_feed_event
+     where feed_name = 'TD' and td_area = $1
+     order by ingestion_sequence desc limit 1`,
+    [tdArea],
+  );
+  return r.rows[0]!;
+}
+
+describe("applyLiveFromEvents — the ingest-td inline path (integration)", () => {
+  it("upserts berth_current_state and publishes a delta for a bound berth, in one call", async () => {
+    const area = uniqueArea();
+    const slug = `inline-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    await publishMapBinding(slug, "berth-inline", area, "0300");
+    const t = Date.now();
+    await seedCEvent(
+      area,
+      "CC",
+      { area_id: area, time: String(t), to: "0300", descr: "3X33" },
+      new Date(t),
+    );
+    const row = await lastCClassRow(area);
+
+    const redis = new CapturingRedis();
+    const summary = await applyLiveFromEvents(pool, redis, new BindingsCache(pool, 0), [row]);
+
+    expect(summary).toMatchObject({ berthsUpdated: 1, deltasPublished: 1 });
+    expect(await currentDescription(area, "0300")).toBe("3X33");
+    const forSlug = redis.published.filter((p) => p.channel === `railway:live:${slug}`);
+    expect(forSlug).toHaveLength(1);
+    expect(forSlug[0]!.message).toMatchObject({
+      type: "berth.updated",
+      elementId: "berth-inline",
+      description: "3X33",
+    });
+  });
+
+  it("is a no-op for a berth a higher-sequence writer already advanced past", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await seedCEvent(
+      area,
+      "CC",
+      { area_id: area, time: String(t), to: "0301", descr: "OLD" },
+      new Date(t),
+    );
+    const row = await lastCClassRow(area);
+    await applyLiveFromEvents(pool, new CapturingRedis(), new BindingsCache(pool, 0), [row]);
+    expect(await currentDescription(area, "0301")).toBe("OLD");
+
+    await pool.query(
+      `update berth_current_state set description = 'NEWER',
+         source_ingestion_sequence = 9223372036854775000
+       where td_area = $1 and berth_code = '0301'`,
+      [area],
+    );
+    // Re-applying the same (now stale) row must not regress it.
+    await applyLiveFromEvents(pool, new CapturingRedis(), new BindingsCache(pool, 0), [row]);
+    expect(await currentDescription(area, "0301")).toBe("NEWER");
+  });
+
+  it("ignores non-CA/CB/CC rows", async () => {
+    const summary = await applyLiveFromEvents(
+      pool,
+      new CapturingRedis(),
+      new BindingsCache(pool, 0),
+      [
+        {
+          id: "1",
+          normalized_event_at_utc: new Date(),
+          ingestion_sequence: "1",
+          event_type: "CT" as unknown as "CA",
+          td_area: "ZZ",
+          raw_event_json: { CT_MSG: {} },
+        },
+      ],
+    );
+    expect(summary).toEqual({ berthsUpdated: 0, deltasPublished: 0 });
   });
 });

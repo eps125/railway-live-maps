@@ -468,6 +468,40 @@ STP tie using a TRUST activation seen today" failed whenever CI ran in that hour
 `($2::date)::timestamp at time zone 'Europe/London'` (the actual instant London midnight
 occurs). Only occurrence of the pattern in `apps/api/src/routes`.
 
+## Milestone 17 — synchronous live-state in `ingest-td` (ADR 0003 Tier 3) `[done — 2026-09-02]`
+
+Milestone 16 measured on the deployed stack via a WebSocket sniffer: NR `eventAt` → browser
+**mean 3.9 s, median 3.9 s, 0.98–7.5 s, n=16** — jittery, characteristic of a rolling backlog.
+`projector-td-live` re-scans all nationwide C-Class `raw_feed_event` on its 100 ms tick with
+~4 checkpoint round-trips per cycle, so each event waited 1–7 s for the checkpoint to reach it.
+
+- **`apps/worker/src/shared/recordBrokerFrame.ts`** — the `raw_feed_event` insert now has a
+  `RETURNING id, child_index, ingestion_sequence, normalized_event_at_utc` (no new round-trip);
+  `RecordBrokerFrameResult` gains `insertedEvents: InsertedRawEvent[]` (joined back onto the
+  parsed children by `child_index`). Additive — existing callers unaffected.
+- **`apps/worker/src/td/liveProjector.ts`** — `bulkUpsertCurrentState` exported;
+  `publishBerthDeltas` extracted (shared by the daemon and the inline path); new
+  `applyLiveFromEvents(pool, redis, bindings, rows)` = fold CA/CB/CC → one guarded upsert →
+  publish. `runProjectTdLive` now calls the shared helpers.
+- **`apps/worker/src/commands/ingestTd.ts`** — creates a Redis client (gated on
+  `LIVE_WS_REDIS_PUBSUB_ENABLED`, `.on('error')` handled) + a `BindingsCache`. In `onFrame`,
+  **after** `recordFrame` + `markFrameAcked` + `handle.ack()`, it maps `result.insertedEvents`
+  (C-class, CA/CB/CC) to `RawCClassRow`s and calls `applyLiveFromEvents` inside a `try/catch`
+  (non-fatal — `projector-td-live` catches up from its checkpoint on failure/restart).
+- **Invariants:** archive-before-ack (rule 2) untouched — inline work is strictly post-ack.
+  `berth_current_state` now has three monotonic-guarded, `(td_area, berth_code)`-ordered
+  writers; `ingest-td` sits at the feed head so it wins and the projectors' later writes for the
+  same event are no-ops. `project-td-live` stays running (catch-up / `--rebuild` / restart gap).
+- **Not done:** S3/MinIO PUT is still ahead of the inline publish (~10–30 ms local). Removing it
+  needs an ADR call on reordering archive-before-ack — deferred unless still short of target.
+- Tests: 3 new `applyLiveFromEvents` integration cases (upsert+delta for a bound berth;
+  monotonic no-op; ignores non-CA/CB/CC). Full repo typecheck + lint + 315 unit tests green;
+  worker + live-projector integration tests run in CI.
+
+**Deploy:** pin `APP_TAG` to this commit's SHA, redeploy. No migration. Confirm `ingest-td`
+logs no `inline live projection failed`, and re-measure NR→browser lag (target sub-second
+server-side).
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

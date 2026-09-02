@@ -142,20 +142,27 @@ Normalized CA/CB/CC event:
 Projection keyed by `(projection_version, td_area, berth_code)`:
 
 - current description nullable
-- occupancy ID nullable — **NULL in steady state since ADR 0003** (its primary writer, the fast
-  `project-td-live` projector, does not manage `berth_occupancy`). Treat `description IS NOT NULL`
-  as the "occupied" signal; read `berth_occupancy` directly for the occupancy id.
-- occupancy entered at — kept correct by the live projector (the `event_at` of the CA/CC that set
-  the description)
+- occupancy ID nullable — **NULL in steady state since ADR 0003** (the live-path writers do not
+  manage `berth_occupancy`). Treat `description IS NOT NULL` as the "occupied" signal; read
+  `berth_occupancy` directly for the occupancy id.
+- occupancy entered at — set to the `event_at` of the CA/CC that set the description
 - event time
 - source event ID
 - source ingestion sequence
 - data-quality state
 
-Two writers (ADR 0003): `project-td-live` (real-time, the hot path) and `project-td` (catch-up /
-`--rebuild`). Both upserts carry the monotonic guard `excluded.source_ingestion_sequence >=
-berth_current_state.source_ingestion_sequence` and sort rows by `(td_area, berth_code)`, so
-neither can regress the other and there is no deadlock cycle.
+Three writers (ADR 0003, Tier 3 as of 2026-09-02):
+
+1. **`ingest-td` inline** — the hot path. Folds each frame's C-class rows straight into this
+   table right after the frame is acked (`applyLiveFromEvents`). Sits at the feed head, so it
+   almost always holds the highest `source_ingestion_sequence` and wins.
+2. **`project-td-live`** — catch-up / `--rebuild` / restart-gap filler. Steady-state upserts are
+   guard-rejected no-ops.
+3. **`project-td`** — history / `--rebuild` path.
+
+All three upserts carry the monotonic guard `excluded.source_ingestion_sequence >=
+berth_current_state.source_ingestion_sequence` and sort rows by `(td_area, berth_code)`, so no
+writer can regress another and there is no deadlock cycle.
 
 This table covers every observed TD area, including areas without maps.
 

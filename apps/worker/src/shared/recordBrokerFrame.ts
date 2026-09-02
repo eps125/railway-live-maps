@@ -54,6 +54,20 @@ export interface RecordBrokerFrameDeps {
   parseFn: (body: Buffer, options: { receivedAt: Date }) => ParsedFrame;
 }
 
+/** One row this frame added to `raw_feed_event`, with the identity Postgres assigned it. Lets a
+ * caller apply a downstream projection inline (ADR 0003 Tier 3: `ingest-td` folds the C-Class
+ * rows straight into `berth_current_state` + Redis deltas) without re-reading `raw_feed_event`. */
+export interface InsertedRawEvent {
+  id: string;
+  childIndex: number;
+  ingestionSequence: string;
+  normalizedEventAtUtc: string;
+  eventType: string;
+  messageClass: "C" | "S" | null;
+  tdArea: string | null;
+  rawEventJson: unknown;
+}
+
 export interface RecordBrokerFrameResult {
   frameId: string;
   /** true = this exact frame was already durably recorded (broker redelivery); the caller
@@ -68,6 +82,9 @@ export interface RecordBrokerFrameResult {
    * end-to-end lag (wall clock minus this) without a second query. See
    * `apps/worker/src/shared/ingestStats.ts`, which is what actually logs it. */
   newestNormalizedEventAtUtc: string | null;
+  /** Every row inserted into `raw_feed_event` for this frame, in child order (empty for an
+   * already-recorded frame). For the Tier 3 inline live path in `apps/worker/src/commands/ingestTd.ts`. */
+  insertedEvents: InsertedRawEvent[];
 }
 
 const RAW_FEED_EVENT_COLUMNS = [
@@ -101,12 +118,20 @@ const MAX_ROWS_PER_INSERT = 500;
  * which a ~1.5 frames/sec arrival rate can never keep pace with — the exact cause of a live,
  * continuously growing ingestion backlog). Same transaction as the caller, so still all-or-
  * nothing on failure — batching changes round-trip count, not atomicity. */
+interface InsertedRawEventRow {
+  id: string;
+  child_index: number;
+  ingestion_sequence: string;
+  normalized_event_at_utc: Date;
+}
+
 async function insertRawFeedEventRows(
   client: PoolClient,
   frameId: string,
   frame: InboundBrokerFrame,
   children: ParsedChild[],
-): Promise<void> {
+): Promise<InsertedRawEventRow[]> {
+  const inserted: InsertedRawEventRow[] = [];
   for (let start = 0; start < children.length; start += MAX_ROWS_PER_INSERT) {
     const batch = children.slice(start, start + MAX_ROWS_PER_INSERT);
     const columnCount = RAW_FEED_EVENT_COLUMNS.length;
@@ -138,12 +163,15 @@ async function insertRawFeedEventRows(
       );
     });
 
-    await client.query(
+    const result = await client.query<InsertedRawEventRow>(
       `insert into raw_feed_event (${RAW_FEED_EVENT_COLUMNS.join(", ")})
-       values ${valuesClauses.join(",")}`,
+       values ${valuesClauses.join(",")}
+       returning id::text, child_index, ingestion_sequence::text, normalized_event_at_utc`,
       params,
     );
+    inserted.push(...result.rows);
   }
+  return inserted;
 }
 
 interface UpsertArchiveObjectInput {
@@ -254,6 +282,7 @@ export async function recordBrokerFrame(
         unsupportedChildCount: 0,
         failedChildCount: 0,
         newestNormalizedEventAtUtc: null,
+        insertedEvents: [],
       };
     }
 
@@ -273,7 +302,7 @@ export async function recordBrokerFrame(
       else failedCount += 1;
     }
 
-    await insertRawFeedEventRows(client, frameId, frame, parsed.children);
+    const insertedRows = await insertRawFeedEventRows(client, frameId, frame, parsed.children);
 
     const frameParseStatus =
       failedCount === parsed.children.length
@@ -306,6 +335,27 @@ export async function recordBrokerFrame(
       }
     }
 
+    // Join the identities Postgres just assigned (by child_index) back onto the parsed children,
+    // so a caller gets id + ingestion_sequence + the parsed payload in one shape.
+    const childByIndex = new Map(parsed.children.map((c) => [c.childIndex, c]));
+    const insertedEvents: InsertedRawEvent[] = insertedRows
+      .map((row) => {
+        const child = childByIndex.get(row.child_index);
+        if (!child) return null;
+        return {
+          id: row.id,
+          childIndex: row.child_index,
+          ingestionSequence: row.ingestion_sequence,
+          normalizedEventAtUtc: row.normalized_event_at_utc.toISOString(),
+          eventType: child.eventType,
+          messageClass: child.messageClass,
+          tdArea: child.tdArea,
+          rawEventJson: child.rawEventJson,
+        };
+      })
+      .filter((e): e is InsertedRawEvent => e !== null)
+      .sort((a, b) => a.childIndex - b.childIndex);
+
     return {
       frameId,
       alreadyRecorded: false,
@@ -314,6 +364,7 @@ export async function recordBrokerFrame(
       unsupportedChildCount: unsupportedCount,
       failedChildCount: failedCount,
       newestNormalizedEventAtUtc,
+      insertedEvents,
     };
   } catch (error) {
     await client.query("rollback");

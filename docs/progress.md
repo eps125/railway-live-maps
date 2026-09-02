@@ -502,6 +502,22 @@ Milestone 16 measured on the deployed stack via a WebSocket sniffer: NR `eventAt
 logs no `inline live projection failed`, and re-measure NR→browser lag (target sub-second
 server-side).
 
+**Measured after deploy (2026-09-02, WebSocket sniffer on the live map, n=18):** NR `eventAt` →
+browser **median 1.1 s, min 0.9 s** (down from Tier 2's 3.9 s median). The ~1 s floor is NR's
+whole-second `eventAt` truncation + wire lag — level with OpenTrainTimes. Target met.
+
+### Follow-up — duplicate deltas (2026-09-02)
+
+The sniffer showed every berth step published **twice**: once by the `ingest-td` inline path
+(~1 s), then again by `projector-td-live` (~80 ms–7 s later). Identical payload, so invisible on
+the map, but wasted Redis/WS traffic and it would matter if a berth changed twice in the gap.
+`forwardWritesOnly` (`apps/worker/src/td/liveProjector.ts`) now pre-reads `berth_current_state`
+and keeps only writes that strictly advance a berth's `source_ingestion_sequence`; both the
+inline path and `runProjectTdLive` skip the upsert **and** the publish for the rest. Whichever
+writer reaches an event first acts; the others are true no-ops (and `projector-td-live` stops
+doing wasted upserts in steady state). The `>=` upsert guard stays as the same-instant-race
+backstop. New integration test: re-applying the same event publishes nothing.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

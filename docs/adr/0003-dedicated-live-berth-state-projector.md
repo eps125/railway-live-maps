@@ -117,6 +117,18 @@ Ordering and invariants:
 Expected end-to-end: NR → `ingest-td` parse + `recordFrame` (S3 PUT + ~5 DB round-trips) + 1
 upsert + Redis publish + WS ≈ sub-200 ms server-side, ~1–1.3 s including NR's own wire lag.
 
+**Measured after deploy (2026-09-02, WebSocket sniffer, n=18):** NR `eventAt` → browser
+**median 1.1 s, min 0.9 s** (mean 1.9 s, inflated by duplicates — see below). Down from Tier 2's
+3.9 s median. The ~1 s floor is NR's whole-second `eventAt` truncation + wire lag, matching OTT.
+
+**Duplicate-delta fix (same day).** With three writers deriving the same value for the same
+event, `projector-td-live` re-wrote and re-published every berth step ~80 ms–7 s behind
+`ingest-td` (identical payload, so invisible on the map but wasteful). `forwardWritesOnly` in
+`liveProjector.ts` now pre-reads `berth_current_state` and drops any write whose berth is
+already at/past that `source_ingestion_sequence`, so whichever writer reaches an event first
+writes and publishes it and the others are true no-ops. The `>=` upsert guard stays as the
+same-instant-race backstop.
+
 ## Consequences
 
 - One more always-on worker service (`projector-td-live`).

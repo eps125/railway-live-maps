@@ -16,7 +16,9 @@
 -- `(projection_version, td_area, berth_code)` prefix, take the first entry (already in
 -- `entered_at desc` order), done — no heap fetch, no sort, and no dependence on planner
 -- row estimates. The index still only covers open intervals, so it stays tiny.
+-- `if exists` / `if not exists` so this is a no-op if the widened index was already created by
+-- hand on the live stack (it was, 2026-09-03, to unblock `project-td` before this shipped).
 drop index if exists berth_occupancy_open_idx;
-create index berth_occupancy_open_idx
+create index if not exists berth_occupancy_open_idx
   on berth_occupancy (projection_version, td_area, berth_code, entered_at desc)
   where left_at is null;

@@ -51,7 +51,10 @@ beforeAll(async () => {
   );
   mapVersionId = mv.rows[0]!.id;
 
-  // An open occupancy so the snapshot has something non-empty to record.
+  // An open occupancy so the snapshot has something non-empty to record. Timestamps are passed
+  // as explicit JS Dates (ms precision) — a SQL `now()` here would store microseconds that the
+  // RETURNING round-trip truncates, breaking the composite FK into partitioned raw_feed_event.
+  const eventAt = new Date(Date.now() - 120_000);
   const archive = await pool.query<{ id: string }>(
     `insert into raw_archive_object (object_key, bucket, content_sha256, compressed_size_bytes, source_kind)
      values ($1, 'test', $2, 1, 'broker-frame') returning id`,
@@ -62,31 +65,26 @@ beforeAll(async () => {
      values ('TD', '/topic/TD_ALL_SIG_AREA', now(), $1, $2) returning id`,
     [randomUUID(), archive.rows[0]!.id],
   );
-  const ev = await pool.query<{
-    id: string;
-    normalized_event_at_utc: Date;
-    ingestion_sequence: string;
-  }>(
+  const ev = await pool.query<{ id: string; ingestion_sequence: string }>(
     `insert into raw_feed_event (
        frame_id, child_index, feed_name, event_type, message_class, td_area, raw_event_json,
        normalized_event_at_utc, received_at_utc, semantic_hash, parse_status, parse_version
-     ) values ($1, 0, 'TD', 'CC', 'C', $2, '{}', now() - interval '2 minutes',
-               now() - interval '2 minutes', $3, 'parsed', 1)
-     returning id, normalized_event_at_utc, ingestion_sequence`,
-    [frame.rows[0]!.id, AREA, randomUUID()],
+     ) values ($1, 0, 'TD', 'CC', 'C', $2, '{}', $3, $3, $4, 'parsed', 1)
+     returning id, ingestion_sequence`,
+    [frame.rows[0]!.id, AREA, eventAt, randomUUID()],
   );
   rawEventIds.push(ev.rows[0]!.id);
   await pool.query(
     `insert into td_berth_event (raw_event_id, raw_event_normalized_at_utc, td_area, message_type,
         from_berth, to_berth, description, event_at, ingestion_sequence, normalization_version)
      values ($1, $2, $3, 'CC', null, '0001', 'SNP1', $2, $4, 1)`,
-    [ev.rows[0]!.id, ev.rows[0]!.normalized_event_at_utc, AREA, ev.rows[0]!.ingestion_sequence],
+    [ev.rows[0]!.id, eventAt, AREA, ev.rows[0]!.ingestion_sequence],
   );
   await pool.query(
     `insert into berth_occupancy (projection_version, td_area, berth_code, description, entered_at,
         left_at, entry_event_id, entry_event_normalized_at_utc, entry_reason)
-     values ($1, $2, '0001', 'SNP1', now() - interval '2 minutes', null, $3, $4, 'cc_interpose')`,
-    [TD_PROJECTION_VERSION, AREA, ev.rows[0]!.id, ev.rows[0]!.normalized_event_at_utc],
+     values ($1, $2, '0001', 'SNP1', $3, null, $4, $3, 'cc_interpose')`,
+    [TD_PROJECTION_VERSION, AREA, eventAt, ev.rows[0]!.id],
   );
 });
 
@@ -145,7 +143,13 @@ describe("runSnapshotMaps (integration)", () => {
     const first = await runSnapshotMaps(pool, now);
     const second = await runSnapshotMaps(pool, now);
     expect(first.mapVersionsSnapshotted).toBeGreaterThanOrEqual(1);
-    expect(second.mapVersionsSnapshotted).toBe(0);
+    // Our map version was written by `first` and must be skipped (not re-inserted) by `second`.
     expect(second.skippedExisting).toBeGreaterThanOrEqual(1);
+    const rows = await pool.query(
+      `select count(*)::int as n from map_state_snapshot
+        where map_version_id = $1 and snapshot_time = $2`,
+      [mapVersionId, now],
+    );
+    expect(rows.rows[0]!.n).toBe(1);
   });
 });

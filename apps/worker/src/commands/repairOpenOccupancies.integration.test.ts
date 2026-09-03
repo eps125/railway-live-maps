@@ -104,9 +104,9 @@ afterAll(async () => {
 });
 
 describe("repair-open-occupancies (integration)", () => {
-  it("closes stale open intervals at the step-out time and leaves the newest open", async () => {
-    // A run stepped 0001 -> 0002 -> 0003; the two CAs exist in td_berth_event but the
-    // occupancies for 0001 and 0002 were never closed (the ADR 0003 getOpenOccupancy bug).
+  it("closes each smeared interval at its first step-out and leaves the current occupant open", async () => {
+    // A run stepped 0001 -> 0002 -> 0003 (one open interval PER berth); every CA exists in
+    // td_berth_event but no occupancy was closed (the ADR 0003 getOpenOccupancy bug).
     const e1 = await tdEvent(T(0), "CC", null, "0001");
     await openInterval("0001", T(0), e1);
     const e2 = await tdEvent(T(1), "CA", "0001", "0002"); // stepped out of 0001 at +1
@@ -121,19 +121,18 @@ describe("repair-open-occupancies (integration)", () => {
     expect(h1[0]!.left_at?.getTime()).toBe(T(1).getTime());
     expect(h1[0]!.exit_reason).toBe("repaired_stepped_out");
 
-    const h2 = await history("0002");
-    expect(h2[0]!.left_at?.getTime()).toBe(T(2).getTime());
+    expect((await history("0002"))[0]!.left_at?.getTime()).toBe(T(2).getTime());
 
     const h3 = await history("0003");
-    expect(h3[0]!.left_at).toBeNull(); // the current occupant stays open
+    expect(h3[0]!.left_at).toBeNull(); // no later event touches 0003 → current occupant
 
     // Idempotent.
     await runRepairOpenOccupancies(config, []);
     expect((await history("0001"))[0]!.left_at?.getTime()).toBe(T(1).getTime());
   });
 
-  it("falls back to the next interval's entered_at when no step-out event exists", async () => {
-    // 0009 was entered twice with no CA/CB ever stepping a train out of it.
+  it("closes an overwritten interval at the later CC that put a new train in the berth", async () => {
+    // 0009 held one train from +10 (never closed); a CC put a different train in at +40.
     const a = await tdEvent(T(10), "CC", null, "0009");
     await openInterval("0009", T(10), a);
     const b = await tdEvent(T(40), "CC", null, "0009");
@@ -143,8 +142,8 @@ describe("repair-open-occupancies (integration)", () => {
 
     const h = await history("0009");
     expect(h).toHaveLength(2);
-    expect(h[0]!.left_at?.getTime()).toBe(T(40).getTime()); // bounded by the next entry
-    expect(h[0]!.exit_reason).toBe("repaired_no_exit_event");
-    expect(h[1]!.left_at).toBeNull();
+    expect(h[0]!.left_at?.getTime()).toBe(T(40).getTime());
+    expect(h[0]!.exit_reason).toBe("repaired_overwritten");
+    expect(h[1]!.left_at).toBeNull(); // the newer occupant stays open
   });
 });

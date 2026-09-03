@@ -604,6 +604,18 @@ Playback on the deployed stack surfaced two bugs:
    `apps/worker/src/commands/repairOpenOccupancies.integration.test.ts`.
 
 3. Playback speeds: added 20× and 60×; buffer window 10 min → 30 min so high speeds refill less.
+4. **`repair-open-occupancies` one-shot** (`apps/worker/src/commands/repairOpenOccupancies.ts`):
+   closes each `left_at IS NULL` interval at the first `td_berth_event` touching that berth
+   (`from`/`to`) after it was entered — `repaired_stepped_out` / `repaired_overwritten` /
+   `repaired_cancelled`. Keyset-batched (10k) with per-batch deadlock retry; live stack had
+   **3.59M** dangling intervals. `--dry-run` = count only. Stop `projector-td` while it runs.
+5. **`project-td` stopped writing `berth_current_state`** (`apps/worker/src/td/projector.ts`
+   `applyEffects`). It was a third writer of that table (ADR 0003 gave it to `ingest-td` inline
+   - `projector-td-live`); after the `getOpenOccupancy` fix + the 2.5h catch-up backlog from the
+     repair downtime, its big batches deadlocked against the two live writers **every tick** and
+     the history projection froze (`td_berth_event` / `td_area_summary` stuck, "data may be stale"
+     banner). Now writes only `berth_occupancy` etc.; `--rebuild` re-seeds `berth_current_state`
+     via `projector-td-live`. `projector.integration.test.ts` `currentState` asserts → `berth_occupancy`.
 
 ## Next smallest task
 

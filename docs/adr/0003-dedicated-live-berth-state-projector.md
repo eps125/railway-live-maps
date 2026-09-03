@@ -106,10 +106,13 @@ Ordering and invariants:
   neither block ingestion nor delay acks.
 - **`projector-td-live` stays running** as the catch-up / `--rebuild` path and the restart-gap
   filler. It is no longer the hot path; in steady state its upserts are guard-rejected no-ops.
-- **`berth_current_state` now has three writers** (`ingest-td` inline, `projector-td-live`,
-  `projector-td`). All use the `source_ingestion_sequence` monotonic guard and the
-  `(td_area, berth_code)` sort order. `ingest-td` is at the feed head so it almost always holds
-  the highest sequence and wins; the projectors' later writes for the same event are no-ops.
+- **`berth_current_state` has two writers** — `ingest-td` inline (at the feed head, almost
+  always wins the `source_ingestion_sequence` monotonic guard) and `projector-td-live` (catch-up
+  / restart-gap; its later writes for the same event are guard-rejected no-ops). Both sort by
+  `(td_area, berth_code)`. **`projector-td` originally wrote it too but stopped 2026-09-03** —
+  as a third writer its catch-up batches (per-row writes in event order) deadlocked against the
+  other two every tick and the history projection froze; on `--rebuild`, `projector-td-live`
+  re-seeds `berth_current_state` from the rebuilt `berth_occupancy`.
 - The S3/MinIO PUT inside `recordFrame` is still ahead of the inline publish (~10–30 ms to local
   MinIO). Taking it off the path would mean reordering archive-before-ack — a separate ADR call,
   only if this still misses the target.
@@ -149,7 +152,7 @@ Redis is memory-only here, so a Redis restart re-seeds the watermark on the next
   it as the occupancy signal — use `description`.
 - `--rebuild` must run against both projectors (or the live projector re-seeds from history,
   which the daemon does automatically on a fresh checkpoint).
-- **(Tier 3)** `berth_current_state` has three writers; `ingest-td` now depends on Redis (gated
+- **(Tier 3)** `berth_current_state` has two writers (was three until 2026-09-03); `ingest-td` now depends on Redis (gated
   by `LIVE_WS_REDIS_PUBSUB_ENABLED`, degrades to upsert-only without it) and on
   `map_binding_index` via an in-process `BindingsCache`.
 - **(Tier 3)** `recordBrokerFrame` does a `RETURNING` on the `raw_feed_event` insert it already

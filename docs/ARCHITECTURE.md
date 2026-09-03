@@ -102,17 +102,18 @@ up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR 0
   → Redis logic; in steady state its upserts are guard-rejected no-ops because `ingest-td` is
   ahead. Keeps its own checkpoint so it can fill any gap if `ingest-td` restarts.
 - **`projector-td`** (`project-td-daemon`, 250ms tick) — everything else TD: `td_berth_event`,
-  `berth_occupancy` history, S-Class, `td_area_summary`, `td_heartbeat`, anomalies. Also writes
-  `berth_current_state` (monotonic-guarded) as the catch-up / `--rebuild` path. Seconds of lag
-  here don't matter.
+  `berth_occupancy` history, S-Class, `td_area_summary`, `td_heartbeat`, anomalies. It does
+  **not** write `berth_current_state` (stopped 2026-09-03 — a third writer's catch-up batches
+  deadlocked the other two). Seconds of lag here don't matter.
 - **`ingest-garner`** (ADR 0002) mirrors CORPUS/SMART/CIF-schedule/TRUST from openrail-eps; it
   self-throttles, skipping a whole tick whenever `projector-td` is stalled or >5000 events behind.
 - **`snapshot-maps`** (Milestone 10) — every `SNAPSHOT_INTERVAL_MS` (default 5 min) writes one
   `map_state_snapshot` per effective published map version, using the same `reconstructMapStateAt`
   the API's `/state?at=` calls. Not latency-sensitive; a cache/audit of point-in-time state.
 
-`berth_current_state` therefore has three monotonic-guarded writers (`ingest-td` inline wins at
-the feed head; both projectors are no-ops in steady state).
+`berth_current_state` therefore has two monotonic-guarded writers — `ingest-td` inline (wins at
+the feed head) and `projector-td-live` (no-op in steady state). `projector-td` no longer writes
+it.
 
 `reference-data-refresh` (2026-08-13) is a separate long-running role (`schedule-reference-refresh`) that re-downloads/re-imports SCHEDULE, SMART and CORPUS once a day at a fixed Europe/London time (`REFERENCE_DATA_REFRESH_TIME`, default `01:00`) — previously this was a manual-only console command (`download-schedule`/`download-smart`/`download-corpus`), gated the same way, behind `SCHEDULE_DOWNLOAD_ENABLED`.
 

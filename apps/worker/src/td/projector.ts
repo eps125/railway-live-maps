@@ -188,6 +188,13 @@ async function applyEffects(
       if (!berthCode) {
         throw new Error(`closeOccupancy effect is missing its ${effect.berth} berth code`);
       }
+      // Only `berth_occupancy` here — `berth_current_state` is owned by `ingest-td`'s inline
+      // path and `projector-td-live` since ADR 0003 (Tier 3). This projector writing it too
+      // made it a third writer of that table, and its catch-up batches (thousands of per-row
+      // writes in event order) deadlocked against the other two's `(td_area, berth_code)`-
+      // ordered writes — every tick failed, the history projection froze (2026-09-03). On a
+      // `--rebuild`, `projector-td-live` re-seeds `berth_current_state` from the rebuilt
+      // `berth_occupancy` off its own reset checkpoint.
       await client.query(
         `update berth_occupancy
          set left_at = $2, exit_event_id = $3, exit_event_normalized_at_utc = $4, exit_reason = $5
@@ -200,37 +207,18 @@ async function applyEffects(
           effect.exitReason,
         ],
       );
-      await client.query(
-        // Monotonic guard: `berth_current_state` also has the fast `project-td-live` projector as
-        // a writer (ADR 0003). Never let this (slower) projector's write regress a berth the live
-        // projector has already advanced past.
-        `update berth_current_state
-         set description = null, occupancy_id = null, occupancy_entered_at = null,
-             event_at = $4, source_event_id = $5, source_event_normalized_at_utc = $6,
-             source_ingestion_sequence = $7, updated_at = now()
-         where projection_version = $1 and td_area = $2 and berth_code = $3
-           and source_ingestion_sequence <= $7`,
-        [
-          ctx.projectionVersion,
-          ctx.tdArea,
-          berthCode,
-          ctx.eventAt,
-          ctx.rawEventId,
-          ctx.rawEventNormalizedAtUtc,
-          ctx.ingestionSequence,
-        ],
-      );
     } else if (effect.kind === "openOccupancy") {
       const berthCode = ctx.toBerth;
       if (!berthCode) {
         throw new Error("openOccupancy effect is missing the to berth code");
       }
-      const inserted = await client.query<{ id: string }>(
+      // `berth_occupancy` only — see the closeOccupancy note above on why this projector no
+      // longer touches `berth_current_state`.
+      await client.query(
         `insert into berth_occupancy (
            projection_version, td_area, berth_code, description, entered_at,
            entry_event_id, entry_event_normalized_at_utc, entry_reason
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8)
-         returning id`,
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
           ctx.projectionVersion,
           ctx.tdArea,
@@ -240,35 +228,6 @@ async function applyEffects(
           ctx.rawEventId,
           ctx.rawEventNormalizedAtUtc,
           effect.entryReason,
-        ],
-      );
-      const occupancyId = inserted.rows[0]?.id;
-      if (!occupancyId) {
-        throw new Error("Expected berth_occupancy insert to return an id");
-      }
-      await client.query(
-        `insert into berth_current_state (
-           projection_version, td_area, berth_code, description, occupancy_id, occupancy_entered_at,
-           event_at, source_event_id, source_event_normalized_at_utc, source_ingestion_sequence
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         on conflict (projection_version, td_area, berth_code) do update
-         set description = excluded.description, occupancy_id = excluded.occupancy_id,
-             occupancy_entered_at = excluded.occupancy_entered_at, event_at = excluded.event_at,
-             source_event_id = excluded.source_event_id,
-             source_event_normalized_at_utc = excluded.source_event_normalized_at_utc,
-             source_ingestion_sequence = excluded.source_ingestion_sequence, updated_at = now()
-         where excluded.source_ingestion_sequence >= berth_current_state.source_ingestion_sequence`,
-        [
-          ctx.projectionVersion,
-          ctx.tdArea,
-          berthCode,
-          effect.description,
-          occupancyId,
-          ctx.eventAt,
-          ctx.eventAt,
-          ctx.rawEventId,
-          ctx.rawEventNormalizedAtUtc,
-          ctx.ingestionSequence,
         ],
       );
     } else {

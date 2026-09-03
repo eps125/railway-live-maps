@@ -69,15 +69,17 @@ function uniqueArea(): string {
   return `T${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 }
 
-interface CurrentStateRow {
-  description: string | null;
-  occupancy_id: string | null;
-}
-
-async function currentState(area: string, berth: string): Promise<CurrentStateRow | undefined> {
-  const result = await pool.query<CurrentStateRow>(
-    `select description, occupancy_id from berth_current_state
-     where projection_version = $1 and td_area = $2 and berth_code = $3`,
+/** The open `berth_occupancy` interval for a berth, if any — the history projection's
+ * equivalent of "what is in this berth now". `project-td` no longer writes `berth_current_state`
+ * (ADR 0003: that table is owned by `ingest-td` inline + `projector-td-live`). */
+async function openOccupancy(
+  area: string,
+  berth: string,
+): Promise<{ description: string } | undefined> {
+  const result = await pool.query<{ description: string }>(
+    `select description from berth_occupancy
+     where projection_version = $1 and td_area = $2 and berth_code = $3 and left_at is null
+     order by entered_at desc limit 1`,
     [TD_PROJECTION_VERSION, area, berth],
   );
   return result.rows[0];
@@ -120,8 +122,8 @@ describe("runProjectTd (integration)", () => {
 
     await runProjectTd(pool);
 
-    expect(await currentState(area, "0100")).toEqual({ description: null, occupancy_id: null });
-    expect((await currentState(area, "0101"))?.description).toBe("AAAA");
+    expect(await openOccupancy(area, "0100")).toBeUndefined();
+    expect((await openOccupancy(area, "0101"))?.description).toBe("AAAA");
     expect(await anomalyCount(area)).toBe(0);
   });
 
@@ -166,7 +168,7 @@ describe("runProjectTd (integration)", () => {
 
     await runProjectTd(pool);
 
-    expect(await currentState(area, "0200")).toEqual({ description: null, occupancy_id: null });
+    expect(await openOccupancy(area, "0200")).toBeUndefined();
     expect(await anomalyCount(area)).toBe(0);
     const history = await occupancyHistory(area, "0200");
     expect(history).toHaveLength(1);
@@ -181,7 +183,7 @@ describe("runProjectTd (integration)", () => {
 
     await runProjectTd(pool);
 
-    expect((await currentState(area, "0300"))?.description).toBe("DDDD");
+    expect((await openOccupancy(area, "0300"))?.description).toBe("DDDD");
     const history = await occupancyHistory(area, "0300");
     expect(history).toHaveLength(2);
     expect(history[0]).toMatchObject({
@@ -191,24 +193,14 @@ describe("runProjectTd (integration)", () => {
     expect(history[1]).toMatchObject({ description: "DDDD", exit_reason: null });
   });
 
-  it("closes the `from` occupancy even when berth_current_state.occupancy_id is NULL (ADR 0003 Tier 3)", async () => {
-    // Since ADR 0003, ingest-td's inline path and projector-td-live write berth_current_state
-    // with occupancy_id = NULL and win the monotonic guard, so getOpenOccupancy must read
-    // berth_occupancy directly — otherwise every CA `from` looks empty and its interval never
-    // closes (smeared headcode trails in point-in-time playback).
+  it("closes the `from` occupancy on a CA — getOpenOccupancy reads berth_occupancy (ADR 0003)", async () => {
+    // Since ADR 0003, `project-td` does not write `berth_current_state` (that table is owned by
+    // ingest-td's inline path + projector-td-live). getOpenOccupancy must therefore read
+    // `berth_occupancy` directly — otherwise every CA `from` looked empty, no closeOccupancy
+    // fired, and intervals never closed (smeared headcode trails in point-in-time playback).
     const area = uniqueArea();
     const t = Date.now();
     await record([cc(area, "0210", "TIER3", t)], new Date(t));
-    await runProjectTd(pool);
-    // Simulate the live-path writers having nulled occupancy_id at a higher source sequence.
-    await pool.query(
-      `update berth_current_state
-         set occupancy_id = null, occupancy_entered_at = null,
-             source_ingestion_sequence = 9223372036854775000
-       where projection_version = $1 and td_area = $2 and berth_code = '0210'`,
-      [TD_PROJECTION_VERSION, area],
-    );
-
     await record([ca(area, "0210", "0211", "TIER3", t + 1000)], new Date(t + 1000));
     await runProjectTd(pool);
 
@@ -221,6 +213,12 @@ describe("runProjectTd (integration)", () => {
       description: "TIER3",
       left_at: null,
     });
+    // project-td wrote no berth_current_state row.
+    const bcs = await pool.query<{ n: number }>(
+      "select count(*)::int as n from berth_current_state where td_area = $1",
+      [area],
+    );
+    expect(bcs.rows[0]?.n).toBe(0);
   });
 
   it("empty source: CA with nothing open in `from` records an anomaly but still opens `to`", async () => {
@@ -230,7 +228,7 @@ describe("runProjectTd (integration)", () => {
 
     await runProjectTd(pool);
 
-    expect((await currentState(area, "0401"))?.description).toBe("EEEE");
+    expect((await openOccupancy(area, "0401"))?.description).toBe("EEEE");
     expect(await anomalyCount(area)).toBe(1);
   });
 
@@ -243,7 +241,7 @@ describe("runProjectTd (integration)", () => {
 
     await runProjectTd(pool);
 
-    expect((await currentState(area, "0501"))?.description).toBe("AAAA");
+    expect((await openOccupancy(area, "0501"))?.description).toBe("AAAA");
     expect(await anomalyCount(area)).toBe(0);
     const history = await occupancyHistory(area, "0501");
     expect(history).toHaveLength(2);
@@ -260,7 +258,7 @@ describe("runProjectTd (integration)", () => {
     await runProjectTd(pool);
 
     // If sequence order were not respected, either row could "win" depending on scan order.
-    expect((await currentState(area, "0600"))?.description).toBe("SECOND");
+    expect((await openOccupancy(area, "0600"))?.description).toBe("SECOND");
   });
 
   it("duplicate delivery / restart-replay: rewinding the checkpoint and rerunning does not duplicate state", async () => {
@@ -270,7 +268,7 @@ describe("runProjectTd (integration)", () => {
     await record([ca(area, "0700", "0701", "GGGG", t + 1000)], new Date(t + 1000));
 
     await runProjectTd(pool);
-    const before = await currentState(area, "0701");
+    const before = await openOccupancy(area, "0701");
     const historyBefore = await occupancyHistory(area, "0701");
     expect(before?.description).toBe("GGGG");
     expect(historyBefore).toHaveLength(1);
@@ -287,7 +285,7 @@ describe("runProjectTd (integration)", () => {
     );
     await runProjectTd(pool);
 
-    const after = await currentState(area, "0701");
+    const after = await openOccupancy(area, "0701");
     const historyAfter = await occupancyHistory(area, "0701");
     expect(after).toEqual(before);
     expect(historyAfter).toHaveLength(1);
@@ -373,13 +371,13 @@ describe("runProjectTd (integration)", () => {
     const t = Date.now();
     await record([cc(area, "0900", "IIII", t)], new Date(t));
     await runProjectTd(pool);
-    expect((await currentState(area, "0900"))?.description).toBe("IIII");
+    expect((await openOccupancy(area, "0900"))?.description).toBe("IIII");
 
     await runProjectTd(pool, { rebuild: true });
 
     // After a full rebuild the whole backlog (including this row) is reprocessed from scratch,
     // landing on the same end state — proving rebuild doesn't lose or duplicate data.
-    expect((await currentState(area, "0900"))?.description).toBe("IIII");
+    expect((await openOccupancy(area, "0900"))?.description).toBe("IIII");
     const history = await occupancyHistory(area, "0900");
     expect(history).toHaveLength(1);
   });
@@ -408,7 +406,7 @@ describe("runProjectTd (integration)", () => {
     );
 
     await expect(runProjectTd(pool, { rebuild: true })).resolves.toBeDefined();
-    expect((await currentState(area, "0911"))?.description).toBe("MCLR");
+    expect((await openOccupancy(area, "0911"))?.description).toBe("MCLR");
 
     const preserved = await pool.query<{ closed_occupancy_id: string | null; reason: string }>(
       `select closed_occupancy_id, reason from operator_berth_action where id = $1`,
@@ -439,7 +437,7 @@ describe("runProjectTd (integration)", () => {
       const summary = await runProjectTd(pool);
       expect(summary.skippedLockContention).toBe(true);
       expect(summary.batches).toBe(0);
-      expect(await currentState(area, "0950")).toBeUndefined();
+      expect(await openOccupancy(area, "0950")).toBeUndefined();
     } finally {
       await lockHolder.query("select pg_advisory_unlock($1)", [lockKey]);
       lockHolder.release();
@@ -448,6 +446,6 @@ describe("runProjectTd (integration)", () => {
     // Once released, a normal run proceeds exactly as usual.
     const summary = await runProjectTd(pool);
     expect(summary.skippedLockContention).toBe(false);
-    expect((await currentState(area, "0950"))?.description).toBe("LOCK");
+    expect((await openOccupancy(area, "0950"))?.description).toBe("LOCK");
   });
 });

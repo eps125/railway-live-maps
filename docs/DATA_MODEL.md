@@ -151,18 +151,20 @@ Projection keyed by `(projection_version, td_area, berth_code)`:
 - source ingestion sequence
 - data-quality state
 
-Three writers (ADR 0003, Tier 3 as of 2026-09-02):
+Two writers (ADR 0003, Tier 3):
 
 1. **`ingest-td` inline** — the hot path. Folds each frame's C-class rows straight into this
    table right after the frame is acked (`applyLiveFromEvents`). Sits at the feed head, so it
    almost always holds the highest `source_ingestion_sequence` and wins.
 2. **`project-td-live`** — catch-up / `--rebuild` / restart-gap filler. Steady-state upserts are
    guard-rejected no-ops.
-3. **`project-td`** — history / `--rebuild` path.
 
-All three upserts carry the monotonic guard `excluded.source_ingestion_sequence >=
-berth_current_state.source_ingestion_sequence` and sort rows by `(td_area, berth_code)`, so no
-writer can regress another and there is no deadlock cycle.
+Both upserts carry the monotonic guard `excluded.source_ingestion_sequence >=
+berth_current_state.source_ingestion_sequence` and sort rows by `(td_area, berth_code)`, so
+neither can regress the other and there is no deadlock cycle. **`project-td` was a third writer
+until 2026-09-03** — its catch-up batches (per-row writes in event order) deadlocked against the
+other two every tick and the history projection froze; it now writes only `berth_occupancy`.
+`occupancy_id` is always NULL (nothing sets it); use `berth_occupancy` for the open interval.
 
 This table covers every observed TD area, including areas without maps.
 

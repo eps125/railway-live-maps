@@ -16,8 +16,11 @@ const PROJECT_TD_MAX_BATCHES_PER_TICK = 20;
  * `project-td-daemon` — the non-hot-path TD projector: `td_berth_event`, `berth_occupancy`
  * history, `td_s_*`, `td_area_summary`, `td_heartbeat`, anomalies. Since ADR 0003 (Milestone 16)
  * it no longer publishes the WebSocket Redis deltas — `project-td-live-daemon` does that, on a
- * much tighter loop, alongside `berth_current_state`. This daemon still writes
- * `berth_current_state` too (monotonic-guarded), as the catch-up / `--rebuild` path.
+ * much tighter loop, alongside `berth_current_state`. As of 2026-09-03 this daemon also no
+ * longer writes `berth_current_state` at all: it was a third writer of that table and its
+ * catch-up batches deadlocked against `ingest-td` inline + `projector-td-live` (every tick
+ * failed, the history projection froze). `berth_current_state` is now solely those two's; on a
+ * `--rebuild`, `projector-td-live` re-seeds it from the rebuilt `berth_occupancy`.
  *
  * `--rebuild` is not available here — run the one-shot `project-td --rebuild` command from the
  * worker console (it also resets the live projector's checkpoint), then restart both daemons.

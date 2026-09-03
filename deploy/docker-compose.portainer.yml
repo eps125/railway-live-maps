@@ -254,10 +254,10 @@ services:
     networks: [backend]
 
   # The NON-hot-path TD projector (ADR 0003): td_berth_event, berth_occupancy history, S-Class,
-  # anomalies, td_area_summary, td_heartbeat. Seconds of lag here don't matter. It also writes
-  # berth_current_state (monotonic-guarded) as the catch-up / --rebuild path, but no longer
-  # publishes deltas — projector-td-live does that. 250ms tick. `--rebuild` still needs the
-  # one-shot: run `project-td --rebuild` from the `worker` console (it also resets the live
+  # anomalies, td_area_summary, td_heartbeat. Seconds of lag here don't matter. Does NOT write
+  # berth_current_state (that's projector-td-live + ingest-td inline; a third writer here
+  # deadlocked them, 2026-09-03) and does not publish deltas. 250ms tick. `--rebuild` still needs
+  # the one-shot: run `project-td --rebuild` from the `worker` console (it also resets the live
   # projector's checkpoint), then restart both projector-td services.
   projector-td:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}

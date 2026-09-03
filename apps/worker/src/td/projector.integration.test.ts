@@ -302,8 +302,8 @@ describe("runProjectTd (integration)", () => {
     await runProjectTd(pool, { batchSize: 1, maxBatches: 2 });
     const seen = async (): Promise<number> => {
       const r = await pool.query<{ n: string }>(
-        `select count(*)::text as n from berth_current_state
-         where projection_version = $1 and td_area = $2 and description is not null`,
+        `select count(*)::text as n from berth_occupancy
+         where projection_version = $1 and td_area = $2 and left_at is null`,
         [TD_PROJECTION_VERSION, area],
       );
       return Number(r.rows[0]!.n);

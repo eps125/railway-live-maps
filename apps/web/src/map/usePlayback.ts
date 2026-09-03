@@ -7,8 +7,10 @@ import type {
   SignalState,
 } from "./types.js";
 
-/** docs/PROJECT_SPEC.md §5 "Playback" — the speed multipliers a visitor can pick. */
-export const PLAYBACK_SPEEDS = [0.25, 0.5, 1, 2, 5, 10] as const;
+/** docs/PROJECT_SPEC.md §5 "Playback" — the speed multipliers a visitor can pick. 20×/60× are
+ * for scrubbing across hours; the event buffer refills as the clock runs, so if the network
+ * can't keep up the map briefly holds at the buffer edge then catches up. */
+export const PLAYBACK_SPEEDS = [0.25, 0.5, 1, 2, 5, 10, 20, 60] as const;
 
 /** Step sizes (ms) — backward/forward by 10 seconds, 1 minute and 10 minutes. */
 export const PLAYBACK_STEPS_MS = [
@@ -20,8 +22,10 @@ export const PLAYBACK_STEPS_MS = [
   { label: "+10m", ms: 600_000 },
 ] as const;
 
-const BUFFER_WINDOW_MS = 10 * 60_000;
-const REFILL_WHEN_REMAINING_MS = 3 * 60_000;
+// Wide enough that even 200× (30 min of playback ≈ 9 s real) needs a refill only every few
+// seconds; a Lancaster-sized 30-min window is well under the /events default page size.
+const BUFFER_WINDOW_MS = 30 * 60_000;
+const REFILL_WHEN_REMAINING_MS = 10 * 60_000;
 const TICK_MS = 200;
 /** Never let the playback clock run into the live present. */
 const LIVE_EDGE_MS = 5_000;

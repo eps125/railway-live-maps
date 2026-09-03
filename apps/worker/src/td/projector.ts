@@ -137,29 +137,30 @@ async function getOpenOccupancy(
   tdArea: string,
   berthCode: string,
 ): Promise<OpenOccupancySnapshot | null> {
-  const result = await client.query<{
-    occupancy_id: string | null;
-    occupancy_entered_at: Date | null;
-    description: string | null;
-  }>(
-    `select occupancy_id, occupancy_entered_at, description
-     from berth_current_state
-     where projection_version = $1 and td_area = $2 and berth_code = $3`,
+  // Read `berth_occupancy` directly, NOT `berth_current_state.occupancy_id`. Since ADR 0003
+  // (Tier 3) `berth_current_state` is written by `ingest-td` inline / `projector-td-live` with
+  // `occupancy_id = NULL` and their write wins the monotonic guard, so this projector was seeing
+  // every `from` berth as empty → no `closeOccupancy` effect → `berth_occupancy` intervals never
+  // closed (visible as smeared headcode trails in point-in-time playback). Reading
+  // `berth_occupancy` here also means an open row inserted earlier in the *same* batch
+  // transaction is visible to a later CA `from` in that batch. Partial index
+  // `berth_occupancy_open_idx` (migration 0026) covers this exact predicate.
+  const result = await client.query<{ id: string; entered_at: Date; description: string }>(
+    `select id, entered_at, description
+       from berth_occupancy
+      where projection_version = $1 and td_area = $2 and berth_code = $3 and left_at is null
+      order by entered_at desc
+      limit 1`,
     [projectionVersion, tdArea, berthCode],
   );
   const row = result.rows[0];
-  if (
-    !row ||
-    row.occupancy_id === null ||
-    row.occupancy_entered_at === null ||
-    row.description === null
-  ) {
+  if (!row) {
     return null;
   }
   return {
-    occupancyId: row.occupancy_id,
+    occupancyId: row.id,
     description: row.description,
-    enteredAt: row.occupancy_entered_at.toISOString(),
+    enteredAt: row.entered_at.toISOString(),
   };
 }
 

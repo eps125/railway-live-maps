@@ -191,6 +191,38 @@ describe("runProjectTd (integration)", () => {
     expect(history[1]).toMatchObject({ description: "DDDD", exit_reason: null });
   });
 
+  it("closes the `from` occupancy even when berth_current_state.occupancy_id is NULL (ADR 0003 Tier 3)", async () => {
+    // Since ADR 0003, ingest-td's inline path and projector-td-live write berth_current_state
+    // with occupancy_id = NULL and win the monotonic guard, so getOpenOccupancy must read
+    // berth_occupancy directly — otherwise every CA `from` looks empty and its interval never
+    // closes (smeared headcode trails in point-in-time playback).
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([cc(area, "0210", "TIER3", t)], new Date(t));
+    await runProjectTd(pool);
+    // Simulate the live-path writers having nulled occupancy_id at a higher source sequence.
+    await pool.query(
+      `update berth_current_state
+         set occupancy_id = null, occupancy_entered_at = null,
+             source_ingestion_sequence = 9223372036854775000
+       where projection_version = $1 and td_area = $2 and berth_code = '0210'`,
+      [TD_PROJECTION_VERSION, area],
+    );
+
+    await record([ca(area, "0210", "0211", "TIER3", t + 1000)], new Date(t + 1000));
+    await runProjectTd(pool);
+
+    expect(await anomalyCount(area)).toBe(0);
+    const from = await occupancyHistory(area, "0210");
+    expect(from).toHaveLength(1);
+    expect(from[0]).toMatchObject({ exit_reason: "stepped_out", description: "TIER3" });
+    expect(from[0]!.left_at).not.toBeNull();
+    expect((await occupancyHistory(area, "0211"))[0]).toMatchObject({
+      description: "TIER3",
+      left_at: null,
+    });
+  });
+
   it("empty source: CA with nothing open in `from` records an anomaly but still opens `to`", async () => {
     const area = uniqueArea();
     const t = Date.now();

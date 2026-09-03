@@ -573,6 +573,28 @@ the next delta per berth — at worst one duplicate per berth, once.
 - **Known limitations:** `datetime-local` input is browser-local zone; playback clock uses a
   200 ms `setInterval` (throttles in a backgrounded tab); snapshot pruning is Milestone 13.
 
+### M10 shakeout fixes (2026-09-03)
+
+Playback on the deployed stack surfaced two bugs:
+
+1. **`/state?at=` timed out (504).** `reconstructMapStateAt` scanned history: the occupancy
+   query filtered `left_at > $at` in `WHERE` (so a vacant berth scanned its whole history), and
+   `sourceSequence` ran `event_at <= $at` over `td_berth_event` with an OR-join. Both rewritten
+   as `CROSS JOIN LATERAL (… ORDER BY … DESC LIMIT 1)` — one index seek per berth / per area.
+   No new index. (`dc4ddff`)
+2. **Every berth in a run showed the same headcode** — `berth_occupancy` intervals were never
+   getting `left_at` set. `apps/worker/src/td/projector.ts`'s `getOpenOccupancy` read
+   `berth_current_state.occupancy_id`, which ADR 0003 (Tier 3) leaves NULL in steady state
+   (`ingest-td` inline / `projector-td-live` write it NULL and win the monotonic guard). So
+   `project-td` saw every CA `from` berth as empty, emitted no `closeOccupancy`, logged a
+   `from_berth_empty` anomaly, and the interval stayed open. Now reads `berth_occupancy`
+   directly (`… and left_at is null order by entered_at desc limit 1`, covered by
+   `berth_occupancy_open_idx` from migration 0026) — same fix `berthActions.ts` got in the
+   ADR 0003 cleanup, missed here. Regression test added to `projector.integration.test.ts`.
+   **`berth_occupancy` accumulated un-closed intervals since ADR 0003 deployed — run
+   `project-td --rebuild` after deploying this fix to re-derive it from `raw_feed_event`.**
+3. Playback speeds: added 20× and 60×; buffer window 10 min → 30 min so high speeds refill less.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):

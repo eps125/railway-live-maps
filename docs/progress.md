@@ -543,11 +543,44 @@ the next delta per berth — at worst one duplicate per berth, once.
   the bound berth publishes **exactly once**.
 - Full repo typecheck + lint + 315 unit tests green; worker integration tests run in CI.
 
+## Milestone 10 — snapshots and playback `[done — 2026-09-03]`
+
+- **`0027_map_state_snapshot.sql`** — `map_state_snapshot` (map version, projection version,
+  snapshot time, `last_event_sequence`, `state` jsonb, `checksum`; unique on
+  `(map_version_id, projection_version, snapshot_time)`).
+- **`berthChangesForEvent` → `@railway/domain`** (`td/berthChanges.ts`), re-exported from the
+  worker's `deltaBuilder.ts` — the API's `/events` now shares the CA/CB/CC → berth-change logic.
+- **`@railway/database` `reconstructMapStateAt`** — deterministic `berth_occupancy` interval
+  reconstruction (`[entered_at, left_at)` half-open), primitive-typed so it stays a leaf package.
+  `apps/api/src/lib/reconstructState.ts` wraps it + `feedGapWarnings`
+  (`apps/api/src/lib/feedGaps.ts`, also now populates live `computeLiveState`'s `quality.gaps`).
+- **`GET /maps/{slug}/state?at=`** — past `at` → `mode:"historical"` reconstruction using the
+  version effective at `at`; future `at` → 400. **`GET /maps/{slug}/events?from&to&after&limit`**
+  — element-resolved, sequence-ordered, cursor-paginated deltas (live WS delta wire shape).
+- **Worker `snapshot-maps` / `snapshot-maps-daemon`** (`SNAPSHOT_INTERVAL_MS`, default 5 min) —
+  `apps/worker/src/mapProjector/snapshotMaps.ts`; a snapshot's `state`+`last_event_sequence`
+  equal a fresh reconstruction at its `snapshot_time` (tested). Dispatch + `index.ts` wired.
+- **Web** `map/usePlayback.ts` + `map/PlaybackControls.tsx` + `MapView.tsx` toggle — date/time
+  Jump, play/pause, step ±10s/±1m/±10m, speeds 0.25–10×, persistent "Historical playback"
+  badge, Return to live, feed-gap warnings. Reuses `MapRenderer` unchanged.
+- **Deploy:** `snapshot-maps` service added to `deploy/docker-compose.portainer.yml`;
+  `SNAPSHOT_INTERVAL_MS` in `.env.example`. Run migration `0027`.
+- **Tests run:** `pnpm run typecheck` ✓, `pnpm run lint` ✓, `pnpm run format:check` ✓,
+  `pnpm -w exec vitest run --exclude '**/*.integration.test.ts'` → **330 passed** (was 315:
+  +berthChanges 4, +PlaybackControls 5, +usePlayback 3, +maps.test 3, others net). New
+  integration suites (`playback.integration.test.ts`, `snapshotMaps.integration.test.ts`) run in
+  CI against a real DB — not run in this environment (no DB).
+- **Known limitations:** `datetime-local` input is browser-local zone; playback clock uses a
+  200 ms `setInterval` (throttles in a backgrounded tab); snapshot pruning is Milestone 13.
+
 ## Next smallest task
 
 Per the standing reprioritized order (`docs/IMPLEMENTATION_PLAN.md`'s "Execution order"):
-**M6 → M11 → M12 → M7 → M8 → M9 → M10 → M13**. Everything through M9 is done (above); next up:
-**Milestone 10** (snapshots and playback).
+**M6 → M11 → M12 → M7 → M8 → M9 → M10 → M13**. Everything through M10 is done; next up:
+**Milestone 13** (operational hardening) — public status page, feed/archive/DB/projection
+metrics + alerts, rate limiting + security headers, Postgres + object-archive backups with a
+tested restore, log rotation, storage monitoring, multi-day soak test, licence/notices. Also
+M13's retention scope: prune `map_state_snapshot` / `map_draft_revision` past 90 days.
 
 Still open regardless of order: the actual Preston/Carlisle TD `area_id`s used in
 `packages/map-schema/fixtures/lancaster-minimal.json` (`PX`/`CL`) are owner-asserted, not

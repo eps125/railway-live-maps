@@ -107,6 +107,9 @@ up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR 0
   here don't matter.
 - **`ingest-garner`** (ADR 0002) mirrors CORPUS/SMART/CIF-schedule/TRUST from openrail-eps; it
   self-throttles, skipping a whole tick whenever `projector-td` is stalled or >5000 events behind.
+- **`snapshot-maps`** (Milestone 10) — every `SNAPSHOT_INTERVAL_MS` (default 5 min) writes one
+  `map_state_snapshot` per effective published map version, using the same `reconstructMapStateAt`
+  the API's `/state?at=` calls. Not latency-sensitive; a cache/audit of point-in-time state.
 
 `berth_current_state` therefore has three monotonic-guarded writers (`ingest-td` inline wins at
 the feed head; both projectors are no-ops in steady state).

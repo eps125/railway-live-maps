@@ -107,6 +107,7 @@ describe("map routes", () => {
         };
       }
       if (text.includes("from td_heartbeat")) return { rows: [{ last_heartbeat_at: new Date() }] };
+      if (text.includes("from feed_gap")) return { rows: [] };
       throw new Error(`unexpected query: ${text}`);
     });
 
@@ -116,6 +117,7 @@ describe("map routes", () => {
     const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/state" });
     expect(response.statusCode).toBe(200);
     const body = response.json();
+    expect(body.mode).toBe("live");
     expect(body.berths["berth-1"]).toEqual({
       description: "2A16",
       enteredAt: "2026-08-04T12:00:00.000Z",
@@ -124,7 +126,45 @@ describe("map routes", () => {
     expect(body.sourceSequence).toBe(42);
   });
 
-  it("GET /api/v1/maps/:slug/state rejects a historical `at` with NOT_YET_SUPPORTED", async () => {
+  it("GET /api/v1/maps/:slug/state?at= reconstructs historical state from berth_occupancy", async () => {
+    const pool = fakePool((text) => {
+      if (text.includes("from map_version mv")) return { rows: [mapVersionRow()] };
+      if (text.includes("from berth_occupancy bo")) {
+        return {
+          rows: [
+            {
+              td_area: "PX",
+              berth_code: "0512",
+              description: "1S99",
+              entered_at: new Date("2026-05-01T09:58:00Z"),
+            },
+          ],
+        };
+      }
+      if (text.includes("from td_berth_event be")) return { rows: [{ source_sequence: "77" }] };
+      if (text.includes("from feed_gap")) return { rows: [] };
+      throw new Error(`unexpected query: ${text}`);
+    });
+    const app = Fastify();
+    await registerMapRoutes(app, { pool });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/maps/lancaster/state?at=2026-05-01T10:00:00Z",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.mode).toBe("historical");
+    expect(body.asOf).toBe("2026-05-01T10:00:00.000Z");
+    expect(body.berths["berth-1"]).toEqual({
+      description: "1S99",
+      enteredAt: "2026-05-01T09:58:00.000Z",
+    });
+    expect(body.sourceSequence).toBe(77);
+  });
+
+  it("GET /api/v1/maps/:slug/state?at= 404s when no version was effective then", async () => {
     const pool = fakePool(() => ({ rows: [] }));
     const app = Fastify();
     await registerMapRoutes(app, { pool });
@@ -134,7 +174,83 @@ describe("map routes", () => {
       url: "/api/v1/maps/lancaster/state?at=2020-01-01T00:00:00Z",
     });
 
-    expect(response.statusCode).toBe(501);
-    expect(response.json().error.code).toBe("NOT_YET_SUPPORTED");
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("MAP_NOT_FOUND");
+  });
+
+  it("GET /api/v1/maps/:slug/state?at= rejects a future timestamp", async () => {
+    const pool = fakePool(() => ({ rows: [] }));
+    const app = Fastify();
+    await registerMapRoutes(app, { pool });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/maps/lancaster/state?at=${new Date(Date.now() + 3_600_000).toISOString()}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("INVALID_TIME_RANGE");
+  });
+
+  it("GET /api/v1/maps/:slug/events returns element-resolved deltas ordered by sequence", async () => {
+    const pool = fakePool((text) => {
+      if (text.includes("from map_version mv")) return { rows: [mapVersionRow()] };
+      if (text.includes("from td_berth_event be")) {
+        return {
+          rows: [
+            {
+              ingestion_sequence: "100",
+              event_at: new Date("2026-05-01T10:00:00Z"),
+              message_type: "CC",
+              td_area: "PX",
+              from_berth: null,
+              to_berth: "0512",
+              description: "1S99",
+            },
+            {
+              ingestion_sequence: "101",
+              event_at: new Date("2026-05-01T10:01:00Z"),
+              message_type: "CB",
+              td_area: "PX",
+              from_berth: "0512",
+              to_berth: null,
+              description: null,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    });
+    const app = Fastify();
+    await registerMapRoutes(app, { pool });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/maps/lancaster/events?from=2026-05-01T10:00:00Z&to=2026-05-01T10:05:00Z",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.events).toEqual([
+      {
+        type: "berth.updated",
+        sequence: 100,
+        eventAt: "2026-05-01T10:00:00.000Z",
+        elementId: "berth-1",
+        tdArea: "PX",
+        berth: "0512",
+        description: "1S99",
+        enteredAt: "2026-05-01T10:00:00.000Z",
+      },
+      {
+        type: "berth.cleared",
+        sequence: 101,
+        eventAt: "2026-05-01T10:01:00.000Z",
+        elementId: "berth-1",
+        tdArea: "PX",
+        berth: "0512",
+      },
+    ]);
+    expect(body.nextCursor).toBeNull();
   });
 });

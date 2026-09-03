@@ -74,6 +74,10 @@ x-worker-env: &worker-env
   # gets pushed deltas over Redis pub/sub instead of polling Postgres, which is what actually
   # makes the map feel live rather than merely "polls a bit faster."
   LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}
+  # Milestone 10: how often the `snapshot-maps` service writes a `map_state_snapshot` per
+  # effective published map version. Not latency-sensitive (a cache/audit of point-in-time
+  # state); 5 min is ample.
+  SNAPSHOT_INTERVAL_MS: ${SNAPSHOT_INTERVAL_MS:-300000}
   # garner bridge (ADR 0002): the `ingest-garner` service mirrors CORPUS/SMART (and, once wired,
   # CIF-schedule + TRUST) from the operator's openrail-eps MariaDB instead of RLM subscribing to
   # Network Rail a second time. Off by default. When true, GARNER_DB_* must be set in Portainer's
@@ -273,6 +277,22 @@ services:
   # The `projector-schedule` service (which ran `project-vstp` / `project-trust` in a shell loop)
   # was removed with ADR 0002 (2026-09-01) along with RLM's own VSTP/TRUST projectors. Delete it
   # from Portainer on the next redeploy if an earlier stack version still defines it.
+
+  # Milestone 10: writes periodic map_state_snapshot rows (one per effective published map
+  # version, every SNAPSHOT_INTERVAL_MS). Pure DB work against the same reconstruction the API's
+  # /state?at= uses — no external network, no feed dependency. Safe to leave running.
+  snapshot-maps:
+    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
+    restart: unless-stopped
+    environment: *worker-env
+    command: ["node", "dist/index.js", "snapshot-maps-daemon"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      disable: true
+    networks: [backend]
 
   # garner bridge (ADR 0002): mirrors CORPUS / SMART / cif_schedules / cif_schedule_locations /
   # trust_* from the operator's openrail-eps MariaDB — RLM no longer subscribes to Network Rail

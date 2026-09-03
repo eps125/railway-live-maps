@@ -1,70 +1,9 @@
 import type { LiveDeltaMessage } from "@railway/protocol";
-
-/** What a single td_berth_event row (CA/CB/CC — CT never reaches td_berth_event, see
- * apps/worker/src/td/projector.ts) implies changed, independent of any map binding. A CA
- * step yields two changes (from clears, to updates); CB/CC yield one each. Pure — no map or
- * DB context here, that's `resolveDeltasForChanges`'s job. */
-export interface BerthChange {
-  tdArea: string;
-  berth: string;
-  /** null = the berth is now empty (a `berth.cleared` delta). */
-  description: string | null;
-  eventAt: string;
-}
-
-export interface TdBerthEventInput {
-  messageType: "CA" | "CB" | "CC";
-  tdArea: string;
-  fromBerth: string | null;
-  toBerth: string | null;
-  description: string;
-  eventAt: string;
-}
-
-/** Pure: the berth state changes implied by one td_berth_event row. Mirrors the exact
- * semantics packages/domain/src/td/berthReducer.ts's applyCA/applyCB/applyCC encode for the
- * current-state projection, so this stays consistent with what berth_current_state actually
- * ends up holding. */
-export function berthChangesForEvent(input: TdBerthEventInput): BerthChange[] {
-  const changes: BerthChange[] = [];
-  if (input.messageType === "CA") {
-    if (input.fromBerth) {
-      changes.push({
-        tdArea: input.tdArea,
-        berth: input.fromBerth,
-        description: null,
-        eventAt: input.eventAt,
-      });
-    }
-    if (input.toBerth) {
-      changes.push({
-        tdArea: input.tdArea,
-        berth: input.toBerth,
-        description: input.description,
-        eventAt: input.eventAt,
-      });
-    }
-  } else if (input.messageType === "CB") {
-    if (input.fromBerth) {
-      changes.push({
-        tdArea: input.tdArea,
-        berth: input.fromBerth,
-        description: null,
-        eventAt: input.eventAt,
-      });
-    }
-  } else {
-    if (input.toBerth) {
-      changes.push({
-        tdArea: input.tdArea,
-        berth: input.toBerth,
-        description: input.description,
-        eventAt: input.eventAt,
-      });
-    }
-  }
-  return changes;
-}
+import type { BerthChange } from "@railway/domain";
+// `berthChangesForEvent` moved to `@railway/domain` in Milestone 10 so the API's point-in-time
+// playback `/events` endpoint reuses the same CA/CB/CC → berth-change semantics. Re-exported
+// here so existing worker imports (`projector.ts`, `liveProjector.ts`, tests) are unchanged.
+export { berthChangesForEvent, type BerthChange, type TdBerthEventInput } from "@railway/domain";
 
 export interface MapBinding {
   mapSlug: string;

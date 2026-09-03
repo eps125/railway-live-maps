@@ -23,6 +23,8 @@ describe("parseCommand", () => {
     "ingest-garner",
     "project-td-daemon",
     "project-td-live-daemon",
+    "snapshot-maps",
+    "snapshot-maps-daemon",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);
   });

@@ -139,6 +139,7 @@ describe("GET /api/v1/maps/:slug/live — snapshot/subscribe ordering", () => {
         };
       }
       if (text.includes("from td_heartbeat")) return { rows: [] };
+      if (text.includes("from feed_gap")) return { rows: [] };
       throw new Error(`unexpected query: ${text}`);
     });
 
@@ -227,6 +228,7 @@ describe("GET /api/v1/maps/:slug/live — snapshot/subscribe ordering", () => {
         };
       }
       if (text.includes("from td_heartbeat")) return { rows: [] };
+      if (text.includes("from feed_gap")) return { rows: [] };
       throw new Error(`unexpected query: ${text}`);
     });
 

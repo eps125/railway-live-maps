@@ -430,12 +430,23 @@ published before this migration existed were backfilled once via the idempotent
 
 ### `map_state_snapshot`
 
-- map version
+**Implemented (Milestone 10):** migration `0027_map_state_snapshot.sql`.
+
+- map version (`map_version_id`)
 - projection version
 - snapshot time
-- last event sequence
-- compressed state
-- checksum
+- last event sequence (highest `td_berth_event.ingestion_sequence` for a bound berth ≤ snapshot time)
+- state — `{ berths: {elementId → {description, enteredAt}}, signals: {elementId → {state}} }`
+  jsonb (TOAST-compressed = the "compressed state")
+- checksum — sha256 of the canonical-JSON `state`
+- `unique (map_version_id, projection_version, snapshot_time)`
+
+Written by the `snapshot-maps` worker role, one row per effective published map version per
+interval (`SNAPSHOT_INTERVAL_MS`, default 5 min). Each row is a cache of
+`@railway/database`'s `reconstructMapStateAt` — the same computation `GET /maps/{slug}/state?at=`
+performs — never an independent source of truth (CLAUDE.md rule 3). Point-in-time `/state?at=`
+reconstructs from `berth_occupancy` directly; snapshots exist so state stays reconstructable and
+auditable once retention pruning of the hot tables lands (Milestone 13).
 
 ## 10. Projection/version tables
 

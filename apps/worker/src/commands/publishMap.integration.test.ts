@@ -41,6 +41,7 @@ const testConfig: Config = {
   GARNER_DB_PASSWORD: "",
   GARNER_BRIDGE_BACKFILL_DAYS: 14,
   LIVE_WS_REDIS_PUBSUB_ENABLED: false,
+  SNAPSHOT_INTERVAL_MS: 300_000,
   NR_USERNAME: undefined,
   NR_PASSWORD: undefined,
 };

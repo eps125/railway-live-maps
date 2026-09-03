@@ -22,6 +22,7 @@ import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
 import { runProjectTdLiveDaemon } from "./commands/projectTdLiveDaemon.js";
 import { runPrunePartitions } from "./commands/prunePartitions.js";
 import { runIngestGarner } from "./commands/ingestGarner.js";
+import { runSnapshotMapsCommand, runSnapshotMapsDaemon } from "./commands/snapshotMaps.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -65,6 +66,8 @@ async function main(): Promise<void> {
       return runBackfillTdAreaSummary(config);
     case "prune-partitions":
       return runPrunePartitions(config, argvRest);
+    case "snapshot-maps":
+      return runSnapshotMapsCommand(config);
     case "ingest-td":
       await runIngestTd(config);
       return;
@@ -79,6 +82,9 @@ async function main(): Promise<void> {
       return;
     case "ingest-garner":
       await runIngestGarner(config);
+      return;
+    case "snapshot-maps-daemon":
+      await runSnapshotMapsDaemon(config);
       return;
     case "serve":
       await runServe(config);

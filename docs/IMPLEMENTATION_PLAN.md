@@ -550,7 +550,7 @@ departurePublic !== null`) only ever looked at _public_ times, which happened to
   itself is wrapped in its own horizontally-scrolling container so a long schedule widens only the
   table, not the whole page.
 
-## Milestone 10 — snapshots and playback
+## Milestone 10 — snapshots and playback `[done — 2026-09-03]`
 
 - Periodic map snapshots.
 - Point-in-time state reconstruction.
@@ -560,6 +560,38 @@ departurePublic !== null`) only ever looked at _public_ times, which happened to
 - Data-gap warnings.
 
 Acceptance: repeated requests for the same time/version produce the same state and source sequence.
+
+**Status: implemented.**
+
+- Migration `0027_map_state_snapshot.sql`: `map_state_snapshot` (`map_version_id`,
+  `projection_version`, `snapshot_time`, `last_event_sequence`, `state` jsonb, `checksum`).
+- `berthChangesForEvent` moved from `apps/worker/src/mapProjector/deltaBuilder.ts` to
+  `@railway/domain` (`td/berthChanges.ts`), re-exported for existing worker imports, so the
+  API's `/events` endpoint derives the same CA/CB/CC → berth-change semantics.
+- `@railway/database` gains `reconstructMapStateAt` — the deterministic `berth_occupancy`
+  interval reconstruction (half-open `[entered_at, left_at)`), dependency-free so both apps use
+  it. `apps/api/src/lib/reconstructState.ts` wraps it with `feedGapWarnings`
+  (`apps/api/src/lib/feedGaps.ts`, also wired into live `computeLiveState`'s `quality.gaps`).
+- `GET /api/v1/maps/{slug}/state?at=`: past `at` → `mode: "historical"` reconstruction using the
+  version **effective at `at`**; future `at` → 400. `GET /api/v1/maps/{slug}/events?from&to&after
+&limit`: compact, element-resolved, sequence-ordered, cursor-paginated deltas — the same wire
+  shape as live WS `berth.updated`/`berth.cleared`.
+- Worker `snapshot-maps` (one-shot) / `snapshot-maps-daemon` (role, `SNAPSHOT_INTERVAL_MS`
+  default 5 min) — `apps/worker/src/mapProjector/snapshotMaps.ts` writes one snapshot per
+  effective map version via the same `reconstructMapStateAt`; a snapshot's `state` +
+  `last_event_sequence` provably equal a fresh reconstruction at its `snapshot_time`.
+- Web `apps/web/src/map/usePlayback.ts` + `PlaybackControls.tsx` + `MapView.tsx` mode toggle:
+  date/time picker + Jump, play/pause, step ±10s/±1m/±10m, speeds 0.25/0.5/1/2/5/10×, a
+  persistent "Historical playback" badge, Return to live, and feed-gap warnings.
+- Tests: `berthChanges` unit; `usePlayback` + `PlaybackControls` web unit; `maps.test.ts`
+  historical/`events` unit; `playback.integration.test.ts` (determinism, version-by-effective-
+  time, gap warnings, `/events` order + cursor); `snapshotMaps.integration.test.ts`
+  (snapshot == reconstruction, idempotent). typecheck / lint / 330 unit tests green.
+- Deploy: run migration `0027`; add the `snapshot-maps` service (compose). No behavioural
+  change to live-path services.
+- Known limitations: `datetime-local` input renders in the browser's local zone (self-hosted
+  browsers run Europe/London, matching); the playback clock uses a 200 ms `setInterval` so it
+  throttles in a backgrounded tab; snapshot pruning is deferred to Milestone 13.
 
 ## Milestone 11 — visual editor MVP
 

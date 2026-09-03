@@ -14,7 +14,12 @@ Return the compiled map version effective at `at`; default now.
 
 ### `GET /api/v1/maps/{slug}/state?at={timestamp}`
 
-Return a complete state snapshot at the requested time.
+Return a complete state snapshot at the requested time. `at` within ~5 s of now → `mode:
+"live"` (current projection). `at` in the past → `mode: "historical"`: a deterministic
+reconstruction from `berth_occupancy` (Milestone 10) using the map version **effective at
+`at`**; repeated identical requests return byte-identical `berths`/`signals`/`sourceSequence`.
+`at` in the future → `400 INVALID_TIME_RANGE`. `quality.gaps` lists `feed_gap` warnings
+overlapping/near `at`; `quality.status` is `"stale"` when a gap actually covers `at`.
 
 Response outline:
 
@@ -45,7 +50,32 @@ Response outline:
 
 ### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
 
-Compact map-relevant events for playback buffering. Cursor pagination; bounded range and result count.
+Compact map-relevant events for playback buffering (Milestone 10). Each entry is the **same
+wire shape as a live WS `berth.updated` / `berth.cleared` delta**, so the playback client
+applies them with its live-delta code path. One `td_berth_event` (a CA) can yield two entries
+(`from` clears, `to` updates); entries for the map's bound berths only. Ordered by
+`ingestion_sequence`; `after` is that cursor; `from`/`to` bound the range (max 7 days). Uses the
+map version effective at `from`.
+
+```json
+{
+  "mapSlug": "lancaster",
+  "mapVersion": 1,
+  "events": [
+    {
+      "type": "berth.updated",
+      "sequence": 123457,
+      "eventAt": "2026-08-04T12:15:38Z",
+      "elementId": "berth-1",
+      "tdArea": "PX",
+      "berth": "1008",
+      "description": "1S97",
+      "enteredAt": "2026-08-04T12:15:38Z"
+    }
+  ],
+  "nextCursor": "123457"
+}
+```
 
 ### `GET /api/v1/berths/{tdArea}/{berth}/history?from=&to=&after=&limit=`
 

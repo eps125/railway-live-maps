@@ -24,6 +24,11 @@ export {
   type ApplyCBInput,
   type ApplyCCInput,
 } from "./td/berthReducer.js";
+export {
+  berthChangesForEvent,
+  type BerthChange,
+  type TdBerthEventInput,
+} from "./td/berthChanges.js";
 export { TD_NORMALIZATION_VERSION } from "./td/normalizationVersion.js";
 export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION } from "./td/projectionVersion.js";
 export {

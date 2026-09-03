@@ -22,3 +22,9 @@ export {
   type Checkpoint,
   type Queryable,
 } from "./checkpoint.js";
+export {
+  reconstructMapStateAt,
+  type ReconstructedBerthState,
+  type ReconstructedMapState,
+  type ReconstructMapStateOptions,
+} from "./mapStateReconstruction.js";

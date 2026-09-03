@@ -17,10 +17,39 @@ export interface MapStateResponse {
   mapVersion: number;
   asOf: string;
   sourceSequence: number;
-  mode: string;
+  mode: "live" | "historical" | string;
   quality: { status: "ok" | "stale" | "unknown"; gaps: string[] };
   berths: Record<string, BerthState>;
   signals: Record<string, SignalState>;
+}
+
+/** One compact playback event from `GET /api/v1/maps/{slug}/events` — the same wire shape as a
+ * live WS `berth.updated` / `berth.cleared` delta, so `applyPlaybackDelta` handles both. */
+export type PlaybackDelta =
+  | {
+      type: "berth.updated";
+      sequence: number;
+      eventAt: string;
+      elementId: string;
+      tdArea: string;
+      berth: string;
+      description: string;
+      enteredAt: string;
+    }
+  | {
+      type: "berth.cleared";
+      sequence: number;
+      eventAt: string;
+      elementId: string;
+      tdArea: string;
+      berth: string;
+    };
+
+export interface MapEventsResponse {
+  mapSlug: string;
+  mapVersion: number;
+  events: PlaybackDelta[];
+  nextCursor: string | null;
 }
 
 export interface MapDefinitionResponse {

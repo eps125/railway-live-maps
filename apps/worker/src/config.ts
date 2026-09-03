@@ -81,6 +81,10 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
+  // Milestone 10: how often the `snapshot-maps-daemon` role writes a `map_state_snapshot` per
+  // effective published map version. Snapshots are a cache/audit of the same reconstruction
+  // `/state?at=` performs — 5 min is ample; not latency-sensitive.
+  SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
 });
 
 export interface Config extends z.infer<typeof baseSchema> {

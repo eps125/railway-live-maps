@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { liveDataStatus, tdAreasFromBundle } from "./mapVersion.js";
+import { feedGapWarnings } from "./feedGaps.js";
 
 // The berth-run resolver was removed with ADR 0002 (2026-09-01); run<->schedule correlation
 // (and any `runSummary` on berth state) is deferred to a later phase that will source it from
@@ -84,10 +85,12 @@ export async function computeLiveState(
     }
   }
 
-  const quality: QualityState = {
-    status: await liveDataStatus(pool, tdAreasFromBundle(bundle), now),
-    gaps: [],
-  };
+  const areas = tdAreasFromBundle(bundle);
+  const [status, { gaps }] = await Promise.all([
+    liveDataStatus(pool, areas, now),
+    feedGapWarnings(pool, areas, now),
+  ]);
+  const quality: QualityState = { status, gaps };
 
   return { sourceSequence, berths, signals, quality };
 }

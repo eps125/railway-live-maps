@@ -3,18 +3,21 @@ import { createPool } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
 import type { Config } from "../config.js";
 
-/** Don't chase an interval's closing event more than this far past its `entered_at`. A train
- * that genuinely sat in one berth longer than this is rare (stabled units) and its interval is
- * legitimately still open, so leave it. Keeps the per-interval `td_berth_event` scan short. */
-const CLOSE_LOOKBACK = "6 hours";
+/** Don't chase an interval's closing event more than this far past its `entered_at`. A stale
+ * trail's step-out is within seconds/minutes; a genuine current occupant has no closing event
+ * at all, so the per-interval `td_berth_event` scan runs the whole window fruitlessly — keep it
+ * short. A berth held longer than this by a real train stays open (rare; acceptable). */
+const CLOSE_LOOKBACK = "90 minutes";
 
-/** Rows per batch. Each batch is its own statement/transaction: bounds lock footprint and WAL,
- * and lets `--dry-run`-sized backlogs (millions of rows) run without one monster transaction. */
-const BATCH_SIZE = 10_000;
+/** Rows per batch. Small on purpose: each batch's UPDATE runs one `td_berth_event` lateral scan
+ * per row, and for a still-occupied berth that scan finds nothing and reads the whole
+ * `CLOSE_LOOKBACK` window — a large batch of those blew the 120s statement timeout (2026-09-03,
+ * 7,899 mostly-current-occupant intervals in one batch). */
+const BATCH_SIZE = 400;
 
 /** Pause between batches so a concurrently-running `projector-td` (if it wasn't stopped) gets
  * turns. Even so, prefer stopping `projector-td` for the duration — see the doc comment. */
-const BATCH_PAUSE_MS = 100;
+const BATCH_PAUSE_MS = 20;
 
 /**
  * `repair-open-occupancies` — one-shot console command (run it from the `worker` container like
@@ -117,8 +120,9 @@ export async function runRepairOpenOccupancies(config: Config, argv: string[]): 
           [ids],
         );
 
-      // A concurrent `projector-td` write can still deadlock a batch (both touch berth_occupancy);
-      // retry the same batch a few times before giving up. Stopping `projector-td` avoids this.
+      // Retry a batch on deadlock (40P01) or statement timeout (57014) — both are transient at
+      // the batch level. After 3 retries, log the id range and move on rather than aborting the
+      // whole run; a re-run picks up whatever was skipped (idempotent, keyset-forward).
       let updated: { rowCount: number | null } | undefined;
       for (let attempt = 1; attempt <= 4; attempt += 1) {
         try {
@@ -126,19 +130,27 @@ export async function runRepairOpenOccupancies(config: Config, argv: string[]): 
           break;
         } catch (error) {
           const code = (error as { code?: string }).code;
-          if (code === "40P01" && attempt < 4) {
+          const retryable = code === "40P01" || code === "57014";
+          if (retryable && attempt < 4) {
             console.warn(
-              `repair-open-occupancies: batch ${batchNo} deadlocked (attempt ${attempt}), retrying`,
+              `repair-open-occupancies: batch ${batchNo} failed (${code}, attempt ${attempt}), retrying`,
             );
             await sleep(500 * attempt);
             continue;
+          }
+          if (retryable) {
+            console.error(
+              `repair-open-occupancies: batch ${batchNo} (ids ${ids[0]}..${ids[ids.length - 1]}) ` +
+                `still failing (${code}) after ${attempt} attempts — skipping; re-run to retry it`,
+            );
+            break;
           }
           throw error;
         }
       }
       closed += updated?.rowCount ?? 0;
 
-      if (batchNo % 20 === 0) {
+      if (batchNo % 25 === 0) {
         console.log(
           `repair-open-occupancies: batch ${batchNo} — scanned ${scanned}, closed ${closed}`,
         );

@@ -139,7 +139,9 @@ describe("runSnapshotMaps (integration)", () => {
   });
 
   it("is idempotent for the same snapshot_time", async () => {
-    const now = new Date("2026-05-02T00:00:00.000Z");
+    // Within the test map version's effective window ([now-1d, ∞)) and unique vs. the first
+    // test's `new Date()`, so `first` always inserts a fresh row and `second` always skips it.
+    const now = new Date(Date.now() + 3_600_000);
     const first = await runSnapshotMaps(pool, now);
     const second = await runSnapshotMaps(pool, now);
     expect(first.mapVersionsSnapshotted).toBeGreaterThanOrEqual(1);

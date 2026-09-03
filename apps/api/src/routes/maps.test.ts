@@ -137,6 +137,7 @@ describe("map routes", () => {
               berth_code: "0512",
               description: "1S99",
               entered_at: new Date("2026-05-01T09:58:00Z"),
+              left_at: null,
             },
           ],
         };

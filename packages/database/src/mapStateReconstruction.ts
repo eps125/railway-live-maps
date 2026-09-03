@@ -7,8 +7,13 @@ import type { Pool } from "pg";
  * computation the live endpoint performs (CLAUDE.md rule 3: playback is a derived projection).
  *
  * `berth_occupancy` intervals are `[entered_at, left_at)` (half-open — a berth cleared at T reads
- * as clear at T), and never overlap for one berth, so "what was in berth X at T" is a single
- * interval lookup. Deterministic: the same inputs always yield the same output.
+ * as clear at T), and never overlap for one berth, so "what was in berth X at T" is: the single
+ * most-recent interval with `entered_at <= T`, occupied iff its `left_at` is null or `> T`.
+ * Deterministic: the same inputs always yield the same output.
+ *
+ * Both queries are shaped to hit an existing index once per berth / area and stop
+ * (`distinct on` + `order by ... entered_at desc`; a `limit 1` seek per area) — the `at` may be
+ * days back over a nationwide-scale table, so a scan is not acceptable.
  *
  * Kept dependency-free of `@railway/domain` / `@railway/map-schema` (pass the projection version
  * and the already-compiled binding index / signal ids as plain values) so `@railway/database`
@@ -20,7 +25,8 @@ export interface ReconstructedBerthState {
 }
 
 export interface ReconstructedMapState {
-  /** Highest `td_berth_event.ingestion_sequence` for any bound berth at or before `at` (0 if none). */
+  /** `td_berth_event.ingestion_sequence` of the most recent berth event in any of the map's TD
+   * areas at or before `at` (0 if none) — the deterministic "source sequence" for that instant. */
   sourceSequence: number;
   /** elementId → berth state, one entry per binding (vacant berths included as nulls). */
   berths: Record<string, ReconstructedBerthState>;
@@ -45,35 +51,44 @@ export async function reconstructMapStateAt(
   const keys = Object.keys(options.berthBindingIndex);
   const tdAreas = keys.map((key) => key.split("|")[0] ?? "");
   const berthCodes = keys.map((key) => key.split("|")[1] ?? "");
+  const uniqueAreas = [...new Set(tdAreas)].filter((area) => area.length > 0);
 
+  // One `(td_area, berth_code, entered_at desc)` index seek per bound berth (the `limit 1`
+  // lateral), walking back from `at` to the most-recent entry. `left_at` decides occupied vs.
+  // vacant in app code — putting it in `WHERE` would make a vacant berth scan its whole history
+  // for a match that never comes. LATERAL (not a `join unnest`) forces the nested-loop-index
+  // plan even when `at` is days back over a nationwide-scale, month-partitioned table.
   const occupancy = await pool.query<{
     td_area: string;
     berth_code: string;
     description: string;
     entered_at: Date;
+    left_at: Date | null;
   }>(
-    `select distinct on (bo.td_area, bo.berth_code)
-            bo.td_area, bo.berth_code, bo.description, bo.entered_at
-       from berth_occupancy bo
-       join (select unnest($1::text[]) as td_area, unnest($2::text[]) as berth_code) wanted
-         on wanted.td_area = bo.td_area and wanted.berth_code = bo.berth_code
-      where bo.projection_version = $3
-        and bo.entered_at <= $4
-        and (bo.left_at is null or bo.left_at > $4)
-      order by bo.td_area, bo.berth_code, bo.entered_at desc`,
+    `select w.td_area, w.berth_code, bo.description, bo.entered_at, bo.left_at
+       from unnest($1::text[], $2::text[]) as w(td_area, berth_code)
+       cross join lateral (
+         select bo.description, bo.entered_at, bo.left_at
+           from berth_occupancy bo
+          where bo.projection_version = $3
+            and bo.td_area = w.td_area and bo.berth_code = w.berth_code
+            and bo.entered_at <= $4
+          order by bo.entered_at desc
+          limit 1
+       ) bo`,
     [tdAreas, berthCodes, options.projectionVersion, options.at],
   );
-  const occupiedByKey = new Map(
+  const latestByKey = new Map(
     occupancy.rows.map((row) => [`${row.td_area}|${row.berth_code}`, row]),
   );
 
   const berths: Record<string, ReconstructedBerthState> = {};
   for (const [key, elementId] of Object.entries(options.berthBindingIndex)) {
-    const row = occupiedByKey.get(key);
-    berths[elementId] = {
-      description: row?.description ?? null,
-      enteredAt: row ? row.entered_at.toISOString() : null,
-    };
+    const row = latestByKey.get(key);
+    const occupied = row && (row.left_at == null || row.left_at.getTime() > options.at.getTime());
+    berths[elementId] = occupied
+      ? { description: row.description, enteredAt: row.entered_at.toISOString() }
+      : { description: null, enteredAt: null };
   }
 
   const signals: Record<string, { state: "blank" }> = {};
@@ -81,14 +96,19 @@ export async function reconstructMapStateAt(
     signals[elementId] = { state: "blank" };
   }
 
+  // One `(td_area, event_at desc)` index seek per area (the correlated `limit 1`), then max —
+  // never a range scan over history.
   const seq = await pool.query<{ source_sequence: string }>(
-    `select coalesce(max(be.ingestion_sequence), 0)::text as source_sequence
-       from td_berth_event be
-       join (select unnest($1::text[]) as td_area, unnest($2::text[]) as berth_code) wanted
-         on wanted.td_area = be.td_area
-        and (wanted.berth_code = be.from_berth or wanted.berth_code = be.to_berth)
-      where be.event_at <= $3`,
-    [tdAreas, berthCodes, options.at],
+    `select coalesce(max(latest.seq), 0)::text as source_sequence
+       from unnest($1::text[]) as a(area)
+       cross join lateral (
+         select be.ingestion_sequence as seq
+           from td_berth_event be
+          where be.td_area = a.area and be.event_at <= $2
+          order by be.event_at desc
+          limit 1
+       ) latest`,
+    [uniqueAreas, options.at],
   );
 
   return {

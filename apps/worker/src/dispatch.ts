@@ -17,6 +17,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "backfill-td-area-summary",
   "prune-partitions",
   "snapshot-maps",
+  "repair-open-occupancies",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

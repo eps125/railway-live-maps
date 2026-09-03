@@ -591,8 +591,18 @@ Playback on the deployed stack surfaced two bugs:
    directly (`… and left_at is null order by entered_at desc limit 1`, covered by
    `berth_occupancy_open_idx` from migration 0026) — same fix `berthActions.ts` got in the
    ADR 0003 cleanup, missed here. Regression test added to `projector.integration.test.ts`.
-   **`berth_occupancy` accumulated un-closed intervals since ADR 0003 deployed — run
-   `project-td --rebuild` after deploying this fix to re-derive it from `raw_feed_event`.**
+
+   **`berth_occupancy` accumulated un-closed intervals since ADR 0003 deployed (~2026-09-01).**
+   Recovery, after deploying the fix — either `project-td --rebuild` (correct but ~days: ~133M
+   events from sequence 0, playback broken meanwhile) **or** the new one-shot
+   `repair-open-occupancies` (`apps/worker/src/commands/repairOpenOccupancies.ts`, run from the
+   `worker` console like `migrate` — no new container): for each berth with >1 `left_at IS NULL`
+   interval, closes all but the newest at the first `td_berth_event` that stepped a train out of
+   it (`exit_reason = 'repaired_stepped_out'`), else at the next interval's `entered_at`
+   (`repaired_no_exit_event`). Minutes, idempotent, `--dry-run` for a count first; stop
+   `projector-td` while it runs. Integration test in
+   `apps/worker/src/commands/repairOpenOccupancies.integration.test.ts`.
+
 3. Playback speeds: added 20× and 60×; buffer window 10 min → 30 min so high speeds refill less.
 
 ## Next smallest task

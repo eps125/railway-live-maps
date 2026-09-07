@@ -3,7 +3,15 @@ import type { MapDocument } from "@railway/map-schema";
 import { applyCommand, type EditorCommand } from "./commands.js";
 
 export type ToolMode =
-  "select" | "multiselect" | "trackPath" | "berth" | "signal" | "platform" | "label" | "boundary";
+  | "select"
+  | "multiselect"
+  | "trackPath"
+  | "berth"
+  | "signal"
+  | "platform"
+  | "station"
+  | "label"
+  | "boundary";
 
 export interface Viewport {
   x: number;

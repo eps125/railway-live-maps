@@ -48,6 +48,15 @@ A schematic polyline with stable element ID, layer, points, line/direction metad
 - binding reference
 - optional associated track/topology element
 - click target/tooltip metadata
+- optional `stationId` (link to a `station` element) and optional `crs` — map-authoring
+  metadata for the deferred station-berth schedule deduction (ADR 0004 D6/D7); no runtime
+  behaviour yet, and it never gates ingestion (rule 17).
+
+The renderer does not trust the authored top-left `y`: when a berth is bound to a track
+(`trackElementId`, or the nearest horizontal `trackPath` in range) its box is drawn vertically
+centred on that line at the berth's horizontal midpoint (`berthRenderRect`, shared by the SVG
+renderer and the editor canvas — ADR 0004 D1). A per-viewer "show empty berths" toggle can
+hide vacant boxes entirely (ADR 0004 D5).
 
 ### `signal`
 
@@ -61,7 +70,17 @@ For Lancaster, no S-Class binding is required and operational state is blank.
 
 ### `platform`
 
-Schematic platform shape/line, number/name and optional TIPLOC/platform metadata.
+Schematic platform shape/line, number/name and optional TIPLOC/platform metadata, plus an
+optional `trackElementId` (offsets the platform bar to the far side of that track). Rendered as
+a filled bar in `--map-platform-fill` (Traksy orange by default) with the number in a white
+bordered box (ADR 0004 D6), not a bare line.
+
+### `station`
+
+A named station: `crs` (optional 3-letter code), `name`, optional `tiploc`, position and font
+size. Renders `name` (plus `[CRS]`) in the standard station-label style. The `crs` is the hook
+the deferred station-berth schedule deduction (ADR 0004 D7) will build on. A zone bracket
+around member platforms is later work.
 
 ### `label`
 
@@ -116,6 +135,27 @@ For a future signal:
 ### Presentation rules
 
 Use semantic style tokens, not arbitrary per-element CSS. Signal style tokens are `signal-blank`, `signal-on`, `signal-off`.
+
+### Style profile (ADR 0004 D4)
+
+Geometry and colour constants live in one module, `packages/map-schema/src/style.ts`
+(`MAP_STYLE`, `MAP_CSS_TOKENS`), imported by the compiler, the public SVG renderer and the
+editor canvas — no literal duplicated across the three.
+
+| Constant                     | Value        | Note                                                       |
+| ---------------------------- | ------------ | ---------------------------------------------------------- |
+| Row pitch                    | 30           | matches OpenTrainTimes; provisional, owner may revisit     |
+| Diagonal slope               | 1:2 (26.57°) | the only permitted non-horizontal track angle              |
+| Track stroke width           | 3            | `stroke-linejoin: round`, `stroke-linecap: butt`           |
+| Berth box height             | 20           | fixed; centred on the bound track's row                    |
+| Signal offset from track     | 12           | standard perpendicular gap                                 |
+| Endpoint weld tolerance      | 6            | editor endpoint magnet + compiler coincident-endpoint weld |
+| Platform bar height / offset | 12 / 12      | fill `--map-platform-fill` (`#ffa500`)                     |
+
+The compiler welds `trackPath` segments that are topology-joined **and** have coincident
+endpoints into a single polyline, so a diagonal-to-horizontal junction is a rounded
+`stroke-linejoin` inside one stroke rather than a gap between two `butt`-capped elements — no
+junction dots (ADR 0004 D2). A purely visual crossing with no topology is never merged.
 
 ## 5. Signal rules
 

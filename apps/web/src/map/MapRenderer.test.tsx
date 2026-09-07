@@ -227,6 +227,120 @@ describe("MapRenderer", () => {
     expect(newViewBox).not.toBe(initialViewBox);
   });
 
+  it("centres a berth vertically on its bound track (ADR 0004 D1)", () => {
+    const doc = bundle({
+      elementsById: {
+        trk: {
+          id: "trk",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "trackPath",
+          points: [
+            { x: 0, y: 100 },
+            { x: 200, y: 100 },
+          ],
+        },
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 40,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Berth 1",
+          trackElementId: "trk",
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const rect = container.querySelector("rect")!;
+    // track y 100, berth height 20 -> top at 90 so the box straddles the rail
+    expect(rect.getAttribute("y")).toBe("90");
+  });
+
+  it("renders a platform as an orange bar with its number in a box (ADR 0004 D6)", () => {
+    const doc = bundle({
+      elementsById: {
+        "plat-1": {
+          id: "plat-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "platform",
+          points: [
+            { x: 0, y: 50 },
+            { x: 120, y: 50 },
+          ],
+          number: "2",
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(screen.getByText("2")).toBeInTheDocument();
+    const bar = container.querySelector("rect")!;
+    expect(bar.getAttribute("fill")).toBe("var(--map-platform-fill, #ffa500)");
+  });
+
+  it("renders a station name with its CRS (ADR 0004 D6)", () => {
+    const doc = bundle({
+      elementsById: {
+        "stn-1": {
+          id: "stn-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "station",
+          x: 100,
+          y: 20,
+          name: "Lancaster",
+          crs: "LAN",
+          fontSize: 16,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(container.querySelector("text")?.textContent).toBe("Lancaster [LAN]");
+  });
+
+  it("hides vacant berths when showEmptyBerths is false but keeps occupied ones (ADR 0004 D5)", () => {
+    const berthEl = (id: string, x: number) => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "berth" as const,
+      x,
+      y: 10,
+      width: 40,
+      height: 20,
+      textAlign: "center" as const,
+      fontSize: 12,
+      displayName: id,
+    });
+    const doc = bundle({
+      elementsById: {
+        "berth-empty": berthEl("berth-empty", 0),
+        "berth-full": berthEl("berth-full", 80),
+      },
+    });
+
+    const { container } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-full": { description: "1A01", enteredAt: null } }}
+        signals={{}}
+        showEmptyBerths={false}
+      />,
+    );
+
+    expect(container.querySelectorAll("rect")).toHaveLength(1);
+    expect(screen.getByText("1A01")).toBeInTheDocument();
+  });
+
   it("does nothing when clicking an unbound or empty berth — only occupied berths are clickable", () => {
     const doc = bundle({
       elementsById: {

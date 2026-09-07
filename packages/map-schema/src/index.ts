@@ -10,6 +10,7 @@ export {
   type BerthElement,
   type SignalElement,
   type PlatformElement,
+  type StationElement,
   type LabelElement,
   type BoundaryElement,
   type MapBinding,
@@ -23,6 +24,9 @@ export {
   compileMapDocument,
   computeBoundingBox,
   sortElementsForPaint,
+  weldTrackPaths,
   Z_INDEX_LAYER_BAND,
   type CompiledMapBundle,
 } from "./compiler.js";
+export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
+export { berthRenderRect, pointOnPathAtX, type Rect } from "./geometry.js";

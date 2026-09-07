@@ -1,4 +1,11 @@
-import type { BoundaryElement, Layer, MapDocument, MapElement } from "./document.js";
+import type {
+  BoundaryElement,
+  Layer,
+  MapDocument,
+  MapElement,
+  TrackPathElement,
+} from "./document.js";
+import { MAP_STYLE } from "./style.js";
 
 export interface CompiledMapBundle {
   schemaVersion: number;
@@ -54,6 +61,116 @@ export function sortElementsForPaint(elements: MapElement[], layers: Layer[]): M
     .map(({ element }) => element);
 }
 
+type Pt = { x: number; y: number };
+
+function near(a: Pt, b: Pt): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= MAP_STYLE.weldTolerance;
+}
+
+/**
+ * D2 (ADR 0004): weld `trackPath` elements that are the same running line broken into
+ * segments back into a single multi-vertex polyline, so a diagonal meeting a horizontal is a
+ * `stroke-linejoin` corner inside one stroke (no wedge-shaped gap between two `butt`-capped
+ * elements) — the shape OpenTrainTimes uses, and without any junction dots.
+ *
+ * Two segments are welded only when **both** hold: an endpoint of one coincides (within
+ * `weldTolerance`) with an endpoint of the other, **and** they are joined in `topology` — the
+ * same `topologyEdgeId`, or two edges that share a node. A purely visual crossing with no
+ * topology is never merged (docs/MAP_EDITOR_SPEC.md §4: "visual line crossings do not imply
+ * connected track"). Segments with a different `line` are also left alone.
+ *
+ * Returns the rewritten element list (welded-away segments removed, the survivor's `points`
+ * extended) and `remap`: `removedId -> survivingId`, so `trackElementId` back-references on
+ * berths/signals can be repointed.
+ */
+export function weldTrackPaths(
+  elements: MapElement[],
+  topology: MapDocument["topology"],
+): { elements: MapElement[]; remap: Record<string, string> } {
+  const edgeNodes = new Map<string, Set<string>>();
+  for (const edge of topology.edges) {
+    edgeNodes.set(edge.id, new Set([edge.fromNodeId, edge.toNodeId]));
+  }
+  const topologyJoined = (a: TrackPathElement, b: TrackPathElement): boolean => {
+    if (!a.topologyEdgeId || !b.topologyEdgeId) return false;
+    if (a.topologyEdgeId === b.topologyEdgeId) return true;
+    const na = edgeNodes.get(a.topologyEdgeId);
+    const nb = edgeNodes.get(b.topologyEdgeId);
+    if (!na || !nb) return false;
+    for (const n of na) if (nb.has(n)) return true;
+    return false;
+  };
+
+  // Mutable working copies of every trackPath's point list, keyed by id; non-track elements
+  // pass through untouched. `absorbed` maps a removed id to the id that swallowed it.
+  const working = new Map<string, TrackPathElement>();
+  for (const el of elements)
+    if (el.type === "trackPath") working.set(el.id, { ...el, points: [...el.points] });
+  const absorbed = new Map<string, string>();
+
+  let merged = true;
+  while (merged) {
+    merged = false;
+    const ids = [...working.keys()];
+    outer: for (let i = 0; i < ids.length; i += 1) {
+      for (let j = i + 1; j < ids.length; j += 1) {
+        const a = working.get(ids[i]!);
+        const b = working.get(ids[j]!);
+        if (!a || !b) continue;
+        if ((a.line ?? null) !== (b.line ?? null)) continue;
+        if (!topologyJoined(a, b)) continue;
+
+        const aStart = a.points[0]!;
+        const aEnd = a.points[a.points.length - 1]!;
+        const bStart = b.points[0]!;
+        const bEnd = b.points[b.points.length - 1]!;
+
+        let mergedPoints: Pt[] | null = null;
+        if (near(aEnd, bStart)) mergedPoints = [...a.points, ...b.points.slice(1)];
+        else if (near(aEnd, bEnd))
+          mergedPoints = [...a.points, ...[...b.points].reverse().slice(1)];
+        else if (near(aStart, bEnd)) mergedPoints = [...b.points, ...a.points.slice(1)];
+        else if (near(aStart, bStart))
+          mergedPoints = [...[...b.points].reverse(), ...a.points.slice(1)];
+        if (!mergedPoints) continue;
+
+        working.set(a.id, { ...a, points: mergedPoints });
+        working.delete(b.id);
+        absorbed.set(b.id, a.id);
+        merged = true;
+        break outer;
+      }
+    }
+  }
+
+  if (absorbed.size === 0) return { elements, remap: {} };
+
+  // Collapse chains (b absorbed by a, a later absorbed by c) so every removed id points at the
+  // final survivor.
+  const remap: Record<string, string> = {};
+  for (const from of absorbed.keys()) {
+    let to = absorbed.get(from)!;
+    while (absorbed.has(to)) to = absorbed.get(to)!;
+    remap[from] = to;
+  }
+
+  const rewritten = elements
+    .filter((el) => !(el.type === "trackPath" && remap[el.id]))
+    .map((el) => {
+      if (el.type === "trackPath") return working.get(el.id) ?? el;
+      if (
+        (el.type === "berth" || el.type === "signal" || el.type === "platform") &&
+        el.trackElementId
+      ) {
+        const to = remap[el.trackElementId];
+        if (to) return { ...el, trackElementId: to };
+      }
+      return el;
+    });
+
+  return { elements: rewritten, remap };
+}
+
 export function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["boundingBox"] {
   let minX = Infinity;
   let minY = Infinity;
@@ -87,8 +204,15 @@ export function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["b
  * `editorMetadata` is simply never copied into the output, which is how it gets stripped.
  */
 export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
+  // D2 (ADR 0004): merge topology-joined coincident track segments into single polylines
+  // before indexing, so the public renderer never has to bridge a gap between two separate
+  // `butt`-capped `trackPath` elements at a junction.
+  const { elements: compiledElements } = weldTrackPaths(
+    sortElementsForPaint(doc.elements, doc.layers),
+    doc.topology,
+  );
   const elementsById: Record<string, MapElement> = {};
-  for (const element of sortElementsForPaint(doc.elements, doc.layers)) {
+  for (const element of compiledElements) {
     elementsById[element.id] = element;
   }
 

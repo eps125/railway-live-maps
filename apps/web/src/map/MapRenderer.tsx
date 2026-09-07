@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { sortElementsForPaint, type CompiledMapBundle } from "@railway/map-schema";
+import {
+  MAP_STYLE,
+  berthRenderRect,
+  pointOnPathAtX,
+  sortElementsForPaint,
+  type CompiledMapBundle,
+  type MapElement,
+  type PlatformElement,
+} from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
 import { RunPopup } from "./RunPopup.js";
 
@@ -7,6 +15,9 @@ export interface MapRendererProps {
   bundle: CompiledMapBundle;
   berths: Record<string, BerthState>;
   signals: Record<string, SignalState>;
+  /** ADR 0004 D5: when false, vacant berths draw nothing (berthmaps behaviour); occupied
+   * berths are unaffected. Defaults to true — parity with the pre-ADR renderer. */
+  showEmptyBerths?: boolean;
 }
 
 export interface ViewBox {
@@ -27,6 +38,72 @@ const SIGNAL_COLORS: Record<SignalState["state"], string> = {
 function berthColors(berthState: BerthState | undefined): { fill: string; stroke: string } {
   if (!berthState?.description) return { fill: "#161d27", stroke: "#2d3644" };
   return { fill: "#1c3a5e", stroke: "#2f5b8a" };
+}
+
+/** ADR 0004 D6: a platform is a filled orange bar (Traksy `#FFA500`) offset from its track,
+ * with the number in a white bordered box — replacing the old bare thick line. The bar spans
+ * the platform polyline's x-range; its y is that polyline's own level, nudged to the far side
+ * of a bound track when `trackElementId` is set. Colours come from `--map-platform-*` tokens
+ * (styles.css) with hard fallbacks so jsdom / a missing stylesheet still paints. */
+function renderPlatform(
+  element: PlatformElement,
+  elementsById: Record<string, MapElement>,
+): JSX.Element {
+  const xs = element.points.map((p) => p.x);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const midX = (minX + maxX) / 2;
+  const selfY = pointOnPathAtX(element.points, midX) ?? element.points[0]!.y;
+
+  let barY = selfY - MAP_STYLE.platform.height / 2;
+  const boundTrack = element.trackElementId ? elementsById[element.trackElementId] : undefined;
+  if (boundTrack?.type === "trackPath") {
+    const trackY = pointOnPathAtX(boundTrack.points, midX);
+    if (trackY !== null) {
+      const below = selfY >= trackY;
+      barY = below
+        ? trackY + MAP_STYLE.platform.offset
+        : trackY - MAP_STYLE.platform.offset - MAP_STYLE.platform.height;
+    }
+  }
+
+  const box = MAP_STYLE.platform.numberBox;
+  return (
+    <g key={element.id}>
+      <rect
+        x={minX}
+        y={barY}
+        width={Math.max(maxX - minX, box)}
+        height={MAP_STYLE.platform.height}
+        fill="var(--map-platform-fill, #ffa500)"
+        stroke="none"
+      />
+      {element.number ? (
+        <>
+          <rect
+            x={minX}
+            y={barY + MAP_STYLE.platform.height / 2 - box / 2}
+            width={box}
+            height={box}
+            fill="var(--map-platform-number-fill, #ffffff)"
+            stroke="var(--map-platform-number-border, #2d3644)"
+            strokeWidth={1}
+          />
+          <text
+            x={minX + box / 2}
+            y={barY + MAP_STYLE.platform.height / 2}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={10}
+            fontWeight={700}
+            fill="var(--map-platform-number-text, #04101f)"
+          >
+            {element.number}
+          </text>
+        </>
+      ) : null}
+    </g>
+  );
 }
 
 const PADDING = 40;
@@ -65,7 +142,12 @@ function initialViewBox(bundle: CompiledMapBundle): ViewBox {
  * docs/MAP_EDITOR_SPEC.md §12): plain SVG, pan/zoom via viewBox manipulation, semantic style
  * tokens for signals. The full train/run popup needs the resolver (Milestone 9) — clicking a
  * berth here only shows the raw description/berth id as a stub. */
-export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.Element {
+export function MapRenderer({
+  bundle,
+  berths,
+  signals,
+  showEmptyBerths = true,
+}: MapRendererProps): JSX.Element {
   const [viewBox, setViewBox] = useState<ViewBox>(() => initialViewBox(bundle));
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
@@ -213,26 +295,39 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
       >
         {elements.map((element) => {
           if (element.type === "trackPath") {
+            // ADR 0004 D2/D4: the compiler has already welded topology-joined segments into
+            // single polylines, so a round `stroke-linejoin` closes every diagonal↔horizontal
+            // corner — no junction dots, matching OpenTrainTimes. Caps stay `butt`.
             return (
               <polyline
                 key={element.id}
                 points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="none"
-                stroke="#3d4a5c"
-                strokeWidth={3}
+                stroke={MAP_STYLE.track.color}
+                strokeWidth={MAP_STYLE.track.strokeWidth}
+                strokeLinejoin="round"
+                strokeLinecap="butt"
+                shapeRendering="geometricPrecision"
               />
             );
           }
           if (element.type === "platform") {
+            return renderPlatform(element, bundle.elementsById);
+          }
+          if (element.type === "station") {
             return (
-              <polyline
+              <text
                 key={element.id}
-                points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
-                fill="none"
-                stroke="#232c38"
-                strokeWidth={10}
-                strokeLinecap="round"
-              />
+                x={element.x}
+                y={element.y}
+                textAnchor="middle"
+                fontSize={element.fontSize}
+                fontWeight={700}
+                fill="var(--map-station-label, #58a6ff)"
+              >
+                {element.name}
+                {element.crs ? ` [${element.crs}]` : ""}
+              </text>
             );
           }
           if (element.type === "berth") {
@@ -241,6 +336,11 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
             // An empty berth has nothing to show a popup for — only occupied berths respond to
             // clicks (docs/PROJECT_SPEC.md §5: "click a populated berth").
             const isOccupied = Boolean(berthState?.description);
+            // ADR 0004 D5: a vacant berth can be hidden entirely (berthmaps style).
+            if (!isOccupied && !showEmptyBerths) return null;
+            // ADR 0004 D1: centre the box on its bound track rather than trusting the authored
+            // top-left y.
+            const rect = berthRenderRect(element, bundle.elementsById);
             return (
               <g
                 key={element.id}
@@ -248,18 +348,18 @@ export function MapRenderer({ bundle, berths, signals }: MapRendererProps): JSX.
                 style={{ cursor: isOccupied ? "pointer" : "default" }}
               >
                 <rect
-                  x={element.x}
-                  y={element.y}
-                  width={element.width}
-                  height={element.height}
+                  x={rect.x}
+                  y={rect.y}
+                  width={rect.width}
+                  height={rect.height}
                   fill={colors.fill}
                   stroke={colors.stroke}
                   strokeWidth={1}
                   rx={2}
                 />
                 <text
-                  x={element.x + element.width / 2}
-                  y={element.y + element.height / 2}
+                  x={rect.x + rect.width / 2}
+                  y={rect.y + rect.height / 2}
                   textAnchor="middle"
                   dominantBaseline="middle"
                   fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"

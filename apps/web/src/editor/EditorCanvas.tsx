@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Line, Rect, Text, Circle, Group, Transformer } from "react-konva";
 import Konva from "konva";
-import { sortElementsForPaint, type Layer as MapLayer, type MapElement } from "@railway/map-schema";
+import {
+  MAP_STYLE,
+  berthRenderRect,
+  sortElementsForPaint,
+  type Layer as MapLayer,
+  type MapElement,
+} from "@railway/map-schema";
 import { useEditorState, useEditorDispatch, type ToolMode } from "./EditorState.js";
 
 // Fallback only, used for the first paint before ResizeObserver reports the real size of
@@ -83,6 +89,7 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   berth: /berth/i,
   signal: /signal/i,
   label: /label/i,
+  station: /label|station/i,
   trackPath: /track/i,
   platform: /track/i,
   boundary: /track/i,
@@ -140,6 +147,17 @@ function defaultElementForTool(
       };
     case "boundary":
       return { id, layerId, zIndex: 0, type: "boundary", x: point.x, y: point.y, name: "Boundary" };
+    case "station":
+      return {
+        id,
+        layerId,
+        zIndex: 0,
+        type: "station",
+        x: point.x,
+        y: point.y,
+        name: "New station",
+        fontSize: 16,
+      };
     case "trackPath":
       return {
         id,
@@ -471,6 +489,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   // for this ordering, also used by the compiler for the published bundle the public renderer
   // consumes — see docs there for the layer-order/zIndex band math.
   const layersById = new Map(doc.layers.map((layer) => [layer.id, layer]));
+  const elementsMap = new Map(doc.elements.map((element) => [element.id, element]));
   const paintOrderedElements = sortElementsForPaint(
     doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
     doc.layers,
@@ -547,19 +566,36 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
               );
             }
             if (element.type === "platform") {
+              // ADR 0004 D6: orange bar (matches the public renderer's filled rect) instead of
+              // the old grey line; keeps the points-based drag/reshape mechanics.
+              const px = element.points.map((p) => p.x);
+              const py = element.points.map((p) => p.y);
               return (
                 <Group key={element.id}>
                   <Line
                     ref={setRef}
                     points={flattenPoints(element.points)}
-                    stroke={selected ? "#58a6ff" : "#3d4a5c"}
-                    strokeWidth={selected ? 8 : 6}
+                    stroke={selected ? "#58a6ff" : MAP_STYLE.platform.color}
+                    strokeWidth={
+                      selected ? MAP_STYLE.platform.height + 2 : MAP_STYLE.platform.height
+                    }
                     hitStrokeWidth={16}
-                    lineCap="round"
+                    lineCap="butt"
                     draggable={draggable}
                     onClick={(e) => handleElementClick(e, element.id)}
                     onDragEnd={(e) => handlePathDragEnd(e, element.id)}
                   />
+                  {element.number ? (
+                    <Text
+                      text={element.number}
+                      x={Math.min(...px)}
+                      y={(Math.min(...py) + Math.max(...py)) / 2 - 5}
+                      fontSize={10}
+                      fontStyle="bold"
+                      fill="#04101f"
+                      listening={false}
+                    />
+                  ) : null}
                   {selected && draggable
                     ? element.points.map((point, index) => (
                         <Circle
@@ -583,6 +619,11 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
             if (element.type === "berth") {
               const overlay = previewState?.[element.id];
               const occupied = overlay !== undefined && overlay.description !== null;
+              // ADR 0004 D1: the box is drawn centred on its bound track. The Group stays at the
+              // authored x/y (so drag + Transformer resize math is unchanged); `yOffset` is a
+              // purely visual nudge of the Rect/Text inside it.
+              const centred = berthRenderRect(element, elementsMap);
+              const yOffset = centred.y - element.y;
               return (
                 <Group
                   key={element.id}
@@ -595,6 +636,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                   onTransformEnd={() => handleTransformEnd(element.id)}
                 >
                   <Rect
+                    y={yOffset}
                     width={element.width}
                     height={element.height}
                     fill={occupied ? "#d29922" : selected ? "#233044" : "#161d27"}
@@ -603,6 +645,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     cornerRadius={2}
                   />
                   <Text
+                    y={yOffset}
                     text={overlay ? (overlay.description ?? "") : element.displayName}
                     width={element.width}
                     height={element.height}
@@ -649,6 +692,23 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                   fontSize={element.fontSize}
                   align={element.align}
                   fill={selected ? "#58a6ff" : "#c9d3de"}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                />
+              );
+            }
+            if (element.type === "station") {
+              return (
+                <Text
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  text={element.crs ? `${element.name} [${element.crs}]` : element.name}
+                  fontSize={element.fontSize}
+                  fontStyle="bold"
+                  fill={selected ? "#58a6ff" : "#4c8fd6"}
                   draggable={draggable}
                   onClick={(e) => handleElementClick(e, element.id)}
                   onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}

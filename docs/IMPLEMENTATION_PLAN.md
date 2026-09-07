@@ -690,31 +690,127 @@ visually before treating the canvas UX itself as polished.
 ## Milestone 14 — public renderer visual polish and theming
 
 Owner reviewed reference examples (2026-08-05) of two quite different professional signalling-panel
-aesthetics — a modern flat/dark control-room look (colour-coded berths, crisp "set route" vs
-unset track highlighting) and a retro monochrome CRT mimic-panel look (pure black background,
-green-on-black track/text) — and asked to pencil this in as a future milestone rather than pick a
-direction yet. Do not start this milestone until the owner has chosen a direction; open questions
-to resolve first:
+aesthetics — a modern flat/dark control-room look and a retro monochrome CRT mimic-panel look —
+and asked to pencil this in as a future milestone rather than pick a direction yet.
 
-- Visual style direction: modern flat/dark panel, retro monochrome CRT, or a deliberate blend.
-- Track rendering: junction/points glyphs, directional arrow ticks, "set" vs "unset" route
-  highlighting (relevant mainly for the modern-panel direction).
-- Berth box colour semantics beyond today's binary occupied/vacant (candidates raised: colour by
-  TD area — relevant now that Lancaster spans both `PX` and `CL` — or something else entirely).
-- Station/area label typography and layout conventions.
+**Direction chosen 2026-09-07 — see `docs/adr/0004-map-track-platform-standardisation.md`.**
+Modern flat/dark panel. Reference maps (OpenTrainTimes, Traksy) inspected once with owner
+permission under CLAUDE.md rule 14. The ADR's open-question answers:
 
-Deliverables once a direction is chosen:
+- Track: continuous polyline per running line, `stroke-linejoin: round`, **no junction dots**;
+  1:2 diagonal slope; row pitch 30; points/switches as short blade stubs (later).
+- Platforms: filled rect, Traksy orange `#FFA500` via `--map-platform-fill`, number in a white
+  bordered box; new `station` element carrying a CRS.
+- Berth colour semantics beyond occupied/vacant: still deferred (no change this phase).
+- Berth boxes only-when-occupied: behind a per-viewer toggle, default on.
 
-- A style-tokens/theme file (colours, stroke widths, fonts, symbol glyphs as a single editable
-  source) so visual tweaks don't require touching `MapRenderer.tsx`'s component logic — the first
-  step toward "easily edit assets for continual improvement," independent of whether M11's editor
-  UI exposes it yet.
-- Reworked track/junction/signal/berth rendering to match the chosen direction.
-- Once M11 (visual editor) exists: expose the relevant theme/asset choices through the editor UI
-  rather than requiring a code change for every tweak.
+Split into an active phase (14a) and a later phase (14b).
 
-Purely visual/UX — not a blocker for any other milestone, safe to defer indefinitely. Reference
-inspiration only, per CLAUDE.md non-negotiable #14 (no scraping Vail Data/Traksy/OpenTrainTimes).
+### Milestone 14a — track/berth/platform standardisation `[done — 2026-09-07]`
+
+Implemented in one pass; `pnpm run build:libs`, `pnpm -r typecheck`, `pnpm run lint`,
+`prettier --check` and the map-schema + web `map`/`editor` vitest suites (117 tests, 8 new)
+all green. No DB migration. Delivered:
+
+- `packages/map-schema/src/style.ts` (`MAP_STYLE`, `MAP_CSS_TOKENS`) and
+  `packages/map-schema/src/geometry.ts` (`berthRenderRect`, `pointOnPathAtX`), both exported
+  from `index.ts` and unit-tested (`geometry.test.ts`, 10 tests).
+- `document.ts`: `StationElementSchema` added to the union (`crs` optional, 3-upper regex;
+  `name` required); `berth` gained optional `stationId` + `crs`; `platform` gained optional
+  `trackElementId` + `stationId`. `schemaVersion` stays 1.
+- `compiler.ts`: `weldTrackPaths` merges topology-joined coincident `trackPath` segments into
+  one polyline before indexing, re-pointing `trackElementId` back-references; wired into
+  `compileMapDocument`. Covered by 5 new `compiler.test.ts` cases (merge, remap, no-merge on a
+  bare crossing, no-merge across different lines, full-pipeline).
+- `MapRenderer.tsx`: berth `<rect>`/`<text>` positioned via `berthRenderRect`; track polyline
+  `strokeLinejoin="round"` + `shapeRendering="geometricPrecision"` + `MAP_STYLE` width/colour;
+  new `renderPlatform` (orange `var(--map-platform-fill, #ffa500)` bar + white number box);
+  `station` text; `showEmptyBerths` prop (default true) hides vacant boxes when false. 4 new
+  `MapRenderer.test.tsx` cases.
+- `MapView.tsx`: "Show empty berths" checkbox, `localStorage`-persisted (try/catch), passed to
+  both the live and playback renderers.
+- `EditorCanvas.tsx`: same `berthRenderRect` centring (visual `yOffset`, group stays at
+  authored x/y so drag/resize math is untouched); orange platform bar + number; `station`
+  render; `station` tool default element + layer hint.
+- `EditorState.tsx` / `ToolPalette.tsx`: `station` tool mode. `PropertyPanel.tsx`: `station`
+  block (name/CRS/TIPLOC/x/y/font), `berth` gained a Station `<select>` + CRS field.
+- `styles.css`: `--map-platform-*` / `--map-station-label` tokens on `:root`;
+  `.map-page__toggle`.
+- `docs/MAP_EDITOR_SPEC.md` §3: `station`, the new `berth`/`platform` fields, and a Style
+  profile subsection.
+
+**Files changed (for reference)**
+
+- `packages/map-schema/src/style.ts` _(new)_ — the D4 style-profile constants (row pitch,
+  diagonal slope, stroke widths, berth/platform dimensions, weld tolerance, colour tokens),
+  exported from `index.ts`.
+- `packages/map-schema/src/geometry.ts` _(new)_ — `berthRenderRect(berth, elementsById)` (D1)
+  and `pointOnPathAtX(points, x)`; unit-tested in `geometry.test.ts`.
+- `packages/map-schema/src/document.ts` — add `StationElementSchema` (`crs`, `name`, `tiploc?`,
+  `x`, `y`) to `MapElementSchema`; add optional `stationId` and `crs` to `BerthElementSchema`.
+  `schemaVersion` stays 1 (additive/optional).
+- `packages/map-schema/src/compiler.ts` — D2 interim weld of coincident + topology-joined
+  `trackPath` elements into single polylines; include `station` in `computeBoundingBox`.
+- `packages/map-schema/src/compiler.test.ts`, `validate.test.ts`, `document.test.ts`,
+  `lancasterFixture.test.ts` — cover the weld, the new element, the new berth fields.
+- `apps/web/src/map/MapRenderer.tsx` — consume `berthRenderRect` for berth `<rect>`/`<text>`;
+  `strokeLinejoin="round"` + `shapeRendering="geometricPrecision"` on track polylines; render
+  `station`; upgraded `platform` (bound rect offset from track, `--map-platform-fill`, number
+  box); read the "show empty berths" toggle.
+- `apps/web/src/map/MapRenderer.test.tsx` — berth centred on bound track; platform number
+  rendered; station name rendered; empty-berth toggle hides vacant boxes.
+- `apps/web/src/map/MapView.tsx` (or the map chrome component) — the "show empty berths"
+  toggle control + `localStorage` persistence (try/catch).
+- `apps/web/src/app.css` (or the map stylesheet) — `--map-platform-fill: #ffa500` and the
+  other colour tokens, defined on `:root` with the existing dark palette.
+- `apps/web/src/editor/EditorCanvas.tsx` — same `berthRenderRect` for the berth node so the
+  canvas matches the renderer (rule 13); draw `station`; upgraded `platform`.
+- `apps/web/src/editor/ToolPalette.tsx`, `EditorState.tsx`/`commands.ts` — a Station tool
+  (`addElement` already generic; add the default `station` shape).
+- `apps/web/src/editor/PropertyPanel.tsx` — `crs` field on `station`; `stationId` (+ optional
+  `crs`) on `berth`.
+- `docs/MAP_EDITOR_SPEC.md` §3 — document the `station` element, the new `berth` fields and the
+  D4 style profile.
+- A visual-regression fixture per new/changed symbol in both renderers (MAP_EDITOR_SPEC §12).
+
+**Acceptance criteria**
+
+1. A berth bound via `trackElementId` renders vertically centred on that track in both the
+   public renderer and the editor canvas; an unbound berth is unchanged. No map republish
+   needed for the current Lancaster map.
+2. Zooming the public map to maximum shows no gap where a diagonal `trackPath` meets a
+   horizontal one, for tracks that are topology-joined. `compileMapDocument` welds those into a
+   single polyline; a compiler test asserts the merged `points` and that non-joined visual
+   crossings are left untouched.
+3. `platform` elements render as an orange (`#FFA500`, via `--map-platform-fill`) filled bar
+   offset from the bound track, with `number` in a white bordered box. Changing the token
+   restyles every platform with no component edit.
+4. A `station` element renders its `name`; `crs` round-trips through schema validation,
+   compile, publish and the editor property panel. `berth.stationId` / `berth.crs` likewise.
+   No deduction or API behaviour changes (D7 stays deferred).
+5. "Show empty berths" toggle: on = today's behaviour; off = only occupied berths draw a box;
+   choice persists across reloads; editor always shows outlines.
+6. Style constants (row pitch 30, slope 1:2, berth height 20, weld tolerance 6, …) live only in
+   `packages/map-schema/src/style.ts` and are imported by compiler, renderer and editor — no
+   duplicated literals.
+7. `pnpm -r lint typecheck test` green; `pnpm --filter @railway/database migrate` unaffected
+   (no DB migration in 14a); `MAP_EDITOR_SPEC.md` updated in this change.
+
+### Milestone 14b — structural track model and correlation `[later]`
+
+- D3 Route A: a lane/row model (`track`, `trackSegment`, `row-transition`, `turnout`) in the
+  canonical JSON, replacing free `trackPath` polylines; renderer/editor rework; re-author
+  Lancaster as a new immutable version.
+- D5 structural "berth = span on a track" model.
+- Line-name-on-path labels; `annotation` element family for tunnels / viaducts / neutral
+  sections / signal-box (TD-area) boundaries (OTT `.divide` / `.portal` patterns).
+- Directional arrow ticks; points/switch blade glyphs; "set route" highlighting.
+- D7 station-berth schedule deduction — only after the two spikes in ADR 0004 and its own ADR
+  reinstating/adjusting CLAUDE.md rules 5 and 7.
+
+Purely visual/UX and map-authoring — not a blocker for any other milestone. Reference maps are
+inspiration only; each future look at Vail Data / Traksy / OpenTrainTimes needs owner sign-off
+per CLAUDE.md non-negotiable #14.
 
 ## Milestone 15 — live-path hardening and garner integration
 

@@ -50,6 +50,9 @@ const TrackPathElementSchema = BaseElementSchema.extend({
   topologyEdgeId: z.string().optional(),
 });
 
+/** 3-letter CRS station code (e.g. `LAN`). Uppercase only; the editor uppercases on commit. */
+const CrsSchema = z.string().regex(/^[A-Z]{3}$/, "CRS must be 3 uppercase letters");
+
 const BerthElementSchema = BaseElementSchema.extend({
   type: z.literal("berth"),
   x: z.number(),
@@ -62,6 +65,11 @@ const BerthElementSchema = BaseElementSchema.extend({
   bindingId: z.string().optional(),
   trackElementId: z.string().optional(),
   tooltip: z.string().optional(),
+  /** ADR 0004 D6/D7: optional link to a `station` element and/or a bare CRS. Map-authoring
+   * metadata only — it does not gate ingestion (CLAUDE.md rule 17) and carries no schedule
+   * deduction behaviour yet (D7 deferred); it is the hook that phase will build on. */
+  stationId: z.string().optional(),
+  crs: CrsSchema.optional(),
 });
 
 /** Public rendering is always blank/on/off (red=on, green=off); no aspect calculation
@@ -83,6 +91,23 @@ const PlatformElementSchema = BaseElementSchema.extend({
   number: z.string().optional(),
   name: z.string().optional(),
   tiploc: z.string().optional(),
+  /** ADR 0004 D6: optional bound track. When set, the renderer offsets the platform bar to the
+   * far side of that track by the standard gap instead of centring it on its own polyline. */
+  trackElementId: z.string().optional(),
+  stationId: z.string().optional(),
+});
+
+/** ADR 0004 D6: a named station. Renders its `name` in the standard station-label style; the
+ * optional `crs` is the map-authoring hook for the deferred station-berth schedule deduction
+ * (D7). A zone bracket around member platforms is later work. */
+const StationElementSchema = BaseElementSchema.extend({
+  type: z.literal("station"),
+  x: z.number(),
+  y: z.number(),
+  name: z.string().min(1),
+  crs: CrsSchema.optional(),
+  tiploc: z.string().optional(),
+  fontSize: z.number().positive().default(16),
 });
 
 const LabelElementSchema = BaseElementSchema.extend({
@@ -108,6 +133,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   BerthElementSchema,
   SignalElementSchema,
   PlatformElementSchema,
+  StationElementSchema,
   LabelElementSchema,
   BoundaryElementSchema,
 ]);
@@ -168,6 +194,7 @@ export type TrackPathElement = z.infer<typeof TrackPathElementSchema>;
 export type BerthElement = z.infer<typeof BerthElementSchema>;
 export type SignalElement = z.infer<typeof SignalElementSchema>;
 export type PlatformElement = z.infer<typeof PlatformElementSchema>;
+export type StationElement = z.infer<typeof StationElementSchema>;
 export type LabelElement = z.infer<typeof LabelElementSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;

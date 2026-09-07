@@ -356,7 +356,51 @@ export function PropertyPanel(): JSX.Element {
             value={element.height}
             onCommit={(v) => setProp("height", v)}
           />
+          <label className="field">
+            Station
+            <select
+              value={element.stationId ?? ""}
+              onChange={(e) => setProp("stationId", e.target.value || undefined)}
+            >
+              <option value="">(none)</option>
+              {doc.elements
+                .filter((el) => el.type === "station")
+                .map((el) => (
+                  <option key={el.id} value={el.id}>
+                    {el.type === "station" ? el.name : el.id}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <TextField
+            label="Station CRS"
+            value={element.crs ?? ""}
+            onCommit={(v) => setProp("crs", v ? v.toUpperCase() : undefined)}
+          />
           <BindingFields elementId={elementId} binding={binding} />
+        </>
+      )}
+
+      {element.type === "station" && (
+        <>
+          <TextField label="Name" value={element.name} onCommit={(v) => setProp("name", v)} />
+          <TextField
+            label="CRS"
+            value={element.crs ?? ""}
+            onCommit={(v) => setProp("crs", v ? v.toUpperCase() : undefined)}
+          />
+          <TextField
+            label="TIPLOC"
+            value={element.tiploc ?? ""}
+            onCommit={(v) => setProp("tiploc", v || undefined)}
+          />
+          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
+          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <NumberField
+            label="Font size"
+            value={element.fontSize}
+            onCommit={(v) => setProp("fontSize", v)}
+          />
         </>
       )}
 

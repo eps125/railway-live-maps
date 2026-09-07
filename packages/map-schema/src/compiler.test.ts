@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MapDocumentSchema, type Layer, type MapElement } from "./document.js";
-import { compileMapDocument, sortElementsForPaint, Z_INDEX_LAYER_BAND } from "./compiler.js";
+import {
+  compileMapDocument,
+  sortElementsForPaint,
+  weldTrackPaths,
+  Z_INDEX_LAYER_BAND,
+} from "./compiler.js";
 
 const doc = MapDocumentSchema.parse({
   schemaVersion: 1,
@@ -114,6 +119,176 @@ describe("compileMapDocument", () => {
     });
     const bundle = compileMapDocument(outOfOrderDoc);
     expect(Object.keys(bundle.elementsById)).toEqual(["trk", "sig"]);
+  });
+});
+
+describe("weldTrackPaths (ADR 0004 D2 — junction-gap fix)", () => {
+  const layers = [{ id: "l1", name: "Track", order: 0, visible: true, locked: false }];
+
+  function track(
+    id: string,
+    points: Array<{ x: number; y: number }>,
+    extra: Partial<MapElement> = {},
+  ): MapElement {
+    return { id, layerId: "l1", zIndex: 0, type: "trackPath", points, ...extra } as MapElement;
+  }
+
+  it("merges two topology-joined coincident segments into one polyline", () => {
+    const a = track(
+      "a",
+      [
+        { x: 0, y: 100 },
+        { x: 100, y: 100 },
+      ],
+      { topologyEdgeId: "e1" },
+    );
+    const b = track(
+      "b",
+      [
+        { x: 100, y: 100 },
+        { x: 160, y: 130 },
+      ],
+      { topologyEdgeId: "e2" },
+    );
+    const topology = {
+      nodes: [
+        { id: "n1", x: 0, y: 100 },
+        { id: "n2", x: 100, y: 100 },
+        { id: "n3", x: 160, y: 130 },
+      ],
+      edges: [
+        { id: "e1", fromNodeId: "n1", toNodeId: "n2" },
+        { id: "e2", fromNodeId: "n2", toNodeId: "n3" },
+      ],
+    };
+    const { elements, remap } = weldTrackPaths([a, b], topology);
+    expect(elements).toHaveLength(1);
+    expect(elements[0]).toMatchObject({
+      id: "a",
+      points: [
+        { x: 0, y: 100 },
+        { x: 100, y: 100 },
+        { x: 160, y: 130 },
+      ],
+    });
+    expect(remap).toEqual({ b: "a" });
+  });
+
+  it("re-points a berth's trackElementId at the surviving segment", () => {
+    const a = track(
+      "a",
+      [
+        { x: 0, y: 0 },
+        { x: 50, y: 0 },
+      ],
+      { topologyEdgeId: "e1" },
+    );
+    const b = track(
+      "b",
+      [
+        { x: 50, y: 0 },
+        { x: 90, y: 20 },
+      ],
+      { topologyEdgeId: "e1" },
+    );
+    const berth: MapElement = {
+      id: "brt",
+      layerId: "l1",
+      zIndex: 0,
+      type: "berth",
+      x: 10,
+      y: -10,
+      width: 20,
+      height: 10,
+      textAlign: "center",
+      fontSize: 12,
+      displayName: "X",
+      trackElementId: "b",
+    } as MapElement;
+    const { elements } = weldTrackPaths([a, b, berth], { nodes: [], edges: [] });
+    const rewrittenBerth = elements.find((e) => e.id === "brt");
+    expect(rewrittenBerth).toMatchObject({ trackElementId: "a" });
+  });
+
+  it("does not merge a purely visual crossing with no topology", () => {
+    const a = track("a", [
+      { x: 0, y: 100 },
+      { x: 100, y: 100 },
+    ]);
+    const b = track("b", [
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+    ]);
+    const { elements, remap } = weldTrackPaths([a, b], { nodes: [], edges: [] });
+    expect(elements).toHaveLength(2);
+    expect(remap).toEqual({});
+  });
+
+  it("does not merge segments on different lines", () => {
+    const a = track(
+      "a",
+      [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+      ],
+      {
+        topologyEdgeId: "e1",
+        line: "Up Main",
+      },
+    );
+    const b = track(
+      "b",
+      [
+        { x: 10, y: 0 },
+        { x: 20, y: 0 },
+      ],
+      {
+        topologyEdgeId: "e1",
+        line: "Down Main",
+      },
+    );
+    const { elements } = weldTrackPaths([a, b], { nodes: [], edges: [] });
+    expect(elements).toHaveLength(2);
+  });
+
+  it("compileMapDocument welds through the full pipeline", () => {
+    const doc = MapDocumentSchema.parse({
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "M",
+        canvas: { width: 300, height: 300, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers,
+      elements: [
+        {
+          id: "a",
+          layerId: "l1",
+          type: "trackPath",
+          topologyEdgeId: "e1",
+          points: [
+            { x: 0, y: 100 },
+            { x: 100, y: 100 },
+          ],
+        },
+        {
+          id: "b",
+          layerId: "l1",
+          type: "trackPath",
+          topologyEdgeId: "e1",
+          points: [
+            { x: 100, y: 100 },
+            { x: 160, y: 130 },
+          ],
+        },
+      ],
+      topology: { nodes: [], edges: [] },
+      bindings: [],
+      editorMetadata: {},
+    });
+    const bundle = compileMapDocument(doc);
+    expect(Object.keys(bundle.elementsById)).toEqual(["a"]);
   });
 });
 

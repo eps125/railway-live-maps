@@ -829,13 +829,21 @@ shared synthetic `topologyEdgeId` in `handlePointDragEnd`; E2 `handleInsertVerte
 hint; signal `offset` branch); `EditorState.tsx` / `ToolPalette.tsx` (`platformNumber` tool);
 `PropertyPanel.tsx` (`platformNumber` block; signal "Offset style" checkbox; `platform.number`
 field removed); `MapRenderer.tsx` (shared `numberBox`, `renderPlatformNumber`, `renderSignal`
-with `offset`, multi-vertex platform polyline); `apps/api/src/editor/draftStore.ts` (5-layer
-blank scaffold); `styles.css` (`.field--checkbox`); `docs/MAP_EDITOR_SPEC.md` §3/§7.
+with `offset`); `apps/api/src/editor/draftStore.ts` (5-layer blank scaffold); `styles.css`
+(`.field--checkbox`); `docs/MAP_EDITOR_SPEC.md` §3/§7.
+
+**Revision (2026-09-08, follow-up):** `platform` with 3+ points is now a **filled polygon**
+(vertices vary its width; new-platform default is a rectangle) in both renderers; a legacy
+2-point platform stays a bar. `platform.number` is **no longer rendered at all** (was "still
+drawn for old maps") — only standalone `platformNumber` elements draw a number, in the same
+white-box style. Vertex insertion handles a polygon's closing edge; removal keeps a polygon
+≥ 3 points. Consequence: a pre-0005 map using `platform.number` shows no number until
+re-authored (Lancaster needs re-authoring for filled platforms regardless).
 
 Known limitations: E1 weld uses a synthetic `topologyEdgeId` (no real `topology` node/edge — a
 14b concern); angle-snap then grid-snap can nudge an exact 1:2 ratio off-grid for short
 segments; vertex removal is double-click only (no Delete-key selection); `platformNumber` is
-not auto-linked to a platform on placement.
+not auto-linked to a platform on placement; the `offset` signal stem is always vertical.
 
 **Original plan (for reference):**
 

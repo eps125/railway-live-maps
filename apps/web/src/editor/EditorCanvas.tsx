@@ -187,6 +187,7 @@ function defaultElementForTool(
         ],
       };
     case "platform":
+      // A filled rectangle to start (ADR 0005 rev.) — reshape it with the vertex tools.
       return {
         id,
         layerId,
@@ -194,7 +195,9 @@ function defaultElementForTool(
         type: "platform",
         points: [
           { x: point.x, y: point.y },
-          { x: point.x + 100, y: point.y },
+          { x: point.x + 120, y: point.y },
+          { x: point.x + 120, y: point.y + MAP_STYLE.platform.height },
+          { x: point.x, y: point.y + MAP_STYLE.platform.height },
         ],
       };
     case "platformNumber":
@@ -531,10 +534,16 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     if (!stage) return;
     const world = toWorldPoint(stage);
     const p = { x: snap(world.x, gridSize), y: snap(world.y, gridSize) };
+    // A platform with 3+ points is a closed polygon, so the wrap edge (last → first) is also a
+    // candidate for insertion; a trackPath is an open polyline.
+    const closed = element.type === "platform" && element.points.length >= 3;
+    const lastSeg = closed ? element.points.length : element.points.length - 1;
     let bestIdx = 0;
     let bestDist = Infinity;
-    for (let i = 0; i < element.points.length - 1; i += 1) {
-      const d = distToSegment(p, element.points[i]!, element.points[i + 1]!);
+    for (let i = 0; i < lastSeg; i += 1) {
+      const a = element.points[i]!;
+      const b = element.points[(i + 1) % element.points.length]!;
+      const d = distToSegment(p, a, b);
       if (d < bestDist) {
         bestDist = d;
         bestIdx = i;
@@ -558,7 +567,10 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   ): void {
     e.cancelBubble = true;
     const element = doc.elements.find((el) => el.id === elementId);
-    if (!element || !("points" in element) || element.points.length <= 2) return;
+    if (!element || !("points" in element)) return;
+    // A platform polygon needs 3 points to stay a shape; a trackPath needs 2.
+    const minPoints = element.type === "platform" && element.points.length >= 3 ? 3 : 2;
+    if (element.points.length <= minPoints) return;
     const newPoints = element.points.filter((_, i) => i !== pointIndex);
     dispatch({
       type: "dispatchCommand",
@@ -714,18 +726,25 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
               );
             }
             if (element.type === "platform") {
-              // ADR 0004 D6: orange bar (matches the public renderer's filled rect) instead of
-              // the old grey line; keeps the points-based drag/reshape mechanics.
-              const px = element.points.map((p) => p.x);
-              const py = element.points.map((p) => p.y);
+              // ADR 0005 (rev.): a filled orange shape. 3+ points = a closed polygon whose
+              // vertices vary its width/shape; a legacy 2-point platform stays a thick bar.
+              const isPolygon = element.points.length >= 3;
               return (
                 <Group key={element.id}>
                   <Line
                     ref={setRef}
                     points={flattenPoints(element.points)}
-                    stroke={selected ? "#58a6ff" : MAP_STYLE.platform.color}
+                    closed={isPolygon}
+                    fill={MAP_STYLE.platform.color}
+                    stroke={selected ? "#58a6ff" : isPolygon ? "#b8791f" : MAP_STYLE.platform.color}
                     strokeWidth={
-                      selected ? MAP_STYLE.platform.height + 2 : MAP_STYLE.platform.height
+                      isPolygon
+                        ? selected
+                          ? 2
+                          : 1
+                        : selected
+                          ? MAP_STYLE.platform.height + 2
+                          : MAP_STYLE.platform.height
                     }
                     hitStrokeWidth={16}
                     lineCap="butt"
@@ -735,17 +754,6 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     onDblClick={(e) => handleInsertVertex(e, element.id)}
                     onDragEnd={(e) => handlePathDragEnd(e, element.id)}
                   />
-                  {element.number ? (
-                    <Text
-                      text={element.number}
-                      x={Math.min(...px)}
-                      y={(Math.min(...py) + Math.max(...py)) / 2 - 5}
-                      fontSize={10}
-                      fontStyle="bold"
-                      fill="#04101f"
-                      listening={false}
-                    />
-                  ) : null}
                   {selected && draggable
                     ? element.points.map((point, index) => (
                         <Circle

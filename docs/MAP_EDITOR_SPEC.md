@@ -73,13 +73,14 @@ For Lancaster, no S-Class binding is required and operational state is blank.
 
 ### `platform`
 
-A multi-vertex polyline (ADR 0005 E2 — any number of corners, so L-shaped / stepped platforms
-are just more points), rendered as a filled bar in `--map-platform-fill` (Traksy orange by
-default). Optional `name` / `tiploc` / `stationId`, and an optional `trackElementId` that
-offsets a straight bar to the far side of that track. `number` is **deprecated** (ADR 0005 E3)
-— still parsed and rendered for maps published before 0005, but new maps use a standalone
-`platformNumber` element. The editor: double-click a segment to add a corner, double-click a
-corner handle to remove it.
+A **filled shape** in `--map-platform-fill` (Traksy orange by default). With 3+ points those
+`points` are the polygon outline, so vertices vary its width and shape (L-shaped platforms,
+bays, tapers); a legacy 2-point platform renders as a standard-height bar, still offsettable to
+the far side of a bound `trackElementId`. Optional `name` / `tiploc` / `stationId`. `number` is
+**deprecated and no longer rendered** (ADR 0005 E3 rev.) — still parsed so old documents load,
+but only a standalone `platformNumber` element produces a number now. The editor: double-click
+an edge to add a corner, double-click a corner handle to remove it (≥ 3 points), drag corners
+to reshape.
 
 ### `platformNumber`
 

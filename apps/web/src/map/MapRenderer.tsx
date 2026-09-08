@@ -73,76 +73,53 @@ function numberBox(cx: number, cy: number, text: string, fontSize: number): JSX.
   );
 }
 
-/** ADR 0004 D6 / ADR 0005 E2-E3: a platform is a filled orange bar (Traksy `#FFA500`) that
- * follows its polyline — any number of vertices, so L-shaped / stepped platforms are just more
- * points. Offset to the far side of a bound track when `trackElementId` is set (straight-bar
- * case only). The number is now a separate `platformNumber` element; `element.number` is drawn
- * here only for maps published before ADR 0005. */
+/** ADR 0004 D6 / ADR 0005 E2-E3 (rev. 2026-09-08): a platform is a **filled shape**, Traksy
+ * orange (`#FFA500`). With 3+ points its `points` are the polygon outline, so vertices vary its
+ * width and shape (L-shaped platforms, bays). A legacy 2-point platform is drawn as a bar of
+ * the standard height, still offset to the far side of a bound `trackElementId`. Platform
+ * numbers are their own `platformNumber` elements — `element.number` is no longer rendered. */
 function renderPlatform(
   element: PlatformElement,
   elementsById: Record<string, MapElement>,
 ): JSX.Element {
-  const xs = element.points.map((p) => p.x);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const straight = element.points.length === 2 && element.points[0]!.y === element.points[1]!.y;
-
-  let legacyNumber: JSX.Element | null = null;
-
-  if (straight) {
-    const midX = (minX + maxX) / 2;
-    const selfY = element.points[0]!.y;
-    let barY = selfY - MAP_STYLE.platform.height / 2;
-    const boundTrack = element.trackElementId ? elementsById[element.trackElementId] : undefined;
-    if (boundTrack?.type === "trackPath") {
-      const trackY = pointOnPathAtX(boundTrack.points, midX);
-      if (trackY !== null) {
-        barY =
-          selfY >= trackY
-            ? trackY + MAP_STYLE.platform.offset
-            : trackY - MAP_STYLE.platform.offset - MAP_STYLE.platform.height;
-      }
-    }
-    if (element.number) {
-      legacyNumber = numberBox(
-        minX + MAP_STYLE.platform.numberBox / 2,
-        barY + MAP_STYLE.platform.height / 2,
-        element.number,
-        10,
-      );
-    }
+  if (element.points.length >= 3) {
     return (
-      <g key={element.id}>
-        <rect
-          x={minX}
-          y={barY}
-          width={Math.max(maxX - minX, MAP_STYLE.platform.numberBox)}
-          height={MAP_STYLE.platform.height}
-          fill="var(--map-platform-fill, #ffa500)"
-          stroke="none"
-        />
-        {legacyNumber}
-      </g>
+      <polygon
+        key={element.id}
+        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill="var(--map-platform-fill, #ffa500)"
+        stroke="none"
+      />
     );
   }
 
-  // Multi-vertex / non-straight: draw the polyline itself as a thick orange stroke so every
-  // corner is followed exactly (an L-shaped platform, a bay).
-  if (element.number) {
-    legacyNumber = numberBox(element.points[0]!.x, element.points[0]!.y, element.number, 10);
+  // Legacy 2-point platform → a standard-height bar (optionally offset onto a bound track).
+  const a = element.points[0]!;
+  const b = element.points[1] ?? a;
+  const minX = Math.min(a.x, b.x);
+  const maxX = Math.max(a.x, b.x);
+  const selfY = a.y;
+  let barY = selfY - MAP_STYLE.platform.height / 2;
+  const boundTrack = element.trackElementId ? elementsById[element.trackElementId] : undefined;
+  if (boundTrack?.type === "trackPath") {
+    const trackY = pointOnPathAtX(boundTrack.points, (minX + maxX) / 2);
+    if (trackY !== null) {
+      barY =
+        selfY >= trackY
+          ? trackY + MAP_STYLE.platform.offset
+          : trackY - MAP_STYLE.platform.offset - MAP_STYLE.platform.height;
+    }
   }
   return (
-    <g key={element.id}>
-      <polyline
-        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
-        fill="none"
-        stroke="var(--map-platform-fill, #ffa500)"
-        strokeWidth={MAP_STYLE.platform.height}
-        strokeLinejoin="round"
-        strokeLinecap="butt"
-      />
-      {legacyNumber}
-    </g>
+    <rect
+      key={element.id}
+      x={minX}
+      y={barY}
+      width={Math.max(maxX - minX, MAP_STYLE.platform.numberBox)}
+      height={MAP_STYLE.platform.height}
+      fill="var(--map-platform-fill, #ffa500)"
+      stroke="none"
+    />
   );
 }
 

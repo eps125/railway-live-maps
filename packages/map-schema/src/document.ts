@@ -91,9 +91,11 @@ const SignalElementSchema = BaseElementSchema.extend({
 
 const PlatformElementSchema = BaseElementSchema.extend({
   type: z.literal("platform"),
+  /** ADR 0005 (rev. 2026-09-08): 3+ points are the outline of a **filled** platform shape (so
+   * vertices vary its width); a legacy 2-point platform is drawn as a standard-height bar. */
   points: z.array(PointSchema).min(2),
-  /** @deprecated ADR 0005 E3 — use a standalone `platformNumber` element. Still parsed and
-   * rendered for maps published before 0005; the editor no longer writes it. */
+  /** @deprecated ADR 0005 E3 — use a standalone `platformNumber` element. Still parsed for old
+   * documents but **no longer rendered**; the editor does not write it. */
   number: z.string().optional(),
   name: z.string().optional(),
   tiploc: z.string().optional(),

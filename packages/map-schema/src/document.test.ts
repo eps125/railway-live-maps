@@ -161,6 +161,26 @@ describe("MapDocumentSchema", () => {
     }
   });
 
+  it("accepts a multi-vertex (filled-shape) platform", () => {
+    const doc = minimalDoc({
+      elements: [
+        {
+          id: "p1",
+          layerId: "l1",
+          type: "platform",
+          points: [
+            { x: 0, y: 0 },
+            { x: 120, y: 0 },
+            { x: 120, y: 20 },
+            { x: 60, y: 24 },
+            { x: 0, y: 20 },
+          ],
+        },
+      ],
+    });
+    expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
+  });
+
   it("still accepts a pre-ADR-0005 map with an inline platform.number", () => {
     const doc = minimalDoc({
       elements: [

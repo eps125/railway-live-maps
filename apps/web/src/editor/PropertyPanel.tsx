@@ -469,8 +469,9 @@ export function PropertyPanel(): JSX.Element {
             onCommit={(v) => setProp("name", v || undefined)}
           />
           <p className="field-hint">
-            Double-click a segment to add a corner; double-click a corner handle to remove it.
-            Platform numbers are a separate item (Plat. number tool).
+            A filled shape — double-click an edge to add a corner, double-click a corner handle to
+            remove it, drag corners to vary the width. Platform numbers are a separate item (Plat.
+            number tool).
           </p>
         </>
       )}

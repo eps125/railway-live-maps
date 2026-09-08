@@ -263,7 +263,7 @@ describe("MapRenderer", () => {
     expect(rect.getAttribute("y")).toBe("90");
   });
 
-  it("renders a platform as an orange bar with its number in a box (ADR 0004 D6)", () => {
+  it("renders a legacy 2-point platform as an orange bar and ignores its .number (ADR 0005 rev.)", () => {
     const doc = bundle({
       elementsById: {
         "plat-1": {
@@ -281,9 +281,35 @@ describe("MapRenderer", () => {
     });
 
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
-    expect(screen.getByText("2")).toBeInTheDocument();
     const bar = container.querySelector("rect")!;
     expect(bar.getAttribute("fill")).toBe("var(--map-platform-fill, #ffa500)");
+    // number is no longer auto-rendered — only standalone platformNumber elements draw one
+    expect(screen.queryByText("2")).not.toBeInTheDocument();
+  });
+
+  it("renders a 3+ point platform as a filled polygon (ADR 0005 rev.)", () => {
+    const doc = bundle({
+      elementsById: {
+        "plat-2": {
+          id: "plat-2",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "platform",
+          points: [
+            { x: 0, y: 40 },
+            { x: 120, y: 40 },
+            { x: 120, y: 60 },
+            { x: 0, y: 52 },
+          ],
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const poly = container.querySelector("polygon")!;
+    expect(poly).not.toBeNull();
+    expect(poly.getAttribute("fill")).toBe("var(--map-platform-fill, #ffa500)");
+    expect(poly.getAttribute("points")).toBe("0,40 120,40 120,60 0,52");
   });
 
   it("renders a station name with its CRS (ADR 0004 D6)", () => {
@@ -358,26 +384,6 @@ describe("MapRenderer", () => {
     });
     render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     expect(screen.getByText("4")).toBeInTheDocument();
-  });
-
-  it("still renders a legacy inline platform.number (ADR 0005 E3 back-compat)", () => {
-    const doc = bundle({
-      elementsById: {
-        "plat-1": {
-          id: "plat-1",
-          layerId: "layer-visible",
-          zIndex: 0,
-          type: "platform",
-          points: [
-            { x: 0, y: 50 },
-            { x: 120, y: 50 },
-          ],
-          number: "3",
-        },
-      },
-    });
-    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
-    expect(screen.getByText("3")).toBeInTheDocument();
   });
 
   it("draws a stem for an offset-mode signal, none for inline (ADR 0005 E4)", () => {

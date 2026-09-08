@@ -43,20 +43,22 @@ The freeform `trackPath` tool gains, in the editor only (no schema change, no la
 
 Route A (the structural lane/row model) stays Milestone 14b.
 
-### E2 — Multi-vertex polylines + vertex add/remove tooling
+### E2 — Multi-vertex shapes + vertex add/remove tooling
 
 `trackPath` and `platform` already allow `points` ≥ 2; no schema change. The editor gains, for
 a selected points-based element:
 
-- **Add vertex** — double-click on a segment inserts a point at the click position (grid- and
-  angle-snapped), splitting that segment.
-- **Remove vertex** — select a vertex handle and press Delete/Backspace, or right-click →
-  Remove; blocked when it would drop the element below 2 points.
+- **Add vertex** — double-click on a segment (a platform polygon's closing edge included)
+  inserts a grid-snapped point, splitting that segment.
+- **Remove vertex** — double-click a vertex handle; blocked below 2 points for a `trackPath`
+  and below 3 for a platform polygon.
 - Both are a single `setProperty { property: "points" }` command, so undo/redo already covers
   them.
 
-This makes L-shaped / stepped platforms just a platform polyline with as many corners as
-needed.
+**Revision (2026-09-08):** a `platform` with 3+ points is a **filled polygon** — its `points`
+are the shape outline, so vertices vary its width (L-shaped platforms, bays, tapers), not a
+thick stroked line. The new-platform default is a rectangle. A legacy 2-point platform still
+renders as a standard-height bar. `trackPath` stays an open polyline.
 
 ### E3 — Independent `platformNumber` element + Platforms layer
 
@@ -64,9 +66,13 @@ needed.
 platformId? }`. Renders as the white bordered box + number (the Traksy pattern already in
   `MapRenderer`), positioned freely — the author places it above its platform. `platformId` is
   an optional soft link for future grouping; nothing enforces it.
-- `platform.number` is **retained but deprecated**: the renderer still draws it when present
-  (existing published maps keep working), but the editor stops writing it and the property
-  panel drops the field in favour of the Number tool. `schemaVersion` stays 1.
+- `platform.number` is **deprecated and no longer rendered** (revised 2026-09-08 — the earlier
+  "still drawn for old maps" behaviour was dropped: two number mechanisms was confusing). The
+  field is still parsed so old documents load; only a standalone `platformNumber` element
+  produces a number box now, and it uses the same white-box style the auto number used.
+  `schemaVersion` stays 1. **Consequence:** a map published before 0005 that relied on
+  `platform.number` shows no platform number until re-authored — Lancaster needs re-authoring
+  for the filled platforms anyway.
 - **Layer**: the editor ensures a layer named `Platforms` exists (creating it, ordered just
   below the Berths layer, when the Platform or Number tool is first used and none matches) and
   defaults both `platform` and `platformNumber` onto it. Within the layer, `platformNumber`

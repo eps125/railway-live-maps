@@ -25,9 +25,6 @@ export const SNAP_ANGLES_DEG: number[] = (() => {
   return [...all].sort((a, b) => a - b);
 })();
 
-/** Within this many degrees of a snap angle, the segment is pulled onto it. */
-export const ANGLE_SNAP_THRESHOLD_DEG = 6;
-
 function angleDeg(from: Point, to: Point): number {
   const deg = Math.atan2(to.y - from.y, to.x - from.x) * (180 / Math.PI);
   return ((deg % 360) + 360) % 360;
@@ -39,9 +36,11 @@ function angularDistance(a: number, b: number): number {
 }
 
 /**
- * Snap the moving end of a segment to the nearest standard angle about its fixed end, keeping
- * the segment's length. Returns `to` unchanged when `bypass` is set, the ends coincide, or no
- * snap angle is within `ANGLE_SNAP_THRESHOLD_DEG`.
+ * Snap the moving end of a segment onto the **nearest** standard angle about its fixed end,
+ * keeping the segment's length. There is no tolerance window — a track endpoint always lands on
+ * `{0°, ±1:2, ±1:1, 90°}` so a hand-drawn track can't take an arbitrary angle. `bypass` (Alt in
+ * the editor) returns `to` untouched for a genuinely free segment; a zero-length segment is
+ * also returned unchanged.
  */
 export function snapSegmentAngle(from: Point, to: Point, bypass = false): Point {
   if (bypass) return to;
@@ -49,8 +48,8 @@ export function snapSegmentAngle(from: Point, to: Point, bypass = false): Point 
   if (len === 0) return to;
 
   const current = angleDeg(from, to);
-  let best = current;
-  let bestDist: number = ANGLE_SNAP_THRESHOLD_DEG;
+  let best = SNAP_ANGLES_DEG[0]!;
+  let bestDist = Infinity;
   for (const candidate of SNAP_ANGLES_DEG) {
     const dist = angularDistance(current, candidate);
     if (dist < bestDist) {
@@ -58,7 +57,6 @@ export function snapSegmentAngle(from: Point, to: Point, bypass = false): Point 
       bestDist = dist;
     }
   }
-  if (best === current) return to;
 
   const rad = best * (Math.PI / 180);
   return { x: from.x + len * Math.cos(rad), y: from.y + len * Math.sin(rad) };

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { MapDocument } from "@railway/map-schema";
 import { EditorStateProvider } from "./EditorState.js";
 import { EditorWorkspace } from "./EditorWorkspace.js";
+import { readApiJson } from "./apiJson.js";
 
 export interface EditorAppProps {
   slug: string;
@@ -32,7 +33,7 @@ export function EditorApp({ slug }: EditorAppProps): JSX.Element {
               : `Failed to load draft (${response.status})`,
           );
         }
-        const body = (await response.json()) as DraftResponse;
+        const body = await readApiJson<DraftResponse>(response);
         if (!cancelled) setDraft(body);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load draft");

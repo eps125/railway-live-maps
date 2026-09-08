@@ -32,10 +32,13 @@ geometry and a choice of signal styles before committing to one:
 
 The freeform `trackPath` tool gains, in the editor only (no schema change, no lane model):
 
-- **Angle-snap** while drawing or dragging an endpoint: the segment relative to its other end
-  snaps to the nearest of `0°`, `±1:2` (≈26.57°), `±1:1` (45°) and `90°` when within a small
-  threshold; holding a modifier (Alt) disables the snap for a genuinely free segment. `1:2` is
-  the standard diagonal (ADR 0004 D4); `1:1` is the permitted steeper option for tight spaces.
+- **Angle-snap** while dragging an endpoint: the segment relative to its other end snaps to the
+  **nearest** of `0°`, `±1:2` (≈26.57°), `±1:1` (45°) and `90°` — there is no tolerance window
+  (a hand-drawn track cannot take an arbitrary angle); holding Alt disables it for a genuinely
+  free segment. `1:2` is the standard diagonal (ADR 0004 D4); `1:1` is the permitted steeper
+  option. The snapped endpoint's **distance along the ray** is quantised to the grid (not `x`
+  and `y` independently, which would pull it back off the angle). _Revised 2026-09-08: the
+  original 6° threshold was too narrow to feel like it worked; snapping is now unconditional._
 - **Magnetic endpoint weld**: an endpoint dropped within `MAP_STYLE.weldTolerance` of another
   track endpoint snaps exactly onto it, and a `topology` node + edge linking the two segments
   is created if absent — so the publish-time weld (ADR 0004 D2) then actually fires and the
@@ -58,7 +61,9 @@ a selected points-based element:
 **Revision (2026-09-08):** a `platform` with 3+ points is a **filled polygon** — its `points`
 are the shape outline, so vertices vary its width (L-shaped platforms, bays, tapers), not a
 thick stroked line. The new-platform default is a rectangle. A legacy 2-point platform still
-renders as a standard-height bar. `trackPath` stays an open polyline.
+renders as a standard-height bar. `trackPath` stays an open polyline. Platform corners (and
+platform / platform-number placement and moves) snap to **half the grid step** so a shape edge
+can sit between grid lines; everything else stays on the full grid.
 
 ### E3 — Independent `platformNumber` element + Platforms layer
 

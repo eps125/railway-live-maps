@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { readApiJson } from "./apiJson.js";
 
 interface IdDiff {
   added: string[];
@@ -43,7 +44,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
   async function loadDiff(): Promise<void> {
     const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/diff`);
     if (response.ok) {
-      setDiff((await response.json()) as DocumentDiff);
+      setDiff(await readApiJson<DocumentDiff>(response));
     }
   }
 
@@ -59,7 +60,17 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
           publishedBy: publishedBy || undefined,
         }),
       });
-      const body = await response.json();
+      const body = await readApiJson<{
+        error?: {
+          message?: string;
+          details?: {
+            currentRevision?: number;
+            errors?: Array<{ code: string; message: string }>;
+          };
+        };
+        versionNumber?: number;
+        effectiveFrom?: string;
+      }>(response);
       if (response.status === 409) {
         setOutcome({
           status: "conflict",
@@ -80,8 +91,8 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
       }
       setOutcome({
         status: "published",
-        versionNumber: body.versionNumber,
-        effectiveFrom: body.effectiveFrom,
+        versionNumber: body.versionNumber ?? 0,
+        effectiveFrom: body.effectiveFrom ?? "",
       });
       onPublished();
     } catch (error) {

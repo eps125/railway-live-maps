@@ -840,10 +840,19 @@ white-box style. Vertex insertion handles a polygon's closing edge; removal keep
 ≥ 3 points. Consequence: a pre-0005 map using `platform.number` shows no number until
 re-authored (Lancaster needs re-authoring for filled platforms regardless).
 
+**Revision 2 (2026-09-08, follow-up):** track angle-snap is now **unconditional** (nearest of
+`{0°,±1:2,±1:1,90°}`, no 6° window — it wasn't firing often enough to feel real) and the
+snapped endpoint quantises its distance along the ray rather than grid-snapping x/y; platform
+corners + platform/number placement snap to **half the grid step**. `apps/web/src/editor/apiJson.ts`
+(`readApiJson`, + test) turns the `Unexpected token '<'` publish failure — the `/api` request
+falling through to `index.html` — into a message naming the cause (`ReviewPanel.tsx`,
+`EditorApp.tsx` now use it).
+
 Known limitations: E1 weld uses a synthetic `topologyEdgeId` (no real `topology` node/edge — a
-14b concern); angle-snap then grid-snap can nudge an exact 1:2 ratio off-grid for short
-segments; vertex removal is double-click only (no Delete-key selection); `platformNumber` is
-not auto-linked to a platform on placement; the `offset` signal stem is always vertical.
+14b concern); vertex removal is double-click only (no Delete-key selection); `platformNumber` is
+not auto-linked to a platform on placement; the `offset` signal stem is always vertical; a
+platform authored under the pre-0005 "thick centreline" model renders oddly as a filled polygon
+until redrawn.
 
 **Original plan (for reference):**
 

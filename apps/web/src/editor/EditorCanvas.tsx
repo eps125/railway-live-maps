@@ -374,9 +374,13 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     const point = toWorldPoint(stage);
     const layerId = defaultLayerIdForTool(toolMode, doc.layers);
     if (!layerId) return;
+    const placeStep =
+      toolMode === "platform" || toolMode === "platformNumber"
+        ? Math.max(1, gridSize / 2)
+        : gridSize;
     const element = defaultElementForTool(toolMode, layerId, {
-      x: snap(point.x, gridSize),
-      y: snap(point.y, gridSize),
+      x: snap(point.x, placeStep),
+      y: snap(point.y, placeStep),
     });
     if (!element) return;
 
@@ -404,8 +408,9 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   function handlePositionedDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
     const element = doc.elements.find((el) => el.id === elementId);
     if (!element || !("x" in element)) return;
-    const newX = snap(e.target.x(), gridSize);
-    const newY = snap(e.target.y(), gridSize);
+    const step = element.type === "platformNumber" ? Math.max(1, gridSize / 2) : gridSize;
+    const newX = snap(e.target.x(), step);
+    const newY = snap(e.target.y(), step);
     const dx = newX - element.x;
     const dy = newY - element.y;
     e.target.position({ x: element.x, y: element.y });
@@ -421,8 +426,10 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   /** Points-based elements (trackPath/platform) render at node (0,0) with absolute points —
    * dragging accumulates an offset in the node's own x/y, which *is* the dx/dy to apply. */
   function handlePathDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
-    const dx = snap(e.target.x(), gridSize);
-    const dy = snap(e.target.y(), gridSize);
+    const moving = doc.elements.find((el) => el.id === elementId);
+    const step = moving?.type === "platform" ? Math.max(1, gridSize / 2) : gridSize;
+    const dx = snap(e.target.x(), step);
+    const dy = snap(e.target.y(), step);
     e.target.position({ x: 0, y: 0 });
     if (dx === 0 && dy === 0) return;
     dispatch({
@@ -449,6 +456,9 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     if (!element || !("points" in element)) return;
     const isTrack = element.type === "trackPath";
     const isEndpoint = pointIndex === 0 || pointIndex === points.length - 1;
+    // Platform corners snap to half the grid step so a shape's width can sit between grid lines
+    // (ADR 0005 rev.); tracks and everything else stay on the full grid.
+    const step = element.type === "platform" ? Math.max(1, gridSize / 2) : gridSize;
 
     let px = e.target.x();
     let py = e.target.y();
@@ -473,16 +483,28 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     }
 
     if (!weldPartnerId) {
-      if (isTrack && !e.evt.altKey) {
-        const anchor = points[pointIndex - 1] ?? points[pointIndex + 1];
-        if (anchor) {
-          const s = snapSegmentAngle(anchor, { x: px, y: py });
+      const anchor =
+        isTrack && !e.evt.altKey ? (points[pointIndex - 1] ?? points[pointIndex + 1]) : undefined;
+      if (anchor) {
+        // Keep the exact standard angle (snapSegmentAngle always snaps now); quantise the
+        // distance along that ray to the grid rather than grid-snapping x and y independently,
+        // which would pull the point back off the angle.
+        const s = snapSegmentAngle(anchor, { x: px, y: py });
+        const rdx = s.x - anchor.x;
+        const rdy = s.y - anchor.y;
+        const rlen = Math.hypot(rdx, rdy);
+        if (rlen > 0) {
+          const qlen = Math.max(gridSize, Math.round(rlen / gridSize) * gridSize);
+          px = Math.round((anchor.x + (rdx / rlen) * qlen) * 2) / 2;
+          py = Math.round((anchor.y + (rdy / rlen) * qlen) * 2) / 2;
+        } else {
           px = s.x;
           py = s.y;
         }
+      } else {
+        px = snap(px, step);
+        py = snap(py, step);
       }
-      px = snap(px, gridSize);
-      py = snap(py, gridSize);
     }
 
     e.target.position({ x: points[pointIndex]!.x, y: points[pointIndex]!.y });
@@ -533,7 +555,8 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     const stage = e.target.getStage();
     if (!stage) return;
     const world = toWorldPoint(stage);
-    const p = { x: snap(world.x, gridSize), y: snap(world.y, gridSize) };
+    const vStep = element.type === "platform" ? Math.max(1, gridSize / 2) : gridSize;
+    const p = { x: snap(world.x, vStep), y: snap(world.y, vStep) };
     // A platform with 3+ points is a closed polygon, so the wrap edge (last → first) is also a
     // candidate for insertion; a trackPath is an open polyline.
     const closed = element.type === "platform" && element.points.length >= 3;

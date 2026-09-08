@@ -32,13 +32,20 @@ describe("snapSegmentAngle", () => {
     expect((snapped.y - from.y) / (snapped.x - from.x)).toBeCloseTo(1, 2);
   });
 
-  it("leaves a segment well away from any snap angle alone", () => {
-    const to = { x: 200, y: 135 }; // ~19 deg, > 6 deg from 0 and from 26.565
-    expect(snapSegmentAngle(from, to)).toEqual(to);
+  it("always snaps — a ~19deg segment is pulled onto the nearest angle (1:2), not left free", () => {
+    const to = { x: 200, y: 135 }; // ~19.3 deg — nearer 26.565 than 0
+    const snapped = snapSegmentAngle(from, to);
+    expect(snapped).not.toEqual(to);
+    expect((snapped.y - from.y) / (snapped.x - from.x)).toBeCloseTo(0.5, 2);
+  });
+
+  it("snaps a ~13deg segment onto 0deg (nearer horizontal than 1:2)", () => {
+    const snapped = snapSegmentAngle(from, { x: 200, y: 123 });
+    expect(snapped.y).toBeCloseTo(100);
   });
 
   it("bypass returns the raw point", () => {
-    const to = { x: 200, y: 101 };
+    const to = { x: 200, y: 135 };
     expect(snapSegmentAngle(from, to, true)).toBe(to);
   });
 

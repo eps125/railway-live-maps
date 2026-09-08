@@ -211,10 +211,11 @@ Modes:
 - Magnetic track endpoints — an endpoint dropped within the weld tolerance of another track's
   endpoint snaps onto it and the pair is given a shared `topologyEdgeId` so the publish-time
   weld merges them (ADR 0005 E1).
-- Track segment angle-snap to `{0°, ±1:2, ±1:1, 90°}` while drawing or dragging an endpoint;
-  hold Alt to draw a free angle (ADR 0005 E1).
-- Multi-vertex polyline editing for tracks and platforms: double-click a segment to insert a
-  corner, double-click a corner handle to remove it (kept ≥ 2 points) (ADR 0005 E2).
+- Track endpoint drags snap **unconditionally** to the nearest of `{0°, ±1:2, ±1:1, 90°}`
+  (distance along the ray quantised to the grid); hold Alt for a free angle (ADR 0005 E1).
+- Multi-vertex editing for tracks and platforms: double-click an edge to insert a corner,
+  double-click a corner handle to remove it (track ≥ 2 points, platform polygon ≥ 3) (ADR 0005
+  E2). Platform corners snap to **half the grid step**; everything else to the full grid.
 - Click and marquee selection.
 - Multi-select and move.
 - Numeric geometry editing.

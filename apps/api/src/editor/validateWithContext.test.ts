@@ -6,9 +6,13 @@ import { validateDraftInContext } from "./validateWithContext.js";
 type QueryHandler = (text: string, values?: unknown[]) => { rows: unknown[] };
 
 function fakePool(handler: QueryHandler): Pool {
-  return {
-    query: async (text: string, values?: unknown[]) => handler(text, values),
-  } as unknown as Pool;
+  const query = async (text: string, values?: unknown[]) => {
+    // Transaction / session-setting statements the scoped-client wrapper issues are no-ops here.
+    if (/^\s*(begin|commit|rollback|set )/i.test(text)) return { rows: [] };
+    return handler(text, values);
+  };
+  const client = { query, release: () => undefined };
+  return { query, connect: async () => client } as unknown as Pool;
 }
 
 function baseDoc(overrides: Partial<MapDocument> = {}): MapDocument {
@@ -76,6 +80,57 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
 
     expect(result.info.boundBerthCount).toBe(1);
     expect(result.info.unboundBerthCount).toBe(0);
+  });
+
+  it("warns 'not seen in the last 90 days' and probes td_berth_event wanted-driven, not a full scan", async () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "berth-1",
+          layerId: "l1",
+          zIndex: 0,
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "0512",
+        },
+      ],
+      bindings: [
+        {
+          id: "bind-1",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "0512",
+          allowDuplicate: false,
+        },
+      ],
+    });
+
+    let observedSql = "";
+    let observedValues: unknown[] | undefined;
+    const pool = fakePool((text, values) => {
+      if (text.includes("from td_berth_event")) {
+        observedSql = text;
+        observedValues = values;
+        return { rows: [] }; // never observed
+      }
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const result = await validateDraftInContext(pool, doc);
+
+    expect(observedSql).toContain("exists (");
+    expect(observedSql).toContain("e.event_at >= now()");
+    expect(observedSql).not.toMatch(/union all/i);
+    expect(observedValues).toEqual([["PX"], ["0512"], 90]);
+    expect(result.warnings.map((w) => w.code)).toContain("binding_never_observed");
+    expect(result.warnings[0]?.message).toMatch(/last 90 days/);
+    expect(result.info.observedBerthBindingPercentage).toBe(0);
   });
 
   it("counts a berth as unbound when no binding in doc.bindings references it, regardless of element.bindingId", async () => {

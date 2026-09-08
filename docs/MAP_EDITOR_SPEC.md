@@ -268,7 +268,9 @@ Each committed command/batch records affected IDs, before/after data, author and
 - Element outside canvas.
 - Overlapping berth text.
 - Berth not attached to nearby track.
-- Binding never observed in the nationwide retained data.
+- Binding not seen in the nationwide retained data in the last 90 days (bounded so the check
+  stays fast on the live recorder — an all-history scan of `td_berth_event` was timing publish
+  out).
 - Duplicated binding.
 - Signal has no S-Class binding; expected for Lancaster and suppressible per map.
 - Experimental future S-Class mapping.

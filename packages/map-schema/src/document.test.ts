@@ -129,4 +129,53 @@ describe("MapDocumentSchema", () => {
     });
     expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
   });
+
+  it("accepts a standalone platformNumber element and signal.renderMode (ADR 0005)", () => {
+    const doc = minimalDoc({
+      elements: [
+        {
+          id: "pn1",
+          layerId: "l1",
+          type: "platformNumber",
+          x: 10,
+          y: 5,
+          text: "2",
+          platformId: "p1",
+        },
+        {
+          id: "sig1",
+          layerId: "l1",
+          type: "signal",
+          x: 0,
+          y: 0,
+          orientation: 180,
+          renderMode: "offset",
+        },
+      ],
+    });
+    const result = MapDocumentSchema.safeParse(doc);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const sig = result.data.elements.find((e) => e.id === "sig1");
+      expect(sig?.type === "signal" && sig.renderMode).toBe("offset");
+    }
+  });
+
+  it("still accepts a pre-ADR-0005 map with an inline platform.number", () => {
+    const doc = minimalDoc({
+      elements: [
+        {
+          id: "p1",
+          layerId: "l1",
+          type: "platform",
+          points: [
+            { x: 0, y: 0 },
+            { x: 40, y: 0 },
+          ],
+          number: "3",
+        },
+      ],
+    });
+    expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
+  });
 });

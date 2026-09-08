@@ -7,6 +7,8 @@ import {
   type CompiledMapBundle,
   type MapElement,
   type PlatformElement,
+  type PlatformNumberElement,
+  type SignalElement,
 } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
 import { RunPopup } from "./RunPopup.js";
@@ -40,11 +42,42 @@ function berthColors(berthState: BerthState | undefined): { fill: string; stroke
   return { fill: "#1c3a5e", stroke: "#2f5b8a" };
 }
 
-/** ADR 0004 D6: a platform is a filled orange bar (Traksy `#FFA500`) offset from its track,
- * with the number in a white bordered box — replacing the old bare thick line. The bar spans
- * the platform polyline's x-range; its y is that polyline's own level, nudged to the far side
- * of a bound track when `trackElementId` is set. Colours come from `--map-platform-*` tokens
- * (styles.css) with hard fallbacks so jsdom / a missing stylesheet still paints. */
+/** The white bordered platform-number box (Traksy pattern), centred on `(cx, cy)`. Shared by
+ * the legacy inline `platform.number` and the standalone `platformNumber` element (ADR 0005
+ * E3). Colours come from `--map-platform-number-*` tokens with hard fallbacks. */
+function numberBox(cx: number, cy: number, text: string, fontSize: number): JSX.Element {
+  const box = MAP_STYLE.platform.numberBox;
+  return (
+    <>
+      <rect
+        x={cx - box / 2}
+        y={cy - box / 2}
+        width={box}
+        height={box}
+        fill="var(--map-platform-number-fill, #ffffff)"
+        stroke="var(--map-platform-number-border, #2d3644)"
+        strokeWidth={1}
+      />
+      <text
+        x={cx}
+        y={cy}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={fontSize}
+        fontWeight={700}
+        fill="var(--map-platform-number-text, #04101f)"
+      >
+        {text}
+      </text>
+    </>
+  );
+}
+
+/** ADR 0004 D6 / ADR 0005 E2-E3: a platform is a filled orange bar (Traksy `#FFA500`) that
+ * follows its polyline — any number of vertices, so L-shaped / stepped platforms are just more
+ * points. Offset to the far side of a bound track when `trackElementId` is set (straight-bar
+ * case only). The number is now a separate `platformNumber` element; `element.number` is drawn
+ * here only for maps published before ADR 0005. */
 function renderPlatform(
   element: PlatformElement,
   elementsById: Record<string, MapElement>,
@@ -52,55 +85,119 @@ function renderPlatform(
   const xs = element.points.map((p) => p.x);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
-  const midX = (minX + maxX) / 2;
-  const selfY = pointOnPathAtX(element.points, midX) ?? element.points[0]!.y;
+  const straight = element.points.length === 2 && element.points[0]!.y === element.points[1]!.y;
 
-  let barY = selfY - MAP_STYLE.platform.height / 2;
-  const boundTrack = element.trackElementId ? elementsById[element.trackElementId] : undefined;
-  if (boundTrack?.type === "trackPath") {
-    const trackY = pointOnPathAtX(boundTrack.points, midX);
-    if (trackY !== null) {
-      const below = selfY >= trackY;
-      barY = below
-        ? trackY + MAP_STYLE.platform.offset
-        : trackY - MAP_STYLE.platform.offset - MAP_STYLE.platform.height;
+  let legacyNumber: JSX.Element | null = null;
+
+  if (straight) {
+    const midX = (minX + maxX) / 2;
+    const selfY = element.points[0]!.y;
+    let barY = selfY - MAP_STYLE.platform.height / 2;
+    const boundTrack = element.trackElementId ? elementsById[element.trackElementId] : undefined;
+    if (boundTrack?.type === "trackPath") {
+      const trackY = pointOnPathAtX(boundTrack.points, midX);
+      if (trackY !== null) {
+        barY =
+          selfY >= trackY
+            ? trackY + MAP_STYLE.platform.offset
+            : trackY - MAP_STYLE.platform.offset - MAP_STYLE.platform.height;
+      }
     }
+    if (element.number) {
+      legacyNumber = numberBox(
+        minX + MAP_STYLE.platform.numberBox / 2,
+        barY + MAP_STYLE.platform.height / 2,
+        element.number,
+        10,
+      );
+    }
+    return (
+      <g key={element.id}>
+        <rect
+          x={minX}
+          y={barY}
+          width={Math.max(maxX - minX, MAP_STYLE.platform.numberBox)}
+          height={MAP_STYLE.platform.height}
+          fill="var(--map-platform-fill, #ffa500)"
+          stroke="none"
+        />
+        {legacyNumber}
+      </g>
+    );
   }
 
-  const box = MAP_STYLE.platform.numberBox;
+  // Multi-vertex / non-straight: draw the polyline itself as a thick orange stroke so every
+  // corner is followed exactly (an L-shaped platform, a bay).
+  if (element.number) {
+    legacyNumber = numberBox(element.points[0]!.x, element.points[0]!.y, element.number, 10);
+  }
   return (
     <g key={element.id}>
-      <rect
-        x={minX}
-        y={barY}
-        width={Math.max(maxX - minX, box)}
-        height={MAP_STYLE.platform.height}
-        fill="var(--map-platform-fill, #ffa500)"
-        stroke="none"
+      <polyline
+        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill="none"
+        stroke="var(--map-platform-fill, #ffa500)"
+        strokeWidth={MAP_STYLE.platform.height}
+        strokeLinejoin="round"
+        strokeLinecap="butt"
       />
-      {element.number ? (
-        <>
-          <rect
-            x={minX}
-            y={barY + MAP_STYLE.platform.height / 2 - box / 2}
-            width={box}
-            height={box}
-            fill="var(--map-platform-number-fill, #ffffff)"
-            stroke="var(--map-platform-number-border, #2d3644)"
-            strokeWidth={1}
-          />
+      {legacyNumber}
+    </g>
+  );
+}
+
+/** ADR 0005 E3: standalone platform number — the author places it above its platform. */
+function renderPlatformNumber(element: PlatformNumberElement): JSX.Element {
+  return <g key={element.id}>{numberBox(element.x, element.y, element.text, element.fontSize)}</g>;
+}
+
+/** ADR 0005 E4: a signal is either `inline` (head on the track at x,y — today's look) or
+ * `offset` (a short stem out to a head set off the track, OTT-inspired but not identical:
+ * shorter stem, solid aspect-colour head with a thin outline, label centred below). Side of
+ * the stem is `orientation` (>= 90 && < 270 → above the track, else below). No aspect change —
+ * still blank/on/off only (CLAUDE.md rule 9). */
+function renderSignal(element: SignalElement, state: SignalState["state"]): JSX.Element {
+  const color = SIGNAL_COLORS[state];
+  const r = MAP_STYLE.signal.radius;
+
+  if (element.renderMode === "offset") {
+    const up = element.orientation >= 90 && element.orientation < 270;
+    const dir = up ? -1 : 1;
+    const headY = element.y + dir * MAP_STYLE.signal.offset;
+    return (
+      <g key={element.id}>
+        <line
+          x1={element.x}
+          y1={element.y}
+          x2={element.x}
+          y2={headY}
+          stroke="#8b949e"
+          strokeWidth={2}
+        />
+        <circle cx={element.x} cy={headY} r={r} fill={color} stroke="#0d1117" strokeWidth={1} />
+        {element.label ? (
           <text
-            x={minX + box / 2}
-            y={barY + MAP_STYLE.platform.height / 2}
+            x={element.x}
+            y={headY + dir * (r + 8)}
             textAnchor="middle"
             dominantBaseline="middle"
             fontSize={10}
-            fontWeight={700}
-            fill="var(--map-platform-number-text, #04101f)"
+            fill="#8b949e"
           >
-            {element.number}
+            {element.label}
           </text>
-        </>
+        ) : null}
+      </g>
+    );
+  }
+
+  return (
+    <g key={element.id}>
+      <circle cx={element.x} cy={element.y} r={r} fill={color} />
+      {element.label ? (
+        <text x={element.x + 10} y={element.y + 4} fontSize={10} fill="#8b949e">
+          {element.label}
+        </text>
       ) : null}
     </g>
   );
@@ -314,6 +411,9 @@ export function MapRenderer({
           if (element.type === "platform") {
             return renderPlatform(element, bundle.elementsById);
           }
+          if (element.type === "platformNumber") {
+            return renderPlatformNumber(element);
+          }
           if (element.type === "station") {
             return (
               <text
@@ -373,17 +473,7 @@ export function MapRenderer({
             );
           }
           if (element.type === "signal") {
-            const signalState = signals[element.id]?.state ?? "blank";
-            return (
-              <g key={element.id}>
-                <circle cx={element.x} cy={element.y} r={6} fill={SIGNAL_COLORS[signalState]} />
-                {element.label ? (
-                  <text x={element.x + 10} y={element.y + 4} fontSize={10} fill="#8b949e">
-                    {element.label}
-                  </text>
-                ) : null}
-              </g>
-            );
+            return renderSignal(element, signals[element.id]?.state ?? "blank");
           }
           if (element.type === "label") {
             return (

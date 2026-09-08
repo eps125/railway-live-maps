@@ -65,15 +65,27 @@ hide vacant boxes entirely (ADR 0004 D5).
 - symbol style
 - optional associated track
 - optional future S-Class binding
+- `renderMode` (ADR 0005 E4): absent / `inline` = head on the track at `(x, y)` (today's look);
+  `offset` = a short stem out to a head set off the track, side from `orientation`. Both ship
+  until the owner picks one. No aspect change either way.
 
 For Lancaster, no S-Class binding is required and operational state is blank.
 
 ### `platform`
 
-Schematic platform shape/line, number/name and optional TIPLOC/platform metadata, plus an
-optional `trackElementId` (offsets the platform bar to the far side of that track). Rendered as
-a filled bar in `--map-platform-fill` (Traksy orange by default) with the number in a white
-bordered box (ADR 0004 D6), not a bare line.
+A multi-vertex polyline (ADR 0005 E2 — any number of corners, so L-shaped / stepped platforms
+are just more points), rendered as a filled bar in `--map-platform-fill` (Traksy orange by
+default). Optional `name` / `tiploc` / `stationId`, and an optional `trackElementId` that
+offsets a straight bar to the far side of that track. `number` is **deprecated** (ADR 0005 E3)
+— still parsed and rendered for maps published before 0005, but new maps use a standalone
+`platformNumber` element. The editor: double-click a segment to add a corner, double-click a
+corner handle to remove it.
+
+### `platformNumber`
+
+The platform number as an independent, freely-placed item (ADR 0005 E3): `text`, position,
+`fontSize`, optional `platformId` soft link. Renders as the white bordered box + text. Lives on
+the Platforms layer with a small positive `zIndex` so it paints above the bars.
 
 ### `station`
 
@@ -195,8 +207,13 @@ Modes:
 
 - Pan and wheel/pinch zoom.
 - Configurable grid and snap-to-grid.
-- Magnetic track endpoints.
-- Horizontal, vertical and optional 45-degree track drawing.
+- Magnetic track endpoints — an endpoint dropped within the weld tolerance of another track's
+  endpoint snaps onto it and the pair is given a shared `topologyEdgeId` so the publish-time
+  weld merges them (ADR 0005 E1).
+- Track segment angle-snap to `{0°, ±1:2, ±1:1, 90°}` while drawing or dragging an endpoint;
+  hold Alt to draw a free angle (ADR 0005 E1).
+- Multi-vertex polyline editing for tracks and platforms: double-click a segment to insert a
+  corner, double-click a corner handle to remove it (kept ≥ 2 points) (ADR 0005 E2).
 - Click and marquee selection.
 - Multi-select and move.
 - Numeric geometry editing.

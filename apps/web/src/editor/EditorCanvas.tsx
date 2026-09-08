@@ -9,6 +9,22 @@ import {
   type MapElement,
 } from "@railway/map-schema";
 import { useEditorState, useEditorDispatch, type ToolMode } from "./EditorState.js";
+import { snapSegmentAngle, weldToEndpoint } from "./geometrySnap.js";
+
+/** Perpendicular distance from a point to a line segment — picks which segment of a polyline a
+ * double-click lands on for vertex insertion (ADR 0005 E2). */
+function distToSegment(
+  p: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
 
 // Fallback only, used for the first paint before ResizeObserver reports the real size of
 // `.editor-canvas-frame` (apps/web/src/styles.css) — the stage itself always tracks that
@@ -91,7 +107,8 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   label: /label/i,
   station: /label|station/i,
   trackPath: /track/i,
-  platform: /track/i,
+  platform: /platform/i,
+  platformNumber: /platform/i,
   boundary: /track/i,
 };
 
@@ -179,6 +196,18 @@ function defaultElementForTool(
           { x: point.x, y: point.y },
           { x: point.x + 100, y: point.y },
         ],
+      };
+    case "platformNumber":
+      // zIndex 1: paints above platform bars (zIndex 0) within the Platforms layer (ADR 0005 E3).
+      return {
+        id,
+        layerId,
+        zIndex: 1,
+        type: "platformNumber",
+        x: point.x,
+        y: point.y,
+        text: "1",
+        fontSize: 10,
       };
     case "select":
     case "multiselect":
@@ -400,20 +429,137 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   }
 
   /** Per-endpoint drag handle for a selected trackPath/platform — the only way to lengthen,
-   * shorten or re-angle a track segment (there's no Transformer-style resize for points-based
-   * elements). Rewrites just the dragged point in place and pushes the whole array through
-   * `setProperty`, so undo/redo gets a single step per drag rather than one per pointer move. */
+   * shorten or re-angle a segment (there's no Transformer-style resize for points-based
+   * elements). Rewrites just the dragged point and pushes the whole array through `setProperty`,
+   * so undo/redo gets one step per drag. For `trackPath` (ADR 0005 E1) the raw drop is first
+   * angle-snapped to `{0°, ±1:2, ±1:1, 90°}` about the neighbouring vertex (Alt bypasses), then
+   * — for an endpoint — magnetically welded onto a nearby other-track endpoint; a welded pair is
+   * given a shared synthetic `topologyEdgeId` so the publish-time weld (ADR 0004 D2) merges
+   * them. */
   function handlePointDragEnd(
     e: Konva.KonvaEventObject<DragEvent>,
     elementId: string,
     pointIndex: number,
     points: Array<{ x: number; y: number }>,
   ): void {
-    const newX = snap(e.target.x(), gridSize);
-    const newY = snap(e.target.y(), gridSize);
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!element || !("points" in element)) return;
+    const isTrack = element.type === "trackPath";
+    const isEndpoint = pointIndex === 0 || pointIndex === points.length - 1;
+
+    let px = e.target.x();
+    let py = e.target.y();
+    let weldPartnerId: string | undefined;
+
+    if (isTrack && isEndpoint) {
+      const others = doc.elements.filter(
+        (el): el is Extract<MapElement, { type: "trackPath" }> =>
+          el.type === "trackPath" && el.id !== elementId,
+      );
+      const ends = others.flatMap((t) => [t.points[0]!, t.points[t.points.length - 1]!]);
+      const welded = weldToEndpoint({ x: px, y: py }, ends);
+      if (welded) {
+        px = welded.x;
+        py = welded.y;
+        weldPartnerId = others.find((t) =>
+          [t.points[0]!, t.points[t.points.length - 1]!].some(
+            (pt) => Math.hypot(pt.x - px, pt.y - py) < 1e-6,
+          ),
+        )?.id;
+      }
+    }
+
+    if (!weldPartnerId) {
+      if (isTrack && !e.evt.altKey) {
+        const anchor = points[pointIndex - 1] ?? points[pointIndex + 1];
+        if (anchor) {
+          const s = snapSegmentAngle(anchor, { x: px, y: py });
+          px = s.x;
+          py = s.y;
+        }
+      }
+      px = snap(px, gridSize);
+      py = snap(py, gridSize);
+    }
+
     e.target.position({ x: points[pointIndex]!.x, y: points[pointIndex]!.y });
-    if (newX === points[pointIndex]!.x && newY === points[pointIndex]!.y) return;
-    const newPoints = points.map((p, i) => (i === pointIndex ? { x: newX, y: newY } : p));
+    const moved = px !== points[pointIndex]!.x || py !== points[pointIndex]!.y;
+    if (!moved && !weldPartnerId) return;
+
+    if (moved) {
+      const newPoints = points.map((p, i) => (i === pointIndex ? { x: px, y: py } : p));
+      dispatch({
+        type: "dispatchCommand",
+        command: { type: "setProperty", elementId, property: "points", value: newPoints },
+      });
+    }
+
+    if (weldPartnerId) {
+      const self = element as Extract<MapElement, { type: "trackPath" }>;
+      const partner = doc.elements.find((el) => el.id === weldPartnerId) as
+        Extract<MapElement, { type: "trackPath" }> | undefined;
+      const shared =
+        self.topologyEdgeId ??
+        partner?.topologyEdgeId ??
+        `weld-${Math.random().toString(36).slice(2, 8)}`;
+      if (self.topologyEdgeId !== shared) {
+        dispatch({
+          type: "dispatchCommand",
+          command: { type: "setProperty", elementId, property: "topologyEdgeId", value: shared },
+        });
+      }
+      if (partner && partner.topologyEdgeId !== shared) {
+        dispatch({
+          type: "dispatchCommand",
+          command: {
+            type: "setProperty",
+            elementId: weldPartnerId,
+            property: "topologyEdgeId",
+            value: shared,
+          },
+        });
+      }
+    }
+  }
+
+  /** ADR 0005 E2: double-click a track/platform segment to insert a grid-snapped vertex on the
+   * nearest segment; double-click an existing vertex handle to remove it (kept ≥ 2 points). */
+  function handleInsertVertex(e: Konva.KonvaEventObject<MouseEvent>, elementId: string): void {
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!element || !("points" in element)) return;
+    const stage = e.target.getStage();
+    if (!stage) return;
+    const world = toWorldPoint(stage);
+    const p = { x: snap(world.x, gridSize), y: snap(world.y, gridSize) };
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < element.points.length - 1; i += 1) {
+      const d = distToSegment(p, element.points[i]!, element.points[i + 1]!);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    const newPoints = [
+      ...element.points.slice(0, bestIdx + 1),
+      p,
+      ...element.points.slice(bestIdx + 1),
+    ];
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setProperty", elementId, property: "points", value: newPoints },
+    });
+  }
+
+  function handleRemoveVertex(
+    e: Konva.KonvaEventObject<MouseEvent>,
+    elementId: string,
+    pointIndex: number,
+  ): void {
+    e.cancelBubble = true;
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!element || !("points" in element) || element.points.length <= 2) return;
+    const newPoints = element.points.filter((_, i) => i !== pointIndex);
     dispatch({
       type: "dispatchCommand",
       command: { type: "setProperty", elementId, property: "points", value: newPoints },
@@ -543,6 +689,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     hitStrokeWidth={16}
                     draggable={draggable}
                     onClick={(e) => handleElementClick(e, element.id)}
+                    onDblClick={(e) => handleInsertVertex(e, element.id)}
                     onDragEnd={(e) => handlePathDragEnd(e, element.id)}
                   />
                   {selected && draggable
@@ -556,6 +703,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                           stroke="#58a6ff"
                           strokeWidth={2}
                           draggable
+                          onDblClick={(e) => handleRemoveVertex(e, element.id, index)}
                           onDragEnd={(e) =>
                             handlePointDragEnd(e, element.id, index, element.points)
                           }
@@ -581,8 +729,10 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     }
                     hitStrokeWidth={16}
                     lineCap="butt"
+                    lineJoin="round"
                     draggable={draggable}
                     onClick={(e) => handleElementClick(e, element.id)}
+                    onDblClick={(e) => handleInsertVertex(e, element.id)}
                     onDragEnd={(e) => handlePathDragEnd(e, element.id)}
                   />
                   {element.number ? (
@@ -607,12 +757,50 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                           stroke="#58a6ff"
                           strokeWidth={2}
                           draggable
+                          onDblClick={(e) => handleRemoveVertex(e, element.id, index)}
                           onDragEnd={(e) =>
                             handlePointDragEnd(e, element.id, index, element.points)
                           }
                         />
                       ))
                     : null}
+                </Group>
+              );
+            }
+            if (element.type === "platformNumber") {
+              const box = MAP_STYLE.platform.numberBox;
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                >
+                  <Rect
+                    x={-box / 2}
+                    y={-box / 2}
+                    width={box}
+                    height={box}
+                    fill="#ffffff"
+                    stroke={selected ? "#58a6ff" : "#2d3644"}
+                    strokeWidth={1}
+                  />
+                  <Text
+                    text={element.text}
+                    x={-box / 2}
+                    y={-box / 2}
+                    width={box}
+                    height={box}
+                    align="center"
+                    verticalAlign="middle"
+                    fontSize={element.fontSize}
+                    fontStyle="bold"
+                    fill="#04101f"
+                    listening={false}
+                  />
                 </Group>
               );
             }
@@ -659,6 +847,11 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
               );
             }
             if (element.type === "signal") {
+              // ADR 0005 E4: `offset` draws a stem out to a head set off the track; `inline` is
+              // today's on-track circle. Side from `orientation` (>=90 && <270 -> above).
+              const offsetMode = element.renderMode === "offset";
+              const dir = element.orientation >= 90 && element.orientation < 270 ? -1 : 1;
+              const hy = offsetMode ? dir * MAP_STYLE.signal.offset : 0;
               return (
                 <Group
                   key={element.id}
@@ -669,14 +862,26 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                   onClick={(e) => handleElementClick(e, element.id)}
                   onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
                 >
+                  {offsetMode ? (
+                    <Line points={[0, 0, 0, hy]} stroke="#8b949e" strokeWidth={2} />
+                  ) : null}
                   <Circle
-                    radius={8}
+                    y={hy}
+                    radius={MAP_STYLE.signal.radius}
                     fill={signalFill(element.symbolStyle)}
                     stroke={selected ? "#58a6ff" : "#2d3644"}
                     strokeWidth={selected ? 2 : 1}
                   />
                   {element.label ? (
-                    <Text text={element.label} y={12} fontSize={10} fill="#8b96a5" />
+                    <Text
+                      text={element.label}
+                      x={offsetMode ? -20 : 12}
+                      y={hy + (offsetMode ? dir * (MAP_STYLE.signal.radius + 4) - 5 : 0)}
+                      width={40}
+                      align={offsetMode ? "center" : "left"}
+                      fontSize={10}
+                      fill="#8b96a5"
+                    />
                   ) : null}
                 </Group>
               );

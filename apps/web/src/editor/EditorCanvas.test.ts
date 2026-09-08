@@ -22,6 +22,16 @@ describe("defaultLayerIdForTool", () => {
     expect(defaultLayerIdForTool("boundary", standardLayers)).toBe("layer-track");
   });
 
+  it("places platform and platformNumber tools on a Platforms layer when one exists (ADR 0005 E3)", () => {
+    const withPlatforms: Layer[] = [
+      { id: "layer-track", name: "Track", order: 0, visible: true, locked: false },
+      { id: "layer-platforms", name: "Platforms", order: 1, visible: true, locked: false },
+      { id: "layer-berths", name: "Berths", order: 2, visible: true, locked: false },
+    ];
+    expect(defaultLayerIdForTool("platform", withPlatforms)).toBe("layer-platforms");
+    expect(defaultLayerIdForTool("platformNumber", withPlatforms)).toBe("layer-platforms");
+  });
+
   it("falls back to the first layer when no name match exists", () => {
     const unnamedLayers: Layer[] = [
       { id: "layer-a", name: "Alpha", order: 0, visible: true, locked: false },

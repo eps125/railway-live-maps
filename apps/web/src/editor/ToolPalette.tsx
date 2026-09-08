@@ -7,6 +7,7 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "berth", label: "Berth" },
   { mode: "signal", label: "Signal" },
   { mode: "platform", label: "Platform" },
+  { mode: "platformNumber", label: "Plat. number" },
   { mode: "station", label: "Station" },
   { mode: "label", label: "Label" },
   { mode: "boundary", label: "Boundary" },

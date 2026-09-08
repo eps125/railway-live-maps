@@ -341,6 +341,73 @@ describe("MapRenderer", () => {
     expect(screen.getByText("1A01")).toBeInTheDocument();
   });
 
+  it("renders a standalone platformNumber element (ADR 0005 E3)", () => {
+    const doc = bundle({
+      elementsById: {
+        "pn-1": {
+          id: "pn-1",
+          layerId: "layer-visible",
+          zIndex: 1,
+          type: "platformNumber",
+          x: 50,
+          y: 30,
+          text: "4",
+          fontSize: 10,
+        },
+      },
+    });
+    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(screen.getByText("4")).toBeInTheDocument();
+  });
+
+  it("still renders a legacy inline platform.number (ADR 0005 E3 back-compat)", () => {
+    const doc = bundle({
+      elementsById: {
+        "plat-1": {
+          id: "plat-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "platform",
+          points: [
+            { x: 0, y: 50 },
+            { x: 120, y: 50 },
+          ],
+          number: "3",
+        },
+      },
+    });
+    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(screen.getByText("3")).toBeInTheDocument();
+  });
+
+  it("draws a stem for an offset-mode signal, none for inline (ADR 0005 E4)", () => {
+    const mk = (id: string, renderMode?: "inline" | "offset") => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "signal" as const,
+      x: 20,
+      y: 20,
+      orientation: 0,
+      symbolStyle: "signal-blank" as const,
+      ...(renderMode ? { renderMode } : {}),
+    });
+
+    const inline = render(
+      <MapRenderer bundle={bundle({ elementsById: { s: mk("s") } })} berths={{}} signals={{}} />,
+    );
+    expect(inline.container.querySelector("line")).toBeNull();
+
+    const offset = render(
+      <MapRenderer
+        bundle={bundle({ elementsById: { s: mk("s", "offset") } })}
+        berths={{}}
+        signals={{}}
+      />,
+    );
+    expect(offset.container.querySelector("line")).not.toBeNull();
+  });
+
   it("does nothing when clicking an unbound or empty berth — only occupied berths are clickable", () => {
     const doc = bundle({
       elementsById: {

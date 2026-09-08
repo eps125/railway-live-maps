@@ -812,10 +812,32 @@ Purely visual/UX and map-authoring — not a blocker for any other milestone. Re
 inspiration only; each future look at Vail Data / Traksy / OpenTrainTimes needs owner sign-off
 per CLAUDE.md non-negotiable #14.
 
-### Milestone 14c — editor authoring: track snapping, multi-vertex platforms, platform numbers, signal modes `[planned]`
+### Milestone 14c — editor authoring: track snapping, multi-vertex platforms, platform numbers, signal modes `[done — 2026-09-08]`
 
 See `docs/adr/0005-editor-track-platform-signal-authoring.md`. Closes the editor-authoring gap
-14a left (ADR 0004 D3 correction). No DB migration; `schemaVersion` stays 1.
+14a left (ADR 0004 D3 correction). No DB migration; `schemaVersion` stays 1. `build:libs`,
+`pnpm -r typecheck`, `pnpm run lint`, `prettier --check` and `vite build` all green; the
+map-schema + web `map`/`editor` vitest suites pass at 132 (15 new: geometrySnap ×9, document
+×2, MapRenderer ×3, EditorCanvas ×1) and `apps/api` at 25.
+
+Delivered: `packages/map-schema/src/document.ts` (`platformNumber` element, optional
+`signal.renderMode`, `platform.number` marked deprecated) + `index.ts` export;
+`apps/web/src/editor/geometrySnap.ts` (+ `.test.ts`, 9 tests — `SNAP_ANGLES_DEG`,
+`snapSegmentAngle`, `weldToEndpoint`); `EditorCanvas.tsx` (E1 endpoint angle-snap + weld +
+shared synthetic `topologyEdgeId` in `handlePointDragEnd`; E2 `handleInsertVertex` /
+`handleRemoveVertex` on segment/handle double-click; `platformNumber` render + tool + layer
+hint; signal `offset` branch); `EditorState.tsx` / `ToolPalette.tsx` (`platformNumber` tool);
+`PropertyPanel.tsx` (`platformNumber` block; signal "Offset style" checkbox; `platform.number`
+field removed); `MapRenderer.tsx` (shared `numberBox`, `renderPlatformNumber`, `renderSignal`
+with `offset`, multi-vertex platform polyline); `apps/api/src/editor/draftStore.ts` (5-layer
+blank scaffold); `styles.css` (`.field--checkbox`); `docs/MAP_EDITOR_SPEC.md` §3/§7.
+
+Known limitations: E1 weld uses a synthetic `topologyEdgeId` (no real `topology` node/edge — a
+14b concern); angle-snap then grid-snap can nudge an exact 1:2 ratio off-grid for short
+segments; vertex removal is double-click only (no Delete-key selection); `platformNumber` is
+not auto-linked to a platform on placement.
+
+**Original plan (for reference):**
 
 **E1 — track tool angle-snap + endpoint weld**
 

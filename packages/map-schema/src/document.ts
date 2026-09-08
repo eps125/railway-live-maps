@@ -83,11 +83,17 @@ const SignalElementSchema = BaseElementSchema.extend({
   symbolStyle: z.enum(["signal-blank", "signal-on", "signal-off"]).default("signal-blank"),
   trackElementId: z.string().optional(),
   bindingId: z.string().optional(),
+  /** ADR 0005 E4: `offset` = a short stem from (x,y) out to a head set off the track (side from
+   * `orientation`), OTT-inspired. Absent / `inline` = today's head on the track at (x,y). Both
+   * ship so the owner can compare and drop one later. No aspect change either way (rule 9). */
+  renderMode: z.enum(["inline", "offset"]).optional(),
 });
 
 const PlatformElementSchema = BaseElementSchema.extend({
   type: z.literal("platform"),
   points: z.array(PointSchema).min(2),
+  /** @deprecated ADR 0005 E3 — use a standalone `platformNumber` element. Still parsed and
+   * rendered for maps published before 0005; the editor no longer writes it. */
   number: z.string().optional(),
   name: z.string().optional(),
   tiploc: z.string().optional(),
@@ -95,6 +101,19 @@ const PlatformElementSchema = BaseElementSchema.extend({
    * far side of that track by the standard gap instead of centring it on its own polyline. */
   trackElementId: z.string().optional(),
   stationId: z.string().optional(),
+});
+
+/** ADR 0005 E3: the platform number as an independent, freely-placed item (the author puts it
+ * above its platform). Renders as the white bordered box + text. `platformId` is an optional
+ * soft link for future grouping; nothing enforces it. Lives on the Platforms layer with a
+ * small positive `zIndex` so it paints above the bars. */
+const PlatformNumberElementSchema = BaseElementSchema.extend({
+  type: z.literal("platformNumber"),
+  x: z.number(),
+  y: z.number(),
+  text: z.string().min(1),
+  platformId: z.string().optional(),
+  fontSize: z.number().positive().default(10),
 });
 
 /** ADR 0004 D6: a named station. Renders its `name` in the standard station-label style; the
@@ -133,6 +152,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   BerthElementSchema,
   SignalElementSchema,
   PlatformElementSchema,
+  PlatformNumberElementSchema,
   StationElementSchema,
   LabelElementSchema,
   BoundaryElementSchema,
@@ -194,6 +214,7 @@ export type TrackPathElement = z.infer<typeof TrackPathElementSchema>;
 export type BerthElement = z.infer<typeof BerthElementSchema>;
 export type SignalElement = z.infer<typeof SignalElementSchema>;
 export type PlatformElement = z.infer<typeof PlatformElementSchema>;
+export type PlatformNumberElement = z.infer<typeof PlatformNumberElementSchema>;
 export type StationElement = z.infer<typeof StationElementSchema>;
 export type LabelElement = z.infer<typeof LabelElementSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;

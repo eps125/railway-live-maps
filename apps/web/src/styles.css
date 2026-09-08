@@ -276,6 +276,12 @@ button {
   color: var(--color-text-muted);
 }
 
+.field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .field input[type="text"],
 .field input[type="number"],
 .field input[type="datetime-local"],

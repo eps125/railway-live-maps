@@ -424,6 +424,14 @@ export function PropertyPanel(): JSX.Element {
               <option value="signal-off">off</option>
             </select>
           </label>
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={element.renderMode === "offset"}
+              onChange={(e) => setProp("renderMode", e.target.checked ? "offset" : "inline")}
+            />
+            Offset style (stem + head off the track)
+          </label>
         </>
       )}
 
@@ -456,15 +464,43 @@ export function PropertyPanel(): JSX.Element {
       {element.type === "platform" && (
         <>
           <TextField
-            label="Number"
-            value={element.number ?? ""}
-            onCommit={(v) => setProp("number", v || undefined)}
-          />
-          <TextField
             label="Name"
             value={element.name ?? ""}
             onCommit={(v) => setProp("name", v || undefined)}
           />
+          <p className="field-hint">
+            Double-click a segment to add a corner; double-click a corner handle to remove it.
+            Platform numbers are a separate item (Plat. number tool).
+          </p>
+        </>
+      )}
+
+      {element.type === "platformNumber" && (
+        <>
+          <TextField label="Text" value={element.text} onCommit={(v) => setProp("text", v)} />
+          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
+          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <NumberField
+            label="Font size"
+            value={element.fontSize}
+            onCommit={(v) => setProp("fontSize", v)}
+          />
+          <label className="field">
+            Platform
+            <select
+              value={element.platformId ?? ""}
+              onChange={(e) => setProp("platformId", e.target.value || undefined)}
+            >
+              <option value="">(none)</option>
+              {doc.elements
+                .filter((el) => el.type === "platform")
+                .map((el) => (
+                  <option key={el.id} value={el.id}>
+                    {el.type === "platform" && el.name ? el.name : el.id}
+                  </option>
+                ))}
+            </select>
+          </label>
         </>
       )}
 

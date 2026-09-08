@@ -23,7 +23,16 @@ function blankDocument(slug: string): MapDocument {
       canvas: { width: 2000, height: 800, gridSize: 10 },
       timezone: "Europe/London",
     },
-    layers: [{ id: "layer-default", name: "Default", visible: true, locked: false, order: 0 }],
+    // ADR 0005 E3: a fresh map starts with the conventional layer stack so tracks, platforms,
+    // platform numbers, berths, signals and labels each land where a human expects (see
+    // EditorCanvas.tsx defaultLayerIdForTool). Existing drafts are untouched.
+    layers: [
+      { id: "layer-track", name: "Track", visible: true, locked: false, order: 0 },
+      { id: "layer-platforms", name: "Platforms", visible: true, locked: false, order: 1 },
+      { id: "layer-berths", name: "Berths", visible: true, locked: false, order: 2 },
+      { id: "layer-signals", name: "Signals", visible: true, locked: false, order: 3 },
+      { id: "layer-labels", name: "Labels", visible: true, locked: false, order: 4 },
+    ],
     elements: [],
     topology: { nodes: [], edges: [] },
     bindings: [],

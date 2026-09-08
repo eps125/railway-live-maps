@@ -10,6 +10,7 @@ export {
   type BerthElement,
   type SignalElement,
   type PlatformElement,
+  type PlatformNumberElement,
   type StationElement,
   type LabelElement,
   type BoundaryElement,

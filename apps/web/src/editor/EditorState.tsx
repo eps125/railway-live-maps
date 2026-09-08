@@ -9,6 +9,7 @@ export type ToolMode =
   | "berth"
   | "signal"
   | "platform"
+  | "platformNumber"
   | "station"
   | "label"
   | "boundary";

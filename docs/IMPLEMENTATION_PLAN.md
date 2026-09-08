@@ -812,6 +812,62 @@ Purely visual/UX and map-authoring — not a blocker for any other milestone. Re
 inspiration only; each future look at Vail Data / Traksy / OpenTrainTimes needs owner sign-off
 per CLAUDE.md non-negotiable #14.
 
+### Milestone 14c — editor authoring: track snapping, multi-vertex platforms, platform numbers, signal modes `[planned]`
+
+See `docs/adr/0005-editor-track-platform-signal-authoring.md`. Closes the editor-authoring gap
+14a left (ADR 0004 D3 correction). No DB migration; `schemaVersion` stays 1.
+
+**E1 — track tool angle-snap + endpoint weld**
+
+- Files: `apps/web/src/editor/EditorCanvas.tsx` (draw + endpoint-drag snap to
+  `{0°, ±1:2, ±1:1, 90°}` within threshold, Alt to bypass; endpoint within
+  `MAP_STYLE.weldTolerance` of another track endpoint snaps onto it and adds a `topology`
+  node/edge if missing), a pure `apps/web/src/editor/geometrySnap.ts` (+ `.test.ts`) for the
+  angle/weld math.
+- Acceptance: a dragged track endpoint released near 26–27° lands exactly on 1:2 and near
+  43–47° on 1:1; an endpoint released within 6 units of another track's end coincides with it
+  and the published bundle then welds the two (ADR 0004 D2); Alt-drag leaves a free angle.
+
+**E2 — multi-vertex polylines + vertex add/remove**
+
+- Files: `EditorCanvas.tsx` (double-click a selected track/platform segment inserts a
+  grid/angle-snapped vertex; a selected vertex handle + Delete/Backspace or right-click removes
+  it, blocked below 2 points), reuses the existing `setProperty "points"` command.
+- Acceptance: a platform can be given ≥ 4 corners (L-shape) and a corner removed; undo/redo is
+  one step per add/remove; a 2-point element refuses vertex removal.
+
+**E3 — independent `platformNumber` element + Platforms layer**
+
+- Files: `packages/map-schema/src/document.ts` (`PlatformNumberElementSchema` → union;
+  `platform.number` marked deprecated in a doc comment, still parsed/rendered),
+  `index.ts` (type export), `compiler.ts` bounding box (covered by the generic x/y branch),
+  `MapRenderer.tsx` (`platformNumber` render = the existing white-box glyph, standalone),
+  `EditorCanvas.tsx` + `ToolPalette.tsx` + `EditorState.tsx` (`platformNumber` tool),
+  `PropertyPanel.tsx` (`platformNumber` block: text/x/y/platformId; drop `platform.number`
+  field), `apps/api/src/editor/draftStore.ts` (blank scaffold → Track/Platforms/Berths/
+  Signals/Labels layers), `EditorCanvas.tsx` `defaultLayerIdForTool` + on-demand "Platforms"
+  layer creation, default `zIndex` nudge so numbers paint above bars.
+- Tests: `document.test.ts` (parse `platformNumber`, `platform.number` still valid),
+  `MapRenderer.test.tsx` (standalone number renders; legacy `platform.number` still renders).
+- Acceptance: a number is placed and moved independently of its platform; both sit on the
+  Platforms layer with the number above the bar; a pre-ADR-0005 map with `platform.number`
+  still shows its numbers.
+
+**E4 — signal render mode `inline` | `offset`**
+
+- Files: `document.ts` (`signal.renderMode` enum, default `inline`), `index.ts`,
+  `MapRenderer.tsx` + `EditorCanvas.tsx` (shared `offset` branch: stem `MAP_STYLE.signal.offset`
+  long off the track, filled aspect-colour head with a thin dark outline, label centred below;
+  side from `orientation`), `PropertyPanel.tsx` (checkbox flipping `renderMode`).
+- Look at OpenTrainTimes for inspiration (`.stem` / `.aspect` / `.sig_id`, left/right `g.sig`
+  groups) — deliberately not identical (shorter stem, solid head, keep blank/on/off colours).
+- Acceptance: toggling the checkbox switches a signal between the current on-track circle and a
+  stem+offset-head form in both the canvas and the public renderer; aspect logic unchanged
+  (blank/on/off only, no calculation — CLAUDE.md rule 9).
+
+Deferred out of 14c: applying angle-snap retroactively to existing tracks; a dedicated
+platform-shape template; auto-linking `platformNumber.platformId` on placement.
+
 ## Milestone 15 — live-path hardening and garner integration
 
 Prompted by a run of production incidents (2026-08-31 → 09-01: RESOLVER_VERSION-bump grind,

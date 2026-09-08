@@ -69,11 +69,25 @@ OTT); rounded ends on real buffer stops are later polish.
 
 ### D3 — Track standardisation route
 
-**Route C now.** The editor authors track as rows / segments / row-transitions and _emits_
-standardised polylines + topology nodes into the canonical JSON; the high-level lane model is
-kept in `editorMetadata` (stripped at publish) for re-editing. The renderer and compiled
-bundle keep today's `trackPath.points` shape. **Route A — a structural lane/row model in the
-canonical JSON — is an explicit later milestone,** not done now.
+The renderer and compiled bundle keep today's `trackPath.points` shape; standardisation is an
+authoring-time concern, not a canonical-format one for now.
+
+**Correction (2026-09-08):** the original wording here ("Route C now — the editor authors
+track as rows / segments / row-transitions and emits standardised polylines") described a
+decision, but **Milestone 14a shipped no editor track-authoring changes at all** — track
+drawing in the editor is still a freeform two-point polyline with draggable endpoints, any
+angle, any position, and 14a's D2 weld runs only in `compileMapDocument` at publish (the editor
+canvas still shows separate segments). Editor-side track standardisation is therefore unbuilt.
+It is now split:
+
+- **Interim (ADR 0005, Milestone 14c):** angle-snap the freeform track tool to `{0°, ±1:2}`
+  plus a magnetic endpoint weld. No lane model, no schema change.
+- **Route A (Milestone 14b):** a structural lane/row model (`track`, `trackSegment`,
+  `row-transition`, `turnout`) in the canonical JSON, replacing free `trackPath` polylines.
+
+The "Route C" hybrid (author in a lane model, emit polylines, keep the lane model in
+`editorMetadata`) is not being pursued as a distinct step — 14c covers the immediate need and
+14b is the durable form.
 
 ### D4 — Style profile
 

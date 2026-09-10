@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "map": {
     "id": "lancaster",
-    "name": "Lancaster",
+    "name": "Preston PSB",
     "canvas": { "width": 2000, "height": 800, "gridSize": 10 },
     "timezone": "Europe/London"
   },

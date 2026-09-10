@@ -97,7 +97,15 @@ around member platforms is later work.
 
 ### `label`
 
-Plain sanitized text with position, alignment and size.
+Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line
+(rendered as stacked `<tspan>`s); `station.name` wraps the same way. The editor's label Text
+field is a textarea.
+
+### Map metadata
+
+`map.name` is the map's display heading on the public renderer (e.g. "Preston PSB") and is
+editable in the editor's Properties panel when nothing is selected — the per-map variable for
+naming as more maps are authored. `map.id` (the slug) is fixed.
 
 ### `boundary`
 

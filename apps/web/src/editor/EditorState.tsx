@@ -42,6 +42,9 @@ export type EditorAction =
   | { type: "setToolMode"; mode: ToolMode }
   | { type: "setViewport"; viewport: Viewport }
   | { type: "setDocument"; document: MapDocument }
+  /** Map-level display name (shown as the map's heading on the public renderer). Not part of
+   * the element command model, so it's a plain state update with no undo entry. */
+  | { type: "setMapName"; name: string }
   | { type: "markSynced" };
 
 function reducer(state: EditorState, action: EditorAction): EditorState {
@@ -93,6 +96,13 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       return { ...state, toolMode: action.mode };
     case "setViewport":
       return { ...state, viewport: action.viewport };
+    case "setMapName":
+      if (action.name === state.document.map.name) return state;
+      return {
+        ...state,
+        document: { ...state.document, map: { ...state.document.map, name: action.name } },
+        dirty: true,
+      };
     case "setDocument":
       return {
         ...state,

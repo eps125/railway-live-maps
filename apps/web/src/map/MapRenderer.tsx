@@ -180,8 +180,56 @@ function renderSignal(element: SignalElement, state: SignalState["state"]): JSX.
   );
 }
 
-const PADDING = 40;
 export const MIN_ZOOM_WIDTH = 100;
+
+/** Public map view state (pan/zoom), remembered per map so returning to a map restores where
+ * you were looking — like traksy.uk. `localStorage`, keyed by map id. */
+const VIEW_KEY_PREFIX = "mtm.mapView.";
+/** First visit renders at this fixed magnification (map units per CSS pixel) regardless of how
+ * big the map is — a consistent default zoom rather than "fit everything". */
+const DEFAULT_UNITS_PER_PX = 1.4;
+const VIEW_SAVE_DEBOUNCE_MS = 400;
+
+function readSavedView(mapId: string): ViewBox | null {
+  try {
+    const raw = window.localStorage.getItem(VIEW_KEY_PREFIX + mapId);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as Partial<ViewBox>;
+    if (
+      typeof v.x === "number" &&
+      typeof v.y === "number" &&
+      typeof v.width === "number" &&
+      typeof v.height === "number" &&
+      v.width >= MIN_ZOOM_WIDTH &&
+      Number.isFinite(v.x + v.y + v.width + v.height)
+    ) {
+      return { x: v.x, y: v.y, width: v.width, height: v.height };
+    }
+  } catch {
+    /* private window / blocked storage — fall through to the default view */
+  }
+  return null;
+}
+
+function writeSavedView(mapId: string, v: ViewBox): void {
+  try {
+    window.localStorage.setItem(VIEW_KEY_PREFIX + mapId, JSON.stringify(v));
+  } catch {
+    /* ignore — panning still works this session */
+  }
+}
+
+/** A fixed-magnification view centred on the map's content. `pxW/pxH` are the real container
+ * pixel size when known (so the zoom is genuinely constant across screens); before the
+ * container is measured, nominal values keep the first paint sensible. */
+function defaultView(bundle: CompiledMapBundle, pxW = 1200, pxH = 700): ViewBox {
+  const { minX, minY, maxX, maxY } = bundle.boundingBox;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const width = Math.max(pxW * DEFAULT_UNITS_PER_PX, MIN_ZOOM_WIDTH);
+  const height = Math.max(pxH * DEFAULT_UNITS_PER_PX, MIN_ZOOM_WIDTH);
+  return { x: cx - width / 2, y: cy - height / 2, width, height };
+}
 
 /** Pure zoom math for a two-finger pinch, factored out so it's directly unit-testable — jsdom
  * (this project's test environment) doesn't implement the `PointerEvent` constructor at all, so
@@ -202,16 +250,6 @@ export function viewBoxAfterPinch(
   return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
 }
 
-function initialViewBox(bundle: CompiledMapBundle): ViewBox {
-  const { minX, minY, maxX, maxY } = bundle.boundingBox;
-  return {
-    x: minX - PADDING,
-    y: minY - PADDING,
-    width: Math.max(maxX - minX + PADDING * 2, MIN_ZOOM_WIDTH),
-    height: Math.max(maxY - minY + PADDING * 2, MIN_ZOOM_WIDTH),
-  };
-}
-
 /** Basic SVG public map renderer (docs/IMPLEMENTATION_PLAN.md Milestone 5,
  * docs/MAP_EDITOR_SPEC.md §12): plain SVG, pan/zoom via viewBox manipulation, semantic style
  * tokens for signals. The full train/run popup needs the resolver (Milestone 9) — clicking a
@@ -222,7 +260,13 @@ export function MapRenderer({
   signals,
   showEmptyBerths = true,
 }: MapRendererProps): JSX.Element {
-  const [viewBox, setViewBox] = useState<ViewBox>(() => initialViewBox(bundle));
+  const [viewBox, setViewBox] = useState<ViewBox>(
+    () => readSavedView(bundle.mapId) ?? defaultView(bundle),
+  );
+  // True if the first paint came from a remembered view — the mount effect then leaves it
+  // alone; false means "first ever visit", so the effect snaps it to the fixed default zoom
+  // sized to the real container.
+  const restoredFromStorage = useRef<boolean>(readSavedView(bundle.mapId) !== null);
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
     null,
@@ -264,6 +308,37 @@ export function MapRenderer({
       ),
     [bundle, layersById],
   );
+
+  function centredDefaultView(): ViewBox {
+    const svg = svgRef.current;
+    return defaultView(bundle, svg?.clientWidth || 1200, svg?.clientHeight || 700);
+  }
+
+  // First-ever visit to this map: once the container is measured, snap to the fixed default
+  // zoom (constant magnification) centred on the content. A remembered view is left untouched.
+  useEffect(() => {
+    if (restoredFromStorage.current) return;
+    setViewBox(centredDefaultView());
+  }, [bundle.mapId]);
+
+  // Remember where the viewer is looking, per map (traksy.uk behaviour). Debounced so a drag
+  // doesn't hammer localStorage.
+  useEffect(() => {
+    const id = window.setTimeout(
+      () => writeSavedView(bundle.mapId, viewBox),
+      VIEW_SAVE_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, [bundle.mapId, viewBox]);
+
+  function resetView(): void {
+    try {
+      window.localStorage.removeItem(VIEW_KEY_PREFIX + bundle.mapId);
+    } catch {
+      /* ignore */
+    }
+    setViewBox(centredDefaultView());
+  }
 
   // React attaches its synthetic onWheel listener as passive at the root, so
   // event.preventDefault() there is silently ignored (and Chrome logs a warning on every
@@ -354,8 +429,7 @@ export function MapRenderer({
         role="img"
         aria-label={`${bundle.mapName} schematic map`}
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-        width="100%"
-        height="600"
+        preserveAspectRatio="xMidYMid meet"
         style={{
           background: "#0d1117",
           cursor: drag || pinch ? "grabbing" : "grab",
@@ -392,6 +466,7 @@ export function MapRenderer({
             return renderPlatformNumber(element);
           }
           if (element.type === "station") {
+            const lines = element.name.split("\n");
             return (
               <text
                 key={element.id}
@@ -402,8 +477,12 @@ export function MapRenderer({
                 fontWeight={700}
                 fill="var(--map-station-label, #58a6ff)"
               >
-                {element.name}
-                {element.crs ? ` [${element.crs}]` : ""}
+                {lines.map((line, i) => (
+                  <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
+                    {line}
+                    {i === lines.length - 1 && element.crs ? ` [${element.crs}]` : ""}
+                  </tspan>
+                ))}
               </text>
             );
           }
@@ -453,6 +532,8 @@ export function MapRenderer({
             return renderSignal(element, signals[element.id]?.state ?? "blank");
           }
           if (element.type === "label") {
+            // Labels wrap on explicit newlines (`\n`) — each becomes a <tspan> on the next line.
+            const lines = element.text.split("\n");
             return (
               <text
                 key={element.id}
@@ -468,7 +549,11 @@ export function MapRenderer({
                 fontSize={element.fontSize}
                 fill="#c9d1d9"
               >
-                {element.text}
+                {lines.map((line, i) => (
+                  <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
+                    {line === "" ? " " : line}
+                  </tspan>
+                ))}
               </text>
             );
           }
@@ -485,6 +570,15 @@ export function MapRenderer({
           return null;
         })}
       </svg>
+
+      <button
+        type="button"
+        className="map-frame__reset"
+        onClick={resetView}
+        title="Reset to the default view"
+      >
+        Reset view
+      </button>
 
       {selectedElementId && selectedBinding ? (
         // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup".

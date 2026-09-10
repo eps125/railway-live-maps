@@ -6,7 +6,7 @@ describe("App", () => {
   it("renders the app title and the non-safety-critical notice", () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Railway Live Maps" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Matts TD Map" })).toBeInTheDocument();
     expect(screen.getByText(/not suitable for safety-critical/i)).toBeInTheDocument();
   });
 });

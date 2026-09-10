@@ -9,6 +9,13 @@ function jsonResponse(body: unknown): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // MapRenderer persists the pan/zoom view per map to localStorage — clear it so tests don't
+  // start from a view a previous test saved.
+  try {
+    window.localStorage.clear();
+  } catch {
+    /* ignore */
+  }
 });
 
 function bundle(overrides: Partial<CompiledMapBundle> = {}): CompiledMapBundle {

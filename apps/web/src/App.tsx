@@ -11,13 +11,7 @@ export function App(): JSX.Element {
     <div className="app-shell">
       <header className="app-header">
         <div className="app-header__brand">
-          <span className="app-header__mark" aria-hidden="true">
-            RLM
-          </span>
-          <div>
-            <h1>Railway Live Maps</h1>
-            <p className="app-header__tagline">Nationwide TD/TRUST recorder — not official</p>
-          </div>
+          <h1>Matts TD Map</h1>
         </div>
         <nav className="app-nav" aria-label="Primary">
           <a

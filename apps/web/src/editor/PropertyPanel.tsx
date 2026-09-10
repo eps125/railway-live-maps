@@ -7,22 +7,35 @@ interface TextFieldProps {
   label: string;
   value: string;
   onCommit: (value: string) => void;
+  /** Render a resizable textarea instead of a single-line input — for label text, which can
+   * span multiple lines (each newline wraps in the renderer). */
+  multiline?: boolean;
 }
 
-function TextField({ label, value, onCommit }: TextFieldProps): JSX.Element {
+function TextField({ label, value, onCommit, multiline }: TextFieldProps): JSX.Element {
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
+  const commit = (): void => {
+    if (local !== value) onCommit(local);
+  };
   return (
     <label className="field">
       {label}
-      <input
-        type="text"
-        value={local}
-        onChange={(e) => setLocal(e.target.value)}
-        onBlur={() => {
-          if (local !== value) onCommit(local);
-        }}
-      />
+      {multiline ? (
+        <textarea
+          rows={3}
+          value={local}
+          onChange={(e) => setLocal(e.target.value)}
+          onBlur={commit}
+        />
+      ) : (
+        <input
+          type="text"
+          value={local}
+          onChange={(e) => setLocal(e.target.value)}
+          onBlur={commit}
+        />
+      )}
     </label>
   );
 }
@@ -241,7 +254,15 @@ export function PropertyPanel(): JSX.Element {
       return (
         <aside aria-label="Properties" className="panel-card">
           <h3>Properties</h3>
-          <p className="panel-card--empty">No selection.</p>
+          <fieldset>
+            <legend>Map</legend>
+            <TextField
+              label="Name (shown as the map heading)"
+              value={doc.map.name}
+              onCommit={(name) => dispatch({ type: "setMapName", name })}
+            />
+          </fieldset>
+          <p className="panel-card--empty">Select an element to edit it.</p>
         </aside>
       );
     }
@@ -437,7 +458,12 @@ export function PropertyPanel(): JSX.Element {
 
       {element.type === "label" && (
         <>
-          <TextField label="Text" value={element.text} onCommit={(v) => setProp("text", v)} />
+          <TextField
+            label="Text (newlines wrap)"
+            value={element.text}
+            multiline
+            onCommit={(v) => setProp("text", v)}
+          />
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <NumberField

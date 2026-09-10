@@ -22,10 +22,14 @@ export const PLAYBACK_STEPS_MS = [
   { label: "+10m", ms: 600_000 },
 ] as const;
 
-// Wide enough that even 200× (30 min of playback ≈ 9 s real) needs a refill only every few
-// seconds; a Lancaster-sized 30-min window is well under the /events default page size.
+// The /events fetch is windowed in time AND capped in row count (server MAX_LIMIT). On a busy
+// map the row cap, not the time window, is what runs the buffer dry — so refill is driven by
+// how many *unplayed events* are left, paginating with the `after` cursor until `nextCursor`
+// is null (caught up to the requested `to`). `BUFFER_WINDOW_MS` only sets how far past "now"
+// the `to` bound reaches so a fast scrub has somewhere to go.
 const BUFFER_WINDOW_MS = 30 * 60_000;
-const REFILL_WHEN_REMAINING_MS = 10 * 60_000;
+const PAGE_LIMIT = 500;
+const REFILL_WHEN_UNPLAYED_BELOW = 80;
 const TICK_MS = 200;
 /** Never let the playback clock run into the live present. */
 const LIVE_EDGE_MS = 5_000;
@@ -90,7 +94,9 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   const berthsRef = useRef(berths);
   const bufferRef = useRef<PlaybackDelta[]>([]);
   const bufferIdxRef = useRef(0);
-  const bufferedToRef = useRef(initialAtMs);
+  /** ISO `from` of the current seek — every refill page keeps this lower bound and walks
+   * forward with the `after` cursor. */
+  const seedFromRef = useRef<string>(new Date(initialAtMs).toISOString());
   const cursorRef = useRef<string | null>(null);
   const seekIdRef = useRef(0);
   const refillingRef = useRef(false);
@@ -106,13 +112,14 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
       setLoading(true);
       setError(null);
       const atIso = new Date(atMs).toISOString();
+      seedFromRef.current = atIso;
       try {
         const [stateRes, eventsRes] = await Promise.all([
           fetch(`/api/v1/maps/${slug}/state?at=${encodeURIComponent(atIso)}`),
           fetch(
             `/api/v1/maps/${slug}/events?from=${encodeURIComponent(atIso)}&to=${encodeURIComponent(
-              new Date(atMs + BUFFER_WINDOW_MS).toISOString(),
-            )}`,
+              new Date(Math.max(Date.now(), atMs) + BUFFER_WINDOW_MS).toISOString(),
+            )}&limit=${PAGE_LIMIT}`,
           ),
         ]);
         if (seekId !== seekIdRef.current) return;
@@ -126,7 +133,6 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
         setQuality(state.quality);
         bufferRef.current = events.events;
         bufferIdxRef.current = 0;
-        bufferedToRef.current = atMs + BUFFER_WINDOW_MS;
         cursorRef.current = events.nextCursor;
         setClock(atMs);
       } catch (err) {
@@ -144,19 +150,19 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
     if (refillingRef.current || cursorRef.current === null) return;
     refillingRef.current = true;
     const seekId = seekIdRef.current;
-    const from = new Date(bufferedToRef.current).toISOString();
-    const to = new Date(bufferedToRef.current + BUFFER_WINDOW_MS).toISOString();
+    const to = new Date(Math.max(Date.now(), clockRef.current) + BUFFER_WINDOW_MS).toISOString();
     try {
       const res = await fetch(
-        `/api/v1/maps/${slug}/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(
-          to,
-        )}&after=${encodeURIComponent(cursorRef.current)}`,
+        `/api/v1/maps/${slug}/events?from=${encodeURIComponent(
+          seedFromRef.current,
+        )}&to=${encodeURIComponent(to)}&after=${encodeURIComponent(
+          cursorRef.current,
+        )}&limit=${PAGE_LIMIT}`,
       );
       if (!res.ok || seekId !== seekIdRef.current) return;
       const page = (await res.json()) as MapEventsResponse;
       if (seekId !== seekIdRef.current) return;
       bufferRef.current = bufferRef.current.concat(page.events);
-      bufferedToRef.current += BUFFER_WINDOW_MS;
       cursorRef.current = page.nextCursor;
     } catch {
       // A failed refill just means the clock will stall at the buffer edge; the next tick retries.
@@ -201,7 +207,14 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
       clockRef.current = next;
       setClock(next);
 
-      if (bufferedToRef.current - next < REFILL_WHEN_REMAINING_MS) void refill();
+      // Refill before the buffer runs dry — driven by unplayed-event count, not time window,
+      // because the server caps rows per page. `refill` no-ops once `nextCursor` is null.
+      if (
+        cursorRef.current !== null &&
+        buffer.length - bufferIdxRef.current < REFILL_WHEN_UNPLAYED_BELOW
+      ) {
+        void refill();
+      }
     }, TICK_MS);
     return () => window.clearInterval(id);
   }, [refill]);

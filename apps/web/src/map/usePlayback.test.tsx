@@ -100,5 +100,84 @@ describe("usePlayback", () => {
     // both a /state and an /events request went out for the seed
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/state?at="))).toBe(true);
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/events?from="))).toBe(true);
+    // the seed asks for a full page, not the 100-row default
+    expect(
+      fetchMock.mock.calls.some(
+        ([u]) => String(u).includes("/events?") && String(u).includes("limit=500"),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps paginating past the first /events page — refills with the `after` cursor before the buffer runs dry", async () => {
+    vi.useFakeTimers();
+    const at = Date.now() - 60_000;
+    // First page: three deltas, all in the near future of `at`, and a non-null cursor.
+    const page1: PlaybackDelta[] = [1, 2, 3].map((i) => ({
+      type: "berth.updated" as const,
+      sequence: i,
+      eventAt: new Date(at + i * 1_000).toISOString(),
+      elementId: "berth-1",
+      tdArea: "PX",
+      berth: "0512",
+      description: `10${i}`,
+      enteredAt: new Date(at + i * 1_000).toISOString(),
+    }));
+    const page2: PlaybackDelta[] = [
+      {
+        type: "berth.updated",
+        sequence: 4,
+        eventAt: new Date(at + 20_000).toISOString(),
+        elementId: "berth-1",
+        tdArea: "PX",
+        berth: "0512",
+        description: "PAGE2",
+        enteredAt: new Date(at + 20_000).toISOString(),
+      },
+    ];
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/state")) {
+        return Promise.resolve(
+          jsonResponse({
+            mapSlug: "lancaster",
+            mapVersion: 1,
+            asOf: new Date(at).toISOString(),
+            sourceSequence: 1,
+            mode: "historical",
+            quality: { status: "ok", gaps: [] },
+            berths: {},
+            signals: {},
+          }),
+        );
+      }
+      if (url.includes("after=")) {
+        return Promise.resolve(
+          jsonResponse({ mapSlug: "lancaster", mapVersion: 1, events: page2, nextCursor: null }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({ mapSlug: "lancaster", mapVersion: 1, events: page1, nextCursor: "cur-1" }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    function Probe(): JSX.Element {
+      const pb = usePlayback("lancaster", at);
+      return (
+        <div>
+          <span data-testid="b1">{pb.berths["berth-1"]?.description ?? "none"}</span>
+          <button type="button" onClick={pb.play}>
+            play
+          </button>
+        </div>
+      );
+    }
+    render(<Probe />);
+    await vi.runOnlyPendingTimersAsync(); // resolve seed
+    screen.getByText("play").click();
+    // advance the playback clock past all three page-1 events and into page-2 territory
+    for (let i = 0; i < 60; i += 1) await vi.advanceTimersByTimeAsync(500);
+
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("after=cur-1"))).toBe(true);
+    expect(screen.getByTestId("b1").textContent).toBe("PAGE2");
   });
 });

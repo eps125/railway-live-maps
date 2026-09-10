@@ -35,11 +35,12 @@ const SIGNAL_COLORS: Record<SignalState["state"], string> = {
   off: "#3fb950",
 };
 
-/** Occupied vs vacant. (Run-match colouring was removed with the berth-run resolver, ADR 0002 —
- * there's no match/ambiguous distinction to show until run correlation is rebuilt.) */
+/** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
+ * removed with the berth-run resolver (ADR 0002) and there's no matched/ambiguous distinction
+ * worth showing until run↔schedule correlation is rebuilt. */
 function berthColors(berthState: BerthState | undefined): { fill: string; stroke: string } {
   if (!berthState?.description) return { fill: "#161d27", stroke: "#2d3644" };
-  return { fill: "#1c3a5e", stroke: "#2f5b8a" };
+  return { fill: "#3d7fc4", stroke: "#6aa4de" };
 }
 
 /** The white bordered platform-number box (Traksy pattern), centred on `(cx, cy)`. Shared by

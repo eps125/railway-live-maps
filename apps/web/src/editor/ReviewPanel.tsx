@@ -61,6 +61,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         }),
       });
       const body = await readApiJson<{
+        // `apiError()` shape for handled 4xx…
         error?: {
           message?: string;
           details?: {
@@ -68,6 +69,8 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
             errors?: Array<{ code: string; message: string }>;
           };
         };
+        // …and Fastify's default shape for an unhandled 500 (`{statusCode,error,message}`).
+        message?: string;
         versionNumber?: number;
         effectiveFrom?: string;
       }>(response);
@@ -85,7 +88,8 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
       if (!response.ok) {
         setOutcome({
           status: "error",
-          message: body.error?.message ?? `Publish failed (${response.status})`,
+          message:
+            body.error?.message ?? body.message ?? `Publish failed (HTTP ${response.status})`,
         });
         return;
       }

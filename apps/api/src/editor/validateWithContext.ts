@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
   validateMapDocument,
   type MapDocument,
@@ -23,15 +23,50 @@ export interface ValidationTierResult {
  * The "ever observed in nationwide data" check is a *warning*, not a blocking gate, and
  * `td_berth_event` is a partitioned nationwide table with no index on `from_berth`/`to_berth`
  * — an all-history `distinct` scan of it on every publish/validate grew slow enough on the live
- * recorder to time out the gateway. Bounding the look-back to this window keeps the query on
- * the existing `(td_area, event_at desc)` index and is a fine proxy for "is this a real,
- * live berth": one that belongs on a current map has had traffic recently.
+ * recorder to time out the gateway (and then to 500 when a statement timeout fired). Bounding
+ * the look-back to this window keeps the query on the existing `(td_area, event_at desc)` index
+ * and is a fine proxy for "is this a real, live berth": one that belongs on a current map has
+ * had traffic within the last month.
  */
-const OBSERVED_LOOKBACK_DAYS = 90;
+const OBSERVED_LOOKBACK_DAYS = 30;
 
-/** Fail a pathological validation query in a bounded time with a clear error rather than
- * hanging until the gateway 504s. */
-const VALIDATION_STATEMENT_TIMEOUT_MS = 20_000;
+/** Per-check statement timeouts. If a check can't complete in this budget its result is simply
+ * dropped (best-effort) — a slow *advisory* query must never block or fail a publish. */
+const BOUNDARY_CHECK_TIMEOUT_MS = 5_000;
+const OBSERVED_CHECK_TIMEOUT_MS = 8_000;
+
+/**
+ * Runs one read-only query on its own short-lived transaction with a `statement_timeout`, and
+ * returns `null` (rather than throwing) on any failure — timeout, aborted transaction, no
+ * connection available. Callers treat `null` as "this context check couldn't run" and degrade
+ * gracefully; they never turn it into a blocking error.
+ */
+async function bestEffortQuery<T extends QueryResultRow>(
+  pool: Pool,
+  sql: string,
+  params: unknown[],
+  timeoutMs: number,
+): Promise<T[] | null> {
+  let client: PoolClient;
+  try {
+    client = await pool.connect();
+  } catch {
+    return null;
+  }
+  try {
+    await client.query("begin");
+    await client.query("set transaction read only");
+    await client.query(`set local statement_timeout = ${timeoutMs}`);
+    const result = await client.query<T>(sql, params);
+    await client.query("commit");
+    return result.rows;
+  } catch {
+    await client.query("rollback").catch(() => undefined);
+    return null;
+  } finally {
+    client.release();
+  }
+}
 
 /**
  * Extends `@railway/map-schema`'s pure `validateMapDocument` with the two checks its own
@@ -57,81 +92,94 @@ export async function validateDraftInContext(
     (binding): binding is TdBerthBinding => binding.type === "tdBerth",
   );
 
-  // Both DB checks run on one short-lived client with a statement timeout, so a slow scan of
-  // the nationwide tables surfaces as a clear error in ~20s instead of hanging the request
-  // until the gateway 504s.
+  // Both DB checks are advisory and best-effort: each runs with its own statement timeout and,
+  // on any failure, is simply dropped with a "check skipped" warning. Neither can block or 500
+  // a publish — a slow scan of the nationwide tables used to do both.
+  let boundaryCheckOk = boundaryElements.length === 0;
+  let observedCheckOk = tdBerthBindings.length === 0;
   const observedKeys = new Set<string>();
   const existingSlugs = new Set<string>();
-  if (boundaryElements.length > 0 || tdBerthBindings.length > 0) {
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query("set transaction read only");
-      await client.query(`set local statement_timeout = ${VALIDATION_STATEMENT_TIMEOUT_MS}`);
 
-      if (boundaryElements.length > 0) {
-        const slugs = [...new Set(boundaryElements.map((element) => element.adjacentMapSlug!))];
-        const existing = await client.query<{ slug: string }>(
-          `select slug from map where slug = any($1::text[])`,
-          [slugs],
-        );
-        for (const row of existing.rows) existingSlugs.add(row.slug);
-      }
-
-      if (tdBerthBindings.length > 0) {
-        const areas = tdBerthBindings.map((binding) => binding.tdArea);
-        const berths = tdBerthBindings.map((binding) => binding.berth);
-        // Wanted-driven: for each of the handful of bindings, an EXISTS probe that the
-        // `(td_area, event_at desc)` index serves and that short-circuits on the first hit —
-        // instead of an all-history `distinct` scan of the whole table.
-        const observedResult = await client.query<{ td_area: string; berth_code: string }>(
-          `with wanted(td_area, berth_code) as (select * from unnest($1::text[], $2::text[]))
-           select distinct w.td_area, w.berth_code
-           from wanted w
-           where exists (
-             select 1 from td_berth_event e
-             where e.td_area = w.td_area
-               and e.event_at >= now() - ($3::int * interval '1 day')
-               and (e.from_berth = w.berth_code or e.to_berth = w.berth_code)
-           )`,
-          [areas, berths, OBSERVED_LOOKBACK_DAYS],
-        );
-        for (const row of observedResult.rows) {
-          observedKeys.add(`${row.td_area}|${row.berth_code}`);
-        }
-      }
-
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
+  if (boundaryElements.length > 0) {
+    const slugs = [...new Set(boundaryElements.map((element) => element.adjacentMapSlug!))];
+    const rows = await bestEffortQuery<{ slug: string }>(
+      pool,
+      `select slug from map where slug = any($1::text[])`,
+      [slugs],
+      BOUNDARY_CHECK_TIMEOUT_MS,
+    );
+    if (rows !== null) {
+      boundaryCheckOk = true;
+      for (const row of rows) existingSlugs.add(row.slug);
     }
   }
 
-  for (const element of boundaryElements) {
-    if (!existingSlugs.has(element.adjacentMapSlug!)) {
-      errors.push({
-        code: "unknown_adjacent_map",
-        message: `Boundary "${element.id}" references unknown adjacent map slug "${element.adjacentMapSlug}"`,
-        elementId: element.id,
-      });
+  if (tdBerthBindings.length > 0) {
+    const areas = tdBerthBindings.map((binding) => binding.tdArea);
+    const berths = tdBerthBindings.map((binding) => binding.berth);
+    // Wanted-driven: for each of the handful of bindings, an EXISTS probe that the
+    // `(td_area, event_at desc)` index serves and that short-circuits on the first hit —
+    // instead of an all-history `distinct` scan of the whole table.
+    const rows = await bestEffortQuery<{ td_area: string; berth_code: string }>(
+      pool,
+      `with wanted(td_area, berth_code) as (select * from unnest($1::text[], $2::text[]))
+       select distinct w.td_area, w.berth_code
+       from wanted w
+       where exists (
+         select 1 from td_berth_event e
+         where e.td_area = w.td_area
+           and e.event_at >= now() - ($3::int * interval '1 day')
+           and (e.from_berth = w.berth_code or e.to_berth = w.berth_code)
+       )`,
+      [areas, berths, OBSERVED_LOOKBACK_DAYS],
+      OBSERVED_CHECK_TIMEOUT_MS,
+    );
+    if (rows !== null) {
+      observedCheckOk = true;
+      for (const row of rows) observedKeys.add(`${row.td_area}|${row.berth_code}`);
     }
+  }
+
+  // The unknown-adjacent-map *error* is only raised when the check actually ran — a DB that was
+  // too slow to answer must never block a publish.
+  if (boundaryCheckOk) {
+    for (const element of boundaryElements) {
+      if (!existingSlugs.has(element.adjacentMapSlug!)) {
+        errors.push({
+          code: "unknown_adjacent_map",
+          message: `Boundary "${element.id}" references unknown adjacent map slug "${element.adjacentMapSlug}"`,
+          elementId: element.id,
+        });
+      }
+    }
+  } else {
+    warnings.push({
+      code: "adjacent_map_check_skipped",
+      message:
+        "Adjacent-map existence check was skipped (database slow or unavailable) — verify any adjacent map slugs manually.",
+    });
   }
 
   let observedCount = 0;
-  for (const binding of tdBerthBindings) {
-    const key = `${binding.tdArea}|${binding.berth}`;
-    if (observedKeys.has(key)) {
-      observedCount += 1;
-    } else {
-      warnings.push({
-        code: "binding_never_observed",
-        message: `Binding ${key} has not been seen in nationwide retained data in the last ${OBSERVED_LOOKBACK_DAYS} days`,
-        bindingId: binding.id,
-      });
+  if (observedCheckOk) {
+    for (const binding of tdBerthBindings) {
+      const key = `${binding.tdArea}|${binding.berth}`;
+      if (observedKeys.has(key)) {
+        observedCount += 1;
+      } else {
+        warnings.push({
+          code: "binding_never_observed",
+          message: `Binding ${key} has not been seen in nationwide retained data in the last ${OBSERVED_LOOKBACK_DAYS} days`,
+          bindingId: binding.id,
+        });
+      }
     }
+  } else {
+    warnings.push({
+      code: "observed_binding_check_skipped",
+      message:
+        "The nationwide 'berth seen recently' check was skipped (query too slow) — binding coverage not verified.",
+    });
   }
 
   const elementCounts: Record<string, number> = {};

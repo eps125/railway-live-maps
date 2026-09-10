@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useEditorState } from "./EditorState.js";
+import { readApiJson } from "./apiJson.js";
 
 interface ValidationIssue {
   code: string;
@@ -27,18 +28,31 @@ interface ValidationResult {
 export function ValidationPanel({ slug }: { slug: string }): JSX.Element {
   const { document: doc } = useEditorState();
   const [result, setResult] = useState<ValidationResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function runValidation(): Promise<void> {
     setLoading(true);
+    setError(null);
     try {
       const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/validate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ canonicalDocument: doc }),
       });
-      const body = (await response.json()) as ValidationResult;
-      setResult(body);
+      const body = await readApiJson<Partial<ValidationResult> & { message?: string }>(response);
+      if (!response.ok || !Array.isArray(body.errors) || !Array.isArray(body.warnings)) {
+        setResult(null);
+        setError(
+          body.message ??
+            `Validation failed (HTTP ${response.status}). The map was not changed — try again, or Publish, which re-runs the checks server-side.`,
+        );
+        return;
+      }
+      setResult(body as ValidationResult);
+    } catch (err) {
+      setResult(null);
+      setError(err instanceof Error ? err.message : "Validation request failed");
     } finally {
       setLoading(false);
     }
@@ -50,6 +64,11 @@ export function ValidationPanel({ slug }: { slug: string }): JSX.Element {
       <button type="button" className="btn" onClick={() => void runValidation()} disabled={loading}>
         {loading ? "Validating…" : "Validate"}
       </button>
+      {error ? (
+        <p role="alert" className="app-error" style={{ marginTop: "0.6rem" }}>
+          {error}
+        </p>
+      ) : null}
       {result ? (
         <div>
           <p style={{ marginTop: "0.6rem" }}>

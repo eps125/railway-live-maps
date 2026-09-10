@@ -82,7 +82,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     expect(result.info.unboundBerthCount).toBe(0);
   });
 
-  it("warns 'not seen in the last 90 days' and probes td_berth_event wanted-driven, not a full scan", async () => {
+  it("warns 'not seen in the last 30 days' and probes td_berth_event wanted-driven, not a full scan", async () => {
     const doc = baseDoc({
       elements: [
         {
@@ -127,10 +127,66 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     expect(observedSql).toContain("exists (");
     expect(observedSql).toContain("e.event_at >= now()");
     expect(observedSql).not.toMatch(/union all/i);
-    expect(observedValues).toEqual([["PX"], ["0512"], 90]);
+    expect(observedValues).toEqual([["PX"], ["0512"], 30]);
     expect(result.warnings.map((w) => w.code)).toContain("binding_never_observed");
-    expect(result.warnings[0]?.message).toMatch(/last 90 days/);
+    expect(result.warnings[0]?.message).toMatch(/last 30 days/);
     expect(result.info.observedBerthBindingPercentage).toBe(0);
+  });
+
+  it("is best-effort: a failing/slow observed query is skipped, not thrown — publish stays valid", async () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "berth-1",
+          layerId: "l1",
+          zIndex: 0,
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "0512",
+        },
+        {
+          id: "bnd-1",
+          layerId: "l1",
+          zIndex: 0,
+          type: "boundary",
+          x: 5,
+          y: 5,
+          name: "North",
+          adjacentMapSlug: "carnforth",
+        },
+      ],
+      bindings: [
+        {
+          id: "bind-1",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "0512",
+          allowDuplicate: false,
+        },
+      ],
+    });
+
+    // Every context query throws (statement timeout / DB unavailable).
+    const pool = fakePool(() => {
+      throw new Error("canceling statement due to statement timeout");
+    });
+
+    const result = await validateDraftInContext(pool, doc);
+
+    // No throw; no blocking error (the unknown-adjacent-map error is NOT raised when the check
+    // couldn't run); a "skipped" warning for each check.
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+    const codes = result.warnings.map((w) => w.code);
+    expect(codes).toContain("adjacent_map_check_skipped");
+    expect(codes).toContain("observed_binding_check_skipped");
+    expect(codes).not.toContain("binding_never_observed");
   });
 
   it("counts a berth as unbound when no binding in doc.bindings references it, regardless of element.bindingId", async () => {

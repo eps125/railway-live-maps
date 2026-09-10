@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Layer, MapElement } from "@railway/map-schema";
-import { defaultLayerIdForTool, elementBounds, boundsIntersect } from "./EditorCanvas.js";
+import {
+  anchoredText,
+  defaultLayerIdForTool,
+  elementBounds,
+  boundsIntersect,
+} from "./EditorCanvas.js";
 
 const standardLayers: Layer[] = [
   { id: "layer-track", name: "Track", order: 0, visible: true, locked: false },
@@ -106,6 +111,27 @@ describe("elementBounds", () => {
 
   it("returns null for a points-based element with no points", () => {
     expect(elementBounds(trackPath([]))).toBeNull();
+  });
+});
+
+describe("anchoredText (editor ↔ public renderer text placement parity)", () => {
+  it("left align keeps x/y and only lifts to the baseline — matches SVG text-anchor:start", () => {
+    expect(anchoredText(100, 50, 16, "left")).toEqual({ x: 100, y: 50, offsetY: 16 * 0.8 });
+  });
+
+  it("center align gives a box whose centre lands on x — matches text-anchor:middle", () => {
+    const p = anchoredText(100, 50, 16, "center");
+    expect(p.align).toBe("center");
+    expect(p.x).toBe(100);
+    // rendered horizontal centre = x - offsetX + width/2
+    expect(p.x - (p.offsetX ?? 0) + (p.width ?? 0) / 2).toBe(100);
+  });
+
+  it("right align puts the box's right edge on x — matches text-anchor:end", () => {
+    const p = anchoredText(100, 50, 16, "right");
+    expect(p.align).toBe("right");
+    // rendered right edge = x - offsetX + width
+    expect(p.x - (p.offsetX ?? 0) + (p.width ?? 0)).toBe(100);
   });
 });
 

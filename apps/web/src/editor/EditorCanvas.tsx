@@ -4,6 +4,7 @@ import Konva from "konva";
 import {
   MAP_STYLE,
   berthRenderRect,
+  computeBoundingBox,
   sortElementsForPaint,
   type Layer as MapLayer,
   type MapElement,
@@ -42,6 +43,31 @@ function snap(value: number, gridSize: number): number {
 
 function flattenPoints(points: Array<{ x: number; y: number }>): number[] {
   return points.flatMap((p) => [p.x, p.y]);
+}
+
+/** Konva `Text` props that reproduce the public SVG renderer's `x`/`y` + `textAnchor` +
+ * alphabetic-baseline placement, so a station / label sits in the same spot in the editor as
+ * in the live map (CLAUDE.md rule 13). Konva anchors a Text at its top-left; SVG at the
+ * baseline with `text-anchor` — so offset ~0.8·fontSize vertically, and for centre/right use a
+ * fixed box width. `x`/`y` stay the authored coords so drag maths is unchanged. */
+export function anchoredText(
+  x: number,
+  y: number,
+  fontSize: number,
+  align: "left" | "center" | "right",
+): {
+  x: number;
+  y: number;
+  offsetY: number;
+  width?: number;
+  align?: "center" | "right";
+  offsetX?: number;
+} {
+  const offsetY = fontSize * 0.8;
+  const w = 260;
+  if (align === "center") return { x, y, offsetY, width: w, align: "center", offsetX: w / 2 };
+  if (align === "right") return { x, y, offsetY, width: w, align: "right", offsetX: w };
+  return { x, y, offsetY };
 }
 
 export interface Bounds {
@@ -282,6 +308,46 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
 
   const { document: doc, selection, toolMode, viewport } = state;
   const gridSize = doc.map.canvas.gridSize;
+
+  // Fit the initial view to the document's content, once, the same way the public renderer
+  // does (`MapRenderer.tsx` derives its viewBox from `bundle.boundingBox`). Without this the
+  // editor opened at (0,0)/scale-1 while the live map was fit-to-bounds, so the same map looked
+  // like it was "in a different place" / a different size in the two views.
+  const didFitRef = useRef(false);
+  useEffect(() => {
+    if (didFitRef.current) return;
+    if (stageSize.width < 2 || stageSize.height < 2) return;
+    // If something already moved the viewport (a restored draft, a prior fit), don't fight it.
+    if (viewport.x !== 0 || viewport.y !== 0 || viewport.scale !== 1) {
+      didFitRef.current = true;
+      return;
+    }
+    const bb = computeBoundingBox(doc.elements);
+    if (!(bb.maxX > bb.minX) || !(bb.maxY > bb.minY)) {
+      didFitRef.current = true;
+      return;
+    }
+    const pad = 60;
+    const scale = Math.max(
+      MIN_SCALE,
+      Math.min(
+        MAX_SCALE,
+        stageSize.width / (bb.maxX - bb.minX + pad * 2),
+        stageSize.height / (bb.maxY - bb.minY + pad * 2),
+      ),
+    );
+    const cx = (bb.minX + bb.maxX) / 2;
+    const cy = (bb.minY + bb.maxY) / 2;
+    dispatch({
+      type: "setViewport",
+      viewport: {
+        scale,
+        x: stageSize.width / 2 - cx * scale,
+        y: stageSize.height / 2 - cy * scale,
+      },
+    });
+    didFitRef.current = true;
+  }, [stageSize, viewport, doc.elements, dispatch]);
 
   function toWorldPoint(stage: Konva.Stage): { x: number; y: number } {
     const pointer = stage.getPointerPosition();
@@ -904,29 +970,42 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     strokeWidth={selected ? 2 : 1}
                   />
                   {element.label ? (
-                    <Text
-                      text={element.label}
-                      x={offsetMode ? -20 : 12}
-                      y={hy + (offsetMode ? dir * (MAP_STYLE.signal.radius + 4) - 5 : 0)}
-                      width={40}
-                      align={offsetMode ? "center" : "left"}
-                      fontSize={10}
-                      fill="#8b96a5"
-                    />
+                    offsetMode ? (
+                      <Text
+                        text={element.label}
+                        x={-20}
+                        y={hy + dir * (MAP_STYLE.signal.radius + 8)}
+                        offsetY={10 * 0.8}
+                        width={40}
+                        align="center"
+                        fontSize={10}
+                        fill="#8b96a5"
+                      />
+                    ) : (
+                      // Match the public renderer's inline label: x+10, alphabetic baseline y+4.
+                      <Text
+                        text={element.label}
+                        x={10}
+                        y={4}
+                        offsetY={10 * 0.8}
+                        fontSize={10}
+                        fill="#8b96a5"
+                      />
+                    )
                   ) : null}
                 </Group>
               );
             }
             if (element.type === "label") {
+              // Match the public renderer's `x/y` + `textAnchor` + alphabetic-baseline
+              // placement (CLAUDE.md rule 13) so a label sits in the same spot in both views.
               return (
                 <Text
                   key={element.id}
                   ref={setRef}
-                  x={element.x}
-                  y={element.y}
+                  {...anchoredText(element.x, element.y, element.fontSize, element.align)}
                   text={element.text}
                   fontSize={element.fontSize}
-                  align={element.align}
                   fill={selected ? "#58a6ff" : "#c9d3de"}
                   draggable={draggable}
                   onClick={(e) => handleElementClick(e, element.id)}
@@ -939,8 +1018,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                 <Text
                   key={element.id}
                   ref={setRef}
-                  x={element.x}
-                  y={element.y}
+                  {...anchoredText(element.x, element.y, element.fontSize, "center")}
                   text={element.crs ? `${element.name} [${element.crs}]` : element.name}
                   fontSize={element.fontSize}
                   fontStyle="bold"
@@ -951,7 +1029,8 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                 />
               );
             }
-            // boundary
+            // boundary — mirror the public renderer: grey r=4 dot, name to its right on the
+            // alphabetic baseline.
             return (
               <Group
                 key={element.id}
@@ -962,8 +1041,19 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                 onClick={(e) => handleElementClick(e, element.id)}
                 onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
               >
-                <Circle radius={6} fill="#f59e0b" stroke={selected ? "#58a6ff" : "#2d3644"} />
-                <Text text={element.name} y={9} fontSize={10} fill="#8b96a5" />
+                <Circle
+                  radius={4}
+                  fill="#8b949e"
+                  {...(selected ? { stroke: "#58a6ff", strokeWidth: 2 } : {})}
+                />
+                <Text
+                  text={element.name}
+                  x={8}
+                  y={4}
+                  offsetY={10 * 0.8}
+                  fontSize={10}
+                  fill="#8b949e"
+                />
               </Group>
             );
           })}

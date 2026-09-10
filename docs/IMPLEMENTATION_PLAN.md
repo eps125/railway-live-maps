@@ -848,6 +848,18 @@ corners + platform/number placement snap to **half the grid step**. `apps/web/sr
 falling through to `index.html` — into a message naming the cause (`ReviewPanel.tsx`,
 `EditorApp.tsx` now use it).
 
+**Revision 3 (2026-09-10):** editor ↔ live-map parity. The editor canvas now **fits the view to
+the document's bounding box on first load** (like `MapRenderer.tsx` does from
+`bundle.boundingBox`) instead of opening at (0,0)/scale-1 — that alone was making the same map
+look "in a different place / a different size" between the two. Text placement is reconciled via
+`anchoredText()` in `EditorCanvas.tsx` (+ test): Konva anchors a `Text` at its top-left, SVG at
+the alphabetic baseline with `text-anchor`, so station/label text was drawn left-aligned from
+`x` in the editor vs centred on `x` in the live map — the helper offsets by ~0.8·fontSize
+vertically and a fixed box width for centre/right. Boundary dot matched to the public r=4 grey
+glyph; inline signal label matched to `x+10, baseline y+4`. (Also note: the **live map always
+shows the last _published_ version** — a draft edited after publishing looks different until
+re-published.)
+
 Known limitations: E1 weld uses a synthetic `topologyEdgeId` (no real `topology` node/edge — a
 14b concern); vertex removal is double-click only (no Delete-key selection); `platformNumber` is
 not auto-linked to a platform on placement; the `offset` signal stem is always vertical; a

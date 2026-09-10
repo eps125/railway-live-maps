@@ -487,6 +487,9 @@ legend {
   inset: 0;
   width: 100%;
   height: 100%;
+  /* Drag-to-pan must not text-select berth/label glyphs on the way past. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .map-frame__reset {

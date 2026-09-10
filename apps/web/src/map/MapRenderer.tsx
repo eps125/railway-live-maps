@@ -435,6 +435,8 @@ export function MapRenderer({
           background: "#0d1117",
           cursor: drag || pinch ? "grabbing" : "grab",
           touchAction: "none",
+          userSelect: "none",
+          WebkitUserSelect: "none",
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

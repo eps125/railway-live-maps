@@ -62,5 +62,15 @@ export async function recordObservedBerthEvent(
          source_ingestion_sequence = excluded.source_ingestion_sequence`,
       [TD_PROJECTION_VERSION, tdArea, toBerth, description, now, eventId, ingestionSequence],
     );
+    // `validateDraftInContext`'s "ever observed" check reads berth_occupancy, not
+    // td_berth_event (2026-09-11 — see that check's own doc comment for why), so a fixture
+    // claiming to represent a real observed berth needs a real occupancy row too.
+    await pool.query(
+      `insert into berth_occupancy (
+         projection_version, td_area, berth_code, description, entered_at,
+         entry_event_id, entry_event_normalized_at_utc, entry_reason
+       ) values ($1, $2, $3, $4, $5, $6, $5, 'test_fixture')`,
+      [TD_PROJECTION_VERSION, tdArea, toBerth, description, now, eventId],
+    );
   }
 }

@@ -51,6 +51,17 @@ A schematic polyline with stable element ID, layer, points, line/direction metad
 - optional `stationId` (link to a `station` element) and optional `crs` — map-authoring
   metadata for the deferred station-berth schedule deduction (ADR 0004 D6/D7); no runtime
   behaviour yet, and it never gates ingestion (rule 17).
+- optional `inhibitedBy` (2026-09-11 owner request): the id of another `berth` element on the
+  same map, declaring a TD-area fringe/boundary pair — the same physical crossing reported
+  independently by two describers (e.g. `PX CE04` / `CL 0005`). Author-declared only, never
+  inferred, and makes no claim about run identity (distinct from the deferred berth-run
+  resolver, CLAUDE.md rule 5/7). Purely a live-rendering rule: when this berth's and the
+  referenced berth's _current_ descriptions are equal and non-null, this berth renders blank —
+  both the public SVG renderer and the editor's own Test-mode preview apply the identical
+  check, independently (they are deliberately separate implementations, not shared rendering
+  code — CLAUDE.md rule 13 covers shared domain model/state semantics, not this). Cosmetic
+  only: `berth_current_state`, `berth_occupancy`, history and playback all keep both berths'
+  real, individual data untouched.
 
 The renderer does not trust the authored top-left `y`: when a berth is bound to a track
 (`trackElementId`, or the nearest horizontal `trackPath` in range) its box is drawn vertically

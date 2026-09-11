@@ -398,6 +398,27 @@ export function PropertyPanel(): JSX.Element {
             value={element.crs ?? ""}
             onCommit={(v) => setProp("crs", v ? v.toUpperCase() : undefined)}
           />
+          <label className="field">
+            Inhibited by
+            <select
+              value={element.inhibitedBy ?? ""}
+              onChange={(e) => setProp("inhibitedBy", e.target.value || undefined)}
+            >
+              <option value="">(none)</option>
+              {doc.elements
+                .filter((el): el is typeof element => el.type === "berth" && el.id !== elementId)
+                .map((el) => (
+                  <option key={el.id} value={el.id}>
+                    {el.displayName}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <p className="field-hint">
+            Opt-in TD-area fringe pair: when the selected berth currently shows the same description
+            as this one, this berth renders blank on the live map — cosmetic only, both berths keep
+            their real recorded state.
+          </p>
           <BindingFields elementId={elementId} binding={binding} />
         </>
       )}

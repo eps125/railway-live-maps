@@ -96,6 +96,26 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  const berthElementIds = new Set(
+    doc.elements.filter((element) => element.type === "berth").map((element) => element.id),
+  );
+  for (const element of doc.elements) {
+    if (element.type !== "berth" || !element.inhibitedBy) continue;
+    if (element.inhibitedBy === element.id) {
+      errors.push({
+        code: "inhibited_by_self_reference",
+        message: `Berth element "${element.id}" cannot be inhibited by itself`,
+        elementId: element.id,
+      });
+    } else if (!berthElementIds.has(element.inhibitedBy)) {
+      errors.push({
+        code: "inhibited_by_missing_element",
+        message: `Berth element "${element.id}" is inhibited by missing berth element "${element.inhibitedBy}"`,
+        elementId: element.id,
+      });
+    }
+  }
+
   const tdBerthBindingIdsByKey = new Map<string, string[]>();
   for (const binding of doc.bindings) {
     if (binding.type !== "tdBerth") continue;

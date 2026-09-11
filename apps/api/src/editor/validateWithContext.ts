@@ -20,13 +20,24 @@ export interface ValidationTierResult {
 }
 
 /**
- * The "ever observed in nationwide data" check is a *warning*, not a blocking gate, and
- * `td_berth_event` is a partitioned nationwide table with no index on `from_berth`/`to_berth`
- * — an all-history `distinct` scan of it on every publish/validate grew slow enough on the live
- * recorder to time out the gateway (and then to 500 when a statement timeout fired). Bounding
- * the look-back to this window keeps the query on the existing `(td_area, event_at desc)` index
- * and is a fine proxy for "is this a real, live berth": one that belongs on a current map has
- * had traffic within the last month.
+ * The "ever observed in nationwide data" check is a *warning*, not a blocking gate. Bounding the
+ * look-back to this window is a fine proxy for "is this a real, live berth": one that belongs on
+ * a current map has had traffic within the last month.
+ *
+ * 2026-09-11: this check used to query `td_berth_event` — a partitioned nationwide table with no
+ * index on `from_berth`/`to_berth` (every raw CA/CB/CC step, including cancels and null-marker
+ * steps) — running one `from_berth = ? or to_berth = ?` correlated EXISTS probe per binding on
+ * the map. Without an index on either column that scan fell back to reading every matching row
+ * in the relevant partition(s), repeated once per berth, which was slow enough on the live
+ * recorder to hit `OBSERVED_CHECK_TIMEOUT_MS` on essentially every validate/publish — so the
+ * check was *always* skipped in practice, not just under genuine load. Switched to
+ * `berth_occupancy` instead: it already carries a matching index
+ * (`berth_occupancy_area_berth_idx (td_area, berth_code, entered_at desc)`, migration 0008), one
+ * row per real occupancy interval (not every raw step), and no `from`/`to` split to OR across —
+ * a single `(td_area, berth_code)` equality prefix plus an `entered_at` range on that same index,
+ * an index seek rather than a scan. It's also arguably the more honest signal for what this
+ * check actually claims ("has a real train genuinely occupied this berth recently") than a raw
+ * step log that can include a cancel on a berth that was never really occupied.
  */
 const OBSERVED_LOOKBACK_DAYS = 30;
 
@@ -117,19 +128,20 @@ export async function validateDraftInContext(
   if (tdBerthBindings.length > 0) {
     const areas = tdBerthBindings.map((binding) => binding.tdArea);
     const berths = tdBerthBindings.map((binding) => binding.berth);
-    // Wanted-driven: for each of the handful of bindings, an EXISTS probe that the
-    // `(td_area, event_at desc)` index serves and that short-circuits on the first hit —
-    // instead of an all-history `distinct` scan of the whole table.
+    // Wanted-driven: for each of the handful of bindings, an EXISTS probe against
+    // `berth_occupancy_area_berth_idx (td_area, berth_code, entered_at desc)` — an index seek,
+    // not a scan (see OBSERVED_LOOKBACK_DAYS's doc comment for why this reads berth_occupancy
+    // rather than td_berth_event).
     const rows = await bestEffortQuery<{ td_area: string; berth_code: string }>(
       pool,
       `with wanted(td_area, berth_code) as (select * from unnest($1::text[], $2::text[]))
        select distinct w.td_area, w.berth_code
        from wanted w
        where exists (
-         select 1 from td_berth_event e
-         where e.td_area = w.td_area
-           and e.event_at >= now() - ($3::int * interval '1 day')
-           and (e.from_berth = w.berth_code or e.to_berth = w.berth_code)
+         select 1 from berth_occupancy o
+         where o.td_area = w.td_area
+           and o.berth_code = w.berth_code
+           and o.entered_at >= now() - ($3::int * interval '1 day')
        )`,
       [areas, berths, OBSERVED_LOOKBACK_DAYS],
       OBSERVED_CHECK_TIMEOUT_MS,

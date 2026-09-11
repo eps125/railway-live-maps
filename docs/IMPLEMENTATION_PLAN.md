@@ -1266,6 +1266,73 @@ handling bearer tokens).
 Files: `deploy/docker-compose.portainer.yml`, `deploy/docker-compose.runner.yml` (new),
 `deploy/.env.example`, `.github/workflows/ci.yml`, `docs/DEPLOYMENT.md`.
 
+## Milestone 21 — opt-in TD-area fringe pairs (`berth.inhibitedBy`) `[done — 2026-09-11]`
+
+Owner-reported: watching `1S58` cross the PX/CL boundary, it showed simultaneously in `PX CE04`
+and `CL 0005` — both correct and expected (each describer independently reports the same physical
+crossing from its own side; see the earlier `1S56` PX/CL boundary-mirroring investigation the same
+day), but visually confusing as two apparently-independent occupied berths. Owner explicitly
+wanted this handled without touching any real data or attempting run-identity resolution (which
+CLAUDE.md rules 5/7 keep deliberately deferred/honest about ambiguity, pending the garner-based
+resolver phase).
+
+Added `berth.inhibitedBy?: string` (`packages/map-schema/src/document.ts`): an author-declared,
+opt-in id of another `berth` element on the same map. Purely a live-rendering rule, not run
+identity — a static, human-declared fact about track topology ("these two berths are the same
+physical crossing"). When the referenced berth's _current_ description equals this berth's, this
+berth renders blank; `berth_current_state`/`berth_occupancy`/history/playback are entirely
+untouched, only what gets drawn changes. `packages/map-schema/src/validate.ts` rejects a
+self-reference or a reference to a non-existent berth element (`inhibited_by_self_reference` /
+`inhibited_by_missing_element`). No compiler change needed — the field passes through
+`elementsById` automatically.
+
+Applied independently in both renderers, since they are deliberately separate implementations
+(not a rule-13 violation — that rule covers shared domain model/state semantics, not shared
+rendering code, per `EditorCanvas.tsx`'s own existing doc comment): the public SVG renderer
+(`apps/web/src/map/MapRenderer.tsx`) and the editor's Konva Test-mode preview
+(`apps/web/src/editor/EditorCanvas.tsx`, careful to substitute `{ description: null }` rather than
+`undefined` so an inhibited berth renders blank during an active preview rather than falling back
+to the design-time placeholder `displayName`). Editor UI: `apps/web/src/editor/PropertyPanel.tsx`
+gained an "Inhibited by" dropdown on the berth property block, same pattern as the existing
+Station field.
+
+Files: `packages/map-schema/src/document.ts`, `packages/map-schema/src/validate.ts` (+test),
+`apps/web/src/map/MapRenderer.tsx` (+test), `apps/web/src/editor/EditorCanvas.tsx`,
+`apps/web/src/editor/PropertyPanel.tsx`, `docs/MAP_EDITOR_SPEC.md`.
+
+**Known gap, not fixed here** (pre-existing, matches `stationId`'s identical gap):
+`apps/web/src/editor/commands.ts`'s `applyRenameElement` doesn't rewrite `inhibitedBy` (or
+`stationId`) when the referenced element is renamed — renaming a berth silently orphans any other
+berth's `inhibitedBy` pointing at it.
+
+## Milestone 22 — fix the editor's "seen in nationwide data" validation check being effectively always-skipped `[done — 2026-09-11]`
+
+Owner-reported: the "ever observed in nationwide data" validate/publish check was always skipping
+("takes too long"), and had previously been slow enough to time out the API gateway and 500 a
+publish (which is what made it best-effort/skippable in the first place — see
+`apps/api/src/editor/validateWithContext.ts`'s existing `OBSERVED_LOOKBACK_DAYS` doc comment).
+Root cause: the check queried `td_berth_event` — a partitioned nationwide table with **no index
+on `from_berth`/`to_berth`** (every raw CA/CB/CC step, including cancels and null-marker steps) —
+via one `e.from_berth = ? or e.to_berth = ?` correlated `EXISTS` probe **per berth binding on the
+map** (Lancaster: ~78 bindings). Without an index on either side of that `OR`, each probe fell
+back to scanning matching rows in the relevant partition(s), repeated ~78 times. Confirmed live: a
+literal `EXPLAIN ANALYZE` of the old query against Lancaster's real 78 bindings hit a 15s
+statement timeout outright — meaning `OBSERVED_CHECK_TIMEOUT_MS` (8s) was being hit essentially
+every time, not just under unusual load, which is why the check always showed as skipped.
+
+Fixed by switching the query from `td_berth_event` to `berth_occupancy`, which already carries a
+matching index (`berth_occupancy_area_berth_idx (td_area, berth_code, entered_at desc)`, migration 0008) — no new migration, no new index, no production risk. `berth_occupancy` holds one row per
+real occupancy interval rather than every raw step, and has a single `berth_code` column rather
+than a `from`/`to` pair to `OR` across, so the rewritten query is a clean two-column-equality plus
+range index seek — arguably also the more honest signal for what this check claims ("has a real
+train genuinely occupied this berth recently") than a raw step log that can include e.g. a cancel
+on a berth that was never actually occupied. Verified live with `EXPLAIN ANALYZE` against
+Lancaster's real 78 bindings: `Index Only Scan` on the migration-0008 index, `Heap Fetches: 0`,
+**32ms total** (down from a 15s timeout) — comfortably inside `OBSERVED_CHECK_TIMEOUT_MS` with
+wide margin, so the check now actually runs on every validate/publish instead of being skipped.
+
+Files: `apps/api/src/editor/validateWithContext.ts` (+test).
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

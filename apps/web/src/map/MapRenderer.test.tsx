@@ -421,6 +421,62 @@ describe("MapRenderer", () => {
     expect(offset.container.querySelector("line")).not.toBeNull();
   });
 
+  it("renders a berth blank when its inhibiting berth shows the identical description (TD-area fringe pair)", () => {
+    const berthEl = (id: string, x: number, inhibitedBy?: string) => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "berth" as const,
+      x,
+      y: 10,
+      width: 40,
+      height: 20,
+      textAlign: "center" as const,
+      fontSize: 12,
+      displayName: id,
+      ...(inhibitedBy ? { inhibitedBy } : {}),
+    });
+    const doc = bundle({
+      elementsById: {
+        "berth-px": berthEl("berth-px", 0, "berth-cl"),
+        "berth-cl": berthEl("berth-cl", 80),
+      },
+    });
+
+    const { container, rerender } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-px": { description: "1S56", enteredAt: null },
+          "berth-cl": { description: "1S56", enteredAt: null },
+        }}
+        signals={{}}
+      />,
+    );
+
+    // Both berths carry the same real headcode, but berth-px is inhibited by berth-cl, so it
+    // renders as if vacant — only one "1S56" text node, and berth-px's rect is the vacant fill.
+    expect(screen.getAllByText("1S56")).toHaveLength(1);
+    const rects = container.querySelectorAll("rect");
+    expect(rects[0]!.getAttribute("fill")).toBe("#161d27"); // vacant
+    expect(rects[1]!.getAttribute("fill")).toBe("#3d7fc4"); // occupied
+
+    // Once the descriptions genuinely differ (the train has moved on from one side), both show
+    // their real, distinct state — inhibition only applies to a real match.
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-px": { description: "1S56", enteredAt: null },
+          "berth-cl": { description: "2A16", enteredAt: null },
+        }}
+        signals={{}}
+      />,
+    );
+    expect(screen.getByText("1S56")).toBeInTheDocument();
+    expect(screen.getByText("2A16")).toBeInTheDocument();
+  });
+
   it("does nothing when clicking an unbound or empty berth — only occupied berths are clickable", () => {
     const doc = bundle({
       elementsById: {

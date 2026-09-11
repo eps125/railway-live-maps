@@ -70,7 +70,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     });
 
     const pool = fakePool((text) => {
-      if (text.includes("from td_berth_event")) {
+      if (text.includes("from berth_occupancy")) {
         return { rows: [{ td_area: "PX", berth_code: "1008" }] };
       }
       throw new Error(`unexpected query: ${text}`);
@@ -82,7 +82,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     expect(result.info.unboundBerthCount).toBe(0);
   });
 
-  it("warns 'not seen in the last 30 days' and probes td_berth_event wanted-driven, not a full scan", async () => {
+  it("warns 'not seen in the last 30 days' and probes berth_occupancy wanted-driven, using its (td_area, berth_code, entered_at) index rather than a scan", async () => {
     const doc = baseDoc({
       elements: [
         {
@@ -114,7 +114,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     let observedSql = "";
     let observedValues: unknown[] | undefined;
     const pool = fakePool((text, values) => {
-      if (text.includes("from td_berth_event")) {
+      if (text.includes("from berth_occupancy")) {
         observedSql = text;
         observedValues = values;
         return { rows: [] }; // never observed
@@ -125,7 +125,7 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     const result = await validateDraftInContext(pool, doc);
 
     expect(observedSql).toContain("exists (");
-    expect(observedSql).toContain("e.event_at >= now()");
+    expect(observedSql).toContain("o.entered_at >= now()");
     expect(observedSql).not.toMatch(/union all/i);
     expect(observedValues).toEqual([["PX"], ["0512"], 30]);
     expect(result.warnings.map((w) => w.code)).toContain("binding_never_observed");

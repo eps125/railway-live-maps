@@ -902,7 +902,22 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
               );
             }
             if (element.type === "berth") {
-              const overlay = previewState?.[element.id];
+              const rawOverlay = previewState?.[element.id];
+              const inhibitingOverlay = element.inhibitedBy
+                ? previewState?.[element.inhibitedBy]
+                : undefined;
+              // Opt-in TD-area fringe pairs (2026-09-11 owner request) — mirrors the identical
+              // check in apps/web/src/map/MapRenderer.tsx's public renderer, kept in sync by
+              // hand since this is a deliberately separate Konva implementation (see this file's
+              // own doc comment on why — CLAUDE.md rule 13 is about shared domain model/state
+              // semantics, not shared rendering code).
+              const isInhibited =
+                rawOverlay?.description != null &&
+                rawOverlay.description === inhibitingOverlay?.description;
+              // `{ description: null }`, not `undefined` — an inhibited berth in an active
+              // test/live preview should render blank (vacant-looking), not fall back to
+              // `element.displayName` (design mode's "no preview running at all" placeholder).
+              const overlay = isInhibited ? { description: null } : rawOverlay;
               const occupied = overlay !== undefined && overlay.description !== null;
               // ADR 0004 D1: the box is drawn centred on its bound track. The Group stays at the
               // authored x/y (so drag + Transformer resize math is unchanged); `yOffset` is a

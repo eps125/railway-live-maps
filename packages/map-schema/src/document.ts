@@ -70,6 +70,16 @@ const BerthElementSchema = BaseElementSchema.extend({
    * deduction behaviour yet (D7 deferred); it is the hook that phase will build on. */
   stationId: z.string().optional(),
   crs: CrsSchema.optional(),
+  /** Opt-in, author-declared id of another `berth` element on this same map (2026-09-11 owner
+   * request): a TD-area fringe/boundary pair, where the same physical crossing is reported
+   * independently by two describers. Purely a live-map rendering hint — when this berth's and
+   * the referenced berth's *current* descriptions are equal and non-null, this berth renders
+   * blank (see apps/web/src/map/MapRenderer.tsx / apps/web/src/editor/EditorCanvas.tsx). Never
+   * inferred, never touches berth_current_state/berth_occupancy/history/playback, and makes no
+   * claim about run identity — CLAUDE.md rule 5's "never assume a berth description uniquely
+   * identifies a run" is about resolving *which train*, not about this static, human-declared
+   * topology fact. */
+  inhibitedBy: z.string().optional(),
 });
 
 /** Public rendering is always blank/on/off (red=on, green=off); no aspect calculation

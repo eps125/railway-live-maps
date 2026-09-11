@@ -192,4 +192,92 @@ describe("validateMapDocument", () => {
     const result = validateMapDocument(doc);
     expect(result.errors.some((e) => e.code === "duplicate_berth_binding")).toBe(false);
   });
+
+  it("flags a berth element inhibited by itself", () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "berth-1",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "1008",
+          bindingId: "bind-1",
+          inhibitedBy: "berth-1",
+        },
+      ],
+      bindings: [
+        { id: "bind-1", elementId: "berth-1", type: "tdBerth", tdArea: "PX", berth: "1008" },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ code: "inhibited_by_self_reference", elementId: "berth-1" }),
+    );
+  });
+
+  it("flags a berth element inhibited by a berth that doesn't exist", () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "berth-1",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "1008",
+          bindingId: "bind-1",
+          inhibitedBy: "no-such-berth",
+        },
+      ],
+      bindings: [
+        { id: "bind-1", elementId: "berth-1", type: "tdBerth", tdArea: "PX", berth: "1008" },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ code: "inhibited_by_missing_element", elementId: "berth-1" }),
+    );
+  });
+
+  it("accepts a berth element inhibited by another real berth element (TD-area fringe pair)", () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "berth-px",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "CE04",
+          bindingId: "bind-px",
+          inhibitedBy: "berth-cl",
+        },
+        {
+          id: "berth-cl",
+          layerId: "l1",
+          type: "berth",
+          x: 20,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "0005",
+          bindingId: "bind-cl",
+        },
+      ],
+      bindings: [
+        { id: "bind-px", elementId: "berth-px", type: "tdBerth", tdArea: "PX", berth: "CE04" },
+        { id: "bind-cl", elementId: "berth-cl", type: "tdBerth", tdArea: "CL", berth: "0005" },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.valid).toBe(true);
+  });
 });

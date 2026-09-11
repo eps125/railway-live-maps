@@ -490,7 +490,17 @@ export function MapRenderer({
             );
           }
           if (element.type === "berth") {
-            const berthState = berths[element.id];
+            const rawBerthState = berths[element.id];
+            const inhibitingState = element.inhibitedBy ? berths[element.inhibitedBy] : undefined;
+            // Opt-in TD-area fringe pairs (2026-09-11 owner request, BerthElementSchema.inhibitedBy):
+            // when the berth this one is inhibited by currently shows the identical description,
+            // render this berth exactly as if vacant. Purely cosmetic — `berths` (live state),
+            // history, and playback all keep this berth's real data untouched; only what gets
+            // drawn here changes.
+            const isInhibited =
+              Boolean(rawBerthState?.description) &&
+              rawBerthState?.description === inhibitingState?.description;
+            const berthState = isInhibited ? undefined : rawBerthState;
             const colors = berthColors(berthState);
             // An empty berth has nothing to show a popup for — only occupied berths respond to
             // clicks (docs/PROJECT_SPEC.md §5: "click a populated berth").

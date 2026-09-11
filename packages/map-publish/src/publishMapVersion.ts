@@ -17,6 +17,17 @@ import { insertMapBindingIndexRows, type Queryable } from "./mapBindingIndex.js"
 const CANVAS_TRIM_PADDING = 40;
 const MIN_CANVAS_DIMENSION = 100;
 
+/** Default `effectiveFrom` for a publish that doesn't specify one (2026-09-11 owner decision —
+ * see docs/IMPLEMENTATION_PLAN.md's "always-latest playback default" note). CLAUDE.md rule 11
+ * ("published map versions are immutable and have effective date ranges") still holds — this
+ * only changes what date a publish uses *by default*: well before any real TD data this project
+ * has ever captured, so the new version's [effectiveFrom, null) range covers every past and
+ * future playback timestamp, immediately superseding whatever was previously open-ended (see the
+ * "close out the previous open version" step below, which uses this same value). A publish that
+ * explicitly passes its own `effectiveFrom` (still fully supported by the API/CLI/editor) keeps
+ * traditional time-scoped versioning for the rare case of a genuine real-world layout change. */
+export const EFFECTIVE_FROM_ALL_TIME = new Date(0);
+
 /** Recomputes canvas.width/height to fit the document's real element bounding box (with
  * padding), leaving gridSize untouched — an editor working on an "infinite" canvas (grid follows
  * the viewport, not a fixed pre-set size) never has to manually resize it, and publishing is what
@@ -96,9 +107,17 @@ export async function publishMapVersion(
   const versionNumber = Number(versionNumberResult.rows[0]?.next ?? "1");
 
   // Close out whichever version was previously open-ended, so the new version's
-  // [effective_from, null) range doesn't overlap it.
+  // [effective_from, null) range doesn't overlap it. `greatest(effective_from, $2)` (rather than
+  // just `$2`) guards against a publish whose effectiveFrom is *earlier* than the row being
+  // closed — e.g. EFFECTIVE_FROM_ALL_TIME superseding a version that was itself published with a
+  // real, later effective_from. Postgres's range type rejects a range whose upper bound is before
+  // its lower bound outright (a hard error, not silently empty), so without the clamp this would
+  // fail; clamping to the row's own effective_from instead collapses it to a valid zero-width
+  // `[x, x)` range — empty, so it still never matches any real `at`, which is exactly "fully
+  // superseded" regardless of which effectiveFrom this closes it to.
   await client.query(
-    `update map_version set effective_to = $2 where map_id = $1 and effective_to is null`,
+    `update map_version set effective_to = greatest(effective_from, $2)
+     where map_id = $1 and effective_to is null`,
     [mapId, effectiveFrom],
   );
 

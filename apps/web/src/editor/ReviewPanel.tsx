@@ -37,6 +37,11 @@ function toDatetimeLocal(date: Date): string {
  * `expectedRevision` the draft-sync hook last confirmed the server has — never a stale one. */
 export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelProps): JSX.Element {
   const [diff, setDiff] = useState<DocumentDiff | null>(null);
+  // Default: apply retroactively to all playback (owner decision 2026-09-11, see
+  // docs/IMPLEMENTATION_PLAN.md) — omitting effectiveFrom from the request lets the API apply
+  // its own EFFECTIVE_FROM_ALL_TIME default, so this component never needs to know that sentinel
+  // value. Un-checking reveals a normal date picker for the rare genuine time-scoped version.
+  const [applyToAllHistory, setApplyToAllHistory] = useState(true);
   const [effectiveFrom, setEffectiveFrom] = useState(() => toDatetimeLocal(new Date()));
   const [publishedBy, setPublishedBy] = useState("");
   const [outcome, setOutcome] = useState<PublishOutcome>({ status: "idle" });
@@ -56,7 +61,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           expectedRevision: syncedRevision,
-          effectiveFrom: new Date(effectiveFrom).toISOString(),
+          effectiveFrom: applyToAllHistory ? undefined : new Date(effectiveFrom).toISOString(),
           publishedBy: publishedBy || undefined,
         }),
       });
@@ -132,14 +137,24 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
 
       <fieldset>
         <legend>Publish</legend>
-        <label className="field">
-          Effective from
+        <label className="field field--checkbox">
           <input
-            type="datetime-local"
-            value={effectiveFrom}
-            onChange={(e) => setEffectiveFrom(e.target.value)}
+            type="checkbox"
+            checked={applyToAllHistory}
+            onChange={(e) => setApplyToAllHistory(e.target.checked)}
           />
+          Apply to all playback, including history (recommended)
         </label>
+        {applyToAllHistory ? null : (
+          <label className="field">
+            Effective from
+            <input
+              type="datetime-local"
+              value={effectiveFrom}
+              onChange={(e) => setEffectiveFrom(e.target.value)}
+            />
+          </label>
+        )}
         <label className="field">
           Published by
           <input

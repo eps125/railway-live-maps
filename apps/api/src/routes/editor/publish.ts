@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import { MapDocumentSchema } from "@railway/map-schema";
-import { publishMapVersion } from "@railway/map-publish";
+import { publishMapVersion, EFFECTIVE_FROM_ALL_TIME } from "@railway/map-publish";
 import { apiError } from "../../lib/queryRange.js";
 import { validateDraftInContext } from "../../editor/validateWithContext.js";
 import { getDraft } from "../../editor/draftStore.js";
@@ -44,7 +44,14 @@ export async function registerEditorPublishRoutes(
         return apiError("VALIDATION_ERROR", "expectedRevision (number) is required");
       }
 
-      const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : new Date();
+      // Owner decision 2026-09-11 (docs/IMPLEMENTATION_PLAN.md): a publish that doesn't specify
+      // effectiveFrom applies retroactively to all playback rather than defaulting to "now", so
+      // playback always reflects the latest published map without the author having to remember
+      // to backdate every publish. Pass an explicit effectiveFrom for a genuine time-scoped
+      // historical version.
+      const effectiveFrom = body.effectiveFrom
+        ? new Date(body.effectiveFrom)
+        : EFFECTIVE_FROM_ALL_TIME;
       if (Number.isNaN(effectiveFrom.getTime())) {
         reply.code(400);
         return apiError("INVALID_TIME_RANGE", "effectiveFrom must be a valid ISO 8601 timestamp");

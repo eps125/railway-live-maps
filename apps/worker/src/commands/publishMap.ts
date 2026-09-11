@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { createPool } from "@railway/database";
 import { validateMapDocument, MapDocumentSchema } from "@railway/map-schema";
-import { publishMapVersion } from "@railway/map-publish";
+import { publishMapVersion, EFFECTIVE_FROM_ALL_TIME } from "@railway/map-publish";
 import type { Config } from "../config.js";
 
+// Owner decision 2026-09-11 (docs/IMPLEMENTATION_PLAN.md): omitting --effective-from applies the
+// publish retroactively to all playback (EFFECTIVE_FROM_ALL_TIME) rather than defaulting to
+// "now" — pass --effective-from explicitly for a genuine time-scoped historical version.
 function parseEffectiveFrom(argv: string[]): Date {
   const flag = argv.find((arg) => arg.startsWith("--effective-from="));
-  if (!flag) return new Date();
+  if (!flag) return EFFECTIVE_FROM_ALL_TIME;
   const value = new Date(flag.slice("--effective-from=".length));
   if (Number.isNaN(value.getTime())) {
     throw new Error(`--effective-from must be a valid ISO 8601 timestamp, got "${flag}"`);

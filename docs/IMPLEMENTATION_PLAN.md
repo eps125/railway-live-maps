@@ -1151,6 +1151,51 @@ actual live map, kept fresh by `projector-td-live`/Tier 3) is current. This chan
 shorter (catch-up is ~5x faster) but does not remove it; `liveDataStatus` should also treat
 `berth_current_state.updated_at` as freshness evidence — separately scoped, not yet implemented.
 
+## Milestone 19 — publish defaults to "all time" so playback always uses the latest map `[done — 2026-09-11]`
+
+Owner decision 2026-09-11: for this deployment, older `map_version` rows only need to exist for
+rollback, not for genuine time-scoped historical accuracy — the owner corrects map data (e.g. a
+mis-bound berth code) and wants every playback timestamp, past and future, to reflect the fix
+immediately, without having to remember to backdate `effectiveFrom` on every publish. This does
+not weaken CLAUDE.md rule 11 ("published map versions are immutable and have effective date
+ranges") — versions are still immutable rows with real effective-date columns, and a publish can
+still specify a genuine time-scoped `effectiveFrom` when that's actually wanted (a real physical
+resignalling, say). Only the _default_ changed.
+
+- `packages/map-publish/src/publishMapVersion.ts`: new exported `EFFECTIVE_FROM_ALL_TIME` (Unix
+  epoch — well before any TD data this project has ever captured). The three publish entry points
+  (`apps/api/src/routes/editor/publish.ts`, `apps/worker/src/commands/publishMap.ts`'s
+  `--effective-from` flag, and the editor's `ReviewPanel.tsx`) now default to this instead of
+  `new Date()` when no explicit date is given.
+- `apps/web/src/editor/ReviewPanel.tsx`: added an "Apply to all playback, including history
+  (recommended)" checkbox, checked by default — when checked, `effectiveFrom` is omitted from the
+  publish request entirely (letting the API's own default apply) rather than the component
+  needing to know the sentinel value itself. Unchecking reveals the original date picker for a
+  genuine time-scoped version.
+- Bug caught by end-to-end verification (not by the unit/integration suites, which never exercised
+  this ordering): `publishMapVersion`'s "close out the previously open version" step set that row's
+  `effective_to` to the _new_ version's `effectiveFrom` unconditionally. When the new version's
+  `effectiveFrom` (now potentially `EFFECTIVE_FROM_ALL_TIME`, i.e. 1970) is _earlier_ than the row
+  being closed had as its own `effective_from` (e.g. a previous real-dated publish), that produces
+  an invalid range (`upper < lower`) — Postgres's range type rejects this outright as a hard error,
+  it does not silently treat it as empty. Fixed by clamping: `effective_to = greatest(effective_from, $newEffectiveFrom)`,
+  which always produces a valid range — a zero-width, empty one exactly when the old row is meant
+  to be immediately and fully superseded, which still correctly never matches any real `at`.
+
+Verified end-to-end against a disposable Postgres container (same pattern as Milestone 18):
+published a version with a real historical `effectiveFrom` (2026-06-01), then a second version
+with the new default, and confirmed `currentVersionForSlug` resolves to the latest version for
+`at` timestamps both before and after the first version's date (including 2020, years before
+either version existed) — the specific behavior this milestone exists to deliver. Also re-ran the
+full `publish`/`mapVersion`/`playback`/`drafts`/`diff`/`liveMap`/`backfillMapBindings` integration
+suites (19 tests) against the same throwaway database; all pass, including the existing
+"republishing closes the prior open version" test, confirming the range-clamp fix doesn't change
+behavior for an ordinary now-or-later-dated republish.
+
+Files: `packages/map-publish/src/publishMapVersion.ts`, `packages/map-publish/src/index.ts`,
+`apps/api/src/routes/editor/publish.ts`, `apps/worker/src/commands/publishMap.ts`,
+`apps/web/src/editor/ReviewPanel.tsx`.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

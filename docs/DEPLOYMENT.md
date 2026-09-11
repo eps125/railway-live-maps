@@ -16,6 +16,39 @@ This is the practical path from "code in this repo" to "running stack" — see
    built-in `GITHUB_TOKEN` — no registry secret setup needed.
 4. Confirm the `publish` job succeeded and the three packages appear under the repo's
    GitHub Packages tab before deploying anywhere.
+5. **Auto-deploy (owner decision 2026-09-11):** fully-automatic, re-pull-`:latest`,
+   no-approval-gate redeploy on every green `main` build. Portainer's stack webhook is a
+   Business Edition feature this deployment doesn't have, and this box only runs the Portainer
+   _agent_ — the actual Portainer server and its rendered compose files live elsewhere, so
+   there's no local compose file to target over SSH either. Instead,
+   `deploy/docker-compose.portainer.yml` runs a `watchtower` service (containrrr/watchtower) that
+   watches only the containers labeled `com.centurylinklabs.watchtower.enable=true` in that file
+   (every api/web/worker-role service — never postgres/redis/archive/the openrail-eps containers
+   sharing this host) and, when POSTed to on its HTTP API, pulls the newest `:latest` for each and
+   recreates any container whose image actually changed. Its port is published **loopback-only**
+   (`127.0.0.1`): GitHub's cloud-hosted Actions runners can't reach a private LAN address at all,
+   so `.github/workflows/ci.yml`'s `deploy` job runs on a **self-hosted runner living on this same
+   box** instead (`deploy/docker-compose.runner.yml`) rather than opening any port to the internet.
+
+   One-time setup, in this order:
+   1. **Watchtower's token:** generate one (`openssl rand -hex 32`), set it as
+      `WATCHTOWER_HTTP_API_TOKEN` in Portainer's stack environment editor, and redeploy the stack
+      so `watchtower` and the label on each service take effect.
+   2. **Same token in GitHub:** store it as this repo's `WATCHTOWER_HTTP_API_TOKEN` Actions secret
+      (`gh secret set WATCHTOWER_HTTP_API_TOKEN`, or the repo's Settings → Secrets and variables →
+      Actions).
+   3. **Runner registration token:** GitHub → this repo → Settings → Actions → Runners → New
+      self-hosted runner → copy the token shown (valid ~1 hour, single-use).
+   4. **Bring up the runner**, on the box itself:
+      ```bash
+      export RUNNER_TOKEN=<paste from step 3>
+      docker compose -f deploy/docker-compose.runner.yml up -d
+      ```
+      Confirm it shows "Idle" under Settings → Actions → Runners before relying on it. A running
+      container stays registered indefinitely; only recreating it later needs a fresh token.
+   5. Push to `main` and confirm the `deploy` job goes green and the box's containers actually
+      pick up the new image (`docker inspect <container> --format '{{.Image}}'` before/after, or
+      just watch `docker compose ... logs -f` for watchtower's own "found new image" log line).
 
 ## 2. Local configuration (never committed)
 

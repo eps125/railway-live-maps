@@ -162,3 +162,21 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}-web:latest
             ghcr.io/${{ github.repository }}-web:${{ github.sha }}
+
+  deploy:
+    # Auto-deploy on green CI (owner decision 2026-09-11, docs/IMPLEMENTATION_PLAN.md Milestone
+    # 20). Runs on a self-hosted runner living on the deployment box's own LAN (deploy/docker-
+    # compose.runner.yml) rather than a GitHub-hosted one — that box's watchtower HTTP API is
+    # published loopback-only, deliberately unreachable from GitHub's cloud runners or anywhere
+    # else on the internet. The label here must match RUNNER_LABELS in that compose file.
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, railway-live-maps-deploy]
+    steps:
+      - name: Trigger watchtower update
+        run: |
+          curl --fail --show-error --silent -X POST \
+            -H "Authorization: Bearer $WATCHTOWER_HTTP_API_TOKEN" \
+            http://127.0.0.1:6056/v1/update
+        env:
+          WATCHTOWER_HTTP_API_TOKEN: ${{ secrets.WATCHTOWER_HTTP_API_TOKEN }}

@@ -1196,6 +1196,55 @@ Files: `packages/map-publish/src/publishMapVersion.ts`, `packages/map-publish/sr
 `apps/api/src/routes/editor/publish.ts`, `apps/worker/src/commands/publishMap.ts`,
 `apps/web/src/editor/ReviewPanel.tsx`.
 
+## Milestone 20 — auto-deploy on green CI `[implemented, awaiting one-time manual setup — 2026-09-11]`
+
+Owner decision 2026-09-11: every push to `main` that passes CI should redeploy the box
+automatically, no approval step. Two mechanisms were ruled out during investigation before
+landing on this one:
+
+- **Portainer stack webhook** — Business Edition only; this deployment is Community Edition.
+- **GitOps (Portainer polling the git repo + CI auto-committing a SHA pin)** — technically sound
+  (and would have doubled as the SHA-pinning `docs/ARCHITECTURE.md` §8 already recommends), but
+  the owner preferred to keep going with the previously-proposed approach instead.
+- **Raw SSH + `docker compose pull/up`** — this box only runs the Portainer _agent_; `docker
+inspect` on a running container shows its compose config at `/data/compose/29/docker-compose.yml`,
+  which does not exist on this host. The real Portainer server (and its rendered compose files)
+  lives elsewhere, so there's no local compose file to target directly.
+
+Landed on **Watchtower** (`containrrr/watchtower`, MIT-licensed, free): a service added to
+`deploy/docker-compose.portainer.yml` that watches only the containers labeled
+`com.centurylinklabs.watchtower.enable=true` (every api/web/worker-role service — a new
+`x-watchtower-label` anchor applied to exactly those 9 services, never
+postgres/redis/archive/the unrelated openrail-eps containers sharing this host) and, when POSTed
+to on its bearer-token-gated HTTP API, pulls the newest `:latest` for each and recreates any
+container whose image actually changed. `WATCHTOWER_CLEANUP` removes each superseded image
+afterward (this box is RAM/disk-constrained). Verified with `docker compose config` on the real
+host (render-only, nothing started or touched) that the file is syntactically valid and exactly
+the intended 9 services carry the label.
+
+**Connectivity:** GitHub's cloud-hosted Actions runners cannot reach this box's private LAN
+address (`10.1.1.66`) at all — this would have blocked the webhook and raw-SSH approaches too,
+not just Watchtower. Owner chose a self-hosted GitHub Actions runner living on this same box
+(`deploy/docker-compose.runner.yml`, `myoung34/github-runner`, `network_mode: host` so it can
+reach the host's own loopback) over a public port-forward. This let `watchtower`'s port move to
+**loopback-only** (`127.0.0.1:${WATCHTOWER_PORT}`) — not just token-gated but genuinely
+unreachable from anywhere but this host, since nothing outside it needs to reach it anymore.
+`.github/workflows/ci.yml`'s new `deploy` job runs on `[self-hosted, railway-live-maps-deploy]`
+(needs: `publish`, only on push to `main`) and does one `curl -X POST` with the bearer token to
+`http://127.0.0.1:6056/v1/update`. Verified the workflow YAML parses correctly (via the repo's own
+`js-yaml` dependency) and both new/changed compose files render cleanly with `docker compose
+config` on the real host (render-only — nothing started, production untouched).
+
+**Remaining: one-time manual setup only**, all owner-side (documented step-by-step in
+`docs/DEPLOYMENT.md`'s deploy section) — generate and set `WATCHTOWER_HTTP_API_TOKEN` in both
+Portainer's stack env editor and as a GitHub Actions secret, generate a runner registration token
+from GitHub's UI, and bring up `docker-compose.runner.yml` on the box. None of these are things an
+agent should do on the owner's behalf (registering infrastructure against their GitHub account,
+handling bearer tokens).
+
+Files: `deploy/docker-compose.portainer.yml`, `deploy/docker-compose.runner.yml` (new),
+`deploy/.env.example`, `.github/workflows/ci.yml`, `docs/DEPLOYMENT.md`.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

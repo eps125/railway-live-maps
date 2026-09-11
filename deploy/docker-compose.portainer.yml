@@ -37,6 +37,13 @@
 # publicdatafeeds.networkrail.co.uk (or the openrail-eps host). Those services are additionally
 # attached to `egress`, a normal (non-internal) network that grants outbound internet without
 # publishing anything new inbound — see its definition below.
+#
+# `watchtower` (owner decision 2026-09-11) is CI's auto-deploy trigger — see its own comment
+# below. Its HTTP API port is published loopback-only (127.0.0.1) since the GitHub Actions
+# `deploy` job that calls it runs on a self-hosted runner on this same box (deploy/docker-
+# compose.runner.yml), not GitHub's cloud runners — no public exposure needed at all. It also
+# holds a Docker-socket mount, which is effectively host-level container control, scoped in
+# practice by WATCHTOWER_LABEL_ENABLE to only the containers this file labels.
 
 name: railway-live-maps
 
@@ -93,6 +100,13 @@ x-worker-env: &worker-env
   # (RESOLVER_EAGER_MAPPED_AREAS_ONLY, RESOLVER_LIVE_WINDOW_HOURS) are gone. Drop them from any
   # existing stack .env.
 
+# Owner decision 2026-09-11 (docs/IMPLEMENTATION_PLAN.md): every image-bearing service carries
+# this label so the `watchtower` service (below) knows which containers it's allowed to touch —
+# scoped deliberately to just the app images (api/web/worker + its daemon roles), never
+# postgres/redis/archive or the unrelated openrail-eps containers sharing this host.
+x-watchtower-label: &watchtower-label
+  - "com.centurylinklabs.watchtower.enable=true"
+
 services:
   web:
     image: ${WEB_IMAGE:-ghcr.io/eps125/railway-live-maps-web}:${APP_TAG:-latest}
@@ -103,6 +117,7 @@ services:
     ports:
       - "${WEB_PORT:-6050}:80"
     networks: [frontend, backend]
+    labels: *watchtower-label
 
   api:
     image: ${API_IMAGE:-ghcr.io/eps125/railway-live-maps-api}:${APP_TAG:-latest}
@@ -141,6 +156,7 @@ services:
       timeout: 5s
       retries: 5
     networks: [backend]
+    labels: *watchtower-label
 
   worker:
     image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
@@ -162,6 +178,7 @@ services:
     # `download-schedule`/`download-corpus`/`download-smart` commands, which reach
     # publicdatafeeds.networkrail.co.uk directly — same requirement as the ingest-* services.
     networks: [backend, egress]
+    labels: *watchtower-label
 
   # Always running; idles (sleep infinity) unless TD_LIVE_ENABLED=true, in which case it
   # connects to the real Network Rail TD feed. Flip the flag and redeploy this service (no
@@ -194,6 +211,7 @@ services:
     # real internet (Network Rail's public STOMP endpoint). `backend`-only would leave it
     # unable to resolve any hostname at all (DNS EAI_AGAIN), not merely blocked.
     networks: [backend, egress]
+    labels: *watchtower-label
 
   # The `ingest-vstp` and `ingest-trust` services were removed with ADR 0002 (2026-09-01): RLM no
   # longer subscribes to Network Rail for VSTP or TRUST. VSTP-schedule and TRUST data are mirrored
@@ -232,6 +250,7 @@ services:
     # `egress` (not `internal`): reaches publicdatafeeds.networkrail.co.uk directly, same
     # requirement as ingest-td and the worker service's own console commands.
     networks: [backend, egress]
+    labels: *watchtower-label
 
   # THE HOT PATH (ADR 0003 / Milestone 16). Reads TD CA/CB/CC from raw_feed_event in tiny
   # batches on a 100ms tick, writes berth_current_state in one bulk upsert, and publishes the
@@ -252,6 +271,7 @@ services:
     healthcheck:
       disable: true
     networks: [backend]
+    labels: *watchtower-label
 
   # The NON-hot-path TD projector (ADR 0003): td_berth_event, berth_occupancy history, S-Class,
   # anomalies, td_area_summary, td_heartbeat. Seconds of lag here don't matter. Does NOT write
@@ -273,6 +293,7 @@ services:
     healthcheck:
       disable: true
     networks: [backend]
+    labels: *watchtower-label
 
   # The `projector-schedule` service (which ran `project-vstp` / `project-trust` in a shell loop)
   # was removed with ADR 0002 (2026-09-01) along with RLM's own VSTP/TRUST projectors. Delete it
@@ -293,6 +314,7 @@ services:
     healthcheck:
       disable: true
     networks: [backend]
+    labels: *watchtower-label
 
   # garner bridge (ADR 0002): mirrors CORPUS / SMART / cif_schedules / cif_schedule_locations /
   # trust_* from the operator's openrail-eps MariaDB — RLM no longer subscribes to Network Rail
@@ -311,12 +333,48 @@ services:
     healthcheck:
       disable: true
     networks: [backend, egress]
+    labels: *watchtower-label
 
   # The berth-run resolver (`projector-resolver` / `project-resolver-daemon`) was removed with
   # ADR 0002 (2026-09-01). Run<->schedule correlation on the live map is deferred to a later
   # phase that will source it from the garner (openrail-eps) `trust_*` mirror. If a
   # `projector-resolver` service from an earlier stack version is still defined in Portainer,
   # delete it on the next redeploy.
+
+  # Auto-deploy on green CI (owner decision 2026-09-11, docs/IMPLEMENTATION_PLAN.md). Watches
+  # only the containers carrying `com.centurylinklabs.watchtower.enable=true` above (every
+  # api/web/worker-role service — never postgres/redis/archive/the unrelated openrail-eps
+  # containers sharing this host, since they carry no such label and WATCHTOWER_LABEL_ENABLE
+  # restricts it to labeled containers only). CI POSTs to its HTTP API after a successful build
+  # on main; it then pulls the newest `:latest` for each labeled service and recreates any
+  # container whose image actually changed. `WATCHTOWER_HTTP_API_TOKEN` is a bearer secret you
+  # generate yourself (e.g. `openssl rand -hex 32`) — set it here (Portainer's stack environment
+  # editor) AND as a GitHub Actions secret; never commit it. `WATCHTOWER_CLEANUP` removes each
+  # superseded image afterward so old layers don't pile up on this RAM/disk-constrained box. Not
+  # given `WATCHTOWER_POLL_INTERVAL` deliberately — CI's HTTP trigger is the intended path; add
+  # one if you also want a periodic background check as a safety net for a missed trigger.
+  # Excluded from `x-watchtower-label` itself (nothing manages Watchtower's own updates) — bump
+  # the pinned image tag by hand when you want a newer Watchtower release.
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_HTTP_API_UPDATE: "true"
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN}
+      WATCHTOWER_CLEANUP: "true"
+    # Loopback-only (owner decision 2026-09-11: CI reaches this via a self-hosted GitHub Actions
+    # runner on this same box, not a public port-forward — see deploy/docker-compose.runner.yml
+    # and docs/DEPLOYMENT.md). Bound to 127.0.0.1 so this endpoint is unreachable from the rest
+    # of the LAN, let alone the internet, not just "bearer-token-gated" — nothing outside this
+    # host can even open a connection to it.
+    ports:
+      - "127.0.0.1:${WATCHTOWER_PORT:-6056}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # `egress` (not `internal`-only): Watchtower itself has to reach ghcr.io to check/pull new
+    # image digests, same requirement as ingest-td/ingest-garner above.
+    networks: [backend, egress]
 
   archive:
     # Development default only. Replace with a tested immutable tag/digest before relying

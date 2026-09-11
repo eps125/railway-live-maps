@@ -76,9 +76,24 @@ jobs:
 
       - name: Start MinIO (archive) for connectivity checks
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio server /data
+          # 2026-09-11: Docker Hub anonymous-pull rate limiting occasionally denies this pull
+          # outright ("pull access denied ... repository does not exist or may require 'docker
+          # login'" — Docker Hub's rate-limit error deliberately reads like a missing/private
+          # repo) on GitHub's shared runner IP ranges. Nothing wrong with the image or this
+          # config; retry with backoff rather than failing the whole job on a transient 429/500.
+          for attempt in $(seq 1 5); do
+            if docker run -d --name minio -p 9000:9000 \
+              -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+              minio/minio server /data; then
+              break
+            fi
+            echo "docker run minio/minio failed (attempt $attempt/5), retrying in 10s..."
+            sleep 10
+          done
+          docker ps --filter name=minio --format '{{.Names}}' | grep -q minio || {
+            echo "::error::minio container never started after 5 attempts"
+            exit 1
+          }
           for i in $(seq 1 30); do
             curl -fs http://localhost:9000/minio/health/live && break
             sleep 1

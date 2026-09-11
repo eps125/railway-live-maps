@@ -1097,6 +1097,60 @@ Files: `apps/worker/src/shared/recordBrokerFrame.ts` (`insertedEvents` via `RETU
 `BindingsCache` + inline call). Not-yet-done follow-up: take the S3 PUT off the path (needs an
 ADR call on reordering archive-before-ack).
 
+## Milestone 18 — batched writes in `project-td-daemon` (history projector) `[done — 2026-09-11]`
+
+Symptom: after a stack restart, `project-td` (the non-hot-path history projector — `td_berth_event`,
+`berth_occupancy`, `td_s_*`, `td_heartbeat`, `td_area_summary`) took far longer than expected to
+catch up to the ingestion head, even on a 16-core/8GB box. Root cause: `runProjectTd`'s per-batch
+loop (`apps/worker/src/td/projector.ts`) issued one `select`/`insert`/`update` round-trip **per
+event** (up to ~2–4 for a CA row: two `getOpenOccupancy` selects, the `td_berth_event` insert, one
+or more effect writes) — ~1,000–2,000 sequential round trips for a 500-row batch, all on one
+connection under one Postgres advisory lock (`runProjectTd` only ever has one instance running at
+a time). That's a serial, WAL-fsync-bound workload — confirmed on the live stack via
+`pg_stat_activity` (`WalSync`/`WALWrite` wait events, one Postgres backend near 100% CPU while 15
+other cores sat idle). Adding CPU/RAM does not help a workload with no concurrency to spread
+across cores; only fewer, larger round trips do.
+
+Fix: restructured the per-batch loop to run a fixed, small number of bulk statements per batch
+instead of one round trip per row:
+
+- `td_heartbeat` / `td_berth_event` / `td_s_event`: one multi-row `insert … on conflict do
+nothing` each (`returning raw_event_id` on the latter two, to recover exactly which rows were
+  newly projected vs. already-seen replays — the same idempotency guard as before, just resolved
+  for the whole batch at once).
+- `td_s_current_state`: newly-projected S-Class rows are folded to one-per-`(td_area,
+currentStateKey)` (last-by-ingestion-order wins — Postgres can't `ON CONFLICT DO UPDATE` the same
+  key twice in one statement) before a single bulk upsert.
+- CA/CB/CC occupancy open/close/anomaly effects (`processCClassBatch`): one bulk read of every
+  distinct `(td_area, berth)` pair the batch's newly-projected rows touch (replacing up to two
+  `select`s per row), folded in-memory against the _same_ pure `applyCA`/`applyCB`/`applyCC`
+  reducers (unchanged) while iterating strictly in ingestion order, then three bulk statements
+  (`insert` opens, `update` closes, `insert` anomalies). A batch of `berth_occupancy_id_seq` values
+  is reserved up front (one `nextval` round trip) so a same-batch close can reference an
+  occupancy opened earlier in the same batch before that row is otherwise looked up; opens are
+  written before closes so a same-batch open-then-close still finds its row (ordinary
+  read-your-writes visibility within the one transaction — no in-memory merging needed).
+- `td_area_summary` upsert and checkpoint advance: unchanged (already batched).
+
+Verified against a disposable, loopback-only Postgres container (same host, migrated fresh, torn
+down after — production untouched): all 15 existing `projector.ts` integration tests pass
+unchanged, plus one new test (`same-batch churn: a long open/close chain for one berth within a
+single batch …`) exercising a 5-step open/close/reopen chain for one berth inside a single batch,
+the specific case the reserved-id/opens-before-closes ordering exists for. A 20,000-event synthetic
+load (same host) measured **~968 events/sec**, vs. the ~187 events/sec observed on the live stack's
+catch-up before this change — roughly 5x.
+
+Files: `apps/worker/src/td/projector.ts` (rewrite), `apps/worker/src/td/projector.integration.test.ts`
+(new test).
+
+Known limitation / not done in this change: the live-status banner (`GET …/state`'s `quality.status`,
+`apps/api/src/lib/mapVersion.ts`'s `liveDataStatus`) still determines freshness from
+`td_heartbeat`/`td_berth_event` only — both owned by this same non-hot-path projector — so it can
+still report "stale" for several minutes after a restart even though `berth_current_state` (the
+actual live map, kept fresh by `projector-td-live`/Tier 3) is current. This change makes that window
+shorter (catch-up is ~5x faster) but does not remove it; `liveDataStatus` should also treat
+`berth_current_state.updated_at` as freshness evidence — separately scoped, not yet implemented.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

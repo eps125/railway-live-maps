@@ -415,6 +415,46 @@ describe("runProjectTd (integration)", () => {
     expect(preserved.rows[0]).toMatchObject({ closed_occupancy_id: null, reason: "test" });
   });
 
+  it("same-batch churn: a long open/close chain for one berth within a single batch lands on the same state as sequential per-row processing (2026-09 batched-write rewrite)", async () => {
+    // Exercises processCClassBatch's in-memory open/close folding and reserved-id bookkeeping
+    // under repeated same-berth churn inside one batch: CC opens, CA steps it on (closing the
+    // first, opening a second), CC re-interposes (closing the second, opening a third), CB
+    // cancels it, then CC opens a fourth — five occupancy rows, four of them closed within the
+    // very same runProjectTd call, none of them ever round-tripping to the database mid-batch.
+    const area = uniqueArea();
+    const t = Date.now();
+    await record(
+      [
+        cc(area, "1000", "V1", t),
+        ca(area, "1000", "1001", "V1", t + 1000),
+        cc(area, "1001", "V2", t + 2000),
+        cb(area, "1001", "V2", t + 3000),
+        cc(area, "1001", "V3", t + 4000),
+      ],
+      new Date(t),
+    );
+
+    await runProjectTd(pool);
+
+    expect(await anomalyCount(area)).toBe(0);
+    const history1000 = await occupancyHistory(area, "1000");
+    expect(history1000).toHaveLength(1);
+    expect(history1000[0]).toMatchObject({ description: "V1", exit_reason: "stepped_out" });
+
+    const history1001 = await occupancyHistory(area, "1001");
+    expect(history1001).toHaveLength(3);
+    // V1 was opened by the CA step but closed by the CC interpose that follows it — closeOccupancy's
+    // exit_reason reflects the *closing* message (applyCC always uses "overwritten_by_interpose"),
+    // not the message that originally opened the occupancy.
+    expect(history1001[0]).toMatchObject({
+      description: "V1",
+      exit_reason: "overwritten_by_interpose",
+    });
+    expect(history1001[1]).toMatchObject({ description: "V2", exit_reason: "cancelled" });
+    expect(history1001[2]).toMatchObject({ description: "V3", exit_reason: null });
+    expect((await openOccupancy(area, "1001"))?.description).toBe("V3");
+  });
+
   it("skips instead of racing when another run already holds the advisory lock", async () => {
     // Reproduces the scenario that leaves a closeOccupancy silently unapplied: two concurrent
     // runProjectTd calls (e.g. the continuous projector loop overlapping a container restart, or

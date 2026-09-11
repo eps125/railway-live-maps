@@ -149,7 +149,10 @@ export function Toolbar({
           return;
         }
         const parsed = MapDocumentSchema.parse(json);
-        dispatch({ type: "setDocument", document: parsed });
+        // dirty: true — this content came from a local file, not the server, so it must be
+        // queued for autosave (useDraftSync.ts's effect is gated on `dirty`). See setDocument's
+        // own doc comment in EditorState.tsx for the incident this fixes.
+        dispatch({ type: "setDocument", document: parsed, dirty: true });
       })
       .catch((error: unknown) => {
         onImportError(error instanceof Error ? error.message : "Failed to import file");

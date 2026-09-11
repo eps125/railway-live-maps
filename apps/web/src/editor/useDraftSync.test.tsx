@@ -130,4 +130,68 @@ describe("useDraftSync", () => {
     // The client's own tracked revision must NOT have been silently bumped to the server's.
     expect(result.current.sync.syncedRevision).toBe(1);
   });
+
+  it("2026-09-12 regression: setDocument with dirty:true (Toolbar.tsx's JSON import) is queued for autosave", async () => {
+    // Previously `setDocument` always set dirty:false, so importing a JSON file visually
+    // updated the canvas but this effect (gated on `dirty`) never fired — the import was never
+    // actually persisted, and refreshing the page reloaded the server's untouched draft,
+    // making the import look like it silently reverted.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(jsonResponse(200, { revision: 2, canonicalDocument: baseDoc() })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(
+      () => {
+        const dispatch = useEditorDispatch();
+        const sync = useDraftSync("test-slug", 1);
+        return { dispatch, sync };
+      },
+      { wrapper },
+    );
+
+    act(() => {
+      result.current.dispatch({
+        type: "setDocument",
+        document: { ...baseDoc(), elements: [makeElement("imported-1")] },
+        dirty: true,
+      });
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/editor/maps/test-slug/draft",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    await waitFor(() => expect(result.current.sync.status).toBe("saved"));
+  });
+
+  it("setDocument without dirty (useDraftSync.ts's own reloadFromServer) does NOT trigger a save — it's already what the server has", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(
+      () => {
+        const dispatch = useEditorDispatch();
+        const sync = useDraftSync("test-slug", 1);
+        return { dispatch, sync };
+      },
+      { wrapper },
+    );
+
+    act(() => {
+      result.current.dispatch({ type: "setDocument", document: baseDoc() });
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

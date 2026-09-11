@@ -1436,6 +1436,32 @@ re-renders the document, not continuously during the drag gesture; and there's s
 multi-node `Transformer`/group bounding box shown for a multi-element selection (only per-element
 highlight styling). Neither blocks the actual group-move from working correctly.
 
+## Milestone 25 — fix: JSON import silently never persisted (looked reverted on refresh) `[done — 2026-09-12]`
+
+Owner-reported, real data-loss bug: importing a JSON file (`Toolbar.tsx`'s "Import JSON", used to
+recover lost editor progress from a previous export) visually updated the canvas, but refreshing
+the page reverted it back to the old draft — the import appeared to silently undo itself.
+
+Root cause: `Toolbar.tsx`'s `importJson` and `useDraftSync.ts`'s `reloadFromServer` both dispatch
+the same `setDocument` action, but for semantically opposite reasons — `reloadFromServer` loads
+content the server already has (nothing new to save), while `importJson` loads a local file the
+server has never seen (must be saved). `setDocument`'s reducer case
+(`apps/web/src/editor/EditorState.tsx`) unconditionally set `dirty: false`, correct for the first
+case and silently wrong for the second: `useDraftSync`'s autosave effect is gated on `dirty`, so
+it never queued a save for the imported content at all. The import wasn't reverted by anything —
+it was simply never persisted in the first place, and a refresh reloads the draft from the server,
+which never received it.
+
+Fixed by making the action's dirty state explicit (`{ type: "setDocument"; document; dirty?:
+boolean }`, defaulting to `false` — the common case, and what `reloadFromServer` still relies on
+implicitly) and having `importJson` pass `dirty: true`. Added two regression tests to
+`useDraftSync.test.tsx`: one proving `setDocument` with `dirty: true` now correctly triggers the
+debounced autosave PUT, one proving `setDocument` without it (matching `reloadFromServer`'s actual
+call site) still does not — protecting both directions from regressing.
+
+Files: `apps/web/src/editor/EditorState.tsx`, `apps/web/src/editor/Toolbar.tsx`,
+`apps/web/src/editor/useDraftSync.test.tsx` (+2 tests).
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

@@ -41,7 +41,15 @@ export type EditorAction =
   | { type: "setSelection"; ids: string[] }
   | { type: "setToolMode"; mode: ToolMode }
   | { type: "setViewport"; viewport: Viewport }
-  | { type: "setDocument"; document: MapDocument }
+  /** `dirty` defaults to `false` — the common case is loading content the server already has
+   * (initial load, `useDraftSync`'s `reloadFromServer`), which is by definition already synced.
+   * A caller loading content the server has NOT seen (Toolbar.tsx's JSON import) must pass
+   * `dirty: true` explicitly, or the change silently never queues for autosave — exactly what
+   * happened before this field existed: importing a JSON file visually updated the canvas but,
+   * since this action unconditionally set `dirty: false`, `useDraftSync`'s autosave effect
+   * (gated on `dirty`) never fired, so the import was never actually persisted and a page
+   * refresh reloaded the server's untouched draft, making the import look like it "reverted". */
+  | { type: "setDocument"; document: MapDocument; dirty?: boolean }
   /** Map-level display name (shown as the map's heading on the public renderer). Not part of
    * the element command model, so it's a plain state update with no undo entry. */
   | { type: "setMapName"; name: string }
@@ -110,7 +118,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         past: [],
         future: [],
         selection: [],
-        dirty: false,
+        dirty: action.dirty ?? false,
       };
     case "markSynced":
       return { ...state, dirty: false };

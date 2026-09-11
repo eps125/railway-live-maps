@@ -1196,6 +1196,27 @@ Files: `packages/map-publish/src/publishMapVersion.ts`, `packages/map-publish/sr
 `apps/api/src/routes/editor/publish.ts`, `apps/worker/src/commands/publishMap.ts`,
 `apps/web/src/editor/ReviewPanel.tsx`.
 
+**Follow-up fix (2026-09-11, found in production):** the first real Lancaster publish after this
+landed hit `conflicting key value violates exclusion constraint "map_version_no_overlap"`. The
+close-out step only closed the single row where `effective_to is null` — correct for the
+end-to-end test above, which only ever had one prior version to worry about, but Lancaster had 38
+real, already-closed, non-overlapping historical versions (a normal day-to-day editing history
+predating this milestone). A new version published with `EFFECTIVE_FROM_ALL_TIME` inserts an
+open-ended `[1970-01-01, infinity)` range, which genuinely overlaps _every one_ of those 38 rows,
+not just the most recently open one. Fixed by widening the close-out `update` to
+`where effective_to is null or effective_to > $2` — closing every row that could overlap the new
+one, not only the currently-open row. For an ordinary same-day republish this changes nothing
+(older rows already end before the new date, so the extra clause never matches anything new); for
+the retroactive/epoch case it correctly collapses all prior versions to empty ranges. Reproduced
+the exact failure against a disposable Postgres container (seeded 39 sequential real-dated
+versions matching Lancaster's actual shape, then published a 40th with `EFFECTIVE_FROM_ALL_TIME`)
+and confirmed the fix resolves it, with `currentVersionForSlug` correctly resolving the latest
+version for timestamps before, during, and after the old history. Existing tests still pass
+(`packages/map-publish` unit tests; `publish`/`mapVersion`/`playback`/`drafts`/`backfillMapBindings`
+integration tests) — two unrelated integration tests flaked from a ~1.2s clock skew between this
+session's dev machine and the remote throwaway-DB host used for ad-hoc verification, not a real
+regression (neither touches `publishMapVersion` at all).
+
 ## Milestone 20 — auto-deploy on green CI `[implemented, awaiting one-time manual setup — 2026-09-11]`
 
 Owner decision 2026-09-11: every push to `main` that passes CI should redeploy the box

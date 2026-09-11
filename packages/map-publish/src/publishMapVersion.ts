@@ -106,18 +106,24 @@ export async function publishMapVersion(
   );
   const versionNumber = Number(versionNumberResult.rows[0]?.next ?? "1");
 
-  // Close out whichever version was previously open-ended, so the new version's
-  // [effective_from, null) range doesn't overlap it. `greatest(effective_from, $2)` (rather than
-  // just `$2`) guards against a publish whose effectiveFrom is *earlier* than the row being
-  // closed — e.g. EFFECTIVE_FROM_ALL_TIME superseding a version that was itself published with a
-  // real, later effective_from. Postgres's range type rejects a range whose upper bound is before
-  // its lower bound outright (a hard error, not silently empty), so without the clamp this would
-  // fail; clamping to the row's own effective_from instead collapses it to a valid zero-width
-  // `[x, x)` range — empty, so it still never matches any real `at`, which is exactly "fully
-  // superseded" regardless of which effectiveFrom this closes it to.
+  // Close out every existing version whose range could overlap the new one, so the new
+  // [effective_from, null) — open-ended, reaching to "infinity" — range doesn't conflict with
+  // `map_version_no_overlap`. That's not just "whichever row was previously open-ended": a new
+  // version published with EFFECTIVE_FROM_ALL_TIME (or any effectiveFrom earlier than existing
+  // history) has a range that spans *every* prior version's real, already-closed, non-overlapping
+  // date range too — `effective_to is null or effective_to > $2` catches all of them, not only the
+  // currently-open one (2026-09-11 incident: Lancaster had 38 real-dated historical versions; only
+  // closing the single open one left the other 37 as genuine overlaps once the new row's range
+  // spanned back to 1970). `greatest(effective_from, $2)` (rather than just `$2`) guards against a
+  // publish whose effectiveFrom is *earlier* than a row being closed — Postgres's range type
+  // rejects a range whose upper bound is before its lower bound outright (a hard error, not
+  // silently empty), so without the clamp this would fail; clamping to the row's own
+  // effective_from instead collapses it to a valid zero-width `[x, x)` range — empty, so it still
+  // never matches any real `at`, which is exactly "fully superseded" regardless of which
+  // effectiveFrom this closes it to.
   await client.query(
     `update map_version set effective_to = greatest(effective_from, $2)
-     where map_id = $1 and effective_to is null`,
+     where map_id = $1 and (effective_to is null or effective_to > $2)`,
     [mapId, effectiveFrom],
   );
 

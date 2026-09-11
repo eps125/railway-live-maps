@@ -407,11 +407,21 @@ export function PropertyPanel(): JSX.Element {
               <option value="">(none)</option>
               {doc.elements
                 .filter((el): el is typeof element => el.type === "berth" && el.id !== elementId)
-                .map((el) => (
-                  <option key={el.id} value={el.id}>
-                    {el.displayName}
-                  </option>
-                ))}
+                .map((el) => {
+                  // Show "PX CE04" (TD area + berth) rather than just the 4-char displayName,
+                  // which is ambiguous — the whole point of this field is picking apart two
+                  // berths that likely share the same displayed description.
+                  const elBinding = doc.bindings.find((b) => b.elementId === el.id);
+                  const label =
+                    elBinding?.type === "tdBerth"
+                      ? `${elBinding.tdArea} ${elBinding.berth}`
+                      : `${el.displayName} (unbound)`;
+                  return (
+                    <option key={el.id} value={el.id}>
+                      {label}
+                    </option>
+                  );
+                })}
             </select>
           </label>
           <p className="field-hint">

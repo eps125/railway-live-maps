@@ -195,6 +195,48 @@ describe("PropertyPanel BindingFields", () => {
   });
 });
 
+describe("PropertyPanel Inhibited by", () => {
+  it("labels each option with its TD area + berth (not the ambiguous 4-char displayName), falling back to '(unbound)'", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/td/areas/")) return Promise.resolve(jsonResponse({ berths: [] }));
+        if (url.includes("/td/areas")) return Promise.resolve(jsonResponse({ areas: [] }));
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    renderPanel(baseDoc(), "berth-b");
+
+    const select = await screen.findByLabelText("Inhibited by");
+    const optionTexts = Array.from(select.querySelectorAll("option")).map((o) => o.textContent);
+    // berth-a is bound to PX/0100 — shown as "PX 0100", not its displayName "Berth A". berth-b
+    // itself is excluded (an element can't be inhibited by itself).
+    expect(optionTexts).toEqual(["(none)", "PX 0100"]);
+
+    fireEvent.change(select, { target: { value: "berth-a" } });
+    expect(select).toHaveValue("berth-a");
+  });
+
+  it("shows the unbound fallback label for a berth with no TD binding", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/td/areas/")) return Promise.resolve(jsonResponse({ berths: [] }));
+        if (url.includes("/td/areas")) return Promise.resolve(jsonResponse({ areas: [] }));
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    // Select berth-a this time, so the only other option is berth-b (unbound).
+    renderPanel(baseDoc(), "berth-a");
+
+    const select = await screen.findByLabelText("Inhibited by");
+    const optionTexts = Array.from(select.querySelectorAll("option")).map((o) => o.textContent);
+    expect(optionTexts).toEqual(["(none)", "Berth B (unbound)"]);
+  });
+});
+
 function docWithLabel(): MapDocument {
   return {
     schemaVersion: 1,

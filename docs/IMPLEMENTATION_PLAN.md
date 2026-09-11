@@ -1401,6 +1401,41 @@ what `docs/PROJECT_SPEC.md §11.8`/`feedGapWarnings` (`apps/api/src/lib/feedGaps
 for. Worth a follow-up once this fix has had time to show whether it meaningfully reduces
 reconnect frequency in practice.
 
+## Milestone 24 — editor: group-move for track paths/platforms; centered label default `[done — 2026-09-11]`
+
+Two small owner-requested editor fixes:
+
+1. **Multi-select group move for tracks/platforms.** The underlying infrastructure already fully
+   supported this — marquee/shift-click multi-select (`apps/web/src/editor/EditorCanvas.tsx`) and
+   the `moveElements` command (`apps/web/src/editor/commands.ts`) already move an arbitrary,
+   mixed-type group of elements in one undoable step, and `handlePositionedDragEnd` (berths,
+   signals, labels, stations, boundaries) already checked the active selection before deciding
+   what to move. The one gap: `handlePathDragEnd` (`trackPath`/`platform` — the points-array
+   element types) never consulted `selection` at all, always moving only the single dragged
+   track/platform even when it was part of a larger active selection — the exact asymmetry that
+   broke "select a mix of tracks and berths, drag one, move them all together." Fixed by mirroring
+   `handlePositionedDragEnd`'s existing `idsToMove` check. Relies on `moveElements`'s existing test
+   coverage (`commands.test.ts`, already proves a mixed berth+trackPath move round-trips through
+   undo correctly) rather than a new test, since the fix itself is a one-line mirror of an
+   already-proven pattern and the two drag-end handlers are internal closures, not exported for
+   direct unit testing.
+2. **Label text now defaults to centered.** `LabelElementSchema.align` defaulted to `"left"` with
+   **no editor control to change it at all** — both renderers already correctly center multi-line
+   text (SVG `textAnchor` per `<tspan>`; Konva `align` + a fixed layout width in
+   `EditorCanvas.tsx`'s `anchoredText`), so this was a default/missing-control gap, not a rendering
+   bug. Changed the schema default to `"center"` and added an "Align" dropdown to the label's
+   Properties panel block (`apps/web/src/editor/PropertyPanel.tsx`) so left/right can still be
+   chosen per label.
+
+Files: `apps/web/src/editor/EditorCanvas.tsx`, `packages/map-schema/src/document.ts`,
+`apps/web/src/editor/PropertyPanel.tsx`, `docs/MAP_EDITOR_SPEC.md`.
+
+**Not done, flagged as a possible follow-up, not requested:** no live visual feedback while
+dragging — the other selected elements only visually snap to their new positions once `dragEnd`
+re-renders the document, not continuously during the drag gesture; and there's still no
+multi-node `Transformer`/group bounding box shown for a multi-element selection (only per-element
+highlight styling). Neither blocks the actual group-move from working correctly.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

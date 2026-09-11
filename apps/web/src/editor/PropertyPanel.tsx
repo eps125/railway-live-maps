@@ -495,6 +495,14 @@ export function PropertyPanel(): JSX.Element {
             multiline
             onCommit={(v) => setProp("text", v)}
           />
+          <label className="field">
+            Align
+            <select value={element.align} onChange={(e) => setProp("align", e.target.value)}>
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </label>
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <NumberField

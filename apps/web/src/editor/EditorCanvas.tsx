@@ -498,9 +498,14 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     const dy = snap(e.target.y(), step);
     e.target.position({ x: 0, y: 0 });
     if (dx === 0 && dy === 0) return;
+    // Mirror handlePositionedDragEnd: dragging one element of a larger active selection moves
+    // the whole (possibly mixed-type — berths, signals, other tracks, ...) group together in
+    // one undo step, not just this trackPath/platform on its own.
+    const idsToMove =
+      selection.includes(elementId) && selection.length > 1 ? selection : [elementId];
     dispatch({
       type: "dispatchCommand",
-      command: { type: "moveElements", elementIds: [elementId], dx, dy },
+      command: { type: "moveElements", elementIds: idsToMove, dx, dy },
     });
   }
 

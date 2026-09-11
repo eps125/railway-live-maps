@@ -110,7 +110,10 @@ around member platforms is later work.
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line
 (rendered as stacked `<tspan>`s); `station.name` wraps the same way. The editor's label Text
-field is a textarea.
+field is a textarea. `align` (left/center/right, defaults to **center** as of 2026-09-11 — a
+multi-line label reads oddly left-anchored by default) is editable via the Properties panel's
+"Align" field; both renderers already center each wrapped line correctly (SVG `textAnchor` per
+`<tspan>`, Konva `align` + a fixed layout width in `anchoredText`).
 
 ### Map metadata
 
@@ -235,8 +238,14 @@ Modes:
 - Multi-vertex editing for tracks and platforms: double-click an edge to insert a corner,
   double-click a corner handle to remove it (track ≥ 2 points, platform polygon ≥ 3) (ADR 0005
   E2). Platform corners snap to **half the grid step**; everything else to the full grid.
-- Click and marquee selection.
-- Multi-select and move.
+- Click and marquee selection (shift-click to add/remove one at a time; drag a marquee in the
+  dedicated multiselect tool to select everything a rectangle intersects, mixed element types
+  included).
+- Multi-select and move: dragging any one element of an active multi-selection moves the whole
+  group together — mixed types included (e.g. berths, signals and track paths at once) — as one
+  undoable step (`moveElements`, `apps/web/src/editor/commands.ts`). Fixed 2026-09-11: dragging a
+  `trackPath`/`platform` used to move only that element even when part of a larger selection,
+  unlike every position-based element type, which already respected it.
 - Numeric geometry editing.
 - Align/distribute.
 - Copy, cut, paste, duplicate and repeat offset.

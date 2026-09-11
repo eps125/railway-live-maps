@@ -146,7 +146,14 @@ const LabelElementSchema = BaseElementSchema.extend({
   x: z.number(),
   y: z.number(),
   text: z.string().min(1),
-  align: z.enum(["left", "center", "right"]).default("left"),
+  // 2026-09-11 owner request: a multi-line label (newlines wrap to stacked lines, both
+  // renderers already support centering each line correctly via `textAnchor`/Konva `align` —
+  // see MapRenderer.tsx's <tspan> block and EditorCanvas.tsx's `anchoredText`) reads oddly
+  // left-aligned by default, and there was previously no editor control to override it per
+  // label at all. Defaulting to "center" fixes new labels; existing documents keep whatever
+  // they were already saved with (this only changes the default for a value that was never
+  // set).
+  align: z.enum(["left", "center", "right"]).default("center"),
   fontSize: z.number().positive().default(12),
 });
 

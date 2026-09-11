@@ -354,11 +354,19 @@ services:
   # given `WATCHTOWER_POLL_INTERVAL` deliberately — CI's HTTP trigger is the intended path; add
   # one if you also want a periodic background check as a safety net for a missed trigger.
   # Excluded from `x-watchtower-label` itself (nothing manages Watchtower's own updates) — bump
-  # the pinned image tag by hand when you want a newer Watchtower release.
+  # the pinned image tag by hand when you want a newer Watchtower release. `DOCKER_API_VERSION`
+  # (2026-09-11, confirmed live): Watchtower's bundled Docker client always defaults to requesting
+  # API 1.25 regardless of the image tag/release — `1.7.1` genuinely is current, that default is
+  # just conservative — and this host's Docker Engine 29.7.2 (API 1.55) rejects anything below
+  # 1.40 outright ("client version 1.25 is too old"). This is the standard Docker SDK env var
+  # (not a Watchtower-specific one — `WATCHTOWER_API_VERSION` is silently ignored, verified live).
+  # 1.44 is comfortably within [1.40, what this Watchtower release's SDK supports] — bump it if a
+  # much newer Docker Engine ever raises the floor above 1.44.
   watchtower:
     image: containrrr/watchtower:1.7.1
     restart: unless-stopped
     environment:
+      DOCKER_API_VERSION: "1.44"
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_HTTP_API_UPDATE: "true"
       WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN}

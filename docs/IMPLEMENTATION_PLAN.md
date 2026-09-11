@@ -1352,6 +1352,55 @@ wide margin, so the check now actually runs on every validate/publish instead of
 
 Files: `apps/api/src/editor/validateWithContext.ts` (+test).
 
+## Milestone 23 — root-cause the TD reconnect instability (`ingest-td` never handled SIGTERM) `[done — 2026-09-11]`
+
+Resolves the long-open "TD reconnect instability" issue: `ingest-td` reconnects every ~20-30
+minutes and `feed_connection_session.disconnected_at` is always `NULL`. Owner-reported trigger:
+`1U01` never appeared to have entered `PX A292` at all in our data (a real `from_berth_empty`
+anomaly, not a bug in the anomaly logic itself — see the same day's chat investigation) — the
+timing lined up with a session reconnect gap, prompting a proper investigation of _why_ ingest-td
+reconnects so often instead of continuing to treat it as unavoidable background noise.
+
+Root cause found in `apps/worker/src/commands/ingestTd.ts`: `runIngestTd` did
+`await connection.start({...})` **before** `return runUntilShutdownSignal(...)`.
+`StompConnection.start()` (`apps/worker/src/shared/connection/stomp/stompConnection.ts`) runs
+`while (!this.stopped) { ... }` internally and only resolves once something calls `stop()` — i.e.
+never, during ordinary healthy operation, since nothing calls `stop()` until the shutdown handler
+itself runs. So that `await` never completed while the feed was healthy, `runUntilShutdownSignal`
+(and the SIGTERM/SIGINT listeners it registers) was **never actually reached**, and every ordinary
+container stop/restart/redeploy sent SIGTERM to a process with no handler installed for it —
+Node's default disposition terminates immediately, skipping the entire graceful-shutdown path:
+
+- `connection.stop()` never runs, so no STOMP `DISCONNECT` is ever sent — `stop()`'s own existing
+  comment already documented the consequence of this exact scenario: Network Rail's broker can
+  then reject the _next_ connection attempt with a stale-session error until its own timeout
+  releases it, which is a second, compounding source of "reconnect instability" beyond the missed
+  messages themselves.
+- The socket's `close` handler (which calls `onSessionEnd` and writes `disconnected_at`) never
+  gets a chance to run before the process exits — explaining why every row was `NULL`.
+
+Every reconnect during this gap is a real, unrecoverable data loss window: Network Rail's STOMP
+feed does not replay missed messages after a reconnect, so any TD step broadcast while
+disconnected is gone permanently — this is very likely the mechanism behind other, previously
+unexplained `from_berth_empty`/gap-shaped anomalies too, not just the `1U01` case that surfaced it.
+
+Fixed by not awaiting `connection.start()` before calling `runUntilShutdownSignal` — fire-and-forget
+(errors already surface via the existing `onError` callback, not via this promise rejecting), so
+the SIGTERM/SIGINT handler is registered immediately regardless of the connection's own state.
+Added `apps/worker/src/shared/runUntilShutdownSignal.test.ts`, which didn't exist before: a
+"root cause" test reproducing the exact bug shape with a fake never-resolving `start()` (proving
+SIGTERM is silently dropped under the old call order) alongside a test proving the fix handles it
+correctly even while that promise is still pending.
+
+Files: `apps/worker/src/commands/ingestTd.ts`,
+`apps/worker/src/shared/runUntilShutdownSignal.test.ts` (new).
+
+**Not yet done:** `feed_gap` has zero recorded rows despite these reconnects — gap _detection_
+itself isn't currently wired up to notice a reconnect and record the affected window, which is
+what `docs/PROJECT_SPEC.md §11.8`/`feedGapWarnings` (`apps/api/src/lib/feedGaps.ts`) are actually
+for. Worth a follow-up once this fix has had time to show whether it meaningfully reduces
+reconnect frequency in practice.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

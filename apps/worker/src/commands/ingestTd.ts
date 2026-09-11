@@ -65,7 +65,20 @@ export async function runIngestTd(config: Config): Promise<never> {
 
   const stats = createIngestStatsLogger("TD");
 
-  await connection.start({
+  // Deliberately NOT awaited (2026-09-11 fix — see runUntilShutdownSignal.test.ts's "root
+  // cause" test for the reproduction). StompConnection.start() runs `while (!this.stopped) {
+  // ... }` internally and only resolves once `stop()` sets `stopped = true` — i.e. never,
+  // during ordinary healthy operation, since nothing calls `stop()` until the shutdown handler
+  // below runs. Awaiting it here first meant `runUntilShutdownSignal` (and the SIGTERM/SIGINT
+  // listeners it registers) was never reached while the feed was running, so every ordinary
+  // container stop/restart/redeploy sent SIGTERM to a process with no handler for it — Node's
+  // default disposition terminates immediately, skipping `connection.stop()` entirely: no STOMP
+  // DISCONNECT ever sent (leaving a stale session at Network Rail's broker, which can then
+  // reject the next connection attempt until its own timeout releases it — see stop()'s own
+  // comment), and `feed_connection_session.disconnected_at` never gets written (confirmed
+  // always NULL in production). Any error from a failed connection attempt is already surfaced
+  // via `onError` below, not via this promise rejecting, so nothing here needs to observe it.
+  void connection.start({
     onSessionStart: async (session) => {
       const result = await pool.query<{ id: string }>(
         `insert into feed_connection_session (feed_name, client_id, connected_at)

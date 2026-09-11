@@ -37,15 +37,19 @@ This is the practical path from "code in this repo" to "running stack" — see
    2. **Same token in GitHub:** store it as this repo's `WATCHTOWER_HTTP_API_TOKEN` Actions secret
       (`gh secret set WATCHTOWER_HTTP_API_TOKEN`, or the repo's Settings → Secrets and variables →
       Actions).
-   3. **Runner registration token:** GitHub → this repo → Settings → Actions → Runners → New
-      self-hosted runner → copy the token shown (valid ~1 hour, single-use).
+   3. **A GitHub personal access token for the runner:** Settings → Developer settings →
+      Personal access tokens → generate one scoped to just this repo, with the
+      "Administration: write" (fine-grained) permission, or classic `repo` scope. This is what
+      `deploy/docker-compose.runner.yml` calls `ACCESS_TOKEN` — deliberately _not_ the one-time
+      "New self-hosted runner" registration token GitHub's UI offers (that one expires in ~1hr
+      and is single-use; the runner needs to re-register on every restart, so a token that
+      expires breaks it — see that compose file's own 2026-09-11 incident writeup).
    4. **Bring up the runner**, on the box itself:
       ```bash
-      export RUNNER_TOKEN=<paste from step 3>
+      export ACCESS_TOKEN=<paste from step 3>
       docker compose -f deploy/docker-compose.runner.yml up -d
       ```
-      Confirm it shows "Idle" under Settings → Actions → Runners before relying on it. A running
-      container stays registered indefinitely; only recreating it later needs a fresh token.
+      Confirm it shows "Idle" under Settings → Actions → Runners before relying on it.
    5. Push to `main` and confirm the `deploy` job goes green and the box's containers actually
       pick up the new image (`docker inspect <container> --format '{{.Image}}'` before/after, or
       just watch `docker compose ... logs -f` for watchtower's own "found new image" log line).

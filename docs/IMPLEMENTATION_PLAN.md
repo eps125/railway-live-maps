@@ -1266,6 +1266,25 @@ handling bearer tokens).
 Files: `deploy/docker-compose.portainer.yml`, `deploy/docker-compose.runner.yml` (new),
 `deploy/.env.example`, `.github/workflows/ci.yml`, `docs/DEPLOYMENT.md`.
 
+**Follow-up fix (2026-09-11, same day, found in production):** the runner crash-looped after its
+first real deploy job. It had genuinely completed the job successfully (watchtower's own log
+showed `Scanned=9 Updated=9 Failed=0`, confirmed against the running containers), but the runner
+container itself still exited afterward and `restart: unless-stopped` tried to re-register it
+using the original one-time `RUNNER_TOKEN` — already consumed, so every restart 404'd against
+GitHub and looped forever. Because the runner vanished mid-job, that job's status hung "in
+progress" on GitHub indefinitely even though its actual work was done; cancelled it by hand
+(`gh run cancel`) since nothing would ever complete it. Root cause not fully pinned down (this
+image's `EPHEMERAL` flag may check only whether the variable is _set_, not its value, so
+`EPHEMERAL: "false"` may still have been read as enabled — the upstream project's own docs
+recommend omitting the variable entirely for persistent mode, not setting it false). Fixed by
+switching authentication from `RUNNER_TOKEN` (GitHub's manually-copied, ~1hr, single-use
+registration token) to `ACCESS_TOKEN` (a durable GitHub personal access token): the entrypoint
+mints a fresh registration token from the GitHub API on every container start, so _any_ restart —
+for any reason — always re-registers cleanly instead of depending on a token that can expire
+mid-lifetime. `EPHEMERAL` is now omitted entirely rather than set to `"false"`.
+
+Files: `deploy/docker-compose.runner.yml`, `docs/DEPLOYMENT.md`.
+
 ## Milestone 21 — opt-in TD-area fringe pairs (`berth.inhibitedBy`) `[done — 2026-09-11]`
 
 Owner-reported: watching `1S58` cross the PX/CL boundary, it showed simultaneously in `PX CE04`

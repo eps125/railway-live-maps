@@ -1,9 +1,7 @@
 # Self-hosted GitHub Actions runner for the CI `deploy` job only (owner decision 2026-09-11,
 # docs/IMPLEMENTATION_PLAN.md Milestone 20). Deliberately separate from docker-compose.portainer.yml
-# / Portainer: this is a CI utility, not part of the application, and its only real secret
-# (RUNNER_TOKEN) is short-lived (~1hr) and only matters at first registration — a poor fit for
-# Portainer's "persistent stack env var" model. Bring it up directly over SSH/docker compose, not
-# through Portainer.
+# / Portainer: this is a CI utility, not part of the application. Bring it up directly over
+# SSH/docker compose, not through Portainer.
 #
 # `network_mode: host`: the whole point of this runner is to reach `watchtower`'s HTTP API, which
 # is published loopback-only (127.0.0.1) on this same box precisely so it's reachable from nothing
@@ -11,14 +9,36 @@
 # loopback, so it has to share the host's network namespace. It does not need Docker access itself
 # (the `deploy` CI job is a single `curl` call, nothing more) — no docker.sock mount here.
 #
-# One-time setup (run these yourself — this file's RUNNER_TOKEN must never be committed):
-#   1. GitHub → this repo → Settings → Actions → Runners → New self-hosted runner → copy the
-#      registration token shown (valid ~1 hour, single use).
-#   2. On this box: `export RUNNER_TOKEN=<paste>` then
+# 2026-09-11 incident: the first version of this file used a one-time `RUNNER_TOKEN` (GitHub's
+# manually-copied registration token, ~1hr lifetime, single-use) with `restart: unless-stopped`.
+# The runner correctly completed a real deploy job, then — NOT in ephemeral mode, deliberately,
+# so it should have stayed registered for future jobs — the container still exited afterward
+# (root cause not fully pinned down: this image's `EPHEMERAL` flag may only check whether the
+# variable is *set* at all rather than its value, so `EPHEMERAL: "false"` was possibly still
+# read as "enabled" — see github.com/myoung34/docker-github-actions-runner's own docs, which
+# recommend *omitting* the variable entirely for persistent mode, not setting it to false).
+# `restart: unless-stopped` then tried to re-register using the same already-consumed
+# `RUNNER_TOKEN`, which GitHub now 404s — an unrecoverable crash loop, and because the runner
+# vanished mid-job, that job's status hung "in progress" on GitHub forever (its actual work HAD
+# already completed successfully — watchtower's own log showed `Scanned=9 Updated=9 Failed=0` —
+# this was purely a CI-bookkeeping problem, not a failed deploy).
+#
+# Fixed by switching to `ACCESS_TOKEN` (a GitHub personal access token) instead of `RUNNER_TOKEN`:
+# the entrypoint uses it to mint a *fresh* registration token from the GitHub API on every
+# container start, so an automatic restart — for any reason — always re-registers cleanly. No
+# more manually copying a token that expires within the hour. `EPHEMERAL` is omitted entirely
+# (not set to `"false"`) per the image's own documented guidance for persistent mode.
+#
+# One-time setup (run these yourself — this file's ACCESS_TOKEN must never be committed):
+#   1. GitHub → your account → Settings → Developer settings → Personal access tokens → generate
+#      one scoped to just this repo, with the "Administration: write" (fine-grained) permission,
+#      or classic `repo` scope. This token can register/deregister runners for this repo — treat
+#      it like any other credential (rotate it if it's ever exposed).
+#   2. On this box: `export ACCESS_TOKEN=<paste>` then
 #      `docker compose -f deploy/docker-compose.runner.yml up -d`
 #   3. Confirm it shows as "Idle" under Settings → Actions → Runners before relying on it.
-# If the container is ever recreated later (not just restarted), repeat steps 1-2 with a fresh
-# token — a running container stays registered indefinitely on its own.
+# Unlike the old RUNNER_TOKEN approach, a container recreated later doesn't need a fresh token —
+# ACCESS_TOKEN itself doesn't expire the way a one-time registration token does.
 
 services:
   deploy-runner:
@@ -32,13 +52,13 @@ services:
     environment:
       REPO_URL: https://github.com/eps125/railway-live-maps
       RUNNER_NAME: railway-live-map-box
-      RUNNER_TOKEN: ${RUNNER_TOKEN:?RUNNER_TOKEN is required — see this file's setup comment}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:?ACCESS_TOKEN is required — see this file's setup comment}
       RUNNER_SCOPE: repo
       # Matches the `runs-on: [self-hosted, railway-live-maps-deploy]` label in
       # .github/workflows/ci.yml's deploy job — only that job is ever dispatched here.
       LABELS: railway-live-maps-deploy
       RUNNER_WORKDIR: /tmp/runner/work
-      EPHEMERAL: "false"
+      # EPHEMERAL deliberately omitted — see this file's top comment.
     volumes:
       - runner_work:/tmp/runner/work
 

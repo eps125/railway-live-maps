@@ -1462,6 +1462,27 @@ call site) still does not — protecting both directions from regressing.
 Files: `apps/web/src/editor/EditorState.tsx`, `apps/web/src/editor/Toolbar.tsx`,
 `apps/web/src/editor/useDraftSync.test.tsx` (+2 tests).
 
+## Milestone 26 — `minio/minio` Docker Hub image discontinued; switched to `quay.io/minio/minio` `[done — 2026-09-11]`
+
+While shipping Milestone 25, CI's "Start MinIO (archive) for connectivity checks" step started
+failing with `pull access denied for minio/minio, repository does not exist or may require
+'docker login': denied`. Confirmed this is not transient rate limiting (5 identical failures 10s
+apart; a specific pre-October-2025 pinned tag failed identically) but a real, permanent change:
+MinIO discontinued free `minio/minio` Docker Hub image distribution in October 2025 — the whole
+repository, every tag, now 401s pull attempts, confirmed live against the production host's own
+Docker daemon (not just GitHub's runners).
+
+This also affects production, not just CI: `deploy/docker-compose.portainer.yml` and
+`deploy/docker-compose.yml`'s `archive` (MinIO) service both defaulted to `minio/minio:latest`.
+The box's already-running `archive` container is unaffected (its image is already pulled and
+cached), but any future fresh pull — a redeploy after the image is ever removed, a host
+migration, `docker system prune -a` — would now fail outright with no working image to fall back
+to. Confirmed `quay.io/minio/minio:latest` — MinIO's own still-working mirror, same image — pulls
+successfully; switched the default in both compose files and CI to it.
+
+Files: `.github/workflows/ci.yml`, `deploy/docker-compose.portainer.yml`,
+`deploy/docker-compose.yml`.
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

@@ -109,8 +109,11 @@ services:
     networks: [backend, egress]
 
   archive:
-    # Development default only. Replace with a tested immutable tag/digest.
-    image: ${MINIO_IMAGE:-minio/minio:latest}
+    # Development default only. Replace with a tested immutable tag/digest. `quay.io/minio/minio`,
+    # not `minio/minio` — MinIO discontinued free Docker Hub image distribution in October 2025;
+    # the whole `minio/minio` Docker Hub repository (every tag, confirmed live) now 401s pull
+    # attempts. Same image, MinIO's own still-working mirror on a different registry.
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:

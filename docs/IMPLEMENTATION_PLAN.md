@@ -1496,7 +1496,7 @@ ever recomputes or re-sends it — `quality.updated` is a real message type in t
 (`packages/protocol/src/liveWsMessages.ts`) and the web client (`useLiveMapSocket.ts`) already
 handles it correctly, but no server code path ever produced one; the live projector
 (`apps/worker/src/td/liveProjector.ts`) only ever publishes `berth.updated`/`berth.cleared`
-deltas. `useMapData.ts` compounds this: its REST `/state` poll fallback (which *does* refresh
+deltas. `useMapData.ts` compounds this: its REST `/state` poll fallback (which _does_ refresh
 quality every 5s) is paused for as long as the WebSocket reports `connectionStatus === "live"` —
 so once a socket is up, quality is frozen at whatever it read at connect time for the entire life
 of that connection, in both directions (a transient gap at connect time never clears once the

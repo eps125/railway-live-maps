@@ -203,6 +203,74 @@ describe("GET /api/v1/maps/:slug/live — snapshot/subscribe ordering", () => {
     }
   });
 
+  it("pushes quality.updated when a later check finds the feed has gone stale since the snapshot", async () => {
+    // Reproduces the "banner stuck on 'Data may be stale' forever" bug: the snapshot's quality
+    // is computed once at connect time and nothing ever re-pushes a later reading — so a socket
+    // that connects while healthy never learns the feed later went stale (or recovered), no
+    // matter how long it stays open. `quality.updated` exists in the protocol for exactly this;
+    // this test proves the route now actually sends it when a periodic re-check disagrees with
+    // whatever was last sent.
+    // Gates the connect-time snapshot open only after the test's message reader is attached —
+    // otherwise the snapshot (which needs no gating of its own here) can be built and sent
+    // before `createMessageReader` registers its "message" listener, silently dropping it and
+    // making the test flaky-looking rather than actually wrong.
+    let releaseSnapshot: () => void = () => {};
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let heartbeatCalls = 0;
+    const pool = fakePool(async (text) => {
+      if (text.includes("from map_version mv")) return { rows: [mapVersionRow()] };
+      if (text.includes("from berth_current_state")) {
+        await snapshotGate;
+        return { rows: [] };
+      }
+      if (text.includes("from td_heartbeat")) {
+        heartbeatCalls += 1;
+        // First call (the connect-time snapshot) reports fresh data; every call after that
+        // (the periodic re-check) reports nothing recent, i.e. a feed that went stale.
+        if (heartbeatCalls === 1) {
+          return { rows: [{ last_activity_at: new Date() }] };
+        }
+        return { rows: [{ last_activity_at: new Date("2020-01-01T00:00:00Z") }] };
+      }
+      if (text.includes("from feed_gap")) return { rows: [] };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const deltaSource: LiveDeltaSource = {
+      subscribe() {
+        return () => {};
+      },
+    };
+
+    const app = Fastify();
+    await app.register(fastifyWebsocket);
+    await registerLiveMapRoutes(app, {
+      pool,
+      deltaSource,
+      heartbeatIntervalMs: 60_000,
+      versionCheckIntervalMs: 20,
+    });
+    await app.ready();
+
+    const ws = await app.injectWS("/api/v1/maps/lancaster/live");
+    const reader = createMessageReader(ws);
+    releaseSnapshot();
+    try {
+      const snapshot = await reader.next();
+      expect(snapshot.type).toBe("snapshot");
+      if (snapshot.type !== "snapshot") throw new Error("expected snapshot");
+      expect(snapshot.state.quality.status).toBe("ok");
+
+      const update = await reader.next();
+      expect(update).toMatchObject({ type: "quality.updated", quality: { status: "stale" } });
+    } finally {
+      ws.terminate();
+      await app.close();
+    }
+  });
+
   it("discards a buffered delta already reflected in the snapshot instead of double-applying it", async () => {
     let capturedOnDelta: ((message: LiveDeltaMessage) => void) | undefined;
     let releaseBerthQuery: () => void = () => {};

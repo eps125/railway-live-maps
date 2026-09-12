@@ -1483,6 +1483,47 @@ successfully; switched the default in both compose files and CI to it.
 Files: `.github/workflows/ci.yml`, `deploy/docker-compose.portainer.yml`,
 `deploy/docker-compose.yml`.
 
+## Milestone 27 — fix: live-map "Data may be stale" banner could freeze indefinitely `[done — 2026-09-12]`
+
+Owner-reported: the live map kept showing "Data may be stale" even while berths were visibly
+stepping normally. Confirmed via production DB queries (`td_heartbeat`/`td_berth_event` for
+Lancaster's bound TD areas, PX and CL) that the underlying feed was fresh (activity seconds old)
+at the exact moment the banner was checked — the warning did not reflect current feed health.
+
+Root cause: `GET /api/v1/maps/:slug/live` (`apps/api/src/routes/liveMap.ts`) computes `quality`
+exactly once, when a socket connects, and sends it in the `snapshot` message. Nothing afterwards
+ever recomputes or re-sends it — `quality.updated` is a real message type in the wire protocol
+(`packages/protocol/src/liveWsMessages.ts`) and the web client (`useLiveMapSocket.ts`) already
+handles it correctly, but no server code path ever produced one; the live projector
+(`apps/worker/src/td/liveProjector.ts`) only ever publishes `berth.updated`/`berth.cleared`
+deltas. `useMapData.ts` compounds this: its REST `/state` poll fallback (which *does* refresh
+quality every 5s) is paused for as long as the WebSocket reports `connectionStatus === "live"` —
+so once a socket is up, quality is frozen at whatever it read at connect time for the entire life
+of that connection, in both directions (a transient gap at connect time never clears once the
+feed recovers; a gap that opens later while already connected never gets reported at all).
+
+Fixed by adding a periodic re-check to the live WS route (piggybacking on the existing
+version-check timer's cadence rather than adding a second polling config knob): it recomputes
+quality via the same `liveDataStatus`/`feedGapWarnings` helpers `computeLiveState` already uses,
+and sends a `quality.updated` message whenever the reading changes. Added a regression test
+(`liveMap.test.ts`) proving a socket that connects healthy is later told when the feed goes
+stale.
+
+Files: `apps/api/src/routes/liveMap.ts`, `apps/api/src/routes/liveMap.test.ts` (+1 test).
+
+## Milestone 28 — temporarily disable the berth-click run popup `[in progress — 2026-09-12]`
+
+Owner request: turn off the public map's "click a populated berth to open its run popup"
+behaviour (docs/PROJECT_SPEC.md §5) while it's being reimplemented. Deliberately not removed —
+`MapRenderer.tsx` gates the click handler and cursor behind a single `clickEnabled = false`
+constant right next to the existing `isOccupied` check; flipping it back to `true` restores the
+exact previous behaviour with no other changes needed. The two `MapRenderer.test.tsx` tests that
+exercise the popup are `.skip`'d (not deleted) with a comment pointing back here — un-skip them
+in the same change that re-enables `clickEnabled`.
+
+Files: `apps/web/src/map/MapRenderer.tsx`, `apps/web/src/map/MapRenderer.test.tsx` (2 tests
+skipped, not removed).
+
 ## Later milestones
 
 - Additional authored/public maps using already-retained nationwide history.

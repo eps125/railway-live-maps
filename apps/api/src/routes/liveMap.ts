@@ -5,10 +5,12 @@ import {
   type SnapshotMessage,
   type HeartbeatMessage,
   type ResyncRequiredMessage,
+  type QualityUpdatedMessage,
   type LiveDeltaMessage,
 } from "@railway/protocol";
-import { currentVersionForSlug } from "../lib/mapVersion.js";
-import { computeLiveState } from "../lib/liveState.js";
+import { currentVersionForSlug, liveDataStatus, tdAreasFromBundle } from "../lib/mapVersion.js";
+import { feedGapWarnings } from "../lib/feedGaps.js";
+import { computeLiveState, type QualityState } from "../lib/liveState.js";
 import type { LiveDeltaSource } from "../live/deltaSource.js";
 
 export interface LiveMapRoutesDeps {
@@ -78,6 +80,8 @@ export async function registerLiveMapRoutes(
         now,
       );
       lastSentSequence = sourceSequence;
+      const tdAreas = tdAreasFromBundle(version.compiled_runtime_bundle);
+      let lastSentQuality = quality;
 
       const snapshot: SnapshotMessage = {
         type: "snapshot",
@@ -128,10 +132,47 @@ export async function registerLiveMapRoutes(
           });
       }, versionCheckIntervalMs);
 
+      // `quality` above is computed exactly once, at connect time — nothing else in this route
+      // (or anywhere upstream: `LiveDeltaSource`/the live projector only ever publish berth
+      // deltas) ever pushes a later reading, even though `quality.updated` exists in the wire
+      // protocol for exactly this. Without this timer, a socket that connects during a brief
+      // feed gap freezes on "stale" forever — the banner never clears even once the feed
+      // recovers seconds later — and a socket that connects while healthy never warns about a
+      // gap that opens up later, because nothing ever recomputes it. Piggybacks on the
+      // version-check cadence rather than adding a second per-socket polling interval/config
+      // knob for what's fundamentally the same "is anything about this connection stale" check.
+      const qualityCheckTimer = setInterval(() => {
+        const at = new Date();
+        Promise.all([liveDataStatus(pool, tdAreas, at), feedGapWarnings(pool, tdAreas, at)])
+          .then(([status, { gaps }]) => {
+            if (socket.readyState !== socket.OPEN) return;
+            const next: QualityState = { status, gaps };
+            if (
+              next.status === lastSentQuality.status &&
+              next.gaps.length === lastSentQuality.gaps.length &&
+              next.gaps.every((gap, i) => gap === lastSentQuality.gaps[i])
+            ) {
+              return;
+            }
+            lastSentQuality = next;
+            const message: QualityUpdatedMessage = {
+              type: "quality.updated",
+              sequence: lastSentSequence,
+              eventAt: at.toISOString(),
+              quality: next,
+            };
+            socket.send(JSON.stringify(message));
+          })
+          .catch((error: unknown) => {
+            request.log.error({ error, slug }, "liveMap: quality check failed");
+          });
+      }, versionCheckIntervalMs);
+
       const cleanup = (): void => {
         unsubscribe();
         clearInterval(heartbeatTimer);
         clearInterval(versionCheckTimer);
+        clearInterval(qualityCheckTimer);
       };
       socket.on("close", cleanup);
       socket.on("error", cleanup);

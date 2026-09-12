@@ -110,7 +110,10 @@ describe("MapRenderer", () => {
     expect(texts).toEqual(["Back", "Front"]);
   });
 
-  it("opens the run popup when clicking a populated, bound berth (docs/PROJECT_SPEC.md §5)", async () => {
+  // Skipped 2026-09-12 (owner request): berth-click popups are temporarily disabled in
+  // MapRenderer.tsx (`clickEnabled = false`) pending a reimplementation. Un-skip both of these
+  // once that flag is restored.
+  it.skip("opens the run popup when clicking a populated, bound berth (docs/PROJECT_SPEC.md §5)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
@@ -163,7 +166,7 @@ describe("MapRenderer", () => {
     ).toBeInTheDocument();
   });
 
-  it("closes the popup via its close button", async () => {
+  it.skip("closes the popup via its close button", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>

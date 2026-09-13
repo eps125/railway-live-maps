@@ -63,7 +63,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await registerPlaceRoutes(app, { pool });
   await registerScheduleRoutes(app, { pool });
   await registerVstpRoutes(app, { pool });
-  await registerCurrentRunRoutes(app, { pool });
+  await registerCurrentRunRoutes(app, { pool, redis, sessionTtlSeconds });
 
   // Milestone 6: polling is the default delta source (no extra infrastructure required). When
   // LIVE_WS_REDIS_PUBSUB_ENABLED=true, a *dedicated* subscriber connection is used instead —

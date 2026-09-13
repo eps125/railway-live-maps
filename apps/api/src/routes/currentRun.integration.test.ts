@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import fastifyCookie from "@fastify/cookie";
+import type { Redis } from "ioredis";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { registerCurrentRunRoutes } from "./currentRun.js";
+import { createSession, SESSION_COOKIE_NAME } from "../auth/session.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -17,6 +20,43 @@ const createdScheduleIds: number[] = [];
 const createdTrustIds: string[] = [];
 const createdLocationReferenceTiplocs: string[] = [];
 const createdSmartBerthStepIds: string[] = [];
+const createdTrainAllocationIds: number[] = [];
+
+/** Minimal in-memory stand-in for ioredis's `Redis` (this sandbox has no real Redis server —
+ * mirrors the FakeRedis pattern in `../auth/session.test.ts`). Only the handful of methods
+ * `getSession`/`createSession` actually call. */
+class FakeRedis {
+  private store = new Map<string, string>();
+  async get(key: string): Promise<string | null> {
+    return this.store.get(key) ?? null;
+  }
+  async set(key: string, value: string): Promise<"OK"> {
+    this.store.set(key, value);
+    return "OK";
+  }
+  async expire(): Promise<number> {
+    return 1;
+  }
+  async del(key: string): Promise<number> {
+    return this.store.delete(key) ? 1 : 0;
+  }
+}
+
+const fakeRedis = new FakeRedis() as unknown as Redis;
+const SESSION_TTL_SECONDS = 3600;
+
+/** Owner request (2026-09-13): the route now optionally reads a session cookie to decide full
+ * vs. reduced/anonymous detail — most existing tests here are exercising the *full* response
+ * shape, so they authenticate via this helper. The new anonymous-specific tests below
+ * deliberately omit it. */
+async function authHeaders(): Promise<{ cookie: string }> {
+  const token = await createSession(
+    fakeRedis,
+    { userId: randomUUID(), username: "test-editor", role: "editor" },
+    SESSION_TTL_SECONDS,
+  );
+  return { cookie: `${SESSION_COOKIE_NAME}=${token}` };
+}
 
 let nextScheduleId = Date.now();
 function newScheduleId(): number {
@@ -58,11 +98,22 @@ afterAll(async () => {
       createdSmartBerthStepIds,
     ]);
   }
+  if (createdTrainAllocationIds.length > 0) {
+    await pool.query("delete from train_allocation where id = any($1::bigint[])", [
+      createdTrainAllocationIds,
+    ]);
+  }
   await pool.end();
 });
 
 function uniqueArea(): string {
   return `Z${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
+}
+
+/** Same Europe/London date the route computes internally (`londonToday`) — for seeding
+ * `train_allocation.schedule_start_date` against "today" reliably. */
+function londonTodayDateString(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
 }
 
 /** Milestone 35: the route computes "now" from a real `new Date()` internally (not injectable),
@@ -243,9 +294,35 @@ async function seedSmartBerthStep(tdArea: string, berth: string, stanox: string)
   createdSmartBerthStepIds.push(result.rows[0]!.id);
 }
 
+/** Owner request (2026-09-13): real unit/stock allocation, mirrored from garner's
+ * `train_allocation` (migration 0031). One row per unit; `position` orders a multi-unit
+ * formation. */
+async function seedTrainAllocation(
+  cifTrainUid: string,
+  scheduleStartDate: string,
+  unitNo: string,
+  position: number,
+  vehicles: string,
+): Promise<void> {
+  const id = newScheduleId();
+  await pool.query(
+    `insert into train_allocation (
+       id, cif_train_uid, headcode, schedule_start_date, origin_tiploc, dest_tiploc,
+       unit_no, "position", fleet_id, vehicles, reported, message_id
+     ) values ($1, $2, 'TEST', $3::date, 'ORIGIN', 'DEST', $4, $5, '465/0', $6, now(), $7)`,
+    [id, cifTrainUid, scheduleStartDate, unitNo, position, vehicles, randomUUID()],
+  );
+  createdTrainAllocationIds.push(id);
+}
+
 async function buildApp() {
   const app = Fastify();
-  await registerCurrentRunRoutes(app, { pool });
+  await app.register(fastifyCookie);
+  await registerCurrentRunRoutes(app, {
+    pool,
+    redis: fakeRedis,
+    sessionTtlSeconds: SESSION_TTL_SECONDS,
+  });
   await app.ready();
   return app;
 }
@@ -257,6 +334,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const response = await app.inject({
         method: "GET",
         url: `/api/v1/td/areas/${uniqueArea()}/berths/0001/current-run`,
+        headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(404);
       expect(response.json().error.code).toBe("BERTH_NOT_OCCUPIED");
@@ -273,6 +351,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const response = await app.inject({
         method: "GET",
         url: `/api/v1/td/areas/${area}/berths/0001/current-run`,
+        headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
@@ -297,6 +376,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const response = await app.inject({
         method: "GET",
         url: `/api/v1/td/areas/${area}/berths/0002/current-run`,
+        headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
@@ -331,6 +411,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const response = await app.inject({
         method: "GET",
         url: `/api/v1/td/areas/${area}/berths/0003/current-run`,
+        headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
@@ -361,6 +442,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const response = await app.inject({
         method: "GET",
         url: `/api/v1/td/areas/${area}/berths/0004/current-run`,
+        headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
@@ -401,6 +483,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const response = await app.inject({
         method: "GET",
         url: `/api/v1/td/areas/${area}/berths/0005/current-run`,
+        headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
@@ -438,6 +521,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0006/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
@@ -476,6 +560,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0007/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
@@ -508,6 +593,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0008/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
@@ -543,6 +629,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0009/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
@@ -580,6 +667,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0010/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
@@ -613,6 +701,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0011/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
@@ -644,12 +733,176 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0012/current-run`,
+          headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
         const body = response.json();
         expect(body.matchStatus).toBe("ambiguous");
         expect(body.matchBasis).toBe("station_berth_timetable");
         expect(body.effective).toBeNull();
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("public/anonymous access (owner request 2026-09-13)", () => {
+    it("404s NO_PUBLIC_DETAIL for an anonymous request when unmatched — no popup at all", async () => {
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0013", "4X13"); // no schedule seeded at all
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0013/current-run`,
+          // no auth headers — anonymous
+        });
+        expect(response.statusCode).toBe(404);
+        expect(response.json().error.code).toBe("NO_PUBLIC_DETAIL");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("404s NO_PUBLIC_DETAIL for an anonymous request when ambiguous", async () => {
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0014", "5X14");
+      await seedSchedule("5X14", "P");
+      await seedSchedule("5X14", "P");
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0014/current-run`,
+        });
+        expect(response.statusCode).toBe(404);
+        expect(response.json().error.code).toBe("NO_PUBLIC_DETAIL");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("404s NO_PUBLIC_DETAIL for an anonymous request even when matched, if only via the weakest headcode_only tier", async () => {
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0015", "6X15");
+      const scheduleId = await seedSchedule("6X15", "P"); // no SMART data seeded — unscoped match
+      void scheduleId;
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0015/current-run`,
+        });
+        expect(response.statusCode).toBe(404);
+        expect(response.json().error.code).toBe("NO_PUBLIC_DETAIL");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("returns a reduced, departure-board-style response for an anonymous request on a solid (position-scoped) match", async () => {
+      const area = uniqueArea();
+      const tiploc = `PB${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Public Loc", stanox);
+      await seedSmartBerthStep(area, "0016", stanox);
+
+      await seedOccupiedBerth(area, "0016", "7X16");
+      const scheduleId = await seedSchedule("7X16", "P");
+      await seedScheduleLocation(scheduleId, 1, tiploc, "LO", { departure: "0900" });
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0016/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.headcode).toBe("7X16");
+        expect(body.effective).toMatchObject({
+          originTiploc: tiploc,
+          originName: "Public Loc",
+        });
+        // Never shown to anonymous visitors — internal identifiers and resolver mechanics.
+        expect(body.matchBasis).toBeUndefined();
+        expect(body.positionScoped).toBeUndefined();
+        expect(body.candidateSchedules).toBeUndefined();
+        expect(body.effective.scheduleId).toBeUndefined();
+        expect(body.effective.trainUid).toBeUndefined();
+        expect(body.effective.activation).toBeUndefined();
+        expect(body.effective.latestMovement).toBeUndefined();
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("includes unit allocation for both anonymous and authenticated requests, ordered by formation position", async () => {
+      const area = uniqueArea();
+      const tiploc = `UA${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Unit Alloc Loc", stanox);
+      await seedSmartBerthStep(area, "0017", stanox);
+
+      await seedOccupiedBerth(area, "0017", "8X17");
+      const scheduleId = await seedSchedule("8X17", "P");
+      await seedScheduleLocation(scheduleId, 1, tiploc, "LO", { departure: "0900" });
+      const cifTrainUid = `U${scheduleId}`;
+      const today = londonTodayDateString();
+      await seedTrainAllocation(cifTrainUid, today, "465029", 1, "64787 72084 72085 64837");
+      await seedTrainAllocation(cifTrainUid, today, "465004", 2, "64762 72034 72035 64812");
+
+      const app = await buildApp();
+      try {
+        const anonResponse = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0017/current-run`,
+        });
+        expect(anonResponse.statusCode).toBe(200);
+        const anonBody = anonResponse.json();
+        expect(anonBody.unitAllocation).toEqual([
+          {
+            unitNo: "465029",
+            position: 1,
+            fleetId: "465/0",
+            vehicles: ["64787", "72084", "72085", "64837"],
+            reportedAt: expect.any(String),
+          },
+          {
+            unitNo: "465004",
+            position: 2,
+            fleetId: "465/0",
+            vehicles: ["64762", "72034", "72035", "64812"],
+            reportedAt: expect.any(String),
+          },
+        ]);
+
+        const authResponse = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0017/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(authResponse.statusCode).toBe(200);
+        expect(authResponse.json().unitAllocation).toEqual(anonBody.unitAllocation);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("unitAllocation is an empty array, not null, when nothing is allocated for a matched train", async () => {
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0018", "9X18");
+      await seedSchedule("9X18", "P");
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0018/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().unitAllocation).toEqual([]);
       } finally {
         await app.close();
       }

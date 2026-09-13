@@ -141,6 +141,22 @@ schedule's calling points, `trust_activation`, latest `trust_movement`) is prese
 (position-scoped or the unscoped fallback). A `note` states the basis in plain language, always
 naming this as garner's data, not a confirmed RLM identification.
 
+**Role-gated response (owner request, same day):** a logged-in session (any role) gets the full
+shape below. An anonymous request (no session cookie — viewing the map itself never needs one)
+gets `404 NO_PUBLIC_DETAIL` unless the match is **solid** (`matchStatus: "matched"` and
+`positionScoped: true` — the weakest `headcode_only` tier is excluded, since its own note already
+says to verify it). On a solid match, an anonymous request instead gets a reduced shape: just
+`{ tdArea, berth, headcode, occupancyEnteredAt, matchStatus: "matched", note, effective:
+{ originTiploc, originName, destinationTiploc, destinationName, operatorCode, locations } | null,
+unitAllocation }` — no `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
+`effective`'s TRUST/CIF/movement fields. This is enforced server-side (the response itself is
+shaped differently), not left to the UI to hide.
+
+**Unit/stock allocation (owner request, same day), shown to every visitor regardless of login:**
+`unitAllocation` — an array, one entry per unit in the formation (ordered by `position`), mirrored
+from garner's `train_allocation` (migration 0031): `{ unitNo, position, fleetId, vehicles: [...],
+reportedAt }`. Empty when garner has nothing allocated for the matched train today.
+
 ```json
 {
   "tdArea": "PX",
@@ -209,7 +225,16 @@ naming this as garner's data, not a confirmed RLM identification.
         "...": "..."
       }
     ]
-  }
+  },
+  "unitAllocation": [
+    {
+      "unitNo": "465029",
+      "position": 1,
+      "fleetId": "465/0",
+      "vehicles": ["64787", "72084", "72085", "64837"],
+      "reportedAt": "2026-08-10T09:00:00.000Z"
+    }
+  ]
 }
 ```
 

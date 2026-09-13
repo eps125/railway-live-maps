@@ -2,8 +2,8 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunPopup } from "./RunPopup.js";
 
-function jsonResponse(body: unknown): Response {
-  return { ok: true, status: 200, json: async () => body } as unknown as Response;
+function jsonResponse(body: unknown, status = 200): Response {
+  return { ok: status < 400, status, json: async () => body } as unknown as Response;
 }
 
 const NOTE =
@@ -25,6 +25,7 @@ function baseBody(overrides: Record<string, unknown> = {}) {
     note: UNMATCHED_NOTE,
     effective: null,
     candidateSchedules: [],
+    unitAllocation: [],
     ...overrides,
   };
 }
@@ -374,5 +375,107 @@ describe("RunPopup", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
 
     vi.useRealTimers();
+  });
+
+  it("shows unit allocation, ordered by formation position, when garner has reported one (owner request 2026-09-13)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(
+            baseBody({
+              unitAllocation: [
+                { unitNo: "465029", position: 1, fleetId: "465/0", vehicles: [], reportedAt: null },
+                { unitNo: "465004", position: 2, fleetId: "465/0", vehicles: [], reportedAt: null },
+              ],
+            }),
+          ),
+        ),
+      ),
+    );
+
+    render(
+      <RunPopup
+        elementId="berth-5"
+        displayName="Berth 5"
+        tdArea="PX"
+        berth="0516"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("465029 (465/0) + 465004 (465/0)")).toBeInTheDocument();
+  });
+
+  it("closes quietly (no error shown) when the API 404s NO_PUBLIC_DETAIL — anonymous, not a solid match", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({ error: { code: "NO_PUBLIC_DETAIL", message: "no detail" } }, 404),
+        ),
+      ),
+    );
+
+    const onClose = vi.fn();
+    render(
+      <RunPopup
+        elementId="berth-6"
+        displayName="Berth 6"
+        tdArea="PX"
+        berth="0517"
+        onClose={onClose}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Failed to load/)).not.toBeInTheDocument();
+  });
+
+  it("renders the reduced, departure-board-style view for an anonymous solid match — no Picked by, no candidate list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "PX",
+            berth: "0518",
+            headcode: "1A23",
+            occupancyEnteredAt: "2026-08-10T10:00:00.000Z",
+            matchStatus: "matched",
+            note: "Matched by garner's TRUST activation...",
+            effective: {
+              originTiploc: "PRST",
+              originName: "Preston",
+              destinationTiploc: "LANCSTR",
+              destinationName: "Lancaster",
+              operatorCode: "NT",
+              locations: [],
+            },
+            unitAllocation: [],
+          }),
+        ),
+      ),
+    );
+
+    render(
+      <RunPopup
+        elementId="berth-7"
+        displayName="Berth 7"
+        tdArea="PX"
+        berth="0518"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("Preston (PRST)")).toBeInTheDocument();
+    expect(screen.getByText("Lancaster (LANCSTR)")).toBeInTheDocument();
+    expect(screen.queryByText("Picked by")).not.toBeInTheDocument();
+    expect(screen.queryByText("Schedule")).not.toBeInTheDocument();
+    expect(screen.queryByText("TRUST ID")).not.toBeInTheDocument();
   });
 });

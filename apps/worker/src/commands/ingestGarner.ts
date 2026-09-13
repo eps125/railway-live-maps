@@ -5,6 +5,7 @@ import { createGarnerPool } from "../garner/garnerPool.js";
 import {
   runGarnerReferenceSync,
   runGarnerScheduleSync,
+  runGarnerTrainAllocationSync,
   runGarnerTrustSync,
 } from "../garner/bridge.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
@@ -112,6 +113,17 @@ export async function runIngestGarner(config: Config): Promise<void> {
       const trust = await runGarnerTrustSync(garner, pg, config.GARNER_BRIDGE_BACKFILL_DAYS);
       const trustTotal = Object.values(trust).reduce((sum, n) => sum + n, 0);
       if (trustTotal > 0) console.log("ingest-garner: trust sync", trust);
+
+      // Owner request (2026-09-13): real unit/stock allocation for the popup. Same cadence as
+      // TRUST (every tick, not the slower reference cycle) — allocation reports arrive live too.
+      const allocationUpserted = await runGarnerTrainAllocationSync(
+        garner,
+        pg,
+        config.GARNER_BRIDGE_BACKFILL_DAYS,
+      );
+      if (allocationUpserted > 0) {
+        console.log("ingest-garner: train allocation sync", { allocationUpserted });
+      }
 
       const schedule = await runGarnerScheduleSync(garner, pg, config.GARNER_BRIDGE_BACKFILL_DAYS);
       if (schedule.schedulesUpserted > 0 || schedule.scheduleLocationsUpserted > 0) {

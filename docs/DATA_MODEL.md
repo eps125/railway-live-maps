@@ -352,20 +352,33 @@ File-based ingestion has no per-message ack to hang lineage off the way STOMP fr
   by `packages/domain/src/trust/garnerMovement.ts`), `next_report_stanox` / `next_report_run_time`.
 - **`trust_cancellation`** / **`trust_changeorigin`** / **`trust_changeid`** /
   **`trust_changelocation`** — mirrored as-is.
+- **`train_allocation`** (migration 0031, owner request 2026-09-13) — real unit/stock allocation
+  per working: `cif_train_uid` + `headcode` + `schedule_start_date` + origin/destination
+  TIPLOC/time identify the working; `unit_no` + `position` + `fleet_id` + `vehicles` identify the
+  physical unit(s) — one row per unit, so a multi-unit formation is several rows sharing the same
+  working key. Unlike the epoch-INT-keyed tables above, garner stores this one's timestamps as
+  real DATE/DATETIME columns, mapped straight across with no epoch conversion. Watermarked by
+  garner's own auto-increment `id` (same convention as `cif_schedules`), not `created`/`reported` —
+  no clustering risk to guard against here, but `id` is simpler and just as sufficient.
 
 ## 8. Berth-to-run correlation
 
-> **ADR 0002 (2026-09-01):** RLM's Milestone 9 berth-run resolver (`berth_run_resolution`,
-> `packages/domain/src/resolver/`, `apps/worker/src/resolver/`, `project-resolver`) was **removed
-> wholesale** — it was the single largest source of production incidents. It is to be **rebuilt in
-> a later phase** on top of garner's own correlation work (`trust_activation.cif_schedule_id`,
-> `deduced_headcode`, SMART berth-offset tracking).
->
-> Interim, the click-a-berth popup (`GET .../current-run`) shows the TD headcode plus every
-> mirrored `cif_schedules` row matching that headcode today, with the STP-effective one (or the
-> one a `trust_activation` today confirms) expanded — explicitly labelled as garner's data, not an
-> RLM `matched`/`ambiguous`/`unmatched` verdict. CLAUDE.md non-negotiables 5/6/7 are held in
-> abeyance until the rebuild.
+> **ADR 0006 (2026-09-13, Milestones 34/35):** the berth-run resolver ADR 0002 removed wholesale
+> (Milestone 9 — `berth_run_resolution`, `packages/domain/src/resolver/`,
+> `apps/worker/src/resolver/`, `project-resolver`; the single largest source of production
+> incidents) was **rebuilt** on garner's data — query-time only inside `GET .../current-run`, no
+> persisted resolution table or daemon reintroduced. Candidate `cif_schedules` rows are
+> **position-scoped** to the berth's SMART-derived STANOX/TIPLOC (`smart_berth_step`) before any
+> tie-break, closing the false-positive risk of matching a same-headcode schedule elsewhere in the
+> country. `resolveRunMatch` (`packages/domain/src/schedule/resolveRunMatch.ts`) then picks by,
+> in order: a same-day `trust_activation` (exactly one candidate); STP precedence; for a
+> position-scoped berth still tied after that, whichever candidate's scheduled calling time at
+> the station is closest to _now_ (`station_berth_timetable`, Milestone 35 —
+> `packages/domain/src/schedule/stationBerthTiming.ts`); an unscoped nationwide headcode match
+> only when the berth has no SMART coverage at all (`headcode_only`, the weakest tier). The
+> result is always exactly `matched` / `ambiguous` / `unmatched` (CLAUDE.md rule 7, reinstated),
+> never a silent single guess. See docs/adr/0006 for the full design, including two rejected
+> `station_berth_timetable` designs and why.
 
 ## 9. Map tables
 

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
+import type { Redis } from "ioredis";
 import {
   TD_PROJECTION_VERSION,
   circularDiffMinutes,
@@ -11,9 +12,12 @@ import {
 } from "@railway/domain";
 import { apiError } from "../lib/queryRange.js";
 import { locationToJson, type CifLocationRowLike } from "./schedule.js";
+import { SESSION_COOKIE_NAME, getSession } from "../auth/session.js";
 
 export interface CurrentRunRoutesDeps {
   pool: Pool;
+  redis: Redis;
+  sessionTtlSeconds: number;
 }
 
 /**
@@ -41,6 +45,22 @@ export interface CurrentRunRoutesDeps {
  * train stabled overnight, or simply early for its working). This also correctly keeps a
  * running-late candidate in play — its nominal time being "in the past" doesn't exclude it,
  * since there's no real-time evidence at this tier to say the working has actually finished.
+ *
+ * Owner request (2026-09-13), role-gated response: an anonymous visitor (no session cookie) gets
+ * no popup content at all unless the berth is a **solid match** — `matchStatus === "matched"`
+ * *and* position-scoped (i.e. not the weakest `headcode_only` tier, which is explicitly "verify
+ * before trusting this" and shouldn't be shown as confident public fact). Even then they see a
+ * reduced, departure-board-style view — headcode, origin/destination, calling points, operator —
+ * never TRUST IDs, CIF schedule IDs, the `deduced` flag, or raw movement/variation detail, which
+ * read as operational/diagnostic rather than public-facing. A logged-in session (any role — this
+ * app only has `editor`/`admin`, no separate "viewer" tier) always gets the full response,
+ * ambiguity detail included, exactly as Milestones 34/35 built it. This is enforced **server-side**
+ * (the response itself is shaped differently, not just hidden in the UI) — an anonymous request
+ * never receives the fields it isn't shown.
+ *
+ * Also owner request, shown to every visitor regardless of session: real unit/stock allocation
+ * for the matched train, mirrored from garner's own `train_allocation` table (migration 0031) —
+ * one row per unit in the formation, keyed by `cif_train_uid` + the traffic day.
  */
 interface CurrentStateRow {
   description: string | null;
@@ -89,6 +109,89 @@ interface MovementRow {
   timetable_variation: number | null;
   flags: number | null;
   next_report_stanox: string | null;
+}
+
+interface UnitAllocationRow {
+  unit_no: string;
+  position: number;
+  fleet_id: string;
+  vehicles: string;
+  reported: Date | null;
+}
+
+interface UnitAllocationEntry {
+  unitNo: string;
+  position: number;
+  fleetId: string;
+  vehicles: string[];
+  reportedAt: string | null;
+}
+
+/** The full, authenticated-only shape of the resolved schedule's detail. `toPublicEffective`
+ * below reduces this to the anonymous view. */
+interface EffectiveScheduleFull {
+  scheduleId: string;
+  trainUid: string;
+  stpIndicator: "C" | "N" | "O" | "P";
+  source: "GARNER";
+  operatorCode: string | null;
+  trainStatus: string | null;
+  serviceCode: string | null;
+  category: string | null;
+  originTiploc: string | null;
+  originName: string | null;
+  destinationTiploc: string | null;
+  destinationName: string | null;
+  activation: {
+    trustId: string;
+    deduced: boolean;
+    activatedAt: string;
+    trainUid: string | null;
+    tocId: string | null;
+    scheduleWttId: string | null;
+    scheduleType: string | null;
+    originDepartureAt: string | null;
+  } | null;
+  latestMovement: {
+    trustId: string;
+    locStanox: string | null;
+    locName: string | null;
+    platform: string | null;
+    actualTimestamp: string | null;
+    plannedTimestamp: string | null;
+    gbttTimestamp: string | null;
+    eventKind: string;
+    variationStatus: string;
+    variationMinutes: number | null;
+    terminated: boolean;
+    offRoute: boolean;
+    manual: boolean;
+    correction: boolean;
+    nextReportStanox: string | null;
+  } | null;
+  locations: (ReturnType<typeof locationToJson> & { locationName: string | null })[];
+}
+
+/** Owner request (2026-09-13): the anonymous, "reduced" view of a matched schedule —
+ * departure-board-style (headcode is returned separately at the top level; origin/destination/
+ * calling points/operator here), never TRUST IDs, CIF schedule IDs, the `deduced` flag, or raw
+ * movement/variation detail, which read as operational/diagnostic rather than public-facing. */
+function toPublicEffective(effective: EffectiveScheduleFull): {
+  originTiploc: string | null;
+  originName: string | null;
+  destinationTiploc: string | null;
+  destinationName: string | null;
+  operatorCode: string | null;
+  locations: EffectiveScheduleFull["locations"];
+} {
+  return {
+    originTiploc: effective.originTiploc,
+    originName: effective.originName,
+    destinationTiploc: effective.destinationTiploc,
+    destinationName: effective.destinationName,
+    operatorCode: effective.operatorCode,
+    locations: effective.locations,
+  };
 }
 
 const STP: ReadonlySet<string> = new Set(["C", "N", "O", "P"]);
@@ -223,16 +326,48 @@ async function callingTimeMinutesByScheduleId(
   return best;
 }
 
+/** Owner request (2026-09-13): real unit/stock allocation for the matched train, mirrored from
+ * garner's `train_allocation` (migration 0031) — one row per unit, ordered by formation
+ * position. Shown to every visitor regardless of login. Only called for the resolved `effective`
+ * schedule (a single, known `cif_train_uid` + traffic day) — ambiguous/unmatched cases have no
+ * single train_uid to key by. */
+async function queryUnitAllocation(
+  pool: Pool,
+  cifTrainUid: string,
+  serviceDate: string,
+): Promise<UnitAllocationEntry[]> {
+  const result = await pool.query<UnitAllocationRow>(
+    `select unit_no, "position", fleet_id, vehicles, reported
+     from train_allocation
+     where cif_train_uid = $1 and schedule_start_date = $2::date
+     order by "position" asc, unit_no asc`,
+    [cifTrainUid, serviceDate],
+  );
+  return result.rows.map((row) => ({
+    unitNo: row.unit_no,
+    position: row.position,
+    fleetId: row.fleet_id,
+    vehicles: row.vehicles.split(/\s+/).filter(Boolean),
+    reportedAt: row.reported ? row.reported.toISOString() : null,
+  }));
+}
+
 export async function registerCurrentRunRoutes(
   app: FastifyInstance,
   deps: CurrentRunRoutesDeps,
 ): Promise<void> {
-  const { pool } = deps;
+  const { pool, redis, sessionTtlSeconds } = deps;
 
   app.get<{ Params: { tdArea: string; berth: string } }>(
     "/api/v1/td/areas/:tdArea/berths/:berth/current-run",
     async (request, reply) => {
       const { tdArea, berth } = request.params;
+
+      // Owner request (2026-09-13): optional auth — never required to view the map or this
+      // popup at all, only to see full detail. A missing/invalid cookie is just "anonymous",
+      // never a 401 (this route stays public, matching every other live-map read).
+      const isAuthenticated =
+        (await getSession(redis, request.cookies[SESSION_COOKIE_NAME], sessionTtlSeconds)) !== null;
 
       const stateResult = await pool.query<CurrentStateRow>(
         `select description, occupancy_entered_at
@@ -350,7 +485,7 @@ export async function registerCurrentRunRoutes(
         };
       });
 
-      let effective: unknown = null;
+      let effective: EffectiveScheduleFull | null = null;
       if (effectiveRow) {
         const activation = activationByScheduleId.get(effectiveRow.id) ?? null;
 
@@ -476,20 +611,55 @@ export async function registerCurrentRunRoutes(
         };
       }
 
+      const unitAllocation = effectiveRow
+        ? await queryUnitAllocation(pool, effectiveRow.cif_train_uid, today)
+        : null;
+
+      // Owner request (2026-09-13): a "solid" match — matched, and not the weakest unscoped
+      // headcode_only tier (that one's own note already says "verify before trusting this", so
+      // it shouldn't be shown to anonymous visitors as if it were confident public fact).
+      const isSolidMatch = matchResult.status === "matched" && matchBasis !== "headcode_only";
+
+      if (!isAuthenticated && !isSolidMatch) {
+        reply.code(404);
+        return apiError(
+          "NO_PUBLIC_DETAIL",
+          "No confirmed match to show without logging in — this berth's identification is either ambiguous, unmatched, or too weak to show publicly",
+        );
+      }
+
+      const occupancyEnteredAt = state.occupancy_entered_at
+        ? state.occupancy_entered_at.toISOString()
+        : null;
+
+      if (!isAuthenticated) {
+        // Reduced, departure-board-style view — see toPublicEffective's own doc comment for
+        // exactly what's withheld and why.
+        return {
+          tdArea,
+          berth,
+          headcode,
+          occupancyEnteredAt,
+          matchStatus: "matched" as const,
+          note: matchNote(matchResult.status, matchBasis, positionScoped),
+          effective: effective ? toPublicEffective(effective) : null,
+          unitAllocation,
+        };
+      }
+
       return {
         tdArea,
         berth,
         description: headcode,
         headcode,
-        occupancyEnteredAt: state.occupancy_entered_at
-          ? state.occupancy_entered_at.toISOString()
-          : null,
+        occupancyEnteredAt,
         matchStatus: matchResult.status,
         matchBasis,
         positionScoped,
         note: matchNote(matchResult.status, matchBasis, positionScoped),
         effective,
         candidateSchedules,
+        unitAllocation,
       };
     },
   );

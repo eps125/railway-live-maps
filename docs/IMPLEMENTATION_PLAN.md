@@ -1854,6 +1854,34 @@ tier to distinguish "finished" from "running late". Exactly one closest → matc
   — only SMART-derived STANOX. A berth with no SMART coverage gets no `station_berth_timetable`
   tier regardless of map-authored CRS metadata.
 
+**Third same-day follow-up (owner request): role-gated popup content, and real unit/stock
+allocation.** Full detail in docs/adr/0006's own addendum; summary here.
+
+- An anonymous visitor (no session cookie — the public map itself still needs no login) gets no
+  popup content at all unless the berth is a **solid match** (`matched`, and not the weakest
+  `headcode_only` tier) — anything else `404 NO_PUBLIC_DETAIL`s and the popup closes itself
+  quietly. On a solid match, anonymous visitors get a reduced, departure-board-style view
+  (headcode, origin/destination, calling points, operator) — never TRUST IDs, CIF schedule IDs,
+  the `deduced` flag, or raw movement/variation data. A logged-in session (any role) always gets
+  the full response exactly as Milestones 34/35 built it. Enforced server-side — the response
+  shape differs per request, not just what the UI renders.
+- Every visitor, regardless of login, now sees real unit/stock allocation for the matched train —
+  mirrored from garner's `train_allocation` table (migration 0031, verified against the real
+  operator instance: 383,882 rows at the time of writing) via a new
+  `runGarnerTrainAllocationSync` bridge sync (`apps/worker/src/garner/bridge.ts`), same cadence
+  as TRUST. Unlike the epoch-INT-keyed tables Milestone 34 already mirrors, this table's
+  timestamps are real garner DATE/DATETIME columns — mapped straight across, watermarked by
+  garner's own auto-increment `id`.
+- Tests: a new `describe("public/anonymous access")` block in `currentRun.integration.test.ts`
+  (404s for ambiguous/unmatched/headcode_only when anonymous, the reduced shape on a solid match,
+  unit allocation identical for anonymous and authenticated requests) using an in-memory
+  `FakeRedis` stand-in rather than a real Redis server; every pre-existing test in that file now
+  authenticates via a small `authHeaders()` helper, since they exercise the full response and
+  would otherwise silently start hitting the new anonymous path. `RunPopup.tsx` split into
+  `FullEffectiveDetail`/`PublicEffectiveDetail` components so TypeScript's discriminated-union
+  narrowing actually applies. All run against a disposable Postgres, not production.
+  `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the full unit suite green.
+
 ## Milestone 36 — S-Class bit decoding `[planned]`
 
 Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.

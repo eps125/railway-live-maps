@@ -845,6 +845,126 @@ async function syncTrustAll(
 }
 
 // ---------------------------------------------------------------------------
+// train_allocation (owner request 2026-09-13, alongside Milestone 35's popup role-gating)
+// ---------------------------------------------------------------------------
+
+/** Unlike the tables above, garner stores this table's timestamps as real DATE/DATETIME columns
+ * (mysql2 already returns JS `Date`s for them) rather than epoch INTs — no `epochToTs` needed. */
+interface TrainAllocationRow extends RowDataPacket {
+  id: number;
+  cif_train_uid: string;
+  headcode: string;
+  schedule_start_date: Date;
+  origin_tiploc: string;
+  origin_dep: Date | null;
+  dest_tiploc: string;
+  dest_arr: Date | null;
+  unit_no: string;
+  position: number;
+  fleet_id: string;
+  vehicles: string;
+  reported: Date | null;
+  message_id: string;
+}
+
+const TRAIN_ALLOCATION_COLS = [
+  "id",
+  "cif_train_uid",
+  "headcode",
+  "schedule_start_date",
+  "origin_tiploc",
+  "origin_dep",
+  "dest_tiploc",
+  "dest_arr",
+  "unit_no",
+  "position",
+  "fleet_id",
+  "vehicles",
+  "reported",
+  "message_id",
+];
+
+const TRAIN_ALLOCATION_CONFLICT = `on conflict (id) do update set
+  cif_train_uid = excluded.cif_train_uid, headcode = excluded.headcode,
+  schedule_start_date = excluded.schedule_start_date, origin_tiploc = excluded.origin_tiploc,
+  origin_dep = excluded.origin_dep, dest_tiploc = excluded.dest_tiploc,
+  dest_arr = excluded.dest_arr, unit_no = excluded.unit_no, "position" = excluded."position",
+  fleet_id = excluded.fleet_id, vehicles = excluded.vehicles, reported = excluded.reported,
+  message_id = excluded.message_id, synced_at = now()`;
+
+/** Mirrors garner `train_allocation`, watermarked by its own auto-increment `id` — like
+ * `cif_schedules`, simpler and just as sufficient as a `created`/`reported` watermark would be,
+ * with no clustering risk to guard against. */
+async function syncTrainAllocation(
+  garner: MysqlPool,
+  pg: PgPool,
+  floorId: number,
+): Promise<number> {
+  const defId = await watermarkDefId(pg, "garner-train_allocation");
+  // Seeded by row-id proxy, not epoch — a fresh watermark starts from `floorId` (an id near the
+  // backfill-days cutoff, resolved by the caller) rather than 0.
+  const cp = await getCheckpoint(pg, defId);
+  if (cp && cp.lastIngestionSequence === "0" && cp.lastCompletedAt === null) {
+    await advanceCheckpoint(pg, defId, String(Math.max(0, floorId)));
+  }
+  const since = await readWatermark(pg, defId);
+
+  const [rows] = await garner.query<TrainAllocationRow[]>(
+    `select id, cif_train_uid, headcode, schedule_start_date, origin_tiploc, origin_dep,
+            dest_tiploc, dest_arr, unit_no, \`position\`, fleet_id, vehicles, reported, message_id
+     from train_allocation where id > ? order by id asc limit ${TRUST_BATCH}`,
+    [since],
+  );
+  if (rows.length === 0) return 0;
+
+  const tuples = rows.map((row) => [
+    row.id,
+    row.cif_train_uid,
+    row.headcode,
+    row.schedule_start_date,
+    row.origin_tiploc,
+    row.origin_dep,
+    row.dest_tiploc,
+    row.dest_arr,
+    row.unit_no,
+    row.position ?? 0,
+    row.fleet_id,
+    row.vehicles,
+    row.reported,
+    row.message_id,
+  ]);
+
+  const written = await chunkedInsert(
+    pg,
+    "train_allocation",
+    TRAIN_ALLOCATION_COLS,
+    tuples,
+    TRAIN_ALLOCATION_CONFLICT,
+  );
+  const hi = rows.reduce((max, row) => Math.max(max, row.id), since);
+  await advanceCheckpoint(pg, defId, String(hi));
+  return written;
+}
+
+export async function runGarnerTrainAllocationSync(
+  garner: MysqlPool,
+  pg: PgPool,
+  backfillDays: number,
+): Promise<number> {
+  // `train_allocation`'s PK is a plain auto-increment with no epoch relationship to real time, so
+  // the usual `floorEpoch` can't seed it — a near-enough id is found directly instead: the
+  // smallest id whose `reported` is within the backfill window (0 when nothing qualifies, i.e.
+  // mirror everything garner still has).
+  const cutoff = new Date(Date.now() - Math.max(0, backfillDays) * 86_400_000);
+  const [rows] = await garner.query<RowDataPacket[]>(
+    `select coalesce(min(id), 0) as floor_id from train_allocation where reported >= ?`,
+    [cutoff],
+  );
+  const floorId = Number((rows[0] as { floor_id: number } | undefined)?.floor_id ?? 0);
+  return syncTrainAllocation(garner, pg, floorId);
+}
+
+// ---------------------------------------------------------------------------
 // entry points
 // ---------------------------------------------------------------------------
 

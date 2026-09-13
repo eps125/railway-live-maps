@@ -235,3 +235,57 @@ Known limitation carried over from Milestone 34's own note: the author-supplied 
 `stationId` schema hooks (ADR 0004 D6/D7) are still not consulted as an additional/overriding
 station-identity source — only the SMART-derived STANOX set is used. A berth SMART doesn't cover
 gets no `station_berth_timetable` tier at all, regardless of map-authored CRS metadata.
+
+## Addendum — role-gated popup content, and real unit/stock allocation
+
+Owner request, same day. Two related pieces added to `GET .../current-run`, both server-side (the
+response itself is shaped differently per request, not just hidden in the UI):
+
+### Role-gated response
+
+- A **logged-in session** (any role — this app only has `editor`/`admin`, no separate "viewer"
+  tier) gets the full response exactly as Milestones 34/35 built it: `matchBasis`,
+  `positionScoped`, the full `candidateSchedules` list, and the full `effective` detail (TRUST
+  ID, CIF schedule ID, the `deduced` flag, raw movement/variation data).
+- An **anonymous** visitor (no session cookie — the map itself still needs no login to view) gets
+  **no popup content at all** unless the berth is a **solid match**: `matchStatus === "matched"`
+  **and** position-scoped — the weakest `headcode_only` tier is deliberately excluded, since its
+  own note already says "verify before trusting this" and showing that to the public as if it
+  were confident fact would undermine the whole point of Milestone 34's position-scoping.
+  Anything else (`ambiguous`, `unmatched`, or a `headcode_only` match) responds `404
+NO_PUBLIC_DETAIL` — the frontend (`RunPopup.tsx`) treats **any** 404 from this endpoint as
+  "nothing to show" and closes itself quietly, no error message.
+- On a solid match, an anonymous visitor gets a **reduced, departure-board-style** view:
+  headcode, origin/destination, the calling-points list, operator code. Never TRUST IDs, CIF
+  schedule IDs, the `deduced` flag, or raw movement/variation detail — those read as
+  operational/diagnostic rather than public-facing.
+- Implementation reads the session cookie the same way `requireRole` does
+  (`apps/api/src/auth/session.ts`'s `getSession`), but never requires one — a missing/invalid
+  cookie is just "anonymous", never a 401. `CurrentRunRoutesDeps` gained `redis`/
+  `sessionTtlSeconds` for this.
+
+### Real unit/stock allocation
+
+Shown to **every** visitor regardless of login (unlike the role-gated detail above) — mirrored
+from garner's own `train_allocation` table (migration 0031, verified against the real operator
+instance: 383,882 rows at the time of writing), the same way TRUST/schedule data already is. One
+row per unit in a formation (a two-unit working produces two rows, ordered by `position`); keyed
+by `cif_train_uid` + the traffic day, joined against whichever schedule the resolver picked as
+`effective`. Unlike the epoch-INT-keyed `trust_*`/`cif_schedules` tables, garner stores this
+table's timestamps as real DATE/DATETIME columns — the bridge
+(`apps/worker/src/garner/bridge.ts`'s `runGarnerTrainAllocationSync`) maps them straight across,
+watermarked by garner's own auto-increment `id` (same convention as `cif_schedules`) rather than
+`created`/`reported`, synced on the same cadence as TRUST (every `ingest-garner` tick).
+
+Tests: `apps/api/src/routes/currentRun.integration.test.ts` gained a
+`describe("public/anonymous access")` block (404s for ambiguous/unmatched/headcode_only when
+anonymous, the reduced shape on a solid match, unit allocation identical for both anonymous and
+authenticated requests) — run against a disposable Postgres, not production, using an in-memory
+`FakeRedis` stand-in (matching `apps/api/src/auth/session.test.ts`'s existing pattern) rather
+than a real Redis server, since the route only ever calls `getSession`/nothing Redis-specific.
+Every pre-existing test in that file now authenticates via a small `authHeaders()` helper, since
+they were written to exercise the full response and would otherwise silently start hitting the
+new anonymous path. `RunPopup.tsx` split into `FullEffectiveDetail`/`PublicEffectiveDetail`
+components so TypeScript's control-flow narrowing on the discriminated `FullCurrentRunResponse |
+PublicCurrentRunResponse` union actually applies (a flat boolean check on a separately-extracted
+`effective` variable does not carry that narrowing).

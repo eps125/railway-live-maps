@@ -40,6 +40,17 @@ const definition: MapDefinitionResponse = {
         symbolStyle: "signal-blank",
         label: "L1",
       },
+      "boundary-1": {
+        id: "boundary-1",
+        layerId: "l1",
+        zIndex: 0,
+        type: "boundary",
+        x: 90,
+        y: 90,
+        name: "Preston PSB",
+        adjacentMapSlug: "carlisle",
+        adjacentBoundaryName: "Carlisle PSB",
+      },
     },
     berthBindingIndex: { "PX|0512": "berth-1" },
     sBitBindingIndex: {},
@@ -120,4 +131,42 @@ describe("MapView", () => {
     expect(await screen.findByText("2A16", {}, { timeout: 8000 })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   }, 10_000);
+
+  it("resolves ?boundary=<name> (Milestone 32) to this map's own same-named boundary element and centres there", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/definition")) return Promise.resolve(jsonResponse(definition));
+      if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(<MapView slug="lancaster" centerBoundaryName="Preston PSB" />);
+    await screen.findByText("2A16");
+
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x! + width! / 2).toBeCloseTo(90);
+    expect(y! + height! / 2).toBeCloseTo(90);
+  });
+
+  it("falls back to the default view when centerBoundaryName matches no boundary on this map (stale/renamed link, never a hard error)", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/definition")) return Promise.resolve(jsonResponse(definition));
+      if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <MapView slug="lancaster" centerBoundaryName="Nonexistent Boundary" />,
+    );
+    await screen.findByText("2A16");
+
+    // No throw, no alert — just the ordinary default view (bounding-box centre).
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x! + width! / 2).toBeCloseTo(50);
+    expect(y! + height! / 2).toBeCloseTo(50);
+  });
 });

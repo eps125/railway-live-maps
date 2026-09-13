@@ -82,10 +82,37 @@ describe("compileMapDocument", () => {
     expect(bundle.topologyAdjacency["n2"]).toEqual(["n1"]);
   });
 
-  it("collects boundary continuation links", () => {
+  it("collects boundary continuation links, defaulting adjacentBoundaryName to the element's own name", () => {
     const bundle = compileMapDocument(doc);
     expect(bundle.continuationLinks).toEqual([
-      { elementId: "boundary-1", adjacentMapSlug: "carnforth", direction: undefined },
+      {
+        elementId: "boundary-1",
+        name: "North",
+        adjacentMapSlug: "carnforth",
+        direction: undefined,
+        adjacentBoundaryName: "North",
+      },
+    ]);
+  });
+
+  it("uses an explicit adjacentBoundaryName over the element's own name (Milestone 32 — sides can name the same boundary differently)", () => {
+    const docWithDifferentNames = MapDocumentSchema.parse({
+      ...JSON.parse(JSON.stringify(doc)),
+      elements: doc.elements.map((element) =>
+        element.type === "boundary"
+          ? { ...element, name: "Preston PSB", adjacentBoundaryName: "Carlisle PSB" }
+          : element,
+      ),
+    });
+    const bundle = compileMapDocument(docWithDifferentNames);
+    expect(bundle.continuationLinks).toEqual([
+      {
+        elementId: "boundary-1",
+        name: "Preston PSB",
+        adjacentMapSlug: "carnforth",
+        direction: undefined,
+        adjacentBoundaryName: "Carlisle PSB",
+      },
     ]);
   });
 

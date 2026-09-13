@@ -545,6 +545,19 @@ export function PropertyPanel(): JSX.Element {
             value={element.adjacentMapSlug ?? ""}
             onCommit={(v) => setProp("adjacentMapSlug", v || undefined)}
           />
+          <TextField
+            label="Adjacent boundary name"
+            value={element.adjacentBoundaryName ?? ""}
+            onCommit={(v) => setProp("adjacentBoundaryName", v || undefined)}
+          />
+          <p className="field-hint">
+            Milestone 32: what this same boundary is called on the adjacent map — often different
+            from this element&apos;s own Name above, since each side is usually named from its own
+            perspective (e.g. this side reads &quot;Carlisle PSB&quot; while the far side reads
+            &quot;Preston PSB&quot; for the identical crossing). Leave blank only if the two sides
+            genuinely share a name. Set both this and Adjacent map slug to make this boundary
+            clickable on the public map.
+          </p>
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
         </>

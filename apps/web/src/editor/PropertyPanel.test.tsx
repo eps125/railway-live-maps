@@ -266,6 +266,60 @@ function docWithLabel(): MapDocument {
   };
 }
 
+function docWithBoundary(): MapDocument {
+  return {
+    schemaVersion: 1,
+    map: {
+      id: "m",
+      name: "m",
+      canvas: { width: 200, height: 200, gridSize: 10 },
+      timezone: "Europe/London",
+    },
+    layers: [{ id: "l", name: "l", visible: true, locked: false, order: 0 }],
+    elements: [
+      {
+        id: "boundary-a",
+        layerId: "l",
+        zIndex: 0,
+        type: "boundary",
+        x: 10,
+        y: 10,
+        name: "Preston PSB",
+      },
+    ],
+    topology: { nodes: [], edges: [] },
+    bindings: [],
+    editorMetadata: {},
+  };
+}
+
+describe("PropertyPanel boundary fields", () => {
+  it("commits Adjacent map slug and Adjacent boundary name independently of the boundary's own Name (Milestone 32 — sides name a boundary differently)", async () => {
+    render(
+      <EditorStateProvider initialDocument={docWithBoundary()}>
+        <Select id="boundary-a" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    expect(await screen.findByLabelText("Name")).toHaveValue("Preston PSB");
+
+    const slugInput = screen.getByLabelText("Adjacent map slug");
+    fireEvent.change(slugInput, { target: { value: "carlisle" } });
+    fireEvent.blur(slugInput);
+    expect(slugInput).toHaveValue("carlisle");
+
+    const adjacentNameInput = screen.getByLabelText("Adjacent boundary name");
+    expect(adjacentNameInput).toHaveValue("");
+    fireEvent.change(adjacentNameInput, { target: { value: "Carlisle PSB" } });
+    fireEvent.blur(adjacentNameInput);
+    expect(adjacentNameInput).toHaveValue("Carlisle PSB");
+
+    // The element's own Name is untouched by setting the adjacent-side name.
+    expect(screen.getByLabelText("Name")).toHaveValue("Preston PSB");
+  });
+});
+
 describe("PropertyPanel label fields", () => {
   it("shows and commits the label's font size", async () => {
     render(

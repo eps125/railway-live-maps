@@ -142,7 +142,14 @@ naming as more maps are authored. `map.id` (the slug) is fixed.
 
 ### `boundary`
 
-Named map continuation with optional adjacent map slug and direction.
+Named map continuation with optional adjacent map slug and direction. Milestone 32: an optional
+`adjacentBoundaryName` names this same boundary as it's authored on the adjacent map — kept
+separate from the element's own `name` because the two sides are typically named from their own
+perspective (e.g. one map's "Carlisle PSB" is the other's "Preston PSB" for the identical
+crossing), not assumed to match. When both `adjacentMapSlug` and `adjacentBoundaryName` are set,
+the boundary is clickable on the public map and jumps to `/map/<adjacentMapSlug>` centred on the
+target map's own boundary element of that name; falls back to the target's default view (never
+errors) if nothing matches there.
 
 ### `group/templateInstance`
 

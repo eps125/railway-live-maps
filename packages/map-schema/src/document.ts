@@ -173,6 +173,13 @@ const BoundaryElementSchema = BaseElementSchema.extend({
   name: z.string().min(1),
   adjacentMapSlug: z.string().optional(),
   direction: z.string().optional(),
+  /** Milestone 32: the name this same physical boundary is called on the adjacent map. Not
+   * assumed to equal this element's own `name` — real signalling boundaries are typically named
+   * from each side's own perspective (e.g. one map's "Carlisle PSB" is the other map's "Preston
+   * PSB" for the identical crossing), so the correspondence is an explicit author-entered field
+   * rather than implicit same-naming. Falls back to this element's own `name` when unset, for the
+   * rare case the two sides do happen to coincide. */
+  adjacentBoundaryName: z.string().optional(),
 });
 
 export const MapElementSchema = z.discriminatedUnion("type", [

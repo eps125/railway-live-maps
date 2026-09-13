@@ -10,11 +10,12 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
-→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31.
+→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
+→ 32.
 
 **Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
 work first, then the resolver-first backlog):**
-32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
+33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
 
 **Milestone 33 is the owner's own task, not Claude's** — they'll author the Blackpool Line map
 themselves in the editor and report back when done; do not pick it up as implementation work.
@@ -1604,27 +1605,64 @@ gracefully instead of erroring.
   first match order is `lr.name`); no pagination beyond the flat `limit` cap; centering only
   applies to the live map view, not historical playback.
 
-## Milestone 32 — boundary elements link to the adjacent map `[planned]`
+## Milestone 32 — boundary elements link to the adjacent map `[done — 2026-09-13]`
 
 Owner request: clicking a boundary label on the public map jumps to the corresponding boundary on
 the adjacent map.
 
-The schema already has this half-built: `BoundaryElementSchema` carries optional
-`adjacentMapSlug`/`direction` fields with no consumer anywhere yet — no schema change needed for
-the link itself.
+The schema already had this half-built: `BoundaryElementSchema` carried optional
+`adjacentMapSlug`/`direction` fields with no consumer anywhere yet.
 
-Planned approach: treat matching boundary **names** on both sides as the correspondence
-convention (the same real signalling-area boundary, named identically by the author on each map)
-rather than adding a new linked-boundary-id field. `MapRenderer.tsx` makes a boundary element with
-`adjacentMapSlug` clickable (same pattern as an occupied berth); navigating to
-`/map/<adjacentMapSlug>` carries the source boundary's name (query param or hash) so the target
-map looks up its own same-named boundary and centers the view there, falling back to that map's
-normal default view if nothing matches — never a hard error for a stale/renamed boundary.
+**Plan revised mid-milestone (owner, 2026-09-13):** the original approach below assumed matching
+boundary **names** on both sides as the correspondence convention. The owner flagged that this
+doesn't hold — real signalling boundaries are typically named from each side's own perspective,
+so the same physical crossing can be one map's "Carlisle PSB" and the other map's "Preston PSB".
+Implemented instead with an explicit author-entered `adjacentBoundaryName` field (see below) —
+same shape as the already-manual `adjacentMapSlug` (a slug/name the author types in, not picked
+from a live cross-map list).
 
-Acceptance: two maps sharing a boundary, each with a same-named boundary element pointing
-`adjacentMapSlug` at the other, let a viewer click through and land near the right spot; a
-boundary with no `adjacentMapSlug` (or no matching name on the target) behaves exactly as today —
-an inert marker.
+~~Planned approach: treat matching boundary names on both sides as the correspondence convention
+(the same real signalling-area boundary, named identically by the author on each map) rather than
+adding a new linked-boundary-id field.~~ — superseded, see above.
+
+Acceptance: two maps sharing a boundary, each with a boundary element pointing `adjacentMapSlug`
+at the other and `adjacentBoundaryName` naming the corresponding boundary as authored _there_, let
+a viewer click through and land near the right spot even when the two sides use different local
+names; a boundary with no `adjacentMapSlug` (or no matching name on the target) behaves exactly as
+today — an inert marker, never a hard error.
+
+**Status: implemented.**
+
+- `packages/map-schema/src/document.ts`: `BoundaryElementSchema` gains optional
+  `adjacentBoundaryName` — the name this same boundary is called on the adjacent map, not assumed
+  to equal this element's own `name`.
+- `packages/map-schema/src/compiler.ts`: `CompiledMapBundle.continuationLinks` (previously built
+  but unconsumed) now also carries `name` and a resolved `adjacentBoundaryName` (falling back to
+  the element's own `name` when the author left it unset — the "two sides happen to coincide"
+  case).
+- Web: `MapRenderer.tsx` makes a boundary element with `adjacentMapSlug` clickable (pointer
+  cursor), navigating via `useRoute.ts`'s `navigate()` to
+  `/map/<adjacentMapSlug>?boundary=<adjacentBoundaryName ?? name>`. `App.tsx` reads the new
+  `?boundary=` query param alongside Milestone 31's `?center=` and threads it to `MapView.tsx` as
+  `centerBoundaryName`; `MapView.tsx` resolves it, once the target map's bundle has loaded, to that
+  map's own boundary element of the matching `name` and passes the resolved id through as the
+  existing `centerElementId` prop — no match (stale/renamed boundary) just falls back to the
+  remembered/default view. `PropertyPanel.tsx` gained the "Adjacent boundary name" field for
+  `boundary` elements, with a hint explaining the naming-differs-per-side reality using the
+  Carlisle/Preston PSB example.
+- Tests: `document.test.ts` (new field parses); `compiler.test.ts` (`continuationLinks` carries
+  `name`/resolved `adjacentBoundaryName`, explicit value overrides the element's own name);
+  `MapRenderer.test.tsx` (click navigates using `adjacentBoundaryName` over `name`, falls back to
+  `name` when unset, inert with no `adjacentMapSlug`); `MapView.test.tsx` (resolves `?boundary=` to
+  the matching local element and centres, falls back to the default view with no match, no error);
+  `PropertyPanel.test.tsx` (new field commits independently of the element's own Name).
+  `pnpm run build:libs`, `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the full
+  unit suite all green (pre-existing unrelated gap: `packages/protocol` has no `vitest.config.ts`,
+  so `pnpm -r test` fails to start that one package — untouched by this milestone).
+- Known limitations: correspondence is entirely author-maintained (no cross-map validation that an
+  `adjacentBoundaryName` actually exists on the target map, or that the link is reciprocated) —
+  authoring errors degrade to "no centering", never a crash, per the acceptance criteria; matching
+  is an exact string comparison on `name` (no normalization/case-insensitivity).
 
 ## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[owner's own task — 2026-09-13]`
 

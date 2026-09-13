@@ -12,6 +12,7 @@ import {
 } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
 import { RunPopup } from "./RunPopup.js";
+import { navigate } from "../useRoute.js";
 
 export interface MapRendererProps {
   bundle: CompiledMapBundle;
@@ -613,8 +614,25 @@ export function MapRenderer({
             );
           }
           if (element.type === "boundary") {
+            // Milestone 32: clicking through to the adjacent map centres it on the same
+            // physical boundary — looked up there by `adjacentBoundaryName`, since the two
+            // sides typically name it differently (one map's "Carlisle PSB" is the other's
+            // "Preston PSB" for the identical crossing), never by matching `name` directly.
+            const targetSlug = element.adjacentMapSlug;
+            const handleClick = targetSlug
+              ? () => {
+                  const boundaryName = element.adjacentBoundaryName ?? element.name;
+                  navigate(
+                    `/map/${encodeURIComponent(targetSlug)}?boundary=${encodeURIComponent(boundaryName)}`,
+                  );
+                }
+              : undefined;
             return (
-              <g key={element.id}>
+              <g
+                key={element.id}
+                onClick={handleClick}
+                style={{ cursor: targetSlug ? "pointer" : "default" }}
+              >
                 <circle cx={element.x} cy={element.y} r={4} fill="#8b949e" />
                 <text x={element.x + 8} y={element.y + 4} fontSize={10} fill="#8b949e">
                   {element.name}

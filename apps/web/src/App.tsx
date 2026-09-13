@@ -57,8 +57,18 @@ export function App(): JSX.Element {
     // from the URL rather than teaching useRoute about query strings, since only this one route
     // cares about it. Re-evaluated on every render, so it stays in sync with `navigate()`-driven
     // route changes (which re-render App via useRoute's own state) without needing its own effect.
-    const centerElementId = new URLSearchParams(window.location.search).get("center");
-    main = <MapView slug={route.slug} centerElementId={centerElementId} />;
+    // Milestone 32 adds `?boundary=<name>`, the same click-through pattern from a boundary
+    // element on the adjacent map instead of a places search.
+    const searchParams = new URLSearchParams(window.location.search);
+    const centerElementId = searchParams.get("center");
+    const centerBoundaryName = searchParams.get("boundary");
+    main = (
+      <MapView
+        slug={route.slug}
+        centerElementId={centerElementId}
+        centerBoundaryName={centerBoundaryName}
+      />
+    );
   } else {
     main = <LandingPage canCreateMap={isAdmin} canEdit={canEdit} />;
   }

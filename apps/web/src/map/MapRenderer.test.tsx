@@ -549,6 +549,77 @@ describe("MapRenderer", () => {
 
     expect(container.querySelector(".map-inspector")).not.toBeInTheDocument();
   });
+
+  it("clicking a boundary with adjacentMapSlug navigates using adjacentBoundaryName, not its own name (Milestone 32 — sides name a boundary differently)", () => {
+    window.history.pushState(null, "", "/map/preston");
+    const doc = bundle({
+      elementsById: {
+        "boundary-1": {
+          id: "boundary-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "boundary",
+          x: 5,
+          y: 5,
+          name: "Preston PSB",
+          adjacentMapSlug: "carlisle",
+          adjacentBoundaryName: "Carlisle PSB",
+        },
+      },
+    });
+
+    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    fireEvent.click(screen.getByText("Preston PSB"));
+
+    expect(window.location.pathname).toBe("/map/carlisle");
+    expect(window.location.search).toBe("?boundary=Carlisle%20PSB");
+  });
+
+  it("falls back to the boundary's own name when adjacentBoundaryName is unset", () => {
+    window.history.pushState(null, "", "/map/preston");
+    const doc = bundle({
+      elementsById: {
+        "boundary-1": {
+          id: "boundary-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "boundary",
+          x: 5,
+          y: 5,
+          name: "North",
+          adjacentMapSlug: "carnforth",
+        },
+      },
+    });
+
+    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    fireEvent.click(screen.getByText("North"));
+
+    expect(window.location.pathname).toBe("/map/carnforth");
+    expect(window.location.search).toBe("?boundary=North");
+  });
+
+  it("a boundary with no adjacentMapSlug is inert — no click handler, default cursor", () => {
+    const doc = bundle({
+      elementsById: {
+        "boundary-1": {
+          id: "boundary-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "boundary",
+          x: 5,
+          y: 5,
+          name: "North",
+        },
+      },
+    });
+
+    window.history.pushState(null, "", "/map/preston");
+    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    fireEvent.click(screen.getByText("North"));
+
+    expect(window.location.pathname).toBe("/map/preston");
+  });
 });
 
 describe("viewBoxAfterPinch", () => {

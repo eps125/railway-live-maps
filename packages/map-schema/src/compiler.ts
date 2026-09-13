@@ -36,8 +36,12 @@ export interface CompiledMapBundle {
   topologyAdjacency: Record<string, string[]>;
   continuationLinks: Array<{
     elementId: string;
+    name: string;
     adjacentMapSlug: string | undefined;
     direction: string | undefined;
+    /** Milestone 32: the name to look up on the adjacent map — `adjacentBoundaryName` when the
+     * author set one, else this element's own `name`. */
+    adjacentBoundaryName: string;
   }>;
 }
 
@@ -251,8 +255,10 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     .filter((element): element is BoundaryElement => element.type === "boundary")
     .map((element) => ({
       elementId: element.id,
+      name: element.name,
       adjacentMapSlug: element.adjacentMapSlug,
       direction: element.direction,
+      adjacentBoundaryName: element.adjacentBoundaryName ?? element.name,
     }));
 
   const placeBindingIndex: CompiledMapBundle["placeBindingIndex"] = [];

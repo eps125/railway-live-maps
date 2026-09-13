@@ -41,6 +41,14 @@ create index train_run_schedule_idx on train_run (cif_schedule_id) where cif_sch
 -- One row per occupancy interval, pointing at the run it belongs to. `berth_occupancy`'s real
 -- primary key is (id, entered_at) — it's partitioned by entered_at — so the FK needs both columns,
 -- same pattern `berth_current_state_occupancy_fk` (migration 0008) already uses.
+--
+-- `on delete cascade`: unlike `operator_berth_action` (a permanent audit trail migration 0022
+-- nulls out rather than lets cascade), this table is a purely derived cache of "which run does
+-- this occupancy belong to" — meaningless once the occupancy it points at is gone, and fully
+-- re-derivable (a later click re-establishes it, or the projector re-inherits it). Without
+-- cascade, `project-td --rebuild`'s `delete from berth_occupancy` (apps/worker/src/td/
+-- projector.ts's `clearProjectionRows`) would fail with a foreign key violation the instant any
+-- occupancy has ever been linked — caught by CI, 2026-09-14.
 create table berth_occupancy_run_link (
   berth_occupancy_id bigint not null,
   occupancy_entered_at timestamptz not null,
@@ -52,6 +60,7 @@ create table berth_occupancy_run_link (
   constraint berth_occupancy_run_link_occupancy_fk
     foreign key (berth_occupancy_id, occupancy_entered_at)
     references berth_occupancy (id, entered_at)
+    on delete cascade
 );
 
 create index berth_occupancy_run_link_train_run_idx on berth_occupancy_run_link (train_run_id);

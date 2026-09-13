@@ -130,11 +130,17 @@ async function insertLink(
   return (result.rowCount ?? 0) > 0;
 }
 
-/** The occupancy a `CA` step's own `from_berth` closed — narrowed by the existing
+/** The occupancy a `from_berth` closed at exactly `at` — narrowed by the existing
  * `(td_area, berth_code, entered_at desc)` index (`td_area`/`berth_code` first), then an exact
- * `left_at` match against the CA event's own timestamp (both effects share it — see
- * `apps/worker/src/td/projector.ts`'s `processCClassBatch`). */
-async function findClosedByStep(
+ * `left_at` match against the closing event's own timestamp (both sides of one C-class effect
+ * share it — see `apps/worker/src/td/projector.ts`'s `processCClassBatch`). Deliberately not
+ * filtered by `exit_reason`: a `CA` step closes with `'stepped_out'`, a `CB` cancel with
+ * `'cancelled'` (`packages/domain/src/td/berthReducer.ts`) — this is shared by both
+ * `processStepChainBatch` (`CA`) and `processBoundaryBatch` (`CB`), so it can't hardcode either
+ * one's reason string (bug caught by CI, 2026-09-14: originally hardcoded `'stepped_out'`, which
+ * silently found nothing for every `CB` cancel). The exact `(td_area, berth_code, left_at)` match
+ * is already precise enough on its own. */
+async function findOccupancyClosedAt(
   client: PoolClient,
   tdArea: string,
   berth: string,
@@ -142,7 +148,7 @@ async function findClosedByStep(
 ): Promise<OccupancyRef | null> {
   const { rows } = await client.query<OccupancyRef>(
     `select id, entered_at from berth_occupancy
-     where td_area = $1 and berth_code = $2 and left_at = $3 and exit_reason = 'stepped_out'
+     where td_area = $1 and berth_code = $2 and left_at = $3
      order by entered_at desc limit 1`,
     [tdArea, berth, at],
   );
@@ -179,7 +185,7 @@ async function processStepChainBatch(
     );
     if (!toOccupancy) continue; // NULL_DESCRIPTION step — nothing opened, nothing to link.
 
-    const fromOccupancy = await findClosedByStep(
+    const fromOccupancy = await findOccupancyClosedAt(
       client,
       row.td_area,
       row.from_berth,
@@ -290,7 +296,7 @@ async function processBoundaryBatch(
   summary: RunLineageSummary,
 ): Promise<void> {
   for (const row of rows) {
-    const fromOccupancy = await findClosedByStep(
+    const fromOccupancy = await findOccupancyClosedAt(
       client,
       row.td_area,
       row.from_berth,

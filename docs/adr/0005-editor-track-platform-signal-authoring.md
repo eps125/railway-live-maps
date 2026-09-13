@@ -6,6 +6,10 @@ Accepted 2026-09-08. Builds on ADR 0004 (whose D3 wording is corrected in that d
 that Milestone 14a shipped no editor track-authoring changes). Implemented as Milestone 14c.
 No change to CLAUDE.md non-negotiables.
 
+_(Note, 2026-09-13: `docs/IMPLEMENTATION_PLAN.md`'s Milestone 14c section is the canonical
+current-state record, including three dated revisions made after this ADR's original E1–E4
+design below — this ADR is kept for the "why," not as a second copy of "what.")_
+
 ## Context
 
 After Milestone 14a the editor still draws track as a freeform two-point polyline at any angle,

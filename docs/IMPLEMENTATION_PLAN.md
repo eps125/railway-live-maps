@@ -8,18 +8,29 @@ Milestone numbers below are stable labels (referenced by code comments throughou
 e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{slug}/state`'s
 "Milestone 10" 501 message) — not a mandated sequence. Actual implementation order:
 
-**0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 → 10 → 13 → Later milestones**
+**Done, in the order actually built:**
+0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
+→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28.
+
+**Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
+work first, then the resolver-first backlog):**
+29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
+
+**Milestone 33 is the owner's own task, not Claude's** — they'll author the Blackpool Line map
+themselves in the editor and report back when done; do not pick it up as implementation work.
+
+Milestone 13 (operational hardening) was drafted early (right after M12) and never started; it
+now sits last in the priority order above rather than where its number would suggest — the
+number is a stable label per the note below, not a position. Everything under "Later/unscheduled"
+at the end of this file is deliberately unsequenced — pull an item forward only when it's
+actually next.
 
 M11 (visual editor MVP) and M12 (editor publishing workflow) were moved ahead of M7–M10:
 both only depend on M4 (nationwide observed TD area/berth discovery) and M5 (canonical map
 schema/compiler) — already done — not on schedule/TRUST/resolver/playback data, so moving
-them up lets maps be authored and published through the editor instead of hand-edited JSON
-plus the `publish-map` CLI. M12's "historical" test mode is the one piece that wants M10
-(playback) — stub or defer just that part until M10 actually lands.
-
-M14 (renderer visual polish/theming) is intentionally not placed in the chain above: it's
-purely visual, blocks nothing, and is waiting on the owner to pick a style direction (see its
-section below) before it should start — slot it in wherever makes sense once that happens.
+them up let maps be authored and published through the editor instead of hand-edited JSON plus
+the `publish-map` CLI. M9 (the original berth-run resolver) was later removed wholesale by ADR
+0002 (2026-09-01); M34 is its planned rebuild, not a continuation.
 
 ## Milestone 0 — decisions, subscriptions and fixtures
 
@@ -115,6 +126,12 @@ document is `packages/map-schema/fixtures/lancaster-minimal.json`. Known limitat
 captured TD messages** — confirm before treating them as real bindings (see "Confirm before
 hardcoding" in CLAUDE.md and Milestone 0); `/maps/{slug}/state` only serves current live state,
 point-in-time playback is Milestone 10; `map_binding_index`/drafts/snapshots are Milestone 6/11/12.
+Deployed and live-tested against the owner's Portainer instance the same day (2026-08-05); two
+real bugs surfaced there that unit/integration tests hadn't caught: the app Dockerfiles didn't
+copy/build the new `@railway/domain`/`@railway/map-schema` workspace deps, and the map page's
+`definition` fetch had no retry — a page loaded before `publish-map` ran got stuck on a stale 404
+forever even after the map was published (both fixed; the second also surfaced that `apps/web`'s
+test setup never ran RTL's cleanup between tests, fixed in `setupTests.ts`).
 
 ## Milestone 6 — live WebSocket
 
@@ -237,318 +254,56 @@ change (documented limitation in the function's own doc comment), which is immat
 once-daily, non-safety-critical reference-data job. A failed night is logged, not thrown, so one
 bad run doesn't crash-loop the container or cost the next day's attempt.
 
-## Milestone 8 — nationwide TRUST runs and activation linkage
+## Milestone 8 — nationwide TRUST runs and activation linkage `[implemented 2026-08-06, then superseded 2026-09-01]`
 
-- TRUST parser for supported message types.
-- Store every nationwide TRUST event.
-- Train-run lifecycle tables.
-- Exact activation-to-schedule link.
-- Identity/change/cancellation handling.
-- Latest report projection and nationwide run query.
+Original design and full build: a dedicated `train_run`/`train_run_event`/`run_schedule_link`
+schema, a pure effects-based run reducer (mirroring `td/berthReducer.ts`), exact
+activation-to-schedule resolution with a deferred-relink pass, and
+`GET /api/v1/runs/{runId}`/`GET /api/v1/runs/{runId}/schedule`. Shipped and verified, then
+**entirely dropped by migration 0025** (ADR 0002 / Milestone 15's "Scope expanded" step) in
+favour of mirroring garner's own `trust_*` tables: `trust_activation.cif_schedule_id` is now the
+activation↔schedule link (CLAUDE.md rule 6), `ingest-trust`/`project-trust` and the `runs`
+routes were retired outright, and RLM no longer ingests TRUST directly from Network Rail's STOMP
+broker at all — it's one of the five feeds now sourced already-normalized from garner (CLAUDE.md
+rule 1's exception; only TD is still ingested raw by RLM itself). `packages/domain/src/trust/
+serviceDate.ts` (UK traffic-day calculation) is the one piece of code left behind, now unused.
+See ADR 0002 for the full rationale and Milestone 15 for the migration detail.
 
-Done when fixtures for unrelated regions and Lancaster are both retained and correctly linked without rewriting history.
+## Milestone 9 — berth-to-run resolver and popup `[implemented 2026-08-09 through 2026-08-31, then removed 2026-09-01]`
 
-**Status: implemented.** Migration `0015_train_run_tables.sql` (renumbered from the plan's
-original "0014" — 0011/0012–0014 were inserted ahead of it by the reprioritized M11/M12/M7
-execution order): `train_run` (uuid PK, `unique(trust_train_id, service_date)`),
-`train_run_event` (partitioned by `raw_event_normalized_at_utc`, composite FK to
-`raw_feed_event`, added to `ensurePartitions.ts`'s `PARTITIONED_TABLES`), `run_schedule_link`
-(one row per run, `match_outcome` reusing the exact `matched`/`ambiguous`/`unmatched`
-vocabulary Milestone 9's resolver will also use). TRUST is the third STOMP feed, so it reuses
-the shared broker connection/recorder generalized in Milestone 7 — no further refactor needed.
-`packages/feed-parsers/src/trust/parseTrustFrame.ts` classifies on `header.msg_type` (all 8
-supported types + unsupported/malformed, same never-zero-children triad as TD/VSTP); its wire
-shape is constructed from public documentation, not a captured real message (same caveat as
-the rest of this project — see the fixtures under `packages/feed-parsers/fixtures/trust/`).
-`packages/domain/src/trust/runReducer.ts` is a pure effects-based reducer (mirrors
-`td/berthReducer.ts`): Activation creates a run (idempotent on redelivery); Movement/Change of
-Origin/Change of Location only advance `last_event_at`, and are a defensive no-op when no
-matching run exists rather than fabricating one; Cancellation/Reinstatement toggle
-`cancelled`/`activated` (no separate `reinstated` state — the Reinstatement is its own
-`train_run_event` row, so nothing is lost); Change of Identity supersedes the old run
-(`superseded_by_train_run_id`) and creates a new run under the revised identity, never
-rewriting history in place; Unidentified Train creates a minimal run with no schedule link.
-`packages/domain/src/trust/serviceDate.ts` computes the UK traffic day — **the exact boundary
-hour (03:00 Europe/London) is a documented assumption, not verified against the real wiki
-page**, same caveat style as the S-Class-decode gap. Schedule-link resolution
-(`apps/worker/src/trust/projector.ts`) is deliberately not a reducer effect (it needs a DB
-round trip against `schedule`): activation resolution runs immediately via
-`resolveStpPrecedence`, and a **deferred-relink pass** re-attempts every non-`matched`
-`run_schedule_link` row at the end of every `project-trust` run — `run_schedule_link` retains
-`activation_train_uid` specifically so this re-resolution doesn't need to re-parse the original
-activation event, and always updates the existing row in place, never re-inserts. New route
-`GET /api/v1/runs/{runId}` / `GET /api/v1/runs/{runId}/schedule`
-(`apps/api/src/routes/runs.ts`), documented in `docs/API_CONTRACT.md`; `resolverEvidence` is
-always `null` until Milestone 9. `ingest-trust`/`project-trust` are gated behind
-`TRUST_LIVE_ENABLED`, untested against a live broker in this environment — proven via fixture
-replay and the integration suite instead. Known limitation: a Movement/Cancellation/
-Reinstatement/Change of Origin/Change of Location message that arrives before its Activation
-(a plausible out-of-order broker delivery scenario) is permanently skipped from
-`train_run_event` — the raw message itself is still fully retained in `raw_feed_event`
-regardless (nationwide retention is never affected), but there is no later-arriving-activation
-backfill/retry mechanism in this MVP pass.
+Fully built, iterated on through several real production incidents, then **entirely removed** by
+ADR 0002 (2026-09-01) — `berth_run_resolution`, `project-resolver`, `resolveBerthRun.ts`, and the
+`run.resolution`/`currentRun` API surface are all gone. CLAUDE.md rules 5 and 7 are held in
+abeyance until Milestone 34 rebuilds this on garner's data instead. What's kept here is only the
+design knowledge worth not re-learning:
 
-## Milestone 9 — berth-to-run resolver and popup
+- **Evidence model**: exact `signalling_id` + service-date match (never a superseded identity) as
+  the only candidate filter, then a _weighted_ score from schedule-link, temporal plausibility,
+  live TRUST movement-report correlation, continuity from a preceding resolved berth, and
+  SMART/STANOX correlation — an exact tie at the top score is always `ambiguous`, never an
+  arbitrary pick (CLAUDE.md rule 5). Two evidence types were added live in response to real
+  production ties the original five couldn't break (continuity, then movement-report
+  correlation) — the lesson being that a fixed evidence set found real gaps only under live
+  traffic, not in fixtures.
+- **Enrich candidates at read time, not at write time** — storing human-readable identity
+  (headcode/UID) on every stored candidate went stale; a real user complaint about "useless"
+  bare UUIDs in the ambiguous-candidate popup was fixed by joining fresh at request time instead.
+- **Version-bump freshness is a real operational hazard.** A `RESOLVER_VERSION` bump replays
+  history oldest-first by default, which once turned a routine deploy into a multi-hour incident
+  (the live map's "today" state stayed stuck behind a multi-day backlog drain). The fix that
+  worked: a bounded live-freshness window plus jumping a freshly-bumped checkpoint straight to
+  "now minus the window" instead of starting at zero, with a separate `--backfill` path for
+  older history. A rebuild should design this in from the start, not add it after the same
+  incident recurs.
+- **Two independent projector loops writing the same table need an explicit lock, immediately.**
+  Concurrent `project-td`/`project-resolver` batches taking `berth_occupancy` row locks in
+  different orders caused a real Postgres deadlock; a second incident showed the fix itself (a
+  lock held too early, across an unrelated read) could stall the _other_ loop for 16+ seconds.
+  Scope any such lock to the narrowest possible write window from day one.
+- The full incident-by-incident history (locking, checkpoint-ordering, evidence-weight tuning,
+  popup polish) is preserved in git history on this file if it's ever needed — not restated here.
 
-- Candidate generation/scoring.
-- `matched`, `ambiguous` and `unmatched` states.
-- Evidence and resolver version storage.
-- Lancaster run popup and full schedule view.
-- Latest TRUST variation with report age/location.
-- Resolver works against nationwide run data while accepting map/corridor context as evidence.
-
-Never claim exact continuous punctuality.
-
-**Status: implemented.** Migration `0018_berth_run_resolution.sql` (per `docs/DATA_MODEL.md` §7:
-`occupancy_id`/`selected_train_run_id`/`confidence`/`resolver_version`/`decided_at`/`candidates`
-jsonb, one row per occupancy updated in place on re-resolution — mirrors `run_schedule_link`'s
-own "retained fields, mutable outcome" pattern from Milestone 8) and `0019_...uuid.sql` (a
-pre-existing bug fix found along the way: `berth_occupancy.resolved_run_id` was declared `bigint`
-back in Milestone 4, before `train_run`'s uuid primary key existed, and had never actually been
-written to). Pure scoring logic in `packages/domain/src/resolver/resolveBerthRun.ts` (mirrors
-`schedule/resolveStpPrecedence.ts`'s DB-I/O-free style): candidate generation (exact
-`signalling_id` + service-date match, never a superseded identity) is evidence #1, then a
-weighted score from #2 (schedule-linked via `run_schedule_link`), #3 (temporal plausibility — see
-its own known-limitation note below), #3b (live movement-report correlation — a candidate run's
-own TRUST `movement` events, by reported `loc_stanox`, placing it at this berth's SMART STANOX
-within ±8 min of the occupancy; added 2026-08-27, see the known-limitation note below), #4
-(continuity) and #5 (SMART berth→STANOX correlation via `smart_berth_step`); an exact tie at the
-top score is `ambiguous`, never an arbitrary pick (CLAUDE.md rule 5). New checkpointed worker projector (`apps/worker/src/resolver/projector.ts`,
-`project-resolver` command, run from its own Portainer `projector-resolver` service loop — split
-from `project-td`'s `projector-td` loop on 2026-08-10 so resolver/TRUST backlog work can never
-stall live berth positions, then split a second time on 2026-08-11 from `project-vstp`/
-`project-trust`'s `projector-schedule` loop after resolver's own internal batch loop was observed
-starving them of turns) processes newly-opened occupancies plus a bounded retry pass over
-still-open, not-yet-`matched` occupancies
-(mirrors TRUST's deferred-relink pass). API: `apps/api/src/lib/liveState.ts`'s `BerthState.
-runSummary` now carries a real `{status, text}` (was hardcoded `null`) — `text` is a short
-Vail-like string built only from the matched run's latest real TRUST movement report, matching
-`docs/PROJECT_SPEC.md`'s "TRUST is not a prediction feed" rule; new `GET /api/v1/td/areas/
-{tdArea}/berths/{berth}/current-run` is the live map's click-a-berth popup in one round trip;
-`GET /api/v1/runs/{runId}`'s `resolverEvidence` (hardcoded `null` since Milestone 8) is now
-populated. Web: `apps/web/src/map/RunPopup.tsx` replaces `MapRenderer.tsx`'s old description-only
-stub, rendering the full `docs/PROJECT_SPEC.md` §5 field list — an `ambiguous` result shows every
-candidate, never a silently-chosen run, and `unmatched` shows the exact spec'd "No matching
-activated schedule found" message.
-
-`berth_run_resolution.candidates` only ever stores a bare `{trainRunId, score, confidence,
-reasons}` per candidate (packages/domain/src/resolver/resolveBerthRun.ts's `ScoredCandidate`) — no
-human-readable identity, since storing it redundantly on every resolution row would only ever go
-stale. 2026-08-11: real production feedback that the popup's ambiguous-candidate list showing bare
-UUIDs was "useless" led to enriching candidates at _read_ time instead — `apps/api/src/routes/
-currentRun.ts` now batch-queries `train_run` LEFT JOIN `schedule` for every candidate's
-`trainRunId` and adds `signallingId`/`trustTrainId`/`trainUid` (headcode / TRUST reporting id /
-schedule UID, per the user's explicit preference over service code) fetched fresh on each request;
-`apps/web/src/map/RunPopup.tsx` renders `UID · headcode · TRUST id` (falling back to the raw
-`trainRunId` only if all three are unresolved, e.g. a since-deleted `train_run`).
-
-Two real `project-td --rebuild` regressions surfaced while building this, both fixed in
-`apps/worker/src/td/projector.ts`'s `clearProjectionRows`: `berth_run_resolution`'s new FK into
-`berth_occupancy` made a rebuild fail the instant any occupancy had ever been resolved (now
-cleared first — it's pure derived state, safe to delete); `operator_berth_action`'s FK (from a
-prior session's manual-clear feature, predating this milestone) had the exact same problem, fixed
-differently since it's a permanent audit trail, not derived state — its dangling occupancy
-reference is nulled out, the audit row itself is preserved.
-
-2026-08-14: a real Postgres `deadlock detected` (40P01) hit `project-td` in production —
-`project-td`'s per-batch transaction updates several `berth_occupancy` rows in TD message arrival
-order (a single CA event alone can close two occupancies, from- and to-berth), while
-`project-resolver`'s batches update rows in ascending `id` (main phase) or `decided_at` (retry
-phase) order; two concurrent multi-row transactions acquiring row locks in different orders can
-deadlock at the Postgres level even though neither projector has any _logical_ dependency on the
-other's data. Fixed with a new shared transaction-scoped mutex, `apps/worker/src/shared/
-advisoryLock.ts`'s `BERTH_OCCUPANCY_WRITE_LOCK_KEY` (`pg_advisory_xact_lock`, auto-released on
-commit/rollback) — both `runProjectTd`'s batch transaction and `runProjectResolver`'s main-phase
-and retry-phase transactions now take it immediately after `BEGIN`, before touching any
-`berth_occupancy` row. Deliberately scoped to one batch transaction rather than held for a whole
-run, so it can't reintroduce the latency coupling `projector-td`/`projector-resolver` were split
-into separate services to avoid (docs/ARCHITECTURE.md's "initial containers" section) — it only
-ever serializes the two loops for the duration of one short transaction each, and does nothing at
-all when there's no contention. Postgres's own deadlock handling meant no data was left
-inconsistent by the incident itself: the checkpoint advance sits inside the same transaction as
-the row effects, so a rolled-back deadlock victim just reprocesses the same batch cleanly on the
-shell loop's next tick.
-
-2026-08-27: that "brief" assumption turned out to be wrong for `project-resolver` specifically,
-discovered live in production during a post-redeploy backlog: acquiring the lock immediately after
-`BEGIN` meant it was held through `fetchBatchCandidateData` too — a read-only query (continuity
-seeding, schedule/SMART lookups) that can run for many seconds of disk I/O under real backlog
-load, but never writes to `berth_occupancy` and so never needed the lock at all. `project-td`'s
-checkpoint commits went from sub-second apart to 16+ seconds apart, which is what "the map is
-running behind" actually traced back to. Fixed by moving the lock acquisition into `resolveBatch`,
-after `fetchBatchCandidateData` returns and immediately before the per-occupancy writes — the
-correctness guarantee (no write to `berth_occupancy` outside the lock) is unchanged, only the
-window during which project-td can be blocked shrank to just the actual write phase.
-
-Same day, a further production observation: `runProjectResolver` had no self-exclusion advisory
-lock at all (unlike `project-td`), relying entirely on the assumption that the `projector-resolver`
-service's own `while true; do node dist/index.js project-resolver; sleep 1; done` loop guarantees
-only one invocation runs at a time. That guarantee only holds _within_ one container's lifetime —
-a Portainer redeploy doesn't guarantee the old container's process has fully exited before the new
-one's loop starts. Live `pg_stat_activity` snapshots caught exactly this: three concurrent
-connections all running `runProjectResolver`'s own batch-select query at once, with no zombie
-transaction or code-level double-invocation to explain it (a full repo-wide investigation — every
-compose file, the dispatch table, the command wrapper, the function's own internal loop, health
-checks, worker_threads/child_process/cluster usage — turned up nothing; see this section's own
-history for the fuller "everything checked out clean" writeup). Fixed by giving `project-resolver`
-the exact same self-exclusion lock `project-td` already has (`pg_try_advisory_lock` for the whole
-run, backing off with `skippedLockContention: true` rather than racing if another instance already
-holds it) — structurally impossible for two instances to run concurrently now, regardless of what
-triggers the overlap.
-
-Known limitations (deliberate scope decisions, not gaps to silently paper over):
-
-- Evidence #7 (operator/direction consistency) is not implemented — no ground-truth signal to
-  score it against without #6.
-- Evidence #4 (continuity from a preceding berth's resolved run) was added 2026-08-10 after real
-  production data showed the gap: a headcode shared by two genuinely different same-day services
-  ties on schedule-linked + temporally-plausible evidence whenever SMART/STANOX coverage (#5) is
-  absent for a particular berth, and with no memory of the immediately preceding, already-`matched`
-  occupancy of the same description, that produced a real train flipping to `ambiguous` for one
-  step (sometimes many consecutive steps) before recovering. `packages/domain/src/resolver/
-resolveBerthRun.ts` scores it via a new `recentContinuity` evidence field (weight 30, between
-  temporal plausibility and SMART/STANOX per docs/DATA_MODEL.md §8's ordering);
-  `apps/worker/src/resolver/projector.ts` seeds it from the most recent `matched`
-  `berth_run_resolution` row for the same description within a 10-minute window and keeps it
-  current as each batch resolves, so a chain of many ambiguous steps in a row self-heals from a
-  single earlier match rather than needing SMART coverage at every one. `RESOLVER_VERSION` bumped
-  1→2. Refined again 2026-08-11 after a live production case showed continuity itself
-  over-correcting: a TD headcode gets set on a stabled unit well before TRUST fires the matching
-  activation (sometimes 1-2+ hours ahead, for the unit's _next_ working), so a stale continuity
-  chain from a genuinely different earlier train sharing the same headcode kept confidently
-  winning long after that train's relevance had ended, instead of the honest `ambiguous`. Fixed
-  two ways: continuity is now scoped per `(description, td_area)` rather than description alone
-  (it was leaking nationwide — a match in one TD area could feed a same-description occupancy
-  anywhere else in the country), and it's suppressed entirely whenever another candidate has a
-  strictly more recent `activated_at` (a freshly-activated real train outranks a self-reinforcing
-  chain). Relatedly, `apps/web/src/map/RunPopup.tsx` was fetch-once — a berth clicked right as a
-  train arrived (the resolver's own decoupled loop, see `projector-resolver` in
-  `deploy/docker-compose.portainer.yml`, can take a few seconds) would show "no match" forever
-  even after the backend resolved it moments later; it now polls every 2s while open.
-- Live movement-report correlation (evidence #3b) was added 2026-08-27 for the tie continuity
-  can't reach: two genuinely different same-day workings of one headcode, both schedule-linked,
-  both inside the 24h temporal window, both SMART-correlated (both routes call at the berth's
-  STANOX), and neither with a preceding `matched` occupancy to chain continuity from — a dead
-  tie that came out `ambiguous` even though only one of the two trains is physically reporting
-  past the berth (the real observed `2C84` case). `packages/domain/src/resolver/resolveBerthRun.ts`
-  scores it via a new `movementCorrelation` field, weight 45 — the highest single weight (enough
-  to break an otherwise-perfect tie on its own), deliberately less than the sum of the others so
-  one stray `smart_berth_step` row can't silently override a candidate that wins on every other
-  signal. `apps/worker/src/resolver/projector.ts` sets it when the candidate run's own TRUST
-  `movement` events (`train_run_event`, by reported `loc_stanox`) include the berth's SMART
-  `to_berth` STANOX within ±8 minutes of the occupancy's `entered_at` — fetched once per batch
-  alongside the existing candidate reads (a 6th fixed query, no per-occupancy round trip).
-  `RESOLVER_VERSION` bumped 2→3. On deploy the new resolver checkpoint starts at 0, but the live
-  window below means the loop only re-decides the last `RESOLVER_LIVE_WINDOW_HOURS` and catches
-  up to "now" in seconds — `--rebuild` is _not_ needed and should be avoided (it reprocesses the
-  entire retained history); use `--backfill --since <date>` if older history needs to be lifted
-  to v3. Still gated on the exact-signalling-identity candidate set like every other signal
-  (CLAUDE.md rule 5), and does not address the separate "no candidate at all" case (a TD headcode
-  seen before its TRUST activation fires) — the open-occupancy retry pass already covers that.
-- Resolver live-freshness window + `--backfill` added 2026-08-27, same change as #3b. The
-  `project-resolver` forward scan and retry pass are bounded to `entered_at >= now() -
-RESOLVER_LIVE_WINDOW_HOURS` (`apps/worker/src/config.ts`, default 72). Without it, a
-  `RESOLVER_VERSION` bump (fresh checkpoint at sequence 0, forward scan `id`-ordered) makes the
-  resolver grind oldest-first through ~14 days of retained _nationwide_ `berth_occupancy` before
-  the live map reflects the current hour — today is processed last. This is a resolver-only
-  freshness policy, not an ingestion/projection filter: raw capture and the TD/berth-occupancy
-  projections stay fully nationwide and unfiltered (CLAUDE.md rule 17), the resolver output for
-  older occupancies is retained (whatever version last decided it), and everything needed to
-  resolve the full history is still on disk. `--rebuild` ignores the window (the deliberate
-  full-history escape hatch). `project-resolver --backfill --since <YYYY-MM-DD>` resolves
-  occupancies from that date forward that aren't already at `RESOLVER_VERSION` — a left join
-  against `berth_run_resolution` rather than a checkpoint, so it's resumable and self-terminating;
-  it runs under a **separate** advisory lock (`berth-run-resolver:backfill`) so an operator can
-  catch history up alongside the 1s live loop instead of the two starving each other, with
-  per-batch `berth_occupancy` writes still serialized by `BERTH_OCCUPANCY_WRITE_LOCK_KEY`. Re-run
-  it until the summary's `moreBacklogRemains` is false.
-- Deploying the first `RESOLVER_VERSION`-bumped build (v3, 2026-08-31) turned into a multi-hour
-  incident because the window above bounds _how much_ work a bump costs but not the _order_ — the
-  `id`-ordered forward scan still did the whole window oldest-first, so the current hour stayed
-  unresolved while ~5M rows drained, and every manual checkpoint seed to "now" was immediately
-  overwritten by a still-in-flight invocation's `advanceCheckpoint`. Two follow-up fixes so a
-  future bump is a non-event: (a) `advanceCheckpoint` (`@railway/database`) is now **monotonic**
-  (`greatest(last_ingestion_sequence, $2)`) — a stale or out-of-order write can no longer rewind a
-  checkpoint an operator (or a concurrent process) moved ahead; `resetCheckpoint` stays the only
-  sanctioned way back. (b) `runProjectResolver` calls `seedFreshResolverCheckpoint` when it finds
-  a **never-advanced** checkpoint (`last_ingestion_sequence = 0` and `last_completed_at is null` —
-  exactly a just-bumped version) and a finite `liveWindowMs`: it jumps the checkpoint straight to
-  the newest occupancy already outside the window, so the loop starts at "now minus the window"
-  with no oldest-first grind. No-op for `--rebuild`, for an unbounded window (tests), and on a
-  fresh/small database. The separately-broken part of the incident — `project-vstp` wedged since
-  2026-08-16 on the schedule-delete FK — was unrelated (see Milestone 7); it was masking nothing,
-  CIF SCHEDULE covered ~98% of links throughout.
-- Evidence #6 ("a selected map or queried corridor's TIPLOC/STANOX coverage") is satisfied via
-  SMART/STANOX correlation to the specific berth being resolved, not by consulting the live map
-  document a berth happens to be published on — the resolver stays fully nationwide/map-
-  independent per CLAUDE.md's "map scope must never be used as an ingestion filter."
-- Temporal plausibility (evidence #3) is a day-level check against `train_run.activated_at`, not
-  per-calling-point precision — `schedule_location`'s own times are raw CIF-style text, not
-  parsed timestamps, and `train_run.origin_departure_at` (which would give an exact anchor) is
-  never actually populated by the Milestone 8 TRUST projector (`apps/worker/src/trust/
-projector.ts` hardcodes it `null` — a pre-existing gap, not something this milestone fixes).
-  The live movement-report correlation bullet above (#3b) supplies the point-wise "actual times"
-  signal for the case that actually matters — telling two same-headcode runs apart — whenever a
-  candidate is genuinely reporting TRUST movements past the berth. `temporallyPlausible` also
-  carries a 20-minute lower-bound grace (`TD_LEADS_TRUST_GRACE_MS`, added 2026-08-31): TD steps a
-  headcode through berths before TRUST fires the activation for that working, so a hard
-  `entered_at >= activated_at` was rejecting the _correct_ just-appeared run while three unrelated
-  same-headcode workings that had activated earlier the same day kept the score (observed live:
-  berth PX 0251 / 5C70, correct run `115C70M931` activated 7.5 min after the step). Tuned without
-  a `RESOLVER_VERSION` bump by owner decision — a plausibility-window widening, not a
-  weight/structure change; the 24h `MAX_JOURNEY_MS` upper bound is unchanged.
-- `berth.updated`/`berth.cleared` WebSocket deltas don't carry a live-refreshed `runSummary`
-  (only the snapshot on connect/reconnect and the REST `/state` poll do) — the already-declared
-  `run.resolution.updated` stub message type would be the clean way to add that, but nothing
-  emits it yet (needs the map-delta projector to also watch `berth_run_resolution`).
-- The popup shows "full schedule" inline (expandable within the same popup) rather than a
-  separate routed page, and links out to run/berth history as identifiers rather than clickable
-  pages — those pages don't exist yet on the web frontend, only as API endpoints.
-
-2026-08-13 popup/map polish, from real usage:
-
-- Calling points are now resolved from raw TIPLOC to a human-readable name via CORPUS
-  (`location_reference`), for origin/destination and every row of the full-schedule table —
-  looked up fresh at request time in `apps/api/src/routes/currentRun.ts` (same "enrich at read
-  time, never store" reasoning as the candidate-identity enrichment above), falling back to the
-  bare TIPLOC wherever CORPUS has no entry. A location with only a pass time (no booked
-  arrival/departure) is now shown as a single greyed-out pass time instead of blank dashes, and a
-  genuine calling point's arrival/departure/arrow are three separate table cells rather than one
-  concatenated string — the previous single-string rendering let the arrow's on-screen position
-  drift row to row depending on whether either side was blank; separate `<td>`s let the browser's
-  own column layout keep it pinned. First cut of the passing-point display only ever read
-  `passPublic`, which turned out to render as a blank dash for nearly every real passing point —
-  confirmed same day against a real service's RTT page (realtimetrains.co.uk, permitted per
-  CLAUDE.md rule 14, not one of the three named sites) that CIF essentially never carries a
-  _public_ pass time for a non-stop junction, only a working one; `apps/web/src/map/RunPopup.tsx`
-  now falls back to `passWorking` (already fetched by the API via the shared `locationToJson`,
-  just not previously read by the popup) whenever `passPublic` is null, which is the normal case.
-- `apps/web/src/map/MapRenderer.tsx`: empty berths no longer respond to clicks at all (no
-  `onClick`, default cursor) — clicking was never meaningful there (`docs/PROJECT_SPEC.md` §5
-  always specified "click a **populated** berth"), and the old empty/unbound stub panel is
-  removed as a result (it can no longer be reached). Fixed a real bug in the existing
-  run-tracking logic (the comment describing it — "lets the map follow this specific run across
-  berth steps" — was already the intent, just not achieving it): the popup closed the instant _no_
-  berth on the map reported the tracked run, which happens on every ordinary step for a brief,
-  normal window — the old berth's occupancy clears before the resolver has confirmed the run in
-  its new berth. `RUN_LOST_GRACE_MS` (8s) now gives that window before treating the run as
-  genuinely gone, and the popup's render condition no longer re-checks the _current_ berth's own
-  `description` (which was closing the popup independently of the tracking fix, since that
-  specific berth's description clears the moment the train steps out of it). It also had no
-  explicit close affordance at all — a small "×" button (`onClose` prop, `.map-inspector__close`)
-  now closes it and cancels any pending grace-period timeout.
-- The first cut of call-vs-pass classification (`isCall = arrivalPublic !== null ||
-departurePublic !== null`) only ever looked at _public_ times, which happened to work for
-  passenger schedules but silently misclassified every stop on a freight/parcels working as a
-  pass — confirmed 2026-08-13 against a real freight service (4S44 / gb-nr:W32423) on
-  realtimetrains.co.uk (permitted per CLAUDE.md rule 14): freight timetables essentially never
-  carry public times at all, only working ones, so a genuine booked stop (e.g. "stops for staffing
-  reasons") was rendering identically to an ordinary passing junction. `isCall` now falls back to
-  `arrivalWorking`/`departureWorking` the same way the pass-time fix falls back to `passWorking`.
-  Also added a Path/Line column (`schedule_location.path`/`.line`, already fetched by the API, not
-  previously surfaced) and a `<thead>` now that the table has enough columns to need one; the table
-  itself is wrapped in its own horizontally-scrolling container so a long schedule widens only the
-  table, not the whole page.
+See ADR 0002 for the removal rationale and Milestone 34 for the rebuild plan.
 
 ## Milestone 10 — snapshots and playback `[done — 2026-09-03]`
 
@@ -675,12 +430,17 @@ integration + 136 unit tests (including a Konva-in-jsdom smoke-mount test via
 `vitest-canvas-mock`), not visually in a live browser — re-verify those specific gestures
 visually before treating the canvas UX itself as polished.
 
-## Milestone 13 — operational hardening
+## Milestone 13 — operational hardening `[planned — sequenced last, see Execution order]`
+
+Drafted early (right after M12) and never started. "Private editor/diagnostic access" below is
+superseded by Milestone 29's login — this milestone's remaining scope is everything else in the
+list. Rate limiting/security headers here can share groundwork with Milestone 29's login-endpoint
+rate limiting rather than being built twice.
 
 - Public status page.
 - Feed/archive/database/projection metrics and alerts.
 - Rate limiting and security headers.
-- Private editor/diagnostic access.
+- ~~Private editor/diagnostic access~~ — done via Milestone 29 instead.
 - PostgreSQL and object-archive backups.
 - Documented restore and raw-event reprocessing test.
 - Log rotation and storage monitoring.
@@ -796,21 +556,14 @@ all green. No DB migration. Delivered:
 7. `pnpm -r lint typecheck test` green; `pnpm --filter @railway/database migrate` unaffected
    (no DB migration in 14a); `MAP_EDITOR_SPEC.md` updated in this change.
 
-### Milestone 14b — structural track model and correlation `[later]`
+### Milestone 14b — structural track model and correlation `[merged into Milestone 38]`
 
-- D3 Route A: a lane/row model (`track`, `trackSegment`, `row-transition`, `turnout`) in the
-  canonical JSON, replacing free `trackPath` polylines; renderer/editor rework; re-author
-  Lancaster as a new immutable version.
-- D5 structural "berth = span on a track" model.
-- Line-name-on-path labels; `annotation` element family for tunnels / viaducts / neutral
-  sections / signal-box (TD-area) boundaries (OTT `.divide` / `.portal` patterns).
-- Directional arrow ticks; points/switch blade glyphs; "set route" highlighting.
-- D7 station-berth schedule deduction — only after the two spikes in ADR 0004 and its own ADR
-  reinstating/adjusting CLAUDE.md rules 5 and 7.
-
-Purely visual/UX and map-authoring — not a blocker for any other milestone. Reference maps are
-inspiration only; each future look at Vail Data / Traksy / OpenTrainTimes needs owner sign-off
-per CLAUDE.md non-negotiable #14.
+Superseded by Milestone 38 ("editor structural track model & visual overhaul") near the end of
+this file, which carries this milestone's full scope forward — including **D5's structural
+"berth = span on a track" model**, deferred alongside D3/Route A per ADR 0004 — plus line-name
+labels, the tunnels/viaducts/neutral-sections/boundary annotation family, arrow ticks,
+points/switch glyphs, and "set route" highlighting. The one piece _not_ in M38, because it has
+its own milestone instead: **D7 station-berth schedule deduction** is Milestone 35.
 
 ### Milestone 14c — editor authoring: track snapping, multi-vertex platforms, platform numbers, signal modes `[done — 2026-09-08]`
 
@@ -1050,6 +803,33 @@ config knobs removed. See ADR 0002 "The berth-run resolver is removed and deferr
 **Milestone 9 (resolver) status changes to: superseded by ADR 0002; to be re-planned as its own
 milestone before any rebuild.**
 
+**Live-path robustness fixes, same rollout, still active today.** Three more bugs surfaced
+running the garner mirror against the real openrail-eps instance for the first time, fixed in
+one pass:
+
+- `createPool` (`packages/database/src/pool.ts`) attaches a `pool.on('error')` listener and
+  enables TCP keepalive on every pool — without the listener, an idle pooled client whose
+  connection is dropped server-side (a Postgres restart) threw an uncaught exception and killed
+  `project-td-daemon` outright; an opt-in `statementTimeoutMs` (`project-td-daemon` 15s,
+  `ingest-garner` 30s) stops a query hung on a connection Postgres already killed from wedging
+  the daemon loop forever.
+- `runDaemonLoop` backs off (`errorBackoffMs`, default 5s) after a failing tick instead of
+  retrying at the full 250ms rate.
+- `StompConnection` gained a silent-stall watchdog: if nothing arrives from the broker (not even
+  a heartbeat) for `max(heartbeatMs*3, 90s)`, the socket force-closes so the reconnect loop takes
+  over — catches a feed that's gone dead while the TCP socket itself stays open.
+- `ingest-garner` self-throttles: smaller per-batch caps, `synchronous_commit = off` (all mirror
+  data is rebuildable), and it skips garner sync entirely on any tick where `project-td` is
+  stalled or more than 5000 TD events behind — an unthrottled initial backfill had saturated
+  disk write bandwidth and starved the live projector.
+- `runProjectTd` gained a `maxBatches` cap (`project-td-daemon` uses 20/tick, ~10k events) so a
+  large catch-up no longer blocks `runProjectMapDeltas` (which runs right after it in the same
+  tick) for minutes at a time — without the cap, the WS delta stream went silent and the live map
+  looked "stuck" during any real backlog drain even though the REST snapshot stayed fresh.
+
+Postgres itself was also tuned live (`shared_buffers` 128MB→2GB, `wal_compression=on`, larger
+`max_wal_size`) — folded into `deploy/docker-compose.portainer.yml`'s `postgres` `command:` flags.
+
 ## Milestone 16 — dedicated fast live-berth-state projector `[done — 2026-09-01]`
 
 See `docs/adr/0003-dedicated-live-berth-state-projector.md`. After the Milestone 15 stability
@@ -1074,6 +854,12 @@ deltas only after the whole projection batch.
   `POST …/editor/berths/{a}/{b}/clear` reads `berth_occupancy` directly.
 - `project-td --rebuild` also resets the `td-live-berth-state` checkpoint so the live projector
   re-seeds.
+
+**Hotfix, same day (migration 0026):** the fresh-checkpoint seed query (populating
+`berth_current_state` from open `berth_occupancy` rows) had no index on `left_at`, so it blew the
+10s statement timeout on every tick — the live projector never processed a single event or
+published a delta after deploy. Fixed with a partial index (`where left_at is null`) and by
+moving the seed to run once, best-effort, rather than being retried every tick.
 
 Expected: `ingest-td` (~0.3 s) + live-projector hop (~0.1–0.3 s) + Redis + WS ≈ sub-second.
 
@@ -1524,11 +1310,243 @@ in the same change that re-enables `clickEnabled`.
 Files: `apps/web/src/map/MapRenderer.tsx`, `apps/web/src/map/MapRenderer.test.tsx` (2 tests
 skipped, not removed).
 
-## Later milestones
+## Milestone 29 — admin login; editor always enabled, gated by auth instead of `EDITOR_ENABLED` `[planned]`
 
-- Additional authored/public maps using already-retained nationwide history.
-- S-Class blank/on/off bindings for areas where usable data exists.
-- Map continuation/follow-train behavior.
+Owner request: a non-obvious login (hidden behind `/rlm-login`, not linked from anywhere) that
+gates the editor and any admin controls; a logged-out visitor sees a plain public app with no
+editor/admin affordances at all; `EDITOR_ENABLED` removed from the codebase entirely — the editor
+is always _present_, just always behind auth.
+
+Today there is no auth of any kind anywhere in the repo. The only existing gate is
+`EDITOR_ENABLED` (`apps/api/src/config.ts`, `server.ts`): when false, `/api/v1/editor/*` routes
+are never registered (a 404, not a 403) and the web app's `EditorApp.tsx` just displays that 404
+as "editor not enabled." `docs/ARCHITECTURE.md` §12 already flags this as unfinished and actually
+suggests Tailscale/OIDC for the first owner-only pass — noted here since it's a cheaper option
+than what follows, in case it changes the owner's mind before this is built.
+
+Planned approach (single-owner self-hosted app, so single admin credential, not a user table):
+
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` (bcrypt) env vars, set via the same gitignored-secrets
+  pattern already used for NR credentials — never plaintext in a compose file.
+- `POST /api/v1/auth/login` (rate-limited) checks the credential and, on success, creates a
+  session in Redis (already in the stack for exactly this kind of ephemeral state — CLAUDE.md's
+  "never source of truth" rule is fine with losing sessions on a Redis restart, that just forces
+  a re-login) keyed by a random opaque id, delivered as an HttpOnly/Secure/SameSite=Lax signed
+  cookie with a sliding TTL. `POST /api/v1/auth/logout` clears it. `GET /api/v1/auth/me` lets the
+  frontend check session state on load.
+- A `requireAdmin` preHandler replaces the `EDITOR_ENABLED` check on every `/api/v1/editor/*`
+  route (which stay registered unconditionally now) and on the new map-create route (Milestone
+  30).
+- Frontend: extend the existing hand-rolled `useRoute.ts` (still no router library — this stays
+  consistent with its explicit "deliberately not react-router-dom" design, just parses one more
+  path shape) to recognize `/rlm-login`; a `useSession` hook backed by `GET /api/v1/auth/me` gates
+  whether `App.tsx` ever renders an editor link or admin controls, and a logged-out visit to
+  `/editor/*` redirects to `/rlm-login` instead of showing a 404-derived message.
+- Remove `EDITOR_ENABLED` everywhere: `apps/api/src/config.ts`, `server.ts`,
+  `deploy/docker-compose*.yml`, `deploy/.env.example`, and the frontend's 404-as-"not enabled"
+  handling in `EditorApp.tsx`/`apiJson.ts`.
+
+Acceptance: logged-out, the app shows only the public view with zero editor/admin affordances,
+and `/editor/*` (page or API) redirects/401s; logging in at `/rlm-login` grants editor access
+that survives a refresh until logout or TTL; grepping the repo for `EDITOR_ENABLED` finds
+nothing.
+
+**Flag for the owner**: bcrypt + Redis-session is the smallest coherent option given today's
+stack, but it's a real design decision — say now if Tailscale-only, OIDC, or something else is
+preferred instead, before this gets built.
+
+## Milestone 30 — create multiple maps; landing page (map list + search) `[planned]`
+
+Owner request: the ability to add more maps, and a new default page showing every current map in
+a left-hand list with a CRS/TIPLOC/STANOX search box on the right (Milestone 31).
+
+The DB/API layer already supports multiple maps cleanly — `map`/`map_version` are already keyed
+per-map with no singleton assumptions, and `GET /api/v1/maps` already lists every current map with
+its live-data status. The only real gap is **creating** one: nothing outside test fixtures ever
+inserts a `map` row today; every "create a map" seen in the repo is a direct SQL insert in a test.
+
+Planned approach:
+
+- `POST /api/v1/editor/maps` (admin-only, Milestone 29's `requireAdmin`): creates the `map` row
+  (slug + name) and an initial empty `map_draft` for it.
+- The web app's `/` route stops being `MapView` hardcoded to `LANCASTER_MAP_SLUG`
+  (`apps/web/src/App.tsx`) and becomes the map-list + search landing page; a chosen map moves to
+  `/map/:slug` and (admin-only) `/editor/:slug` — again just extending `useRoute.ts`'s parser, no
+  router library added.
+- Left panel renders `GET /api/v1/maps`'s existing list as clickable entries. An admin-only
+  "+ New map" control (visible only when logged in) opens a small name/slug form against the new
+  create route and drops the admin straight into that map's editor.
+- `VITE_LANCASTER_MAP_SLUG` retires once nothing hardcodes it — Lancaster becomes just one entry
+  in the list, not special-cased.
+
+Acceptance: a logged-in admin creates a new empty map from the landing page and lands in its
+editor; a logged-out visitor sees the map list (no create control) and can open any published
+map; existing Lancaster links/behavior keep working unchanged.
+
+## Milestone 31 — place identifiers on labels + nationwide CRS/TIPLOC/STANOX search `[planned]`
+
+Owner request: label elements get the same CRS/TIPLOC/STANOX identifiers stations already carry
+(so junctions are searchable by name too, not just stations), and the landing page's search box
+finds any of them and jumps to the map that covers it.
+
+`StationElementSchema` already has optional `crs`/`tiploc`; `LabelElementSchema` has neither
+today. Nationwide location data is already ingested and indexed — `location_reference`
+(CORPUS-sourced: `tiploc` unique, plus `stanox`/`crs`/`name`) needs no new ingestion for this.
+There is currently no search endpoint anywhere in the API.
+
+Planned approach:
+
+- `packages/map-schema`: add optional `tiploc`/`stanox`/`crs` to `LabelElementSchema` (and add
+  the missing `stanox` to `StationElementSchema` for consistency while touching this).
+- `PropertyPanel.tsx`: expose the new fields for labels (and the added one for stations).
+- Compiler (`compileMapDocument`): build a place-binding index alongside the existing
+  `berthBindingIndex` — every station/label with a crs/tiploc/stanox becomes an entry in a new
+  `map_place_index` table (parallel to `map_binding_index`), written at publish time.
+- `GET /api/v1/places/search?q=` (public): matches against `location_reference` by name/CRS/
+  TIPLOC/STANOX, left-joined against `map_place_index` across every currently-effective
+  `map_version` so each result carries whichever map (if any) currently covers it.
+- Search results with a covering map are clickable straight to `/map/:slug`, centered on that
+  element if practical; results with no covering map show as inert ("not on any published map
+  yet") — consistent with the project's existing principle that map scope never gates capture, but
+  it can obviously gate what's dicoverable through a map-jump search.
+
+Acceptance: tagging a junction label with a TIPLOC/CRS/STANOX and publishing makes it findable by
+that identifier or by name from the landing page; an identifier with no covering map yet degrades
+gracefully instead of erroring.
+
+## Milestone 32 — boundary elements link to the adjacent map `[planned]`
+
+Owner request: clicking a boundary label on the public map jumps to the corresponding boundary on
+the adjacent map.
+
+The schema already has this half-built: `BoundaryElementSchema` carries optional
+`adjacentMapSlug`/`direction` fields with no consumer anywhere yet — no schema change needed for
+the link itself.
+
+Planned approach: treat matching boundary **names** on both sides as the correspondence
+convention (the same real signalling-area boundary, named identically by the author on each map)
+rather than adding a new linked-boundary-id field. `MapRenderer.tsx` makes a boundary element with
+`adjacentMapSlug` clickable (same pattern as an occupied berth); navigating to
+`/map/<adjacentMapSlug>` carries the source boundary's name (query param or hash) so the target
+map looks up its own same-named boundary and centers the view there, falling back to that map's
+normal default view if nothing matches — never a hard error for a stale/renamed boundary.
+
+Acceptance: two maps sharing a boundary, each with a same-named boundary element pointing
+`adjacentMapSlug` at the other, let a viewer click through and land near the right spot; a
+boundary with no `adjacentMapSlug` (or no matching name on the target) behaves exactly as today —
+an inert marker.
+
+## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[owner's own task — 2026-09-13]`
+
+**The owner will build this map themselves in the editor and report back when it's done — not a
+Claude task.** Listed here purely for planning continuity, not as work for Claude to pick up:
+not a code milestone at all, and no editor/platform work is required to unblock it once
+Milestones 29-32 land. One real dependency worth knowing about before or during authoring:
+**S-Class bit decoding is still unimplemented** (`td_s_bit_transition` exists but is unpopulated;
+no verified decode spec/fixture yet — this predates this plan, see Milestone 36). Authoring the
+map itself doesn't need to wait, but its signals will render blank (same as Lancaster/Preston
+today, CLAUDE.md rule 8) until that decode work happens.
+
+---
+
+With 29-33 done, here is the rest of the existing backlog folded into a numbered plan, starting
+with the resolver rebuild as requested. These are all pre-existing deferred items (see each for
+its original source), just sequenced here rather than left as a flat list.
+
+## Milestone 34 — rebuild the berth-run resolver `[planned]`
+
+Reinstates CLAUDE.md rules 5 and 7, held in abeyance since ADR 0002 (2026-09-01) removed the
+original resolver. Rebuild on top of garner's mirrored data instead of RLM's own: `SMART`
+berth-offset tracking for candidate generation, `trust_activation.cif_schedule_id` /
+`deduced_headcode`/`deduced_headcode_status` for the activation link (rule 6 already sources from
+this). Needs its own ADR before/while being built (CLAUDE.md: material changes to chosen technical
+direction need one) — in particular re-deciding the `matched`/`ambiguous`/`unmatched` verdict
+semantics rule 7 requires, since the interim popup currently just shows garner's own single-winner
+deduction unlabelled as an RLM verdict.
+
+## Milestone 35 — station-berth schedule deduction `[planned]`
+
+ADR 0004 D7's already-designed extension to Milestone 34: matching a train sitting in a station
+berth to a schedule when there's no TRUST activation at all. Shape already spec'd — TIPLOC-based
+candidate matching within ±5 minutes, a `matchBasis` confidence enum
+(`trust_activation > stp_precedence > station_berth_timetable > headcode_only`), never overriding
+a TRUST-backed pick, always `ambiguous` for multiple candidates. Two spikes named as prerequisites:
+checking whether garner's `td_states`/`livesig` exposes a usable single-winner deduction directly,
+and checking SMART berth→STANOX coverage/quality. Depends on Milestone 34.
+
+## Milestone 36 — S-Class bit decoding `[planned]`
+
+Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.
+Needed for any map (Blackpool, Milestone 33, included) to show real signal aspects rather than
+permanently blank ones — CLAUDE.md rules 9/10 (blank/on/off only, never inferred) still apply once
+this lands.
+
+## Milestone 37 — `feed_gap` auto-detection on reconnect `[planned]`
+
+Flagged as a follow-up when the `ingest-td` SIGTERM/reconnect root-cause fix landed (Milestone
+23): reconnects are now handled cleanly, but nothing yet writes a `feed_gap` row when one happens,
+despite `docs/PROJECT_SPEC.md` §11.8 and `feedGapWarnings` existing specifically to consume that
+data. Worth doing once real-world reconnect frequency post-fix is observed.
+
+## Milestone 38 — editor structural track model & visual overhaul ("Route A" / 14b) `[planned]`
+
+ADR 0004's deferred structural model, **and** the visual-overhaul items the owner asked for back
+when that ADR was written (2026-09-07, ADR 0004 §Context: _"eventually line names / structures
+(tunnels, viaducts) / neutral sections / area boundaries"_) — kept as one milestone per owner
+decision (2026-09-13), not split out, but broken out explicitly below so it doesn't read as a
+buried footnote again:
+
+- **Structural track model**: real `track`/`trackSegment`/`row-transition`/`turnout` elements
+  replacing today's free-drawn two-point polylines, requiring existing maps (Lancaster included)
+  to be re-authored as a new version. Bundled with it (ADR 0004 D5, deferred alongside this): the
+  structural "berth = span on a track" model, replacing a berth's independent box geometry.
+- **Visual overhaul — new editor-authorable annotation elements**:
+  - **Tunnels and viaducts** — structure markers along a track (OTT's grey `.portal` is the
+    closest prior art), editable in the editor like any other element, not just a renderer-side
+    style.
+  - **Neutral sections** — electrification-gap markers.
+  - **Area/signalling-boundary styling** — a proper dashed-line boundary style (OTT's `.divide`),
+    distinct from and complementary to the plain boundary marker Milestone 32 already makes
+    clickable.
+  - **Line names on the track path itself** — labels that follow a track's line rather than
+    sitting at a fixed point.
+- Also bundled per ADR 0004: directional arrow ticks, points/switch blade glyphs, "set route"
+  highlighting, a platform zone bracket, richer berth colour semantics, and track-stroke halo
+  casing.
+
+Sequenced after Milestones 29-33 per owner decision (2026-09-13) — the admin/multi-map/search
+work and the Blackpool map land first; this stays the next milestone after that.
+
+## Later / unscheduled
+
+Smaller pre-existing deferred items not yet worth their own milestone:
+
+- Editor MVP gaps: align/distribute tools, 45°-constrained/magnetic track drawing,
+  grouping/templates, a keyboard-shortcut help overlay, a locked reference-image layer, true
+  multi-point polylines, retroactive angle-snap on existing tracks, a dedicated platform-shape
+  template, auto-linking `platformNumber.platformId` on placement.
+- `applyRenameElement` doesn't rewrite `inhibitedBy`/`stationId` on rename — known gap since
+  Milestone 21, silently orphans references.
+- No live drag feedback / no multi-node Transformer box for multi-select group-move — cosmetic
+  only.
+- Map continuation/follow-train behaviour — removed with the original resolver, no replacement
+  built; likely revisit alongside Milestone 34.
+- Dedicated schedule/run/berth-history web pages (currently just the inline popup + raw API
+  identifiers).
+- `signal.updated` WS message — listed in the API contract as future, unimplemented.
+- Freshness threshold (`FRESHNESS_THRESHOLD_MS`) as configuration instead of a hardcoded constant.
+- Weekly (from monthly) time partitions; partitioning the garner `trust_movement` mirror on
+  `created`.
+- Physical/WAL backups and external archive replication (may fold into Milestone 13).
+- Horizontal worker scaling, if measured load ever requires it.
 - Bulk binding import and binding-discovery assistance.
-- Physical/WAL backups and external archive replication.
-- Horizontal worker scaling if measured load requires it.
+- Taking the S3/MinIO archive PUT off the `ingest-td` hot path (ADR 0003 consequences,
+  Milestone 17) — needs an ADR decision on reordering archive-before-ack; only worth it if
+  sub-200ms live-ingest latency is ever actually needed.
+- **Known current duplication, not yet resolved (found 2026-09-13):** CORPUS/SMART reference
+  data is synced by _two_ independent, still-active mechanisms — the `schedule-reference-refresh`
+  daemon (Milestone 7's `download-corpus`/`download-smart`, still running as its own Portainer
+  service) and `ingest-garner`'s own `runGarnerReferenceSync` (Milestone 15). Both write to the
+  same `location_reference`/`smart_berth_step` tables. Harmless today (idempotent upserts), but
+  worth a deliberate decision (keep one as a fallback for the other, or retire one) rather than
+  leaving it as an accident.

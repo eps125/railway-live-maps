@@ -19,11 +19,12 @@ This pack is the authoritative planning context for building a self-hosted Briti
 - `docs/DATA_MODEL.md` — events, projections and principal database entities.
 - `docs/MAP_EDITOR_SPEC.md` — canonical map format and visual editor requirements.
 - `docs/API_CONTRACT.md` — initial REST and WebSocket contract.
-- `docs/IMPLEMENTATION_PLAN.md` — bounded milestones and acceptance criteria.
+- `docs/IMPLEMENTATION_PLAN.md` — the single master plan: every milestone's status (done/planned),
+  acceptance criteria, and the full outstanding-work backlog. `docs/progress.md` was retired
+  2026-09-13 once consolidated into this file.
 - `docs/CLAUDE_WORKFLOW.md` — low-waste prompting workflow.
 - `docs/REFERENCES.md` — primary references and project inspirations.
 - `docs/DEPLOYMENT.md` — GitHub/Docker/Portainer bring-up runbook, including how NR credentials are supplied.
-- `docs/progress.md` — operational memory: what's built, what was verified and how, next smallest task.
 - `docs/adr/0001-nationwide-capture-map-independent.md` — accepted scope decision separating nationwide ingestion from first-map coverage.
 - `deploy/docker-compose.yml` — tested Portainer/Docker Compose stack. Pin exact image tags/digests before production use.
 - `deploy/docker-compose.portainer.yml` — pull-only variant for Portainer's "Repository" stack deploy method (no build context, images come from GHCR).

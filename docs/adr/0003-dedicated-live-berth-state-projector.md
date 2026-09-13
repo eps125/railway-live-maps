@@ -6,6 +6,11 @@ Accepted (2026-09-01). Tier 2 implemented as Milestone 16. **Tier 3 implemented 
 Milestone 17** — measured Tier 2 end-to-end latency (NR `eventAt` → browser) was mean 3.9 s
 (0.98–7.5 s, n=16) against a target of ~500 ms, so the deferred option was taken.
 
+_(Note, 2026-09-13: `docs/IMPLEMENTATION_PLAN.md`'s Milestones 16/17 are the canonical
+current-state record for what actually shipped, including the migration-0026 hotfix and the
+duplicate-delta dedupe fix below — this ADR is kept for the "why," not as a second copy of
+"what.")_
+
 ## Context
 
 After the 2026-09-01 stability work, end-to-end latency (a TD frame arriving at `ingest-td` → the

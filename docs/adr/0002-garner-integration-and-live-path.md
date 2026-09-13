@@ -3,9 +3,12 @@
 ## Status
 
 Accepted (2026-09-01). Live-path hardening (steps 1–6) and the resolver removal implemented under
-Milestone 15. The garner bridge — CORPUS/SMART, CIF schedules and TRUST — is implemented against
-the openrail-eps C-source schema (`openrail-master/database.c`); still to run against a live
-instance with real `GARNER_DB_*` credentials.
+Milestone 15. The garner bridge — CORPUS/SMART, CIF schedules and TRUST — was built against the
+openrail-eps C-source schema (`openrail-master/database.c`) and run live against the operator's
+real instance the same day (2026-09-01), immediately surfacing the three real-traffic bugs fixed
+in Milestone 15's "live-path robustness fixes" (pool error handling, daemon backoff, STOMP
+watchdog, `ingest-garner` self-throttling) — see that section for the incident detail. _(Status
+line corrected 2026-09-13 — it previously read as still-pending, which was stale.)_
 
 ## Context
 

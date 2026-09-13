@@ -48,10 +48,12 @@ Then ask Claude to fix selected findings, not all speculative improvements.
 Before ending a milestone session:
 
 ```text
-Update docs/progress.md with completed work, exact test commands/results, unresolved decisions and the next smallest task. Keep it factual and under 100 lines. Do not duplicate the full specification.
+Update the milestone's own section in docs/IMPLEMENTATION_PLAN.md with completed work, exact test commands/results, and known limitations — that file is the single master plan (2026-09-13). Do not create a separate progress log; a second file that also tracks "what's done" is exactly the kind of duplicate this consolidation removed.
 ```
 
-Create `docs/progress.md` once implementation begins. It is operational memory, not architecture.
+`docs/progress.md` existed as a separate operational-memory log through 2026-09-13, when it was
+retired: everything it tracked now lives directly in each milestone's own section of
+`docs/IMPLEMENTATION_PLAN.md` instead. Do not recreate it.
 
 ## 5. Avoid expensive prompt patterns
 

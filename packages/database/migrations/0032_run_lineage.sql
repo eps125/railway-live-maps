@@ -14,8 +14,14 @@ create table train_run (
   -- Nullable: a run can, in principle, be established purely from step-chain continuity with no
   -- schedule ever resolved for it (not attempted in this milestone — `currentRun.ts` only ever
   -- writes a link when it has resolved a `cif_schedule_id`), but the column stays nullable rather
-  -- than assuming that never happens.
-  cif_schedule_id bigint references cif_schedules (id),
+  -- than assuming that never happens. `on delete set null`, not cascade: production never hard-
+  -- deletes `cif_schedules` rows (garner soft-deletes via the `deleted` timestamp only — see
+  -- migration 0024), so this only matters for a hypothetical future cleanup job or test fixture
+  -- teardown; a `train_run` row's own identity/history (`cif_train_uid`, `traffic_day`,
+  -- `established_at`) stays meaningful even without its schedule pointer, so it's preserved
+  -- rather than cascaded away (caught by CI, 2026-09-14, on the shared integration test database's
+  -- own cleanup deleting a schedule a `train_run` row still referenced).
+  cif_schedule_id bigint references cif_schedules (id) on delete set null,
   cif_train_uid text not null,
   traffic_day date not null,
   match_basis text not null check (

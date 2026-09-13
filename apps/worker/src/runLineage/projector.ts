@@ -317,8 +317,17 @@ async function processBoundaryBatch(
       `select cif_schedule_id, cif_train_uid, traffic_day::text as traffic_day from train_run where id = $1`,
       [link.trainRunId],
     );
-    const run = runRows[0] as RunForCorroboration | undefined;
-    if (!run) continue;
+    const runRow = runRows[0];
+    if (!runRow) continue;
+    // A cast (`as RunForCorroboration`) here would type-lie: the query returns snake_case keys,
+    // not the camelCase ones below — caught by CI, 2026-09-14, the boundary-corroboration test
+    // silently saw `run.cifScheduleId` as `undefined` and both corroboration checks short-
+    // circuited to `false` no matter what the real data said.
+    const run: RunForCorroboration = {
+      cifScheduleId: runRow.cif_schedule_id,
+      cifTrainUid: runRow.cif_train_uid,
+      trafficDay: runRow.traffic_day,
+    };
 
     const windowStart = row.raw_event_normalized_at_utc;
     const windowEnd = new Date(windowStart.getTime() + BOUNDARY_CANDIDATE_WINDOW_MINUTES * 60_000);

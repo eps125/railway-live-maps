@@ -130,6 +130,11 @@ async function insertLink(
   return (result.rowCount ?? 0) > 0;
 }
 
+/** How far back an occupancy could plausibly have been entered before closing "now" and still be
+ * found by `findOccupancyClosedAt` — generous enough for any realistic stabling duration (a
+ * weekend engineering possession, say), while still bounding the search enough to matter. */
+const OCCUPANCY_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** The occupancy a `from_berth` closed at exactly `at` — narrowed by the existing
  * `(td_area, berth_code, entered_at desc)` index (`td_area`/`berth_code` first), then an exact
  * `left_at` match against the closing event's own timestamp (both sides of one C-class effect
@@ -139,7 +144,16 @@ async function insertLink(
  * `processStepChainBatch` (`CA`) and `processBoundaryBatch` (`CB`), so it can't hardcode either
  * one's reason string (bug caught by CI, 2026-09-14: originally hardcoded `'stepped_out'`, which
  * silently found nothing for every `CB` cancel). The exact `(td_area, berth_code, left_at)` match
- * is already precise enough on its own. */
+ * is already precise enough to identify the row on its own — but without a predicate on
+ * `entered_at` (`berth_occupancy`'s own partition key), Postgres has no way to prune old month
+ * partitions from the plan and must check all of them, including cold, rarely-touched ones with
+ * real data (production incident, 2026-09-14: 15.4s for a single lookup that touched one such
+ * partition — 6.5ms once its pages were cached — and every *new* live berth this daemon had never
+ * looked up yet paid that cost again, since a one-time cache warm doesn't help a different berth's
+ * different pages; seeding the checkpoint forward fixed the backlog-replay case but not this one).
+ * The `entered_at >= $4` bound below lets the planner prune everything older than
+ * `OCCUPANCY_LOOKBACK_MS` from the plan entirely — confirmed via `EXPLAIN` to drop the historical
+ * partitions out of the query altogether, not just filter them out after scanning. */
 async function findOccupancyClosedAt(
   client: PoolClient,
   tdArea: string,
@@ -148,9 +162,9 @@ async function findOccupancyClosedAt(
 ): Promise<OccupancyRef | null> {
   const { rows } = await client.query<OccupancyRef>(
     `select id, entered_at from berth_occupancy
-     where td_area = $1 and berth_code = $2 and left_at = $3
+     where td_area = $1 and berth_code = $2 and left_at = $3 and entered_at >= $4
      order by entered_at desc limit 1`,
-    [tdArea, berth, at],
+    [tdArea, berth, at, new Date(at.getTime() - OCCUPANCY_LOOKBACK_MS)],
   );
   return rows[0] ?? null;
 }

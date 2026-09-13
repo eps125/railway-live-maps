@@ -248,3 +248,17 @@ garner/bridge.ts`'s `seedWatermarkIfFresh`) instead of replaying history — cal
 Both fixes shipped same-day; the daemon was stopped between diagnosis and fix to avoid repeated
 load on production while investigating, and live traffic (`ingest-td`, `berth_current_state`
 writes) was confirmed unaffected throughout — the slow queries were read-only, never blocking.
+
+**A third round, same day**: after redeploying with both fixes above, the checkpoint still never
+advanced past its seeded value — every tick kept failing. The seed fix correctly skipped the
+_historical backlog_, but `findOccupancyClosedAt`'s query had no predicate at all on `entered_at`
+(`berth_occupancy`'s own partition key), so Postgres could not prune old month partitions from the
+plan for _any_ call, including ones triggered by brand-new live events — it had to check every
+partition, and a berth whose specific pages in an old partition had never been touched paid the
+same cold-page cost the seed fix was supposed to eliminate. One cache-warm doesn't help a
+_different_ berth's _different_ pages, so this wasn't a one-time cost — it recurred for every
+distinct berth's first lookup. Fixed by adding `entered_at >= (closing time − 7 days)`: confirmed
+via `EXPLAIN` that this lets the planner prune historical partitions out of the plan entirely
+(not just filter them out after scanning), while still generously covering any realistic stabling
+duration. `findOpenedByStep`'s equivalent query was never affected — its exact `entered_at = $3`
+equality against the partition key already pruned correctly on its own.

@@ -1,0 +1,18 @@
+-- Milestone 39 follow-up (docs/adr/0007), production incident 2026-09-14: `run-lineage-daemon`'s
+-- catch-up cursor (`where ingestion_sequence > $1 order by ingestion_sequence`) against
+-- `td_berth_event` had no supporting index — only `(id, event_at)`, `(td_area, event_at desc)`,
+-- and `(raw_event_id, event_at)` existed — forcing a full scan+sort of this huge, nationwide,
+-- multi-month partitioned table on every tick. Caught live: the daemon retried the same expensive
+-- scan every ~5s until stopped by hand.
+--
+-- This plain `create index` is safe to run through `migrate` as-is on a fresh/empty database
+-- (CI, local dev, disaster recovery) — instant there. It is **not** how this was actually applied
+-- to production: a `create index` on an already-populated partitioned table takes a lock that
+-- blocks writes for as long as the build takes, exactly the mistake documented in
+-- `migrate_verify_schema_migrations_first`. Production instead got this index built by hand,
+-- non-blocking, via `CREATE INDEX CONCURRENTLY` on each existing month partition individually,
+-- then `ALTER INDEX ... ATTACH PARTITION` for each one — `migrate`'s runner wraps every file in a
+-- transaction, and `CONCURRENTLY` cannot run inside one, so that dance can never go through this
+-- tool regardless. `schema_migrations` was backfilled by hand immediately after, recording this
+-- migration as already applied there, so `migrate` never attempts to replay it non-concurrently.
+create index td_berth_event_ingestion_sequence_idx on td_berth_event (ingestion_sequence);

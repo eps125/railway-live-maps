@@ -384,6 +384,51 @@ async function processBoundaryBatch(
   }
 }
 
+/**
+ * Called once by `run-lineage-daemon` (`apps/worker/src/commands/runLineageDaemon.ts`) before its
+ * first tick — deliberately **not** part of `runProjectRunLineage` itself, so a test calling that
+ * directly against fixture rows it just inserted (every case in `projector.integration.test.ts`)
+ * is never affected by this.
+ *
+ * On this projector's very first run only (a genuinely fresh checkpoint — never advanced, same
+ * "is it fresh" guard `apps/worker/src/garner/bridge.ts`'s `seedWatermarkIfFresh` uses), skips
+ * straight to the current tail of `td_berth_event` instead of starting from `ingestion_sequence
+ * 0`. Production incident, 2026-09-14: sticky matching only has value for *live, ongoing* train
+ * movements — a step from months ago tells today's ambiguous berth nothing — but a from-scratch
+ * checkpoint tried to replay the entire nationwide history regardless, and the per-row occupancy
+ * lookups (`findOccupancyClosedAt`/`findOpenedByStep`) hit cold, never-cached pages on old
+ * partitions hard enough to blow the daemon's own statement timeout on the very first batch
+ * (15.4s observed on one lookup against a historical partition — 6.5ms on the identical query
+ * once warmed, confirming it was purely a cold-cache cost, not a design flaw needing more
+ * indexing). `max(ingestion_sequence)` is a fast backward index scan once
+ * `td_berth_event_ingestion_sequence_idx` exists (migration 0033, also added after this same
+ * incident) — cheap even though `td_berth_event` itself is huge.
+ */
+export async function seedRunLineageCheckpointIfFresh(pool: Pool): Promise<void> {
+  const definitionId = await getOrCreateProjectionDefinition(
+    pool,
+    RUN_LINEAGE_PROJECTION_NAME,
+    RUN_LINEAGE_PROJECTION_VERSION,
+    "run-lineage-v1",
+  );
+  await ensureCheckpoint(pool, definitionId);
+  const checkpoint = await getCheckpoint(pool, definitionId);
+  if (
+    !checkpoint ||
+    checkpoint.lastIngestionSequence !== "0" ||
+    checkpoint.lastCompletedAt !== null
+  ) {
+    return;
+  }
+  const { rows } = await pool.query<{ max_seq: string | null }>(
+    `select max(ingestion_sequence)::text as max_seq from td_berth_event`,
+  );
+  const maxSeq = rows[0]?.max_seq;
+  if (maxSeq) {
+    await advanceCheckpoint(pool, definitionId, maxSeq);
+  }
+}
+
 export interface RunLineageOptions {
   batchSize?: number;
 }

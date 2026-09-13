@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted 2026-09-14, not yet implemented (Milestone 39). Partially reverses ADR 0002's removal of
-RLM's bespoke run-tracking model — see Context for how this differs from what was removed.
+Accepted and implemented 2026-09-14 (Milestone 39). Partially reverses ADR 0002's removal of
+RLM's bespoke run-tracking model — see Context for how this differs from what was removed. See
+the Consequences addendum for a production incident on first deploy and its fix.
 
 ## Context
 
@@ -212,3 +213,38 @@ later physical step can carry forward.
 - CLAUDE.md rules 5, 6, 7 apply identically to inherited/correlated matches as to fresh ones —
   ambiguity at any tier (including a boundary crossing with more than one plausible candidate) is
   surfaced honestly, never resolved by guessing.
+
+## Addendum — first-deploy production incident and fix (2026-09-14)
+
+On first real deployment, `run-lineage-daemon` started from a fresh checkpoint (`ingestion_sequence
+0`) and tried to catch up through `td_berth_event`'s **entire nationwide history** — many months,
+tens of millions of rows. Two problems surfaced immediately, both against real production data
+only (no realistic-scale test was possible beforehand):
+
+1. **No index supported the catch-up query.** `where ingestion_sequence > $1 order by
+ingestion_sequence` against `td_berth_event` had nothing to use but `(id, event_at)`,
+   `(td_area, event_at desc)`, and `(raw_event_id, event_at)` — a full scan+sort of the whole
+   partitioned table on every tick. Fixed by adding `td_berth_event_ingestion_sequence_idx`
+   (migration 0033) — built on production via `CREATE INDEX CONCURRENTLY` per existing month
+   partition then `ALTER INDEX ... ATTACH PARTITION`, never blocking a write, with
+   `schema_migrations` backfilled by hand immediately after (the exact discipline
+   `migrate_verify_schema_migrations_first` exists to enforce — the migration file itself holds a
+   plain `create index`, correct and fast on any fresh/empty database, but never intended to run
+   that way against production).
+2. **Even once the cursor query was fast, the per-row occupancy lookups
+   (`findOccupancyClosedAt`/`findOpenedByStep`) hit cold, never-cached pages on old month
+   partitions** — one lookup against August's partition took 15.4 seconds; the identical query
+   re-run immediately after took 6.5ms. Confirmed as a pure cold-cache cost, not a missing index or
+   a design flaw. But it meant the very first backlog batch reliably blew the daemon's own 15s
+   statement timeout, rolling back and retrying forever with no forward progress. The real fix was
+   architectural, not another index: **sticky matching only has value for live, ongoing train
+   movements** — a step from months ago tells today's ambiguous berth nothing. `run-lineage-daemon`
+   now seeds a genuinely fresh checkpoint straight to the current tail of `td_berth_event`
+   (`seedRunLineageCheckpointIfFresh`, same "only if never advanced" guard as `apps/worker/src/
+garner/bridge.ts`'s `seedWatermarkIfFresh`) instead of replaying history — called once by the
+   daemon wrapper before its first tick, deliberately kept out of `runProjectRunLineage` itself so
+   the integration tests (which insert fixture rows and expect them processed) are unaffected.
+
+Both fixes shipped same-day; the daemon was stopped between diagnosis and fix to avoid repeated
+load on production while investigating, and live traffic (`ingest-td`, `berth_current_state`
+writes) was confirmed unaffected throughout — the slow queries were read-only, never blocking.

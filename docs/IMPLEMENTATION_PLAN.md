@@ -2024,6 +2024,15 @@ job. Also not attempted, matching the ADR's explicit scope: portion join/split t
 fresh resolution instead) and any SMART-derived auto-suggestion for boundary entry (owner-curated
 only, by design).
 
+**First-deploy production incident, same day** (docs/adr/0007 addendum): a fresh checkpoint tried
+to replay `td_berth_event`'s entire nationwide history, with no supporting index on
+`ingestion_sequence` (full scan+sort every tick) and cold-partition reads slow enough to blow the
+statement timeout on the very first batch. Fixed with migration 0033 (index, built on production
+via `CREATE INDEX CONCURRENTLY` per partition + `ATTACH PARTITION`, never blocking a write) and a
+new `seedRunLineageCheckpointIfFresh` step that skips a fresh checkpoint straight to the current
+tail instead of the backlog — sticky matching only helps live movements anyway. Daemon stopped
+during diagnosis, live traffic confirmed unaffected throughout, redeployed clean afterward.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

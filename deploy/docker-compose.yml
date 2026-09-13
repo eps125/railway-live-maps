@@ -31,7 +31,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
-      EDITOR_ENABLED: ${EDITOR_ENABLED:-false}
+      # Milestone 29: the editor is always registered, gated by login instead of the removed
+      # EDITOR_ENABLED flag. COOKIE_SECURE defaults to false here (APP_ENV=development, plain
+      # HTTP) so local `docker compose up` login actually sets its cookie.
       LIVE_WS_POLL_INTERVAL_MS: ${LIVE_WS_POLL_INTERVAL_MS:-1000}
       LIVE_WS_HEARTBEAT_INTERVAL_MS: ${LIVE_WS_HEARTBEAT_INTERVAL_MS:-15000}
     ports:

@@ -56,12 +56,12 @@ describe("EditorApp (Konva smoke test)", () => {
     await waitFor(() => expect(screen.getByLabelText(/properties/i)).toBeInTheDocument());
   });
 
-  it("shows an actionable error when the editor API 404s (EDITOR_ENABLED=false)", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 404 } as Response));
+  it("shows an actionable error when the session expires mid-visit (401)", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 401 } as Response));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<EditorApp slug="lancaster" />);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/EDITOR_ENABLED/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/session has expired/i);
   });
 });

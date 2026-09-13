@@ -37,8 +37,8 @@ async function findOpenOccupancy(
 }
 
 /**
- * `POST /api/v1/editor/berths/{tdArea}/{berth}/clear` (private editor surface, EDITOR_ENABLED
- * gated like every other route in this directory) — a manual override for a berth stuck showing
+ * `POST /api/v1/editor/berths/{tdArea}/{berth}/clear` (private editor surface, role-gated like
+ * every other route in this directory — Milestone 29) — a manual override for a berth stuck showing
  * a stale description, most likely because a feed connection gap silently dropped the real
  * step/clear event for it (TD is delta-only; there is no automatic backfill for a dropped
  * message). Deliberately a *live-only* override, not a fabricated feed event: it updates

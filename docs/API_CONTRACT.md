@@ -351,9 +351,40 @@ The client tracks `sequence`. On a gap it discards uncertain deltas and fetches 
 5. On a new arbitrary seek, cancel old requests and repeat.
 6. Live WebSocket remains separate; switching to live fetches a fresh live snapshot before accepting deltas.
 
+## 4a. Auth and admin API
+
+Milestone 29. Roles: `admin`, `editor` (`admin` satisfies any `editor`-gated route too).
+
+- `POST /api/v1/auth/login` — body `{ username, password }`. Rate-limited per-IP and
+  per-normalized-username (fixed window). On success sets the `rlm_session` HttpOnly/SameSite=Lax
+  cookie (an opaque server-side session token, not a JWT — nothing in it to decode or forge) and
+  returns `{ username, role }`. `401` on bad credentials or an inactive account (same generic
+  message either way — doesn't reveal which). `429` with `Retry-After` and
+  `details.retryAfterSeconds` when rate-limited.
+- `POST /api/v1/auth/logout` — clears the session (idempotent; `204` even with no session).
+- `GET /api/v1/auth/me` — `{ username, role }` for the current session, `401` if not logged in.
+  Used by the frontend to decide whether to show the Editor/Users nav links at all.
+- `GET /api/v1/admin/users` (admin only) — `{ users: [...] }`, no password hashes.
+- `POST /api/v1/admin/users` (admin only) — body `{ username, password, role }`. `400` for a
+  missing/short (<8 char) password or invalid role; `409 DUPLICATE_USERNAME` for an existing one.
+- `PATCH /api/v1/admin/users/{id}` (admin only) — body may include any of `role`, `isActive`,
+  `password`; only the given fields change. `409 LAST_ADMIN` if the change would leave the system
+  with no active admin at all (demoting, deactivating, or — via `DELETE` below — removing the last
+  one). `404` for an unknown id.
+- `DELETE /api/v1/admin/users/{id}` (admin only) — `204` on success, `404` if already gone, same
+  `409 LAST_ADMIN` guard as `PATCH`.
+
+There is no self-registration and no password-reset flow — the first admin account is created via
+the worker's `manage-users create --role admin` one-shot CLI (no bootstrap row, no env-var
+credential — see `docs/ARCHITECTURE.md` §12); every account after that is managed through the
+admin-only "Users" page (`/admin/users` in the web app), which is this same API.
+
 ## 4. Editor API
 
-Protected/private.
+**Protected (Milestone 29, see §4a):** every route below requires a valid session at the `editor`
+role or higher. A request with no session gets `401`; a session below the required role gets
+`403` (in practice `editor` is the lowest role, so any logged-in user passes this particular
+gate — `403` only shows up on the admin-only routes in §4a).
 
 - `GET /api/v1/editor/maps/{slug}/draft`
 - `PUT /api/v1/editor/maps/{slug}/draft` with optimistic revision check

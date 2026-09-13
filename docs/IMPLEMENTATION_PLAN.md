@@ -10,11 +10,11 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
-→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28.
+→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29.
 
 **Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
 work first, then the resolver-first backlog):**
-29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
+30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
 
 **Milestone 33 is the owner's own task, not Claude's** — they'll author the Blackpool Line map
 themselves in the editor and report back when done; do not pick it up as implementation work.
@@ -1310,12 +1310,95 @@ in the same change that re-enables `clickEnabled`.
 Files: `apps/web/src/map/MapRenderer.tsx`, `apps/web/src/map/MapRenderer.test.tsx` (2 tests
 skipped, not removed).
 
-## Milestone 29 — admin login; editor always enabled, gated by auth instead of `EDITOR_ENABLED` `[planned]`
+## Milestone 29 — admin login; editor always enabled, gated by auth instead of `EDITOR_ENABLED` `[done — 2026-09-13]`
 
 Owner request: a non-obvious login (hidden behind `/rlm-login`, not linked from anywhere) that
 gates the editor and any admin controls; a logged-out visitor sees a plain public app with no
 editor/admin affordances at all; `EDITOR_ENABLED` removed from the codebase entirely — the editor
 is always _present_, just always behind auth.
+
+**Direction changed before implementation.** The drafted plan below (kept for the record) proposed
+a single `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` env-var credential — cheapest given "single-owner
+self-hosted app." Asked to confirm before building (auth is a real architecture decision, and
+Tailscale-only/OIDC were also on the table per `docs/ARCHITECTURE.md` §12's original suggestion),
+the owner explicitly rejected **both** the env-var credential and Tailscale-only, wanting instead
+"a system that enables me to create multiple users in future with multiple levels. Eg
+Admin/Editor etc." What's below is what was actually built — a real `app_user` table, not the
+drafted single credential.
+
+**Delivered:**
+
+- Migration `0029_app_user.sql`: `app_user` (username unique/case-normalized, bcrypt
+  `password_hash`, `role check (role in ('admin','editor'))`, `is_active`, timestamps). No seed
+  row — see the bootstrap note below.
+- `packages/database/src/users.ts` (+ unit + integration tests): shared CRUD/hashing used by both
+  `apps/api` (login) and `apps/worker` (the bootstrap CLI) — `createUser`/`updateUserRole`/
+  `updateUserPassword`/`setUserActive`/`deleteUser`/`listUsers`/`findUserByUsername`, plus a
+  **last-active-admin guard** (`LastAdminGuardError`) refusing to demote/deactivate/delete the
+  only remaining admin — a real lockout risk in a self-hosted app with no "contact support" path.
+  `verifyPassword` compares against a dummy hash for a nonexistent username so a login attempt
+  doesn't time out differently and leak which usernames exist.
+- Sessions live only in Redis (`apps/api/src/auth/session.ts`) — an opaque random token as the
+  `rlm_session` HttpOnly/SameSite=Lax cookie (`Secure` unless `APP_ENV=development`, via
+  `@fastify/cookie`), sliding TTL (`SESSION_TTL_SECONDS`, default 12h). Nothing to forge — the
+  token is just a lookup key, `app_user` in Postgres stays the durable identity/role record
+  (CLAUDE.md: Redis never a source of truth).
+- `apps/api/src/auth/loginRateLimit.ts`: fixed-window limiter on `POST /api/v1/auth/login`, scoped
+  independently by client IP and by normalized username (`LOGIN_RATE_LIMIT_MAX_ATTEMPTS`/
+  `_WINDOW_SECONDS`) — `server.ts` now sets Fastify's `trustProxy: true` so this (and the cookie
+  itself) sees the real client through the reverse proxy, not the proxy's own address.
+- `apps/api/src/auth/requireRole.ts`: a `requireRole(minRole, deps)` preHandler factory. Applied
+  via `app.addHook` inside an encapsulated `app.register(async (scope) => {...})` block in
+  `server.ts` — one hook per Fastify encapsulation scope, so `/api/v1/editor/*` requires `editor`
+  and the new `/api/v1/admin/*` requires `admin`, with no per-route wiring inside
+  `registerEditorRoutes`/`registerAdminUserRoutes` themselves.
+- `apps/api/src/routes/auth.ts` (`/api/v1/auth/login|logout|me`) and
+  `apps/api/src/routes/admin/users.ts` (`/api/v1/admin/users` CRUD) — see `docs/API_CONTRACT.md`
+  §4a for the full shape.
+- **Bootstrap**: since there's no env-var credential and no user table row to seed from, the very
+  first admin can't come from the (now auth-gated) API at all. `apps/worker/src/commands/
+manageUsers.ts` — `manage-users create|list|set-role|set-password|set-active|delete` — is a new
+  one-shot CLI command (`docs/DEPLOYMENT.md` step 3a), run once by hand against the deployed
+  worker container, matching this repo's existing pattern of operational CLI commands
+  (`publish-map`, `prune-partitions`) rather than a magic seed row or plaintext credential in Git.
+  Every account after the first goes through the admin-only "Users" page instead.
+- Frontend: `useRoute.ts` gained `/rlm-login` and `/admin/users`; `apps/web/src/auth/useSession.ts`
+  (`GET /api/v1/auth/me`, a 401 is the normal logged-out case, not an error),
+  `LoginPage.tsx` (the non-obvious login form), `AdminUsersPage.tsx` (the admin-only user-CRUD
+  page). `App.tsx` only shows the Editor/Users nav links when the session role allows them, and
+  redirects an unauthenticated/under-privileged `/editor` or `/admin/users` visit to `/rlm-login`
+  (a `useEffect`, not a render-time side effect — redirecting during render would violate React's
+  "render must be pure" rule and risk a re-render loop).
+- Removed `EDITOR_ENABLED` everywhere: `apps/api/src/config.ts`, `server.ts`,
+  `deploy/docker-compose*.yml`, `deploy/.env.example`, and the frontend's stale
+  404-as-"not enabled" message in `EditorApp.tsx`/`apiJson.ts` (now a 401/403-aware "session
+  expired" message, since `App.tsx`'s redirect means a logged-out visitor never reaches
+  `EditorApp` at all in normal use).
+
+Tests: unit tests for `users.ts` (hash/verify round-trip, role ranking), `session.ts`/
+`loginRateLimit.ts`/`requireRole.ts` (FakeRedis, matching this repo's existing no-real-Redis-in-
+sandbox pattern from `redisDeltaSource.test.ts`), and the web-side `useSession`/`LoginPage`/`App`
+nav-gating. Integration tests (real Postgres + Redis, not run in this sandbox — same standing
+limitation as every other integration suite here — but written to run in CI):
+`packages/database/src/users.integration.test.ts` (duplicate-username rejection, the last-admin
+guard against real concurrent state), `apps/api/src/server.integration.test.ts` (rewritten from
+the old EDITOR_ENABLED-gating tests to log in for real through `/api/v1/auth/login` and prove the
+resulting cookie passes `/api/v1/editor/*` but 403s on `/api/v1/admin/*` for an editor session),
+and `apps/api/src/routes/admin/users.integration.test.ts` (full CRUD + the 409/404 edge cases).
+
+Acceptance re-checked against what was actually built: logged-out, the app shows only the public
+view with zero editor/admin affordances, and `/editor`/`/admin/users` redirect to `/rlm-login`;
+logging in there grants access at the account's actual role, surviving a refresh until logout or
+the session TTL; grepping the repo for `EDITOR_ENABLED` finds nothing outside this file's own
+historical note above.
+
+Known limitations / follow-up not done here: no password-reset or self-service flow (an admin
+resets a password via the Users page or the CLI); no audit log of who changed what (drafts already
+have an `updated_by` free-text field, unrelated to this login system); rate limiting here is
+login-specific, not the app-wide rate limiting Milestone 13 still owns.
+
+<details>
+<summary>Original drafted plan (superseded — kept for the record)</summary>
 
 Today there is no auth of any kind anywhere in the repo. The only existing gate is
 `EDITOR_ENABLED` (`apps/api/src/config.ts`, `server.ts`): when false, `/api/v1/editor/*` routes
@@ -1355,6 +1438,8 @@ nothing.
 stack, but it's a real design decision — say now if Tailscale-only, OIDC, or something else is
 preferred instead, before this gets built.
 
+</details>
+
 ## Milestone 30 — create multiple maps; landing page (map list + search) `[planned]`
 
 Owner request: the ability to add more maps, and a new default page showing every current map in
@@ -1367,7 +1452,8 @@ inserts a `map` row today; every "create a map" seen in the repo is a direct SQL
 
 Planned approach:
 
-- `POST /api/v1/editor/maps` (admin-only, Milestone 29's `requireAdmin`): creates the `map` row
+- `POST /api/v1/editor/maps` (admin-only — Milestone 29's `requireRole("admin", ...)`, the same
+  encapsulated-scope pattern `/api/v1/admin/*` already uses in `server.ts`): creates the `map` row
   (slug + name) and an initial empty `map_draft` for it.
 - The web app's `/` route stops being `MapView` hardcoded to `LANCASTER_MAP_SLUG`
   (`apps/web/src/App.tsx`) and becomes the map-list + search landing page; a chosen map moves to

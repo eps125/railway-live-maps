@@ -24,6 +24,7 @@ import { runPrunePartitions } from "./commands/prunePartitions.js";
 import { runIngestGarner } from "./commands/ingestGarner.js";
 import { runSnapshotMapsCommand, runSnapshotMapsDaemon } from "./commands/snapshotMaps.js";
 import { runRepairOpenOccupancies } from "./commands/repairOpenOccupancies.js";
+import { runManageUsers } from "./commands/manageUsers.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -71,6 +72,8 @@ async function main(): Promise<void> {
       return runSnapshotMapsCommand(config);
     case "repair-open-occupancies":
       return runRepairOpenOccupancies(config, argvRest);
+    case "manage-users":
+      return runManageUsers(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
       return;

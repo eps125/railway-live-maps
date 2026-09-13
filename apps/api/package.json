@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@fastify/websocket": "^11.0.2",
     "@railway/database": "workspace:*",
     "@railway/domain": "workspace:*",

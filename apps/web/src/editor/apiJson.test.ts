@@ -16,7 +16,7 @@ describe("readApiJson", () => {
 
   it("throws a diagnostic error when the body is HTML (request fell through to the SPA)", async () => {
     await expect(readApiJson(res("<html> <head></head> ...", 404))).rejects.toThrow(
-      /non-JSON response \(HTTP 404\).*EDITOR_ENABLED/s,
+      /non-JSON response \(HTTP 404\).*index\.html/s,
     );
   });
 });

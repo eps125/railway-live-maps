@@ -16,7 +16,9 @@ interface DraftResponse {
 
 /** Milestone 11/12 top-level editor page: loads the current draft, then hands it to
  * `EditorStateProvider` (the undo/redo command-model state) and `EditorWorkspace` (canvas +
- * panels). A 404 here almost always means `EDITOR_ENABLED=false` on the API. */
+ * panels). `App.tsx` already redirects an unauthenticated/under-privileged visit to `/rlm-login`
+ * before this ever mounts (Milestone 29), so a 401/403 here would mean the session expired
+ * mid-visit rather than a normal first-load case. */
 export function EditorApp({ slug }: EditorAppProps): JSX.Element {
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,8 +30,8 @@ export function EditorApp({ slug }: EditorAppProps): JSX.Element {
         const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/draft`);
         if (!response.ok) {
           throw new Error(
-            response.status === 404
-              ? "Editor is not enabled on this deployment (EDITOR_ENABLED=false)."
+            response.status === 401 || response.status === 403
+              ? "Your session has expired — reload the page to log in again."
               : `Failed to load draft (${response.status})`,
           );
         }

@@ -108,6 +108,12 @@ so it deploys without needing host filesystem/SSH access at all.
 3. Run the `migrate` and `ensure-archive-bucket` one-off commands (Portainer's "Console"
    against the `worker` container, or a scheduled/manual task) before the stack serves
    traffic, same as step 3.
+   3a. **Create the first admin account** (Milestone 29 — there is no bootstrap row or env-var
+   credential): against the same `worker` container, run
+   `node dist/index.js manage-users create --username <you> --role admin --password <a-real-password>`
+   (or set `MANAGE_USERS_PASSWORD` in the console session instead of `--password`, to keep it
+   out of that shell's history). Log in at `/rlm-login` — not linked anywhere in the public UI —
+   then use the admin-only "Users" page for every account after that.
 4. Only `web` needs a reverse proxy/public DNS entry for real public use. Postgres, Redis
    and the archive (MinIO) are published straight to the host (`POSTGRES_PORT`/
    `REDIS_PORT`/`MINIO_PORT`/`MINIO_CONSOLE_PORT`, set in Portainer's stack environment —

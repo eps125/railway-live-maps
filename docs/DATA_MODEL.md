@@ -486,3 +486,24 @@ Use:
 - daily aggregate tables or metrics for event/byte counts by feed and area
 
 Do not add an area-retention filter. Storage control must use compression, partition maintenance, verified tiered archival and explicit retention policy—not silent loss of unmapped-area data.
+
+## 12. Auth (Milestone 29)
+
+### `app_user`
+
+**Implemented:** migration `0029_app_user.sql`.
+
+- `username` (unique, stored/looked-up case-insensitively — normalized to lowercase)
+- `password_hash` (bcrypt)
+- `role` — `check (role in ('admin', 'editor'))`; owner explicitly wanted a real multi-user,
+  role-based table rather than a single `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` env-var credential,
+  so more accounts/levels can be added later without a schema rewrite (widen the check constraint
+  for a third role if one's ever needed)
+- `is_active`
+- `created_at` / `updated_at` / `last_login_at`
+
+The durable identity/role record — not the source of truth for "who is currently logged in,"
+which is a Redis-only opaque session token (§1 principle: Redis is cache/coordination, never
+source of truth for anything that must survive a restart; losing a session just forces a
+re-login). No table seeds an initial row: the first admin is created via the worker's
+`manage-users create --role admin` CLI, run once by hand — see `docs/ARCHITECTURE.md` §12.

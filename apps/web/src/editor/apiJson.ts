@@ -14,8 +14,8 @@ export async function readApiJson<T = unknown>(response: Response): Promise<T> {
   } catch {
     throw new Error(
       `The editor API returned a non-JSON response (HTTP ${response.status}). The request isn't ` +
-        `reaching the API — check the API service is running with EDITOR_ENABLED=true and that ` +
-        `/api is routed to it rather than falling through to the app's index.html.`,
+        `reaching the API — check the API service is running and that /api is routed to it ` +
+        `rather than falling through to the app's index.html.`,
     );
   }
 }

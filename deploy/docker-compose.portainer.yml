@@ -133,7 +133,13 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/London}
-      EDITOR_ENABLED: ${EDITOR_ENABLED:-true}
+      # Milestone 29: the editor is always registered now, gated by login (POST /api/v1/auth/login
+      # at /rlm-login) instead of the removed EDITOR_ENABLED flag. COOKIE_SECURE defaults to true
+      # in production (APP_ENV != development) — this deployment is expected to sit behind a
+      # TLS-terminating reverse proxy; override explicitly only if it genuinely doesn't.
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-43200}
+      LOGIN_RATE_LIMIT_MAX_ATTEMPTS: ${LOGIN_RATE_LIMIT_MAX_ATTEMPTS:-10}
+      LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_RATE_LIMIT_WINDOW_SECONDS:-900}
       # Must match the worker-side copy of this flag (x-worker-env above) — if only one side
       # has it on, deltas either never get published or never get subscribed to.
       LIVE_WS_REDIS_PUBSUB_ENABLED: ${LIVE_WS_REDIS_PUBSUB_ENABLED:-true}

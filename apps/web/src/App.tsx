@@ -1,11 +1,58 @@
+import { useEffect } from "react";
 import { MapView } from "./map/MapView.js";
 import { EditorApp } from "./editor/EditorApp.js";
 import { navigate, useRoute } from "./useRoute.js";
+import { useSession, roleAtLeast } from "./auth/useSession.js";
+import { LoginPage } from "./auth/LoginPage.js";
+import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 
 const LANCASTER_MAP_SLUG = import.meta.env["VITE_LANCASTER_MAP_SLUG"] ?? "lancaster";
 
 export function App(): JSX.Element {
   const route = useRoute();
+  const { session, refresh, logout } = useSession();
+
+  const isAuthenticated = session.status === "authenticated";
+  const canEdit = isAuthenticated && roleAtLeast(session.user.role, "editor");
+  const isAdmin = isAuthenticated && roleAtLeast(session.user.role, "admin");
+  const sessionLoading = session.status === "loading";
+
+  // Milestone 29: a logged-out (or under-privileged) visit to a gated route redirects to the
+  // login page instead of showing whatever the API's 401/403 looks like — the route itself is
+  // never revealed to render. Redirecting is a side effect, so it belongs in an effect, not the
+  // render body itself (which must stay pure).
+  useEffect(() => {
+    if (sessionLoading) return;
+    if (route.name === "editor" && !canEdit) {
+      navigate("/rlm-login");
+    } else if (route.name === "adminUsers" && !isAdmin) {
+      navigate(isAuthenticated ? "/editor" : "/rlm-login");
+    }
+  }, [route.name, sessionLoading, canEdit, isAdmin, isAuthenticated]);
+
+  let main: JSX.Element;
+  if (route.name === "login") {
+    main = (
+      <LoginPage
+        onLoggedIn={() => {
+          void refresh();
+          navigate("/editor");
+        }}
+      />
+    );
+  } else if (route.name === "editor") {
+    main =
+      sessionLoading || !canEdit ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <EditorApp slug={LANCASTER_MAP_SLUG} />
+      );
+  } else if (route.name === "adminUsers") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminUsersPage />;
+  } else {
+    main = <MapView slug={LANCASTER_MAP_SLUG} />;
+  }
 
   return (
     <div className="app-shell">
@@ -25,27 +72,47 @@ export function App(): JSX.Element {
           >
             Live map
           </a>
-          <a
-            className="app-nav__link"
-            href="/editor"
-            aria-current={route.name === "editor" ? "page" : undefined}
-            onClick={(e) => {
-              e.preventDefault();
-              navigate("/editor");
-            }}
-          >
-            Editor
-          </a>
+          {canEdit && (
+            <a
+              className="app-nav__link"
+              href="/editor"
+              aria-current={route.name === "editor" ? "page" : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate("/editor");
+              }}
+            >
+              Editor
+            </a>
+          )}
+          {isAdmin && (
+            <a
+              className="app-nav__link"
+              href="/admin/users"
+              aria-current={route.name === "adminUsers" ? "page" : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate("/admin/users");
+              }}
+            >
+              Users
+            </a>
+          )}
+          {isAuthenticated ? (
+            <button
+              type="button"
+              className="app-nav__link"
+              onClick={() => {
+                void logout().then(() => navigate("/"));
+              }}
+            >
+              Log out ({session.user.username})
+            </button>
+          ) : null}
         </nav>
       </header>
 
-      <main className="app-main">
-        {route.name === "editor" ? (
-          <EditorApp slug={LANCASTER_MAP_SLUG} />
-        ) : (
-          <MapView slug={LANCASTER_MAP_SLUG} />
-        )}
-      </main>
+      <main className="app-main">{main}</main>
 
       <footer className="app-footer">
         For information and enthusiast use only. Not official and not suitable for safety-critical

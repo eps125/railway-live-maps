@@ -352,9 +352,24 @@ A verified `pg_dump` process is acceptable while small. Move to physical/WAL bac
 
 - Public APIs are read-only and rate-limited.
 - Raw nationwide feeds and diagnostic endpoints are private by default.
-- Editor endpoints are disabled or private by default.
-- Prefer private networking/Tailscale or upstream OIDC for the first owner-only editor.
+- Editor and admin endpoints require a logged-in session at the right role (Milestone 29 —
+  superseded the original `EDITOR_ENABLED` boolean gate and the Tailscale/OIDC options this
+  section used to suggest instead; see below).
 - Validate all map JSON and labels before publication.
 - Apply request-size, result-count and time-range limits.
 - Use a strict Content Security Policy.
 - Never expose Network Rail credentials, archive credentials, sensitive broker headers, stack environment or raw exception internals.
+
+**Implemented (Milestone 29):** a real multi-user, role-based (`admin`/`editor`) login, not a
+single env-var credential — the owner explicitly wanted to be able to add more accounts and
+levels later without a code change. `app_user` (migration `0029_app_user.sql`) in Postgres is the
+durable identity/role record; sessions themselves live only in Redis (opaque random token as the
+`rlm_session` cookie, HttpOnly/SameSite=Lax, `Secure` unless `APP_ENV=development`) — losing them
+on a Redis restart just forces a re-login, consistent with "Redis only for ephemeral pub/sub,
+cache and coordination" (CLAUDE.md). `POST /api/v1/auth/login` is rate-limited per-IP and
+per-username. `/api/v1/editor/*` requires the `editor` role or higher; the new
+`/api/v1/admin/users` CRUD requires `admin`. The web app's login page lives at the deliberately
+non-obvious `/rlm-login`, never linked from the public UI. The very first admin account has no
+bootstrap row or env var — it's created once via the worker's `manage-users create --role admin`
+CLI (matching this repo's existing one-shot operational commands like `publish-map`); every
+account after that goes through the admin-only "Users" page in the app.

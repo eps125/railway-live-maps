@@ -14,8 +14,9 @@ export interface EditorRoutesDeps {
 
 /**
  * All Milestone 11/12 editor routes (docs/API_CONTRACT.md §4), registered as one group so
- * `server.ts` can gate the whole set behind `EDITOR_ENABLED` in a single place — when disabled,
- * none of these routes exist at all (`docs/ARCHITECTURE.md` §12: "disabled... by default").
+ * `server.ts` can gate the whole set behind a single `requireRole("editor", ...)` hook, applied
+ * to the encapsulated Fastify scope these are registered into (Milestone 29 — replaces the old
+ * `EDITOR_ENABLED` boolean gate; `docs/ARCHITECTURE.md` §12).
  */
 export async function registerEditorRoutes(
   app: FastifyInstance,

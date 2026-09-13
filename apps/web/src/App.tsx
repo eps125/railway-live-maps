@@ -1,12 +1,11 @@
 import { useEffect } from "react";
 import { MapView } from "./map/MapView.js";
 import { EditorApp } from "./editor/EditorApp.js";
+import { LandingPage } from "./LandingPage.js";
 import { navigate, useRoute } from "./useRoute.js";
 import { useSession, roleAtLeast } from "./auth/useSession.js";
 import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
-
-const LANCASTER_MAP_SLUG = import.meta.env["VITE_LANCASTER_MAP_SLUG"] ?? "lancaster";
 
 export function App(): JSX.Element {
   const route = useRoute();
@@ -20,13 +19,16 @@ export function App(): JSX.Element {
   // Milestone 29: a logged-out (or under-privileged) visit to a gated route redirects to the
   // login page instead of showing whatever the API's 401/403 looks like — the route itself is
   // never revealed to render. Redirecting is a side effect, so it belongs in an effect, not the
-  // render body itself (which must stay pure).
+  // render body itself (which must stay pure). Milestone 30: `/editor` with no slug has nothing
+  // to load — send it to the landing page, where every map's own "Edit" link carries the slug.
   useEffect(() => {
     if (sessionLoading) return;
     if (route.name === "editor" && !canEdit) {
       navigate("/rlm-login");
+    } else if (route.name === "editorPicker") {
+      navigate("/");
     } else if (route.name === "adminUsers" && !isAdmin) {
-      navigate(isAuthenticated ? "/editor" : "/rlm-login");
+      navigate(isAuthenticated ? "/" : "/rlm-login");
     }
   }, [route.name, sessionLoading, canEdit, isAdmin, isAuthenticated]);
 
@@ -36,7 +38,7 @@ export function App(): JSX.Element {
       <LoginPage
         onLoggedIn={() => {
           void refresh();
-          navigate("/editor");
+          navigate("/");
         }}
       />
     );
@@ -45,13 +47,15 @@ export function App(): JSX.Element {
       sessionLoading || !canEdit ? (
         <p className="app-loading">Loading…</p>
       ) : (
-        <EditorApp slug={LANCASTER_MAP_SLUG} />
+        <EditorApp slug={route.slug} />
       );
   } else if (route.name === "adminUsers") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminUsersPage />;
+  } else if (route.name === "map") {
+    main = <MapView slug={route.slug} />;
   } else {
-    main = <MapView slug={LANCASTER_MAP_SLUG} />;
+    main = <LandingPage canCreateMap={isAdmin} canEdit={canEdit} />;
   }
 
   return (
@@ -64,27 +68,14 @@ export function App(): JSX.Element {
           <a
             className="app-nav__link"
             href="/"
-            aria-current={route.name === "public" ? "page" : undefined}
+            aria-current={route.name === "landing" ? "page" : undefined}
             onClick={(e) => {
               e.preventDefault();
               navigate("/");
             }}
           >
-            Live map
+            Maps
           </a>
-          {canEdit && (
-            <a
-              className="app-nav__link"
-              href="/editor"
-              aria-current={route.name === "editor" ? "page" : undefined}
-              onClick={(e) => {
-                e.preventDefault();
-                navigate("/editor");
-              }}
-            >
-              Editor
-            </a>
-          )}
           {isAdmin && (
             <a
               className="app-nav__link"

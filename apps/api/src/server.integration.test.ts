@@ -95,6 +95,16 @@ describe("buildServer: role-based route gating (integration)", () => {
       headers: { cookie },
     });
     expect(adminResponse.statusCode).toBe(403);
+
+    // Milestone 30: creating a map is admin-only even though it lives under `/api/v1/editor/*` —
+    // an editor session gets the same 403 an admin-only route gives.
+    const createMapResponse = await built.app.inject({
+      method: "POST",
+      url: "/api/v1/editor/maps",
+      headers: { cookie },
+      payload: { slug: `should-not-be-created-${randomUUID()}`, name: "x" },
+    });
+    expect(createMapResponse.statusCode).toBe(403);
   });
 
   it("admin routes work for a logged-in admin", async () => {
@@ -115,6 +125,15 @@ describe("buildServer: role-based route gating (integration)", () => {
     });
     expect(adminResponse.statusCode).toBe(200);
     expect(Array.isArray(adminResponse.json().users)).toBe(true);
+
+    // Milestone 30: an admin session can reach the create-map route.
+    const createMapResponse = await built.app.inject({
+      method: "POST",
+      url: "/api/v1/editor/maps",
+      headers: { cookie },
+      payload: { slug: `admin-created-${randomUUID()}`, name: "Admin Created Map" },
+    });
+    expect(createMapResponse.statusCode).toBe(201);
   });
 
   it("public routes need no session at all", async () => {

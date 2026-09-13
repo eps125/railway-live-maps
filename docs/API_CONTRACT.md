@@ -384,8 +384,16 @@ admin-only "Users" page (`/admin/users` in the web app), which is this same API.
 **Protected (Milestone 29, see §4a):** every route below requires a valid session at the `editor`
 role or higher. A request with no session gets `401`; a session below the required role gets
 `403` (in practice `editor` is the lowest role, so any logged-in user passes this particular
-gate — `403` only shows up on the admin-only routes in §4a).
+gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/editor/maps` below).
 
+- `POST /api/v1/editor/maps` (**admin only**, Milestone 30) — body `{ slug, name }`. `slug` must
+  be lowercase letters/digits/single-hyphens (`^[a-z0-9]+(-[a-z0-9]+)*$`); `400 VALIDATION_ERROR`
+  for a missing/malformed `slug` or a missing/empty `name`; `409 DUPLICATE_SLUG` if the slug is
+  already taken (the existing map is left untouched). Creates the `map` row and seeds its initial
+  empty `map_draft` (same blank scaffold `GET .../draft` would otherwise seed on first access, just
+  named after the new map instead of the slug) in one step, returning
+  `{ slug, name, mapId, draftRevision }`. The map has no published version yet, so it does not
+  appear in `GET /api/v1/maps` until its first publish.
 - `GET /api/v1/editor/maps/{slug}/draft`
 - `PUT /api/v1/editor/maps/{slug}/draft` with optimistic revision check
 - `GET /api/v1/editor/maps/{slug}/revisions`

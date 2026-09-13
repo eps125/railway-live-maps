@@ -14,12 +14,12 @@ export interface DraftRow {
   created_at: Date;
 }
 
-function blankDocument(slug: string): MapDocument {
+function blankDocument(slug: string, name: string): MapDocument {
   return {
     schemaVersion: 1,
     map: {
       id: slug,
-      name: slug,
+      name,
       canvas: { width: 2000, height: 800, gridSize: 10 },
       timezone: "Europe/London",
     },
@@ -42,9 +42,11 @@ function blankDocument(slug: string): MapDocument {
 
 /**
  * Fetches the draft for a slug, seeding a fresh one (revision 1) on first access: from the
- * currently published version's canonical document if one exists, otherwise a blank scaffold.
- * `on conflict do update ... returning` makes the seed race-safe — two concurrent first
- * requests for the same never-before-drafted slug both get back the same, single row rather
+ * currently published version's canonical document if one exists; otherwise, if the slug already
+ * has a `map` row (Milestone 30's `POST /api/v1/editor/maps` creates one before a first publish
+ * ever happens), a blank scaffold named after that map; otherwise a blank scaffold named after the
+ * slug itself. `on conflict do update ... returning` makes the seed race-safe — two concurrent
+ * first requests for the same never-before-drafted slug both get back the same, single row rather
  * than erroring or creating a duplicate.
  */
 export async function getOrSeedDraft(pool: Pool, slug: string): Promise<DraftRow> {
@@ -53,14 +55,25 @@ export async function getOrSeedDraft(pool: Pool, slug: string): Promise<DraftRow
   if (found) return found;
 
   const version = await currentVersionForSlug(pool, slug, new Date());
-  const doc = version ? version.canonical_document : blankDocument(slug);
+  let mapId = version?.map_id ?? null;
+  let doc = version?.canonical_document;
+
+  if (!doc) {
+    const mapRow = await pool.query<{ id: string; name: string }>(
+      `select id, name from map where slug = $1`,
+      [slug],
+    );
+    const map = mapRow.rows[0];
+    mapId = map?.id ?? null;
+    doc = blankDocument(slug, map?.name ?? slug);
+  }
 
   const inserted = await pool.query<DraftRow>(
     `insert into map_draft (slug, map_id, canonical_document, revision, base_map_version_id)
      values ($1, $2, $3, 1, $4)
      on conflict (slug) do update set slug = excluded.slug
      returning *`,
-    [slug, version?.map_id ?? null, JSON.stringify(doc), version?.id ?? null],
+    [slug, mapId, JSON.stringify(doc), version?.id ?? null],
   );
   return inserted.rows[0]!;
 }

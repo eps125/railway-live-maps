@@ -10,11 +10,11 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
-→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29.
+→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30.
 
 **Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
 work first, then the resolver-first backlog):**
-30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
+31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
 
 **Milestone 33 is the owner's own task, not Claude's** — they'll author the Blackpool Line map
 themselves in the editor and report back when done; do not pick it up as implementation work.
@@ -1440,7 +1440,7 @@ preferred instead, before this gets built.
 
 </details>
 
-## Milestone 30 — create multiple maps; landing page (map list + search) `[planned]`
+## Milestone 30 — create multiple maps; landing page (map list + search) `[done — 2026-09-13]`
 
 Owner request: the ability to add more maps, and a new default page showing every current map in
 a left-hand list with a CRS/TIPLOC/STANOX search box on the right (Milestone 31).
@@ -1468,6 +1468,42 @@ Planned approach:
 Acceptance: a logged-in admin creates a new empty map from the landing page and lands in its
 editor; a logged-out visitor sees the map list (no create control) and can open any published
 map; existing Lancaster links/behavior keep working unchanged.
+
+**Status: implemented.**
+
+- `POST /api/v1/editor/maps` (`apps/api/src/routes/editor/createMap.ts`) — admin-only, registered
+  in its own `requireRole("admin", ...)`-gated Fastify scope in `server.ts` (the same
+  encapsulated-scope pattern as `routes/admin/users.ts`, one level below the `editor`-role-gated
+  scope the rest of `/api/v1/editor/*` shares, since this one route needs a stricter gate). Body
+  `{ slug, name }`; `400 VALIDATION_ERROR` for a malformed slug (`^[a-z0-9]+(-[a-z0-9]+)*$`) or
+  missing name, `409 DUPLICATE_SLUG` for an existing one. Inserts the `map` row, then calls the
+  existing `getOrSeedDraft` to seed its initial blank draft in the same request — "create a map"
+  is one admin action, not two.
+- `apps/api/src/editor/draftStore.ts`'s `getOrSeedDraft`/`blankDocument`: a slug with a `map` row
+  but no published version yet (exactly the state `createMap.ts` leaves it in) now seeds its blank
+  draft named after that map, not the bare slug — the one behavior change needed so a freshly
+  created map's editor doesn't show "lancaster"-style placeholder naming.
+- Web: `useRoute.ts` gained `/map/:slug` and `/editor/:slug` (plus an `editorPicker` case for a
+  bare `/editor`, which `App.tsx` immediately redirects to `/`); `App.tsx`'s `/` route is now the
+  new `LandingPage.tsx` instead of `MapView` hardcoded to `VITE_LANCASTER_MAP_SLUG` (removed
+  entirely — nothing hardcodes it anymore). `LandingPage.tsx`: fetches `GET /api/v1/maps`, renders
+  each as a row linking to `/map/{slug}`; an editor-or-admin session gets a per-row "Edit" link to
+  `/editor/{slug}`; an admin session additionally gets a "+ New map" form (name + auto-slugified,
+  editable slug) posting to the new create route and navigating straight to the new map's editor
+  on success. The top-nav's slug-less "Editor" link is gone (editing now always starts from a
+  specific map, via the landing page's own per-row link); the "Live map" link is renamed "Maps"
+  and now points at the landing page rather than directly at Lancaster.
+- The right-hand CRS/TIPLOC/STANOX search box is deliberately not built here — nothing to search
+  against yet (`GET /api/v1/places/search` is Milestone 31). Also out of scope: an unpublished
+  (never-yet-published) map has no way back into its own editor except the URL an admin was
+  already dropped into on creation — it won't appear in the landing list until its first publish,
+  since `GET /api/v1/maps` only ever listed currently-effective versions; not a regression (nothing
+  before this milestone could create an unpublished map at all), but worth an "in-progress drafts"
+  affordance if that turns out to matter in practice.
+- Tests: `apps/api/src/routes/editor/createMap.integration.test.ts` (create, validation, duplicate
+  slug, seeded-draft naming); a new `drafts.integration.test.ts` case for the pre-existing-map-row
+  seeding path; `apps/web/src/useRoute.test.ts`; `apps/web/src/LandingPage.test.tsx`; `App.test.tsx`
+  updated for the removed "Editor" nav link and the renamed "Maps" link.
 
 ## Milestone 31 — place identifiers on labels + nationwide CRS/TIPLOC/STANOX search `[planned]`
 

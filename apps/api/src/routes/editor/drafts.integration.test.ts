@@ -65,6 +65,24 @@ describe("editor draft routes (integration)", () => {
     }
   });
 
+  it("GET seeds a blank draft named after a pre-existing, never-published map row (Milestone 30)", async () => {
+    const slug = uniqueSlug();
+    await pool.query(`insert into map (slug, name) values ($1, $2)`, [slug, "Pre-created Map"]);
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/editor/maps/${slug}/draft`,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.mapId).not.toBeNull();
+      expect(body.canonicalDocument.map.name).toBe("Pre-created Map");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("PUT with the correct expectedRevision succeeds, bumps revision, and records a revision row", async () => {
     const slug = uniqueSlug();
     const app = await buildApp();

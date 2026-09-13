@@ -1149,3 +1149,66 @@ legend {
   padding: 0.4rem 0.5rem;
   border-bottom: 1px solid var(--color-border-subtle);
 }
+
+/* Milestone 30: map-list landing page. */
+.landing-page {
+  padding: 1.5rem;
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.landing-page__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.landing-page__maps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.landing-page__map-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+}
+
+.landing-page__map-row a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.landing-page__map-row > a:first-child {
+  font-weight: 600;
+  flex: 1;
+}
+
+.landing-page__status {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-faint);
+}
+
+.landing-page__status--ok {
+  color: var(--color-success, #3ecf6b);
+}
+
+.landing-page__status--stale {
+  color: var(--color-danger);
+}
+
+.landing-page__edit-link {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}

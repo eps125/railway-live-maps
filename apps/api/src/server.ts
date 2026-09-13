@@ -13,6 +13,7 @@ import { registerVstpRoutes } from "./routes/vstp.js";
 import { registerCurrentRunRoutes } from "./routes/currentRun.js";
 import { registerLiveMapRoutes } from "./routes/liveMap.js";
 import { registerEditorRoutes } from "./routes/editor/index.js";
+import { registerCreateMapRoute } from "./routes/editor/createMap.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
 import { requireRole } from "./auth/requireRole.js";
@@ -97,6 +98,14 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (adminScope) => {
     adminScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerAdminUserRoutes(adminScope, { pool });
+  });
+
+  // Milestone 30: creating a map is admin-only, unlike the rest of `/api/v1/editor/*` above
+  // (which any `editor`-role session can use) — its own admin-gated scope rather than folding it
+  // into `editorScope`.
+  await app.register(async (adminMapScope) => {
+    adminMapScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
+    await registerCreateMapRoute(adminMapScope, { pool });
   });
 
   const close = async (): Promise<void> => {

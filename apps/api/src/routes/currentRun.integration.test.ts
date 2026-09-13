@@ -16,6 +16,7 @@ const createdOccupancyIds: string[] = [];
 const createdScheduleIds: number[] = [];
 const createdTrustIds: string[] = [];
 const createdLocationReferenceTiplocs: string[] = [];
+const createdSmartBerthStepIds: string[] = [];
 
 let nextScheduleId = Date.now();
 function newScheduleId(): number {
@@ -50,6 +51,11 @@ afterAll(async () => {
   if (createdLocationReferenceTiplocs.length > 0) {
     await pool.query("delete from location_reference where tiploc = any($1::text[])", [
       createdLocationReferenceTiplocs,
+    ]);
+  }
+  if (createdSmartBerthStepIds.length > 0) {
+    await pool.query("delete from smart_berth_step where id = any($1::bigint[])", [
+      createdSmartBerthStepIds,
     ]);
   }
   await pool.end();
@@ -205,6 +211,17 @@ async function seedLocationReference(
   createdLocationReferenceTiplocs.push(tiploc);
 }
 
+/** Milestone 34 (docs/adr/0006): a berth's SMART-derived STANOX — the position-scoping input.
+ * `from_berth`/`to_berth` both accept the seeded berth; tests use `from_berth`. */
+async function seedSmartBerthStep(tdArea: string, berth: string, stanox: string): Promise<void> {
+  const result = await pool.query<{ id: string }>(
+    `insert into smart_berth_step (td_area, from_berth, to_berth, stanox, event_type, raw_source_json)
+     values ($1, $2, $3, $4, 'A', '{}') returning id`,
+    [tdArea, berth, `${berth}X`, stanox],
+  );
+  createdSmartBerthStepIds.push(result.rows[0]!.id);
+}
+
 async function buildApp() {
   const app = Fastify();
   await registerCurrentRunRoutes(app, { pool });
@@ -239,9 +256,11 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.headcode).toBe("1A23");
+      expect(body.matchStatus).toBe("unmatched");
+      expect(body.matchBasis).toBeNull();
       expect(body.effective).toBeNull();
       expect(body.candidateSchedules).toEqual([]);
-      expect(body.note).toContain("ADR 0002");
+      expect(body.note).toContain("No candidate schedule found");
     } finally {
       await app.close();
     }
@@ -266,9 +285,13 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         isEffective: true,
         activatedToday: false,
       });
+      // No SMART data seeded for this berth — falls to the unscoped headcode_only tier, even
+      // though STP precedence is what actually picked the single candidate within it.
+      expect(body.matchStatus).toBe("matched");
+      expect(body.matchBasis).toBe("headcode_only");
+      expect(body.positionScoped).toBe(false);
       expect(body.effective).toMatchObject({
         scheduleId: String(scheduleId),
-        selectedBy: "stp_precedence",
         activation: null,
       });
     } finally {
@@ -291,6 +314,8 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.candidateSchedules).toHaveLength(2);
+      expect(body.matchStatus).toBe("ambiguous");
+      expect(body.matchBasis).toBe("headcode_only");
       expect(body.effective).toBeNull();
       expect(body.candidateSchedules.every((c: { isEffective: boolean }) => !c.isEffective)).toBe(
         true,
@@ -318,10 +343,11 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.effective).toMatchObject({
-        scheduleId: String(activatedId),
-        selectedBy: "trust_activation",
-      });
+      // No SMART data seeded — headcode_only tier — even though the activation is what actually
+      // broke the tie inside it.
+      expect(body.matchStatus).toBe("matched");
+      expect(body.matchBasis).toBe("headcode_only");
+      expect(body.effective).toMatchObject({ scheduleId: String(activatedId) });
       expect(body.effective.activation).toMatchObject({ trustId, deduced: false, tocId: "NT" });
       expect(body.effective.latestMovement).toMatchObject({
         trustId,
@@ -369,5 +395,140 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
     } finally {
       await app.close();
     }
+  });
+
+  describe("position scoping (Milestone 34, docs/adr/0006)", () => {
+    it("excludes a same-headcode schedule calling nowhere near this berth's SMART-derived STANOX", async () => {
+      const area = uniqueArea();
+      const nearTiploc = `NR${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const farTiploc = `FR${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(nearTiploc, "Near Loc", stanox);
+      await seedSmartBerthStep(area, "0006", stanox);
+
+      await seedOccupiedBerth(area, "0006", "6A16");
+      const nearId = await seedSchedule("6A16", "P");
+      await seedScheduleLocation(nearId, 1, nearTiploc, "LO", { departure: "0900" });
+      const farId = await seedSchedule("6A16", "P");
+      await seedScheduleLocation(farId, 1, farTiploc, "LO", { departure: "0900" });
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0006/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.positionScoped).toBe(true);
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("stp_precedence");
+        // Only the near schedule was ever a candidate — the far one, despite sharing the
+        // headcode, calls nowhere this berth's SMART data says is plausible.
+        expect(body.candidateSchedules).toHaveLength(1);
+        expect(body.effective.scheduleId).toBe(String(nearId));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("is ambiguous when two position-scoped candidates share the headcode and neither is activated", async () => {
+      const area = uniqueArea();
+      const tiploc = `TP${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Shared Loc", stanox);
+      await seedSmartBerthStep(area, "0007", stanox);
+
+      await seedOccupiedBerth(area, "0007", "7A16");
+      const idA = await seedSchedule("7A16", "P");
+      await seedScheduleLocation(idA, 1, tiploc, "LO", { departure: "0900" });
+      const idB = await seedSchedule("7A16", "P");
+      await seedScheduleLocation(idB, 1, tiploc, "LO", { departure: "1000" });
+      void idA;
+      void idB;
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0007/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.positionScoped).toBe(true);
+        expect(body.matchStatus).toBe("ambiguous");
+        expect(body.matchBasis).toBe("stp_precedence");
+        expect(body.effective).toBeNull();
+        expect(body.candidateSchedules).toHaveLength(2);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("prefers a TRUST activation over STP precedence among position-scoped candidates", async () => {
+      const area = uniqueArea();
+      const tiploc = `TA${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Activated Loc", stanox);
+      await seedSmartBerthStep(area, "0008", stanox);
+
+      await seedOccupiedBerth(area, "0008", "8A16");
+      await seedSchedule("8A16", "P"); // unactivated sibling — would otherwise tie on STP.
+      const activatedId = await seedSchedule("8A16", "P");
+      await seedScheduleLocation(activatedId, 1, tiploc, "LO", { departure: "0900" });
+      const trustId = await seedActivation(activatedId, "8A16");
+      void trustId;
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0008/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.positionScoped).toBe(true);
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("trust_activation");
+        // The unactivated sibling never had a schedule location at this TIPLOC, so it was
+        // never a position-scoped candidate in the first place — only the activated one.
+        expect(body.candidateSchedules).toHaveLength(1);
+        expect(body.effective.scheduleId).toBe(String(activatedId));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("stays unmatched when the position-scoped search comes back empty, rather than falling back nationwide", async () => {
+      const area = uniqueArea();
+      const nearTiploc = `EM${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const elsewhereTiploc = `EL${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(nearTiploc, "Empty Near Loc", stanox);
+      await seedSmartBerthStep(area, "0009", stanox);
+
+      await seedOccupiedBerth(area, "0009", "9A16");
+      // This schedule shares the headcode but calls nowhere near berth 0009's SMART STANOX —
+      // if the fallback wrongly triggered on an empty scoped result, this would be (wrongly)
+      // matched instead.
+      const elsewhereId = await seedSchedule("9A16", "P");
+      await seedScheduleLocation(elsewhereId, 1, elsewhereTiploc, "LO", { departure: "0900" });
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0009/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.positionScoped).toBe(true);
+        expect(body.matchStatus).toBe("unmatched");
+        expect(body.matchBasis).toBeNull();
+        expect(body.candidateSchedules).toEqual([]);
+      } finally {
+        await app.close();
+      }
+    });
   });
 });

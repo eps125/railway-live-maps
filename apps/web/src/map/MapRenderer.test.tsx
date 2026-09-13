@@ -119,7 +119,7 @@ describe("MapRenderer", () => {
   // Skipped 2026-09-12 (owner request): berth-click popups are temporarily disabled in
   // MapRenderer.tsx (`clickEnabled = false`) pending a reimplementation. Un-skip both of these
   // once that flag is restored.
-  it.skip("opens the run popup when clicking a populated, bound berth (docs/PROJECT_SPEC.md §5)", async () => {
+  it("opens the run popup when clicking a populated, bound berth (docs/PROJECT_SPEC.md §5)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
@@ -130,7 +130,10 @@ describe("MapRenderer", () => {
             description: "2A16",
             headcode: "2A16",
             occupancyEnteredAt: null,
-            note: "garner data, not a confirmed RLM identification.",
+            matchStatus: "unmatched",
+            matchBasis: null,
+            positionScoped: false,
+            note: "No candidate schedule found for this headcode today, mirrored from openrail-eps (garner).",
             effective: null,
             candidateSchedules: [],
           }),
@@ -172,7 +175,7 @@ describe("MapRenderer", () => {
     ).toBeInTheDocument();
   });
 
-  it.skip("closes the popup via its close button", async () => {
+  it("closes the popup via its close button", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
@@ -183,7 +186,10 @@ describe("MapRenderer", () => {
             description: "2A16",
             headcode: "2A16",
             occupancyEnteredAt: null,
-            note: "garner data, not a confirmed RLM identification.",
+            matchStatus: "unmatched",
+            matchBasis: null,
+            positionScoped: false,
+            note: "No candidate schedule found for this headcode today, mirrored from openrail-eps (garner).",
             effective: null,
             candidateSchedules: [],
           }),

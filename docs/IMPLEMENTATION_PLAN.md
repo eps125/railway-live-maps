@@ -11,14 +11,15 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
 → 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
-→ 32.
+→ 32 → 34.
 
 **Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
 work first, then the resolver-first backlog):**
-33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
+35 → 36 → 37 → 38 → 13 → _Later/unscheduled_. (33 sits outside this sequence — see below.)
 
-**Milestone 33 is the owner's own task, not Claude's** — they'll author the Blackpool Line map
-themselves in the editor and report back when done; do not pick it up as implementation work.
+**Milestone 33 is the owner's own task, not Claude's, done at their leisure** — they'll author the
+Blackpool Line map themselves in the editor and report back when done; do not pick it up as
+implementation work, and do not treat it as a blocker for 34 onward.
 
 Milestone 13 (operational hardening) was drafted early (right after M12) and never started; it
 now sits last in the priority order above rather than where its number would suggest — the
@@ -1716,12 +1717,13 @@ since `server.integration.test.ts` exercises real sessions) rather than producti
 flow + cancel). `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the full unit
 suite green.
 
-## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[owner's own task — 2026-09-13]`
+## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[owner's own task — at their leisure, confirmed 2026-09-13]`
 
-**The owner will build this map themselves in the editor and report back when it's done — not a
-Claude task.** Listed here purely for planning continuity, not as work for Claude to pick up:
-not a code milestone at all, and no editor/platform work is required to unblock it once
-Milestones 29-32 land. One real dependency worth knowing about before or during authoring:
+**The owner will build this map themselves in the editor, at their own pace, and report back when
+it's done — not a Claude task.** Confirmed 2026-09-13: this stays parked until the owner picks it
+up; do not attempt it proactively. Listed here purely for planning continuity, not as work for
+Claude to pick up: not a code milestone at all, and no editor/platform work is required to unblock
+it once Milestones 29-32 land. One real dependency worth knowing about before or during authoring:
 **S-Class bit decoding is still unimplemented** (`td_s_bit_transition` exists but is unpopulated;
 no verified decode spec/fixture yet — this predates this plan, see Milestone 36). Authoring the
 map itself doesn't need to wait, but its signals will render blank (same as Lancaster/Preston
@@ -1733,16 +1735,74 @@ With 29-33 done, here is the rest of the existing backlog folded into a numbered
 with the resolver rebuild as requested. These are all pre-existing deferred items (see each for
 its original source), just sequenced here rather than left as a flat list.
 
-## Milestone 34 — rebuild the berth-run resolver `[planned]`
+## Milestone 34 — rebuild the berth-run resolver `[done — 2026-09-13]`
 
 Reinstates CLAUDE.md rules 5 and 7, held in abeyance since ADR 0002 (2026-09-01) removed the
-original resolver. Rebuild on top of garner's mirrored data instead of RLM's own: `SMART`
-berth-offset tracking for candidate generation, `trust_activation.cif_schedule_id` /
-`deduced_headcode`/`deduced_headcode_status` for the activation link (rule 6 already sources from
-this). Needs its own ADR before/while being built (CLAUDE.md: material changes to chosen technical
-direction need one) — in particular re-deciding the `matched`/`ambiguous`/`unmatched` verdict
-semantics rule 7 requires, since the interim popup currently just shows garner's own single-winner
-deduction unlabelled as an RLM verdict.
+original resolver. Rebuilt on top of garner's mirrored data instead of RLM's own.
+
+**Design, per docs/adr/0006 (spikes run against the real operator infrastructure before writing
+any code):**
+
+- Spike 1 — queried the operator's live openrail-eps MariaDB directly (read-only `rlm_bridge`
+  grant): garner's `td_states` (47,310 rows, `k`/`v` keyed by `<td_area><berth>` → current
+  headcode) is its own live TD state cache, **not** a trust_id/schedule link, and no `livesig`
+  table exists at all — it's a web UI feature name, not stored data. No shortcut available; the
+  correlation has to be built. This also corrects the plan text as it stood before this entry:
+  garner's real `trust_activation` schema is only `(created, trust_id, cif_schedule_id,
+deduced)` — no `deduced_headcode`/`deduced_headcode_status` columns exist anywhere in garner's
+  database; that detail was aspirational, not real.
+- Spike 2 — RLM's own `smart_berth_step` mirror has real coverage: 33,052 rows nationwide across
+  194 TD areas; `PX` (Preston, containing Lancaster) specifically has 423 rows, 100% carrying a
+  `stanox`. One real wrinkle, not a data problem to paper over: a berth code can carry more than
+  one STANOX (`PX` berth `0491` has 3) — treated as a set throughout, not forced to one.
+- Candidate generation: `cif_schedules` matching the berth's TD headcode and running today,
+  **position-scoped** to a TIPLOC set derived from the berth's SMART STANOX(es) via
+  `location_reference` — closing the false-positive risk of a same-headcode schedule running
+  somewhere else in the country entirely (rule 5's whole point). Only when a berth has no SMART
+  coverage at all does the search fall back to the unscoped nationwide headcode match — never
+  because the scoped search itself came back empty, which is real information, not a reason to
+  widen.
+- `matchBasis` tiers (ADR 0004 D7's already-decided ranking, `station_berth_timetable` excluded —
+  that's Milestone 35's no-headcode-at-all case): `trust_activation` (exactly one position-scoped
+  candidate activated today) > `stp_precedence` (else, pure STP precedence among them) >
+  `headcode_only` (the unscoped fallback, explicitly the weakest tier regardless of which internal
+  rule picked the winner within it — position-scoping, not the tie-break method, is what the
+  ranking is about).
+- Stays **query-time only** — no persisted resolution table, no daemon, no WS delta. Deliberate:
+  ADR 0002 removed the original resolver specifically for the operational fragility that shape
+  caused (see `[[resolver_version_bump_incident]]`); reintroducing it here would just rebuild the
+  same failure surface.
+
+**Status: implemented.**
+
+- `packages/domain/src/schedule/resolveRunMatch.ts` (+ `resolveStpPrecedence.ts`'s newly exported
+  `candidatesRunningOn`): the pure tiered decision function, unit-tested independent of the DB —
+  `trust_activation` tier checked first among candidates actually running today, ties at either
+  tier reported `ambiguous` with the full tied set, never a guess.
+- `apps/api/src/routes/currentRun.ts`: rewritten to position-scope via `smart_berth_step` →
+  `location_reference` before querying `cif_schedules`, call `resolveRunMatch`, and relabel an
+  unscoped-fallback result as `headcode_only` regardless of its internal basis. Response gains
+  `matchStatus`/`matchBasis`/`positionScoped`; `effective.selectedBy` is removed (superseded by
+  the top-level `matchBasis`, single source of truth); `note` is now tier-specific plain language.
+- `apps/web/src/map/RunPopup.tsx` updated to the new response shape. `apps/web/src/map/
+MapRenderer.tsx`'s berth click was re-enabled (`clickEnabled = true`) — it had been temporarily
+  disabled 2026-09-12 specifically pending this rebuild, per that session's own comment.
+- CLAUDE.md rules 5 and 7 updated from "held in abeyance" to reinstated; rule 6 updated to note
+  the activation link is now the actual top-priority tier, not just a same-day tie-break.
+- Tests: `resolveRunMatch.test.ts` (7 cases, pure); `currentRun.integration.test.ts` gained a
+  `describe("position scoping")` block (excludes an elsewhere-calling same-headcode schedule,
+  ambiguous when two position-scoped candidates tie, activation beats STP among scoped
+  candidates, stays unmatched rather than falling back when the scoped search is empty) alongside
+  updates to the five pre-existing cases (`selectedBy` → top-level `matchBasis`, note text); `Run
+Popup.test.tsx` and `MapRenderer.test.tsx` updated to the new shape, and the two `it.skip` popup
+  tests un-skipped now that the click is re-enabled — all pass. Integration tests run against a
+  disposable Postgres (`packages/database`'s migrate CLI against a throwaway container), not
+  production. `pnpm run build:libs`, `pnpm -r typecheck`, and the full unit suite green.
+- Known limitations: `station_berth_timetable` (no headcode at all) is explicitly out of scope,
+  Milestone 35's job; TIPLOC/STANOX matching is exact (no distance-radius fuzziness); a berth
+  with SMART coverage that happens to be wrong or stale degrades to `unmatched` rather than a
+  guess, by design, but could show as "no match" for a real train more often than the old
+  unscoped behavior did in that edge case — an accepted trade for closing the false-positive risk.
 
 ## Milestone 35 — station-berth schedule deduction `[planned]`
 

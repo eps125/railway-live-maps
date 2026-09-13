@@ -42,6 +42,16 @@ function runsOnDate(candidate: ScheduleCandidate, serviceDate: string): boolean 
   return candidate.daysRunsBitmask.charAt(mondayIndexedDay) === "1";
 }
 
+/** Milestone 34 (docs/adr/0006): the "running today" half of `selectEffectiveSchedule`, exposed
+ * on its own so `resolveRunMatch.ts` can check TRUST activation across the same running-today
+ * set before falling to STP precedence — without duplicating the date/bitmask logic. */
+export function candidatesRunningOn<T extends ScheduleCandidate>(
+  candidates: T[],
+  serviceDate: string,
+): T[] {
+  return candidates.filter((candidate) => runsOnDate(candidate, serviceDate));
+}
+
 /** Selects the single schedule that governs `serviceDate` for one `train_uid`'s candidates. */
 export function selectEffectiveSchedule<T extends ScheduleCandidate>(
   candidates: T[],

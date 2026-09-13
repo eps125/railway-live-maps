@@ -114,20 +114,26 @@ List every observed TD area with first/last event times, C-Class/S-Class counts,
 
 List observed berth identifiers and basic activity statistics for map-authoring and diagnostics.
 
-### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9; reworked by ADR 0002)
+### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9; rebuilt Milestone 34, docs/adr/0006)
 
 The live map's click-a-berth popup, one round trip (`docs/PROJECT_SPEC.md` §5 "Train/run
 popup"). 404 with `error.code: "BERTH_NOT_OCCUPIED"` when the berth has no current occupancy —
 matches "click a **populated** berth."
 
-Since ADR 0002 (2026-09-01) RLM has **no berth-run resolver** and does not claim a single train
-identity for a berth. The response instead carries, all sourced from the garner (openrail-eps)
-mirror: the TD headcode, every `cif_schedules` row whose `signalling_id` equals that headcode and
-that runs today (`candidateSchedules`), and — when one can be picked (STP precedence, or a single
-`trust_activation` today breaking an STP tie) — the `effective` schedule with its calling points,
-`trust_activation` and latest `trust_movement`. `effective` is `null` when the headcode is
-ambiguous and nothing is TRUST-activated today. A fixed `note` states this is garner's data, not
-an RLM identification.
+The berth-run resolver ADR 0002 removed (2026-09-01) was rebuilt on garner (openrail-eps) data by
+ADR 0006 (2026-09-13, Milestone 34) — query-time only, no persisted resolution table or daemon.
+Candidate `cif_schedules` rows (`signalling_id` equals the berth's TD headcode, running today) are
+**position-scoped** first — narrowed to schedules calling at a TIPLOC this berth's SMART data
+(`smart_berth_step`) says is plausible — before any tie-break runs; only when a berth has no SMART
+coverage at all does the search fall back to the unscoped nationwide headcode match, the weakest
+`headcode_only` tier. `matchStatus` is always exactly one of `matched`, `ambiguous` or `unmatched`
+(CLAUDE.md rule 7 — reinstated by this milestone, never silently resolved); `matchBasis` says which
+tier produced it (`trust_activation` > `stp_precedence` > `headcode_only`, ADR 0004 D7's ranking);
+`positionScoped` says whether SMART-derived scoping was used at all. `effective` (the picked
+schedule's calling points, `trust_activation`, latest `trust_movement`) is present only when
+`matchStatus` is `matched`; `candidateSchedules` lists whichever set was actually considered
+(position-scoped or the unscoped fallback). A `note` states the basis in plain language, always
+naming this as garner's data, not a confirmed RLM identification.
 
 ```json
 {
@@ -136,7 +142,10 @@ an RLM identification.
   "description": "2A16",
   "headcode": "2A16",
   "occupancyEnteredAt": "2026-08-10T10:14:58.000Z",
-  "note": "Candidate schedules for this headcode running today, mirrored from openrail-eps ...",
+  "matchStatus": "matched",
+  "matchBasis": "trust_activation",
+  "positionScoped": true,
+  "note": "Matched by garner's TRUST activation for a schedule scoped to schedules calling near this berth (SMART data) — not a confirmed RLM identification.",
   "candidateSchedules": [
     {
       "scheduleId": "4210031",
@@ -163,7 +172,6 @@ an RLM identification.
     "originName": "Preston",
     "destinationTiploc": "LANCSTR",
     "destinationName": "Lancaster",
-    "selectedBy": "trust_activation",
     "activation": {
       "trustId": "729S93MT10",
       "deduced": false,

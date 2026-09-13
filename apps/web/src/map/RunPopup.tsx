@@ -86,18 +86,24 @@ interface EffectiveSchedule {
   originName: string | null;
   destinationTiploc: string | null;
   destinationName: string | null;
-  selectedBy: "stp_precedence" | "trust_activation";
   activation: EffectiveActivation | null;
   latestMovement: EffectiveMovement | null;
   locations: EffectiveLocation[];
 }
 
+/** Milestone 34 (docs/adr/0006). `positionScoped` says whether `candidateSchedules` was narrowed
+ * to schedules calling near this berth (SMART data) — false means no SMART coverage exists for
+ * this berth at all, so `matchBasis` (when matched/ambiguous) is always the weakest
+ * `headcode_only` tier regardless of which internal rule actually picked among the unscoped set. */
 interface CurrentRunResponse {
   tdArea: string;
   berth: string;
   description: string | null;
   headcode: string;
   occupancyEnteredAt: string | null;
+  matchStatus: "matched" | "ambiguous" | "unmatched";
+  matchBasis: "trust_activation" | "stp_precedence" | "headcode_only" | null;
+  positionScoped: boolean;
   note: string;
   effective: EffectiveSchedule | null;
   candidateSchedules: CandidateSchedule[];
@@ -123,6 +129,12 @@ const VARIATION_LABELS: Record<EffectiveMovement["variationStatus"], string> = {
   on_time: "on time",
   late: "late",
   off_route: "off route",
+};
+
+const MATCH_BASIS_LABELS: Record<NonNullable<CurrentRunResponse["matchBasis"]>, string> = {
+  trust_activation: "TRUST activation today",
+  stp_precedence: "STP precedence",
+  headcode_only: "headcode match only — no position data, unscoped, verify",
 };
 
 /** How often the popup re-fetches while open — garner's mirror advances every ~20s, and a berth
@@ -242,11 +254,7 @@ export function RunPopup({
                   {STP_LABELS[effective.stpIndicator] ?? effective.stpIndicator}
                 </dd>
                 <dt>Picked by</dt>
-                <dd>
-                  {effective.selectedBy === "stp_precedence"
-                    ? "STP precedence"
-                    : "TRUST activation today"}
-                </dd>
+                <dd>{data.matchBasis ? MATCH_BASIS_LABELS[data.matchBasis] : "—"}</dd>
                 <dt>Operator</dt>
                 <dd>{effective.operatorCode ?? "—"}</dd>
                 <dt>Service code</dt>

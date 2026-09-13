@@ -7,9 +7,10 @@ function jsonResponse(body: unknown): Response {
 }
 
 const NOTE =
-  "Candidate schedules for this headcode running today, mirrored from openrail-eps (garner). " +
-  "RLM's berth-to-run resolver is being rebuilt (ADR 0002) — this is garner's data, not a " +
-  "confirmed RLM identification.";
+  "Matched by garner's TRUST activation for a schedule scoped to schedules " +
+  "calling near this berth (SMART data) — not a confirmed RLM identification.";
+const UNMATCHED_NOTE =
+  "No candidate schedule found for this headcode today, mirrored from openrail-eps (garner).";
 
 function baseBody(overrides: Record<string, unknown> = {}) {
   return {
@@ -18,7 +19,10 @@ function baseBody(overrides: Record<string, unknown> = {}) {
     description: "2A16",
     headcode: "2A16",
     occupancyEnteredAt: "2026-08-10T10:00:00.000Z",
-    note: NOTE,
+    matchStatus: "unmatched",
+    matchBasis: null,
+    positionScoped: false,
+    note: UNMATCHED_NOTE,
     effective: null,
     candidateSchedules: [],
     ...overrides,
@@ -37,6 +41,10 @@ describe("RunPopup", () => {
         Promise.resolve(
           jsonResponse(
             baseBody({
+              matchStatus: "matched",
+              matchBasis: "trust_activation",
+              positionScoped: true,
+              note: NOTE,
               effective: {
                 scheduleId: "42",
                 trainUid: "U12345",
@@ -49,7 +57,6 @@ describe("RunPopup", () => {
                 originName: "Preston",
                 destinationTiploc: "LANCSTR",
                 destinationName: "Lancaster",
-                selectedBy: "trust_activation",
                 activation: {
                   trustId: "729S93MT10",
                   deduced: false,
@@ -187,6 +194,10 @@ describe("RunPopup", () => {
               berth: "0513",
               description: "3A16",
               headcode: "3A16",
+              matchStatus: "ambiguous",
+              matchBasis: "headcode_only",
+              positionScoped: false,
+              note: "More than one candidate schedule remains tied.",
               effective: null,
               candidateSchedules: [
                 {
@@ -305,6 +316,9 @@ describe("RunPopup", () => {
       berth: "0226",
       description: "9S93",
       headcode: "9S93",
+      matchStatus: "matched",
+      matchBasis: "trust_activation",
+      positionScoped: true,
       effective: {
         scheduleId: "1",
         trainUid: "U99999",
@@ -317,7 +331,6 @@ describe("RunPopup", () => {
         originName: null,
         destinationTiploc: null,
         destinationName: null,
-        selectedBy: "trust_activation",
         activation: {
           trustId: "729S93MT10",
           deduced: false,

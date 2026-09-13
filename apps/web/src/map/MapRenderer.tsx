@@ -564,10 +564,10 @@ export function MapRenderer({
             // An empty berth has nothing to show a popup for — only occupied berths respond to
             // clicks (docs/PROJECT_SPEC.md §5: "click a populated berth").
             const isOccupied = Boolean(berthState?.description);
-            // Temporarily disabled 2026-09-12 (owner request) — the popup is being
-            // reimplemented; `false` here is the only change needed to restore it later, since
-            // `isOccupied` above and the click-target styling below are otherwise unchanged.
-            const clickEnabled = false;
+            // Re-enabled (Milestone 34, docs/adr/0006) — was temporarily disabled 2026-09-12
+            // pending the resolver rebuild the popup depends on; that's what `resolveRunMatch`/
+            // the position-scoped `currentRun.ts` now is.
+            const clickEnabled = true;
             // ADR 0004 D5: a vacant berth can be hidden entirely (berthmaps style).
             if (!isOccupied && !showEmptyBerths) return null;
             // ADR 0004 D1: centre the box on its bound track rather than trusting the authored

@@ -42,9 +42,16 @@ export {
 } from "./vstp/vstpNormalizationVersion.js";
 export {
   selectEffectiveSchedule,
+  candidatesRunningOn,
   type ScheduleCandidate,
   type StpPrecedenceResult,
 } from "./schedule/resolveStpPrecedence.js";
+export {
+  resolveRunMatch,
+  type RunMatchBasis,
+  type RunMatchResult,
+  type RunMatchCandidate,
+} from "./schedule/resolveRunMatch.js";
 export {
   mapToScheduleRow,
   type ScheduleSourceRecord,
@@ -90,6 +97,8 @@ export {
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,
 } from "./trust/trustNormalizationVersion.js";
-// The berth-run resolver (`./resolver/`) was removed by ADR 0002 (2026-09-01) — run↔schedule
-// correlation is deferred to a later phase built on garner's data. See docs/adr/0002 and
-// docs/IMPLEMENTATION_PLAN.md Milestone 15.
+// The original berth-run resolver (`./resolver/`) was removed by ADR 0002 (2026-09-01) —
+// run↔schedule correlation was deferred to a later phase built on garner's data. See
+// docs/adr/0002 and docs/IMPLEMENTATION_PLAN.md Milestone 15. Rebuilt (Milestone 34) as
+// `resolveRunMatch` above, per docs/adr/0006 — a pure decision function only, no persisted
+// resolution table or daemon this time.

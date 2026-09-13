@@ -1882,6 +1882,52 @@ allocation.** Full detail in docs/adr/0006's own addendum; summary here.
   narrowing actually applies. All run against a disposable Postgres, not production.
   `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the full unit suite green.
 
+**Fourth same-day follow-up (bugs found in production the same day this shipped):**
+
+1. **Migration 0031 never ran on production.** Watchtower auto-deploys new images but nothing
+   runs pending migrations, so `train_allocation` didn't exist yet — every `current-run` request
+   500'd (`relation "train_allocation" does not exist`). Fixed by running `migrate` by hand
+   (production infra has no auto-migrate step; this is a known gap, not fixed here).
+2. **Overnight-crossing schedules had their calling points sequenced tail-first.** `syncCif
+ScheduleLocations` (`apps/worker/src/garner/bridge.ts`) ordered by `sort_time` alone — a
+   within-day clock value that resets after midnight — so a schedule that runs past midnight got
+   its post-midnight calling points sequenced _before_ its pre-midnight ones (reproduced against
+   real headcode 9M63/UID W33240: Northampton/Courteenhall/Euston, all next-day, were sequencing
+   ahead of Glasgow/Motherwell/Carlisle). Fixed by extracting a pure `sequenceScheduleLocations`
+   helper that sorts by `next_day` then `sort_time` (fixture-tested, `bridge.test.ts`), and
+   one-time repairing the 36,092 already-mirrored schedules affected (1,118,183 rows) on
+   production with a two-phase `seq_no` re-sequencing `UPDATE` — no other column touched, fully
+   re-derivable from garner if ever needed.
+3. **`unitAllocation: null` crashed the whole page (blank, needs a refresh).** `currentRun.ts`
+   sent `null` (not `[]`, contradicting its own documented contract) whenever there was no
+   `effectiveRow` — i.e. every `ambiguous`/`unmatched` berth. `RunPopup.tsx`'s
+   `UnitAllocationSection` did `unitAllocation.length` unconditionally with no error boundary
+   anywhere above it, so any unresolved berth blanked the page (reproduced against PX 0127/0133,
+   both `unmatched` that day). Fixed server-side (`: []`, matching the documented contract) and
+   defensively client-side (`!unitAllocation || unitAllocation.length === 0`). Regression tests
+   added to both `currentRun.integration.test.ts` (unmatched and ambiguous cases assert `[]`) and
+   `RunPopup.test.tsx` (a `unitAllocation: null` response renders without crashing).
+4. **Owner request: the map's toolbar (map name, live status, playback button, "show empty
+   berths") no longer floats over the map.** It was `position: absolute` over the top-left corner
+   of `.map-page`, which — since the historical-playback panel (`.playback`) renders as the same
+   flow-parent's first child — visually overlaid and blocked the playback panel's own "Historical
+   playback"/"Return to live" row. Now a static, full-width bar (`.map-page__toolbar`, no more
+   `position: absolute`) sitting in normal flow directly below the app header, which fixes both
+   the requested layout change and the playback-overlay bug as one change. Verified visually
+   (screenshot) against a standalone static harness reproducing the real markup/CSS, since no
+   local backend was available to run the actual app.
+5. **Owner request: no `note` field for anonymous/public popups.** Its "matched by TRUST
+   activation/STP precedence/verify this" language is resolver-internal and only meaningful
+   alongside `matchBasis`, which anonymous visitors never receive — kept on the full (logged-in)
+   response only. `docs/API_CONTRACT.md`'s reduced-shape description updated to match.
+
+Tests: `bridge.test.ts` (+3 `sequenceScheduleLocations` cases), `currentRun.integration.test.ts`
+(+3 assertions: unmatched/ambiguous `unitAllocation`, anonymous `note` absence),
+`RunPopup.test.tsx` (+1 crash-regression case, existing anonymous-view test updated for no
+`note`). Full worker/api/web unit suites green; `currentRun.integration.test.ts` itself needs a
+migrated Postgres, not re-run here — read carefully against the new assertions instead.
+`pnpm -r typecheck` green for `@railway/api` and `@railway/web`.
+
 ## Milestone 36 — S-Class bit decoding `[planned]`
 
 Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.

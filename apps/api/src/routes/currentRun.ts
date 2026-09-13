@@ -611,9 +611,14 @@ export async function registerCurrentRunRoutes(
         };
       }
 
+      // Always an array (docs/API_CONTRACT.md: "empty when garner has nothing allocated") — an
+      // ambiguous/unmatched berth has no single train to key an allocation by, which is exactly
+      // "nothing allocated", not the absence of the field. `null` here previously crashed the web
+      // popup's unconditional `unitAllocation.length` (no effective schedule -> blank page,
+      // reported 2026-09-14 against PX 0127/0133, both `unmatched` today).
       const unitAllocation = effectiveRow
         ? await queryUnitAllocation(pool, effectiveRow.cif_train_uid, today)
-        : null;
+        : [];
 
       // Owner request (2026-09-13): a "solid" match — matched, and not the weakest unscoped
       // headcode_only tier (that one's own note already says "verify before trusting this", so
@@ -634,14 +639,16 @@ export async function registerCurrentRunRoutes(
 
       if (!isAuthenticated) {
         // Reduced, departure-board-style view — see toPublicEffective's own doc comment for
-        // exactly what's withheld and why.
+        // exactly what's withheld and why. Owner request (2026-09-14): no `note` either — its
+        // "matched by TRUST activation / STP precedence / verify this" language is resolver
+        // internals, meaningless (and a little alarming) to a visitor with no matchBasis to
+        // interpret it against; that explanation stays for the logged-in, full response only.
         return {
           tdArea,
           berth,
           headcode,
           occupancyEnteredAt,
           matchStatus: "matched" as const,
-          note: matchNote(matchResult.status, matchBasis, positionScoped),
           effective: effective ? toPublicEffective(effective) : null,
           unitAllocation,
         };

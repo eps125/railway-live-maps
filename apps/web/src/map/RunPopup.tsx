@@ -135,14 +135,16 @@ interface FullCurrentRunResponse {
 /** Owner request (2026-09-13): what an anonymous (no session cookie) visitor gets on a "solid"
  * match — the API never sends this shape unless `matchStatus` is `matched` and position-scoped
  * (not the weakest `headcode_only` tier); anything else 404s and the popup closes itself rather
- * than showing a reduced view of an ambiguous/unmatched/unreliable result. */
+ * than showing a reduced view of an ambiguous/unmatched/unreliable result. No `note` either
+ * (owner request, 2026-09-14) — the resolver-internal "matched by TRUST activation/STP
+ * precedence/verify this" language has no `matchBasis` to interpret it against out here, so it
+ * stays backend-only, on the full response. */
 interface PublicCurrentRunResponse {
   tdArea: string;
   berth: string;
   headcode: string;
   occupancyEnteredAt: string | null;
   matchStatus: "matched";
-  note: string;
   effective: PublicEffectiveSchedule | null;
   unitAllocation: UnitAllocationEntry[];
 }
@@ -271,9 +273,12 @@ function LocationsTable({ locations }: { locations: EffectiveLocation[] }): JSX.
 function UnitAllocationSection({
   unitAllocation,
 }: {
-  unitAllocation: UnitAllocationEntry[];
+  unitAllocation: UnitAllocationEntry[] | null;
 }): JSX.Element | null {
-  if (unitAllocation.length === 0) return null;
+  // Defensive: the API contract (docs/API_CONTRACT.md) always sends an array, but this popup
+  // has no error boundary anywhere above it — a bug that ever regresses this to `null`/`undefined`
+  // again should not blank the whole page (see currentRun.ts's own fix for the same 2026-09-14 bug).
+  if (!unitAllocation || unitAllocation.length === 0) return null;
   return (
     <dl>
       <dt>Formation</dt>
@@ -453,10 +458,11 @@ export function RunPopup({
             <dd>{formatIso(data.occupancyEnteredAt)}</dd>
           </dl>
 
-          <p className="map-inspector__note">{data.note}</p>
-
           {isFullResponse(data) ? (
-            <FullEffectiveDetail data={data} />
+            <>
+              <p className="map-inspector__note">{data.note}</p>
+              <FullEffectiveDetail data={data} />
+            </>
           ) : (
             <PublicEffectiveDetail data={data} />
           )}

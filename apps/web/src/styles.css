@@ -424,21 +424,20 @@ legend {
   position: relative;
 }
 
-/* Controls float over the map so the schematic uses the whole page (Traksy-style). */
+/* A static sub-nav bar below the app header (docs/PROJECT_SPEC.md request, 2026-09-14) — not a
+ * floating overlay any more, which used to sit on top of the historical-playback panel's own
+ * "Historical playback"/"Return to live" row and block it from being clicked (both `.map-page__
+ * toolbar` and `.playback` render as the first flow child of `.map-page`, so an absolutely
+ * positioned toolbar and a normal-flow playback panel occupied the same top-left corner). */
 .map-page__toolbar {
-  position: absolute;
-  top: 0.5rem;
-  left: 0.5rem;
-  z-index: 5;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
-  padding: 0.3rem 0.5rem;
-  background: rgba(13, 17, 23, 0.78);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  backdrop-filter: blur(6px);
+  padding: 0.5rem 1.25rem;
+  background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .map-page__title {
@@ -451,6 +450,7 @@ legend {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  margin-left: auto;
   font-size: 0.78rem;
   color: var(--color-text-muted);
   cursor: pointer;

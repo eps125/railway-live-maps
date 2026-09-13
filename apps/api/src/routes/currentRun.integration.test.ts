@@ -361,6 +361,10 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       expect(body.effective).toBeNull();
       expect(body.candidateSchedules).toEqual([]);
       expect(body.note).toContain("No candidate schedule found");
+      // Regression (2026-09-14, PX 0127/0133): an unmatched berth has no effective train to key
+      // an allocation by, which the web popup's `unitAllocation.length` renders unconditionally —
+      // `null` here crashed the whole page with no error boundary to catch it.
+      expect(body.unitAllocation).toEqual([]);
     } finally {
       await app.close();
     }
@@ -422,6 +426,9 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       expect(body.candidateSchedules.every((c: { isEffective: boolean }) => !c.isEffective)).toBe(
         true,
       );
+      // Same regression as the unmatched case above — ambiguous also has no single effective
+      // train, so this must stay `[]`, not `null`.
+      expect(body.unitAllocation).toEqual([]);
     } finally {
       await app.close();
     }
@@ -833,6 +840,9 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         expect(body.effective.trainUid).toBeUndefined();
         expect(body.effective.activation).toBeUndefined();
         expect(body.effective.latestMovement).toBeUndefined();
+        // Owner request (2026-09-14): no `note` for anonymous visitors either — its "matched by
+        // TRUST activation/STP precedence" language is resolver-internal, backend-only.
+        expect(body.note).toBeUndefined();
       } finally {
         await app.close();
       }

@@ -146,11 +146,13 @@ shape below. An anonymous request (no session cookie — viewing the map itself 
 gets `404 NO_PUBLIC_DETAIL` unless the match is **solid** (`matchStatus: "matched"` and
 `positionScoped: true` — the weakest `headcode_only` tier is excluded, since its own note already
 says to verify it). On a solid match, an anonymous request instead gets a reduced shape: just
-`{ tdArea, berth, headcode, occupancyEnteredAt, matchStatus: "matched", note, effective:
+`{ tdArea, berth, headcode, occupancyEnteredAt, matchStatus: "matched", effective:
 { originTiploc, originName, destinationTiploc, destinationName, operatorCode, locations } | null,
-unitAllocation }` — no `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
-`effective`'s TRUST/CIF/movement fields. This is enforced server-side (the response itself is
-shaped differently), not left to the UI to hide.
+unitAllocation }` — no `note`, `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
+`effective`'s TRUST/CIF/movement fields. `note`'s "matched by TRUST activation/STP precedence/
+verify this" language is resolver-internal and meaningless without `matchBasis` to read it
+against, so it stays on the full (logged-in) response only (owner request, 2026-09-14). This is
+enforced server-side (the response itself is shaped differently), not left to the UI to hide.
 
 **Unit/stock allocation (owner request, same day), shown to every visitor regardless of login:**
 `unitAllocation` — an array, one entry per unit in the formation (ordered by `position`), mirrored

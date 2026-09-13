@@ -288,6 +288,38 @@ describe("RunPopup", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not crash (blank page) when the API sends unitAllocation: null instead of [] (regression, 2026-09-14 — PX 0127/0133, both unmatched)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(
+            baseBody({
+              berth: "0127",
+              description: "2140",
+              headcode: "2140",
+              unitAllocation: null,
+            }),
+          ),
+        ),
+      ),
+    );
+
+    render(
+      <RunPopup
+        elementId="berth-4"
+        displayName="Berth 4"
+        tdArea="PX"
+        berth="0127"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(
+      await screen.findByText("No garner schedule matches headcode 2140 today."),
+    ).toBeInTheDocument();
+  });
+
   it("has a close button that calls onClose", async () => {
     vi.stubGlobal(
       "fetch",
@@ -447,7 +479,9 @@ describe("RunPopup", () => {
             headcode: "1A23",
             occupancyEnteredAt: "2026-08-10T10:00:00.000Z",
             matchStatus: "matched",
-            note: "Matched by garner's TRUST activation...",
+            // No `note` field — the API never sends one to anonymous visitors (owner request,
+            // 2026-09-14): the resolver-internal "matched by TRUST activation/STP precedence"
+            // language stays backend-only, on the full (logged-in) response.
             effective: {
               originTiploc: "PRST",
               originName: "Preston",
@@ -477,5 +511,7 @@ describe("RunPopup", () => {
     expect(screen.queryByText("Picked by")).not.toBeInTheDocument();
     expect(screen.queryByText("Schedule")).not.toBeInTheDocument();
     expect(screen.queryByText("TRUST ID")).not.toBeInTheDocument();
+    // Owner request (2026-09-14): no resolver-mechanics explanation shown to anonymous visitors.
+    expect(document.querySelector(".map-inspector__note")).not.toBeInTheDocument();
   });
 });

@@ -479,9 +479,39 @@ async function syncCifSchedules(
   return { upserted, touchedIds: rows.map((row) => row.id) };
 }
 
-/** garner has no ordering column on `cif_schedule_locations`; `sort_time` is its within-day
- * ordering key. For each schedule touched this cycle, delete the RLM copy and re-insert in
- * `sort_time` order so `seq_no` is a stable calling-order index. */
+/** Pure ordering step for `syncCifScheduleLocations` below (kept separate and exported so the
+ * overnight-crossing bug it fixes is fixture-testable, per this project's "keep feed parsers
+ * pure and fixture-driven" rule — the DB-touching function around it isn't).
+ *
+ * garner has no ordering column on `cif_schedule_locations`; `sort_time` is only a *within-day*
+ * ordering key — it resets to a small value just after midnight, so a schedule that runs past
+ * midnight needs `next_day` rows ordered after every same-day row, or the post-midnight calling
+ * points (low `sort_time`) sort before the pre-midnight ones (high `sort_time`) and `seq_no`
+ * comes out with the tail of the journey first (reproduced 2026-09-14 against a real overnight
+ * Glasgow-Euston working, headcode 9M63/UID W33240: Northampton/Courteenhall/Euston, all
+ * `next_day`, were sequencing ahead of Glasgow/Motherwell/Carlisle). Sorted in JS rather than
+ * trusted to the SQL `ORDER BY` so this ordering is independent of driver/collation behaviour and
+ * can be verified directly against fixture rows. */
+export function sequenceScheduleLocations<
+  T extends { cif_schedule_id: number; sort_time: number; next_day: number },
+>(rows: T[]): (T & { seqNo: number })[] {
+  const sorted = [...rows].sort((a, b) => {
+    if (a.cif_schedule_id !== b.cif_schedule_id) return a.cif_schedule_id - b.cif_schedule_id;
+    const aNextDay = bool(a.next_day) ? 1 : 0;
+    const bNextDay = bool(b.next_day) ? 1 : 0;
+    if (aNextDay !== bNextDay) return aNextDay - bNextDay;
+    return (a.sort_time ?? 0) - (b.sort_time ?? 0);
+  });
+  const seqByScheduleId = new Map<number, number>();
+  return sorted.map((row) => {
+    const seq = (seqByScheduleId.get(row.cif_schedule_id) ?? 0) + 1;
+    seqByScheduleId.set(row.cif_schedule_id, seq);
+    return { ...row, seqNo: seq };
+  });
+}
+
+/** For each schedule touched this cycle, delete the RLM copy of its `cif_schedule_locations` and
+ * re-insert in `sequenceScheduleLocations` order so `seq_no` is a stable calling-order index. */
 async function syncCifScheduleLocations(
   garner: MysqlPool,
   pg: PgPool,
@@ -489,29 +519,26 @@ async function syncCifScheduleLocations(
 ): Promise<number> {
   if (scheduleIds.length === 0) return 0;
 
-  const [rows] = await garner.query<CifScheduleLocationRow[]>(
+  const [rawRows] = await garner.query<CifScheduleLocationRow[]>(
     `select cif_schedule_id, update_id, location_type, record_identity, tiploc_code,
             tiploc_instance, arrival, departure, \`pass\`, public_arrival, public_departure,
             sort_time, next_day, platform, line, path, engineering_allowance, pathing_allowance,
             performance_allowance
      from cif_schedule_locations
-     where cif_schedule_id in (?)
-     order by cif_schedule_id asc, sort_time asc`,
+     where cif_schedule_id in (?)`,
     [scheduleIds],
   );
 
   await pg.query(`delete from cif_schedule_locations where cif_schedule_id = any($1::bigint[])`, [
     scheduleIds,
   ]);
-  if (rows.length === 0) return 0;
+  if (rawRows.length === 0) return 0;
 
-  const seqByScheduleId = new Map<number, number>();
+  const rows = sequenceScheduleLocations(rawRows);
   const tuples = rows.map((row) => {
-    const seq = (seqByScheduleId.get(row.cif_schedule_id) ?? 0) + 1;
-    seqByScheduleId.set(row.cif_schedule_id, seq);
     return [
       row.cif_schedule_id,
-      seq,
+      row.seqNo,
       row.update_id,
       nonEmpty(row.location_type),
       row.record_identity ?? "",

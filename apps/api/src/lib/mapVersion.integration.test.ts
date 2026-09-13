@@ -103,4 +103,17 @@ describe("liveDataStatus (integration)", () => {
     const status = await liveDataStatus(pool, [uniqueArea()], new Date());
     expect(status).toBe("unknown");
   });
+
+  it("reports stale (not unknown) when the only history is older than the lookback window", async () => {
+    // Milestone 30 incident fix: the main query is bounded to the last day for performance, but an
+    // area with real (if very old) history must still classify as "stale", not "unknown" — the
+    // fallback existence check is what tells the two apart.
+    const area = uniqueArea();
+    const now = new Date();
+    const veryOld = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    await seedBerthEvent(area, veryOld);
+
+    const status = await liveDataStatus(pool, [area], now);
+    expect(status).toBe("stale");
+  });
 });

@@ -1505,6 +1505,32 @@ map; existing Lancaster links/behavior keep working unchanged.
   seeding path; `apps/web/src/useRoute.test.ts`; `apps/web/src/LandingPage.test.tsx`; `App.test.tsx`
   updated for the removed "Editor" nav link and the renamed "Maps" link.
 
+**Production incident, same day (2026-09-13), root-caused and fixed within the hour:** this
+milestone's landing page was the first thing to ever call `GET /api/v1/maps` from a live browser
+(the old `/` route went straight to `/definition`/`/state` for the hardcoded Lancaster slug, never
+`/maps` itself). That endpoint's `liveDataStatus` (`apps/api/src/lib/mapVersion.ts`, shared with
+`/state`/`/live`'s quality flag) ran `select max(event_at) from td_berth_event where td_area =
+any($1::text[])` with no time bound — Postgres's single-equality MIN/MAX index rewrite doesn't
+apply to a multi-value `= ANY(array)` predicate, so this scanned every historical row for the area
+across the full nationwide retention window. A few page reloads stacked up several multi-minute
+scans and exhausted the API's 10-connection Postgres pool, taking the whole site down (10s
+connection-acquire timeouts on every other route too, not just `/maps`) — this had been a latent
+bug since Milestone 6, just never exercised by real traffic until this milestone gave it a caller.
+Restored service by restarting `railway-live-map-api-1` (drops the stuck connections; the
+alternative of `pg_terminate_backend`-ing the individual queries was blocked by the auto-mode
+permission classifier as a production-database action, so the owner chose the container-restart
+option instead). Root-caused and fixed the same session: `liveDataStatus` now bounds its main
+query to the last 24 hours (`LIVE_STATUS_LOOKBACK_MS`) — enough to cover the real "hours-stale
+heartbeat" production case from 2026-08-09 with room to spare — and only falls back to a cheap
+`exists(...)` check (which short-circuits at the first match regardless of table size, unlike
+`max()`) to distinguish "genuinely never observed" (`unknown`) from "real history, just older than
+the window" (`stale`) in the rare case nothing turns up in the bounded window. New test:
+`mapVersion.integration.test.ts`'s "reports stale (not unknown) when the only history is older
+than the lookback window" locks in that distinction. Standing rule reaffirmed (this is the same
+class of bug Milestone 15 step 6 already fixed once for `/td/areas`): every query against a table
+that grows without bound needs an explicit range or a rollup, with no exceptions for "it's just a
+freshness check."
+
 ## Milestone 31 — place identifiers on labels + nationwide CRS/TIPLOC/STANOX search `[planned]`
 
 Owner request: label elements get the same CRS/TIPLOC/STANOX identifiers stations already carry

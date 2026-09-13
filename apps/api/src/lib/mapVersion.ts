@@ -60,20 +60,59 @@ export function tdAreasFromBundle(bundle: CompiledMapBundle): string[] {
  * live-status banner permanently claim "stale" for a map that was, in fact, live — so real berth
  * activity counts as freshness evidence too, not just the dedicated heartbeat message type.
  */
+
+/**
+ * How far back `liveDataStatus`'s main query looks for the most recent event before falling back
+ * to the `everObserved` existence check below. Almost every real, currently-mapped area has *some*
+ * event within a day, so this bound covers the common case in one cheap, index-friendly query;
+ * the rare "genuinely nothing in the last day" case still gets the right answer, just via one
+ * extra query (see below).
+ *
+ * Bounding this query is not optional: without it (production incident, 2026-09-13), `= any(text[])`
+ * defeats Postgres's usual "index scan for MAX" rewrite (that optimization only applies to a
+ * single equality, not a multi-value array), so an unbounded `max(event_at) where td_area =
+ * any($1)` scans every historical row ever recorded for that area — months of nationwide capture
+ * — instead of stopping at the newest one. Milestone 30's landing page was the first thing to ever
+ * call `GET /api/v1/maps` from a live browser (nothing did before); a few page reloads were enough
+ * to stack up several of these multi-minute scans and exhaust the API's whole 10-connection
+ * Postgres pool, taking every other route down with 10s connection-acquire timeouts. Bounding the
+ * range here also lets Postgres prune `td_berth_event`'s monthly partitions outright, matching the
+ * project's standing rule (docs/IMPLEMENTATION_PLAN.md Milestone 15 step 6): every
+ * projector/bridge query carries an explicit bounded range or reads a rollup, never an unbounded
+ * scan of a table that grows without limit.
+ */
+const LIVE_STATUS_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
 export async function liveDataStatus(
   pool: Pool,
   tdAreas: string[],
   now: Date,
 ): Promise<"ok" | "stale" | "unknown"> {
   if (tdAreas.length === 0) return "unknown";
+  const since = new Date(now.getTime() - LIVE_STATUS_LOOKBACK_MS);
   const result = await pool.query<{ last_activity_at: Date | null }>(
     `select greatest(
-       (select max(event_at) from td_heartbeat where td_area = any($1::text[])),
-       (select max(event_at) from td_berth_event where td_area = any($1::text[]))
+       (select max(event_at) from td_heartbeat where td_area = any($1::text[]) and event_at >= $2),
+       (select max(event_at) from td_berth_event where td_area = any($1::text[]) and event_at >= $2)
      ) as last_activity_at`,
-    [tdAreas],
+    [tdAreas, since],
   );
   const lastActivityAt = result.rows[0]?.last_activity_at;
-  if (!lastActivityAt) return "unknown";
-  return now.getTime() - lastActivityAt.getTime() <= FRESHNESS_THRESHOLD_MS ? "ok" : "stale";
+  if (lastActivityAt) {
+    return now.getTime() - lastActivityAt.getTime() <= FRESHNESS_THRESHOLD_MS ? "ok" : "stale";
+  }
+
+  // Nothing in the last day — could be a genuinely never-observed area ("unknown") or one that
+  // really has gone quiet for over a day ("stale", not "unknown": it was mapped and has real
+  // history, just not recently). `exists(...)` short-circuits at the first matching row per the
+  // same `(td_area, event_at desc)` index, so this stays cheap regardless of table size — unlike
+  // `max()`, an existence check doesn't need Postgres's single-equality MIN/MAX rewrite to avoid
+  // scanning every row.
+  const everObserved = await pool.query<{ observed: boolean }>(
+    `select
+       exists(select 1 from td_heartbeat where td_area = any($1::text[]))
+       or exists(select 1 from td_berth_event where td_area = any($1::text[])) as observed`,
+    [tdAreas],
+  );
+  return everObserved.rows[0]?.observed ? "stale" : "unknown";
 }

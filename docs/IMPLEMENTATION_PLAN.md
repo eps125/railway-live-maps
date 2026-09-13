@@ -1971,6 +1971,59 @@ buried footnote again:
 Sequenced after Milestones 29-33 per owner decision (2026-09-13) — the admin/multi-map/search
 work and the Blackpool map land first; this stays the next milestone after that.
 
+## Milestone 39 — sticky run-lineage matching across berth steps and TD-area boundaries `[done — 2026-09-14]`
+
+Owner request, 2026-09-14 (docs/adr/0007), following the 1P03 ambiguity investigation: once an
+occupancy is confidently matched, thread that identity forward along `td_berth_event` `CA` (berth
+step) chains instead of re-resolving headcode/position from scratch at every berth — a `CA` event
+is direct signalling evidence of physical continuity, strictly stronger than a headcode string.
+(The ADR's first draft named `CB` for this — corrected against the real reducers,
+`packages/domain/src/td/berthReducer.ts`, before implementing: `CA` closes `from`/opens `to`
+[the step], `CB` closes `from` only [cancel, chain-breaking], `CC` opens `to` only [fresh
+interpose, cold start].) Extended to cross-TD-area boundaries via owner-curated reference data
+(never auto-derived/auto-applied) plus corroboration (schedule timing, `trust_movement`
+continuity), never headcode alone. Full design, confidence-tiering rules, and the three owner
+decisions (inherit-and-cap confidence; boundary pairs entered by the owner through a new editor
+screen; joins/splits always reset to fresh resolution) are in docs/adr/0007.
+
+Checklist:
+
+- [x] Migration 0032: `train_run`, `berth_occupancy_run_link`, `td_area_boundary`. No change to
+      any existing table — the projector's occupancy lookups reuse the existing
+      `(td_area, berth_code, entered_at desc)` index rather than adding one to the huge, hot
+      `berth_occupancy`.
+- [x] Pure domain logic (fixture-tested, `packages/domain/src/schedule/runLineage.ts`,
+      16 cases): confidence-capping on inheritance, clean-step/feed-gap chain-break detection,
+      boundary corroboration eligibility scoring.
+- [x] `run-lineage-daemon` (worker, `apps/worker/src/runLineage/projector.ts`), checkpointed
+      against `td_berth_event`, wired into command dispatch and
+      `deploy/docker-compose.portainer.yml`.
+- [x] `currentRun.ts`: lineage lookup (`apps/api/src/lib/runLineage.ts`) ahead of the existing
+      ADR 0006/0035 resolver; `matchBasis` gains `step_chain`/`boundary_correlated`, confidence
+      surfaced verbatim, never upgraded. A real (non-lineage) `matched` result establishes/
+      corrects the link afterward; a lineage-shortcut match never rewrites it (would relabel
+      inherited provenance as fresh).
+- [x] Admin-only editor screen (`apps/web/src/auth/TdBoundariesPage.tsx`, `/admin/td-boundaries`) + API routes (`apps/api/src/routes/admin/tdBoundaries.ts`) for curating `td_area_boundary` —
+      same `AdminUsersPage`/role-gating pattern, reference data entry, not Konva canvas authoring.
+- [x] Correction path: fresher evidence (new `trust_activation`, STP change) supersedes an
+      inherited link (`train_run.superseded_by`) rather than freezing it.
+- [x] Docs: `DATA_MODEL.md` §8, `API_CONTRACT.md` (current-run + new admin endpoints),
+      `ARCHITECTURE.md` (new daemon), this checklist.
+- [x] Resolves the "Map continuation/follow-train behaviour" line previously under
+      Later/unscheduled below.
+
+Tests: `runLineage.test.ts` (16 pure-logic cases), `projector.integration.test.ts` (4 cases —
+step-chain inheritance + confidence cap, no-propagation-when-unlinked, boundary correlation via
+TRUST movement continuity, boundary ambiguity with two unclaimed candidates), `tdBoundaries.
+integration.test.ts` (4 cases), `TdBoundariesPage.test.tsx` (3 cases). `pnpm -r typecheck` and
+`pnpm run lint` green for every touched package. **Known limitation**: the two new integration
+test files could not be run locally this session (no local Postgres available, and an SSH tunnel
+to a disposable remote one was blocked by the sandbox) — typechecked and reviewed carefully
+against real schema/query behavior, but their first actual execution is CI's `test:integration`
+job. Also not attempted, matching the ADR's explicit scope: portion join/split tracking (resets to
+fresh resolution instead) and any SMART-derived auto-suggestion for boundary entry (owner-curated
+only, by design).
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:
@@ -1983,8 +2036,6 @@ Smaller pre-existing deferred items not yet worth their own milestone:
   Milestone 21, silently orphans references.
 - No live drag feedback / no multi-node Transformer box for multi-select group-move — cosmetic
   only.
-- Map continuation/follow-train behaviour — removed with the original resolver, no replacement
-  built; likely revisit alongside Milestone 34.
 - Dedicated schedule/run/berth-history web pages (currently just the inline popup + raw API
   identifiers).
 - `signal.updated` WS message — listed in the API contract as future, unimplemented.

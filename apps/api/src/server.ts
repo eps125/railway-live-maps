@@ -18,6 +18,7 @@ import { registerCreateMapRoute } from "./routes/editor/createMap.js";
 import { registerManageMapRoutes } from "./routes/editor/manageMap.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
+import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
 import { requireRole } from "./auth/requireRole.js";
 import { createPollingDeltaSource } from "./live/pollingDeltaSource.js";
 import { createRedisDeltaSource } from "./live/redisDeltaSource.js";
@@ -101,6 +102,13 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (adminScope) => {
     adminScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerAdminUserRoutes(adminScope, { pool });
+  });
+
+  // Milestone 39 (docs/adr/0007): admin-only TD-area boundary curation — same gate as user
+  // management, since this is reference config, not day-to-day editor work.
+  await app.register(async (tdBoundaryScope) => {
+    tdBoundaryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
+    await registerTdBoundaryRoutes(tdBoundaryScope, { pool });
   });
 
   // Milestone 30: creating a map is admin-only, unlike the rest of `/api/v1/editor/*` above

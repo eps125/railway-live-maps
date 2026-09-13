@@ -129,7 +129,9 @@ has no SMART coverage at all does the search fall back to the unscoped nationwid
 the weakest `headcode_only` tier. `matchStatus` is always exactly one of `matched`, `ambiguous` or
 `unmatched` (CLAUDE.md rule 7 — reinstated by Milestone 34, never silently resolved); `matchBasis`
 says which tier produced it (`trust_activation` > `stp_precedence` > `station_berth_timetable` >
-`headcode_only`, ADR 0004 D7's ranking). `station_berth_timetable` (Milestone 35) only applies to
+`headcode_only`, ADR 0004 D7's ranking — plus `step_chain` / `boundary_correlated`, Milestone 39,
+docs/adr/0007, when the match came from inherited lineage rather than this request's own
+headcode/position search; see below). `station_berth_timetable` (Milestone 35) only applies to
 a position-scoped berth: when STP precedence alone leaves more than one tied candidate, it's
 broken by whichever candidate's scheduled calling time at that station is closest to _now_ — not
 to when the berth was entered (a headcode is often interposed hours before its scheduled
@@ -143,9 +145,9 @@ naming this as garner's data, not a confirmed RLM identification.
 
 **Role-gated response (owner request, same day):** a logged-in session (any role) gets the full
 shape below. An anonymous request (no session cookie — viewing the map itself never needs one)
-gets `404 NO_PUBLIC_DETAIL` unless the match is **solid** (`matchStatus: "matched"` and
-`positionScoped: true` — the weakest `headcode_only` tier is excluded, since its own note already
-says to verify it). On a solid match, an anonymous request instead gets a reduced shape: just
+gets `404 NO_PUBLIC_DETAIL` unless the match is **solid** — the weakest `headcode_only` tier is
+excluded, since its own note already says to verify it. On a solid match, an anonymous request
+instead gets a reduced shape: just
 `{ tdArea, berth, headcode, occupancyEnteredAt, matchStatus: "matched", effective:
 { originTiploc, originName, destinationTiploc, destinationName, operatorCode, locations } | null,
 unitAllocation }` — no `note`, `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
@@ -153,6 +155,20 @@ unitAllocation }` — no `note`, `matchBasis`, `positionScoped`, `candidateSched
 verify this" language is resolver-internal and meaningless without `matchBasis` to read it
 against, so it stays on the full (logged-in) response only (owner request, 2026-09-14). This is
 enforced server-side (the response itself is shaped differently), not left to the UI to hide.
+
+**Sticky run-lineage matching (Milestone 39, docs/adr/0007):** before running the resolver above
+at all, the route checks whether the berth's currently open occupancy already carries a run link
+— established by an earlier click here, or inherited by `run-lineage-daemon` from a berth this
+train physically stepped from (`matchBasis: "step_chain"`) or across an owner-curated TD-area
+boundary crossing (`matchBasis: "boundary_correlated"`). If so, `effective` is built directly from
+that linked schedule and headcode/position resolution is skipped entirely for this request.
+"Solid" for the anonymous gate above then follows the link's own inherited confidence (capped at
+whatever produced it originally — inheriting from a `headcode_only` match stays weak downstream,
+never upgrades) rather than being re-derived from `matchBasis` alone. A real (non-lineage) match
+always establishes or corrects the link afterward so a later physical step can carry it forward;
+a lineage-shortcut match never rewrites it, so its `step_chain`/`boundary_correlated` provenance
+isn't lost. Every field on this response otherwise behaves identically regardless of which path
+produced the match.
 
 **Unit/stock allocation (owner request, same day), shown to every visitor regardless of login:**
 `unitAllocation` — an array, one entry per unit in the formation (ordered by `position`), mirrored
@@ -430,6 +446,20 @@ There is no self-registration and no password-reset flow — the first admin acc
 the worker's `manage-users create --role admin` one-shot CLI (no bootstrap row, no env-var
 credential — see `docs/ARCHITECTURE.md` §12); every account after that is managed through the
 admin-only "Users" page (`/admin/users` in the web app), which is this same API.
+
+**TD-area boundaries (Milestone 39, docs/adr/0007), admin only:** owner-curated reference data
+`run-lineage-daemon` uses to correlate a matched run across a TD-area crossing — never auto-derived
+or auto-applied, this API is the only way a pair gets in.
+
+- `GET /api/v1/admin/td-boundaries` — `{ boundaries: [{ id, areaA, berthA, areaB, berthB, notes,
+createdBy, createdAt }] }`.
+- `POST /api/v1/admin/td-boundaries` — body `{ areaA, berthA, areaB, berthB, notes? }`, all four
+  area/berth fields required non-empty strings. `409 DUPLICATE_BOUNDARY` for an existing
+  `(areaA, berthA, areaB, berthB)` pair.
+- `DELETE /api/v1/admin/td-boundaries/{id}` — `204` on success, `404` if already gone.
+
+Managed through the admin-only "TD boundaries" page (`/admin/td-boundaries` in the web app), which
+is this same API.
 
 ## 4. Editor API
 

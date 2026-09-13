@@ -110,6 +110,11 @@ up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR 0
 - **`snapshot-maps`** (Milestone 10) — every `SNAPSHOT_INTERVAL_MS` (default 5 min) writes one
   `map_state_snapshot` per effective published map version, using the same `reconstructMapStateAt`
   the API's `/state?at=` calls. Not latency-sensitive; a cache/audit of point-in-time state.
+- **`run-lineage`** (`run-lineage-daemon`, Milestone 39, docs/adr/0007, 1s tick) — background
+  enrichment only, no Redis dependency: threads an already-`resolved` run identity (established by
+  `currentRun.ts` on a click) forward along `td_berth_event` `CA` step chains and owner-curated
+  `td_area_boundary` crossings, so a later click on a berth the train physically stepped through
+  can skip headcode/position re-resolution entirely. Never establishes a run itself.
 
 `berth_current_state` therefore has two monotonic-guarded writers — `ingest-td` inline (wins at
 the feed head) and `projector-td-live` (no-op in steady state). `projector-td` no longer writes

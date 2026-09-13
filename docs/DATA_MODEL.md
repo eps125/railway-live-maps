@@ -380,6 +380,35 @@ File-based ingestion has no per-message ack to hang lineage off the way STOMP fr
 > never a silent single guess. See docs/adr/0006 for the full design, including two rejected
 > `station_berth_timetable` designs and why.
 
+> **ADR 0007 (2026-09-14, Milestone 39):** once `currentRun.ts` resolves a berth's occupancy, that
+> identity now threads forward along physical `td_berth_event` `CA` (berth step) chains and
+> owner-curated TD-area boundary crossings, rather than being re-derived by headcode/position
+> every time a different berth on the same journey is clicked. A **much thinner** reintroduction
+> of run tracking than the model ADR 0002 removed: `train_run` here is an identity pointer only
+> (`cif_schedule_id`/`cif_train_uid`/`traffic_day`), never a duplicate of schedule content, and
+> carries no backfill/version-bump machinery — just a checkpointed projector like any other.
+
+- **`train_run`** — `cif_schedule_id` (nullable FK into `cif_schedules`), `cif_train_uid`,
+  `traffic_day`, `match_basis` (adds `step_chain` / `boundary_correlated` to ADR 0006's four
+  tiers), `match_confidence` (`solid` / `weak`), `established_td_area`/`established_berth`,
+  `superseded_by` (self-FK, set when fresher evidence corrects this run rather than the row being
+  silently overwritten).
+- **`berth_occupancy_run_link`** — one row per `berth_occupancy` interval (composite FK, same
+  `(id, entered_at)` shape `berth_current_state_occupancy_fk` already uses, since
+  `berth_occupancy` is partitioned by `entered_at`), pointing at its `train_run` and tagged
+  `link_basis`: `resolved` (a click established it), `step_chain` (inherited via a clean `CA`
+  step), or `boundary_correlated` (inherited across a curated crossing).
+- **`td_area_boundary`** — owner-curated only (never auto-derived from SMART or auto-applied):
+  `area_a`/`berth_a` ↔ `area_b`/`berth_b` physical adjacency pairs, entered through the editor's
+  admin-only "TD boundaries" screen. `run-lineage-daemon` (`apps/worker/src/runLineage/
+projector.ts`) looks a berth up on both sides.
+
+Confidence is capped on inheritance — a `step_chain`/`boundary_correlated` link is never stronger
+than whatever match it descended from (owner decision, 2026-09-14). A boundary crossing only
+correlates when corroborated by the run's own schedule timing or continued TRUST movement
+reports, never by headcode alone; more than one plausible candidate on the far side is left
+unlinked (ambiguous), exactly as any other tier. See docs/adr/0007 for the full design.
+
 ## 9. Map tables
 
 ### `map`

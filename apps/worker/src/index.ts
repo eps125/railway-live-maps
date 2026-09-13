@@ -25,6 +25,7 @@ import { runIngestGarner } from "./commands/ingestGarner.js";
 import { runSnapshotMapsCommand, runSnapshotMapsDaemon } from "./commands/snapshotMaps.js";
 import { runRepairOpenOccupancies } from "./commands/repairOpenOccupancies.js";
 import { runManageUsers } from "./commands/manageUsers.js";
+import { runRunLineageDaemon } from "./commands/runLineageDaemon.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -91,6 +92,9 @@ async function main(): Promise<void> {
       return;
     case "snapshot-maps-daemon":
       await runSnapshotMapsDaemon(config);
+      return;
+    case "run-lineage-daemon":
+      await runRunLineageDaemon(config);
       return;
     case "serve":
       await runServe(config);

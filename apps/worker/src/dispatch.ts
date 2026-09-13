@@ -36,7 +36,9 @@ export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
  * Rail for those feeds, so the `ingest-vstp` / `ingest-trust` roles and the `project-vstp` /
  * `project-trust` / `import-schedule` / `download-schedule` commands were removed. (The
  * `project-resolver` daemon/commands went the same way, with the rest of the berth-run
- * resolver.) */
+ * resolver.) "run-lineage-daemon" (Milestone 39, docs/adr/0007) threads an already-resolved run
+ * identity forward along TD berth-step chains and TD-area boundary crossings — background
+ * enrichment, not on the hot or history path. */
 export const LONG_RUNNING_ROLE_NAMES = [
   "serve",
   "ingest-td",
@@ -45,6 +47,7 @@ export const LONG_RUNNING_ROLE_NAMES = [
   "project-td-live-daemon",
   "ingest-garner",
   "snapshot-maps-daemon",
+  "run-lineage-daemon",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];
 

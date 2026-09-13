@@ -59,6 +59,20 @@ export {
   closestToNow,
 } from "./schedule/stationBerthTiming.js";
 export {
+  confidenceForBasis,
+  capInheritedConfidence,
+  evaluateStepChain,
+  evaluateBoundaryCorroboration,
+  isSameRunIdentity,
+  type RunMatchBasisExtended,
+  type MatchConfidence,
+  type StepChainInput,
+  type StepChainVerdict,
+  type BoundaryCorroborationInput,
+  type BoundaryCorroborationVerdict,
+  type ResolvedRunIdentity,
+} from "./schedule/runLineage.js";
+export {
   mapToScheduleRow,
   type ScheduleSourceRecord,
   type ScheduleSourceLocation,

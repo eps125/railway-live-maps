@@ -6,6 +6,7 @@ import { navigate, useRoute } from "./useRoute.js";
 import { useSession, roleAtLeast } from "./auth/useSession.js";
 import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
+import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
 
 export function App(): JSX.Element {
   const route = useRoute();
@@ -27,7 +28,7 @@ export function App(): JSX.Element {
       navigate("/rlm-login");
     } else if (route.name === "editorPicker") {
       navigate("/");
-    } else if (route.name === "adminUsers" && !isAdmin) {
+    } else if ((route.name === "adminUsers" || route.name === "adminTdBoundaries") && !isAdmin) {
       navigate(isAuthenticated ? "/" : "/rlm-login");
     }
   }, [route.name, sessionLoading, canEdit, isAdmin, isAuthenticated]);
@@ -52,6 +53,9 @@ export function App(): JSX.Element {
   } else if (route.name === "adminUsers") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminUsersPage />;
+  } else if (route.name === "adminTdBoundaries") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <TdBoundariesPage />;
   } else if (route.name === "map") {
     // Milestone 31: a places-search click-through carries `?center=<elementId>` — read directly
     // from the URL rather than teaching useRoute about query strings, since only this one route
@@ -102,6 +106,19 @@ export function App(): JSX.Element {
               }}
             >
               Users
+            </a>
+          )}
+          {isAdmin && (
+            <a
+              className="app-nav__link"
+              href="/admin/td-boundaries"
+              aria-current={route.name === "adminTdBoundaries" ? "page" : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate("/admin/td-boundaries");
+              }}
+            >
+              TD boundaries
             </a>
           )}
           {isAuthenticated ? (

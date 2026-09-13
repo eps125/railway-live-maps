@@ -91,6 +91,17 @@ Occurrences across all retained TD areas.
 > run-following left the web client. Run↔schedule detail now comes from the garner mirror via the
 > `current-run` popup endpoint below.
 
+### `GET /api/v1/places/search?q=` (Milestone 31)
+
+Nationwide place search, public/no session required. Matches `q` against `location_reference`
+(CORPUS-sourced) by name/CRS/TIPLOC/STANOX, left-joined against `map_place_index` restricted to
+each map's currently-effective version. `400 VALIDATION_ERROR` for a missing/blank `q`; `limit`
+optional (default 20, max 50). Returns
+`{ results: [{ tiploc, stanox, crs, name, mapSlug, elementId }] }` — `mapSlug`/`elementId` are
+`null` when nothing currently published covers that place (inert, not an error). A result with a
+map jumps straight to `/map/{mapSlug}?center={elementId}` in the web app, which centers the public
+renderer's initial view on that element.
+
 ### `GET /api/v1/status`
 
 Sanitized status of web/API, nationwide feeds, archive durability, projections, schedules, storage pressure and playback.

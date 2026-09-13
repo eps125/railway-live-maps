@@ -10,11 +10,11 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
-→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30.
+→ 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31.
 
 **Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
 work first, then the resolver-first backlog):**
-31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
+32 → 33 → 34 → 35 → 36 → 37 → 38 → 13 → _Later/unscheduled_.
 
 **Milestone 33 is the owner's own task, not Claude's** — they'll author the Blackpool Line map
 themselves in the editor and report back when done; do not pick it up as implementation work.
@@ -1531,7 +1531,7 @@ class of bug Milestone 15 step 6 already fixed once for `/td/areas`): every quer
 that grows without bound needs an explicit range or a rollup, with no exceptions for "it's just a
 freshness check."
 
-## Milestone 31 — place identifiers on labels + nationwide CRS/TIPLOC/STANOX search `[planned]`
+## Milestone 31 — place identifiers on labels + nationwide CRS/TIPLOC/STANOX search `[done — 2026-09-13]`
 
 Owner request: label elements get the same CRS/TIPLOC/STANOX identifiers stations already carry
 (so junctions are searchable by name too, not just stations), and the landing page's search box
@@ -1561,6 +1561,48 @@ Planned approach:
 Acceptance: tagging a junction label with a TIPLOC/CRS/STANOX and publishing makes it findable by
 that identifier or by name from the landing page; an identifier with no covering map yet degrades
 gracefully instead of erroring.
+
+**Status: implemented.**
+
+- `packages/map-schema/src/document.ts`: `LabelElementSchema` gains optional `crs`/`tiploc`/
+  `stanox` (metadata only, not rendered — same as a station's); `StationElementSchema` gains the
+  missing `stanox` (already had `crs`/`tiploc`).
+- `packages/map-schema/src/compiler.ts`: `CompiledMapBundle.placeBindingIndex` — every station/
+  label with at least one identifier, built alongside `berthBindingIndex`/`sBitBindingIndex` in
+  `compileMapDocument`.
+- Migration `0030_map_place_index.sql`: `map_place_index` (map version, element id/type, tiploc/
+  stanox/crs — at least one required), parallel to `map_binding_index` but with no uniqueness
+  constraint (a discovery/search index, not a routing-correctness-critical one).
+  `packages/map-publish/src/mapPlaceIndex.ts`'s `insertMapPlaceIndexRows` populates it; wired into
+  `publishMapVersion.ts` right after `insertMapBindingIndexRows`. No backfill command — none of the
+  currently-published maps had a tagged station/label yet (see the table's own doc comment in
+  `docs/DATA_MODEL.md` if that changes).
+- `GET /api/v1/places/search?q=` (`apps/api/src/routes/places.ts`, public, registered alongside
+  `GET /api/v1/maps`): matches `location_reference` by name/CRS/TIPLOC/STANOX, left-joined against
+  `map_place_index` restricted to each map's currently-effective version (an aggregate `group by`
+  - `array_agg(...) filter (...)` collapses a location matching both a current and a historical
+    `map_place_index` row down to the current one). `location_reference` is CORPUS's bounded,
+    nationwide-but-finite location list — not the kind of ever-growing event table the Milestone 30
+    incident (and Milestone 15 step 6 before it) was about, so the `ilike` scan here needed no special
+    indexing.
+- Web: `PropertyPanel.tsx` gained the CRS/TIPLOC/STANOX fields for `label` and the STANOX field for
+  `station`. `MapRenderer.tsx` gained `centerElementId` (+ exported `elementCenterPoint` helper):
+  set once at mount, it centres the initial view on that element instead of the remembered/default
+  view (silently ignored for an unknown id or a points-based `trackPath`/`platform`).
+  `MapView.tsx`/`App.tsx` thread a `?center=<elementId>` query param on the `/map/:slug` route
+  through to it. `LandingPage.tsx` gained a right-hand search column: debounced as-you-type
+  `GET /api/v1/places/search`, a clickable result (`/map/{slug}?center={elementId}`) when a map
+  covers it, an inert "not on any published map yet" row when not.
+- Tests: `document.test.ts`/`compiler.test.ts` (new schema fields, `placeBindingIndex` build/skip);
+  `publishMap.integration.test.ts` new `map_place_index` describe block;
+  `apps/api/src/routes/places.test.ts` (unit) + `places.integration.test.ts` (real join, including
+  the superseded-version exclusion); `MapRenderer.test.tsx` (centering + `elementCenterPoint`);
+  `PropertyPanel.test.tsx` (new label fields); `LandingPage.test.tsx` (search debounce, covering/
+  inert results, click-through, clearing the query). `pnpm run build:libs`, `pnpm -r typecheck`,
+  `pnpm run lint`, `pnpm run format:check` and the full unit suite all green.
+- Known limitations: search matches via `ilike '%q%'` on all four columns (no ranking/relevance —
+  first match order is `lr.name`); no pagination beyond the flat `limit` cap; centering only
+  applies to the live map view, not historical playback.
 
 ## Milestone 32 — boundary elements link to the adjacent map `[planned]`
 

@@ -56,6 +56,7 @@ function minimalBundle(mapId: string) {
     elementsById: {},
     berthBindingIndex: {},
     sBitBindingIndex: {},
+    placeBindingIndex: [],
     boundingBox: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
     topologyAdjacency: {},
     continuationLinks: [],

@@ -20,6 +20,12 @@ export interface MapRendererProps {
   /** ADR 0004 D5: when false, vacant berths draw nothing (berthmaps behaviour); occupied
    * berths are unaffected. Defaults to true — parity with the pre-ADR renderer. */
   showEmptyBerths?: boolean;
+  /** Milestone 31: jump to and centre the initial view on this element (a places-search
+   * click-through) instead of the remembered/default view. Only evaluated on first mount —
+   * subsequent identical prop values don't re-centre a view the visitor has since panned away
+   * from. Silently ignored if the element doesn't exist in this bundle or has no single (x, y)
+   * point (e.g. a `trackPath`/`platform`, which are polylines). */
+  centerElementId?: string | null;
 }
 
 export interface ViewBox {
@@ -232,6 +238,25 @@ function defaultView(bundle: CompiledMapBundle, pxW = 1200, pxH = 700): ViewBox 
   return { x: cx - width / 2, y: cy - height / 2, width, height };
 }
 
+/** A fixed-magnification view centred on an arbitrary point rather than the map's bounding box —
+ * used for Milestone 31's "jump to this place from search" click-through. Same magnification
+ * convention as `defaultView`. */
+function pointCenteredView(x: number, y: number, pxW = 1200, pxH = 700): ViewBox {
+  const width = Math.max(pxW * DEFAULT_UNITS_PER_PX, MIN_ZOOM_WIDTH);
+  const height = Math.max(pxH * DEFAULT_UNITS_PER_PX, MIN_ZOOM_WIDTH);
+  return { x: x - width / 2, y: y - height / 2, width, height };
+}
+
+/** The single (x, y) point of an element that has one — every type except the polyline-shaped
+ * `trackPath`/`platform`. Exported for Milestone 31's centering logic and unit tests. */
+export function elementCenterPoint(
+  element: MapElement | undefined,
+): { x: number; y: number } | null {
+  if (!element) return null;
+  if (element.type === "trackPath" || element.type === "platform") return null;
+  return { x: element.x, y: element.y };
+}
+
 /** Pure zoom math for a two-finger pinch, factored out so it's directly unit-testable — jsdom
  * (this project's test environment) doesn't implement the `PointerEvent` constructor at all, so
  * a genuine two-distinct-pointer gesture can't be reliably simulated through fireEvent; this is
@@ -260,14 +285,25 @@ export function MapRenderer({
   berths,
   signals,
   showEmptyBerths = true,
+  centerElementId,
 }: MapRendererProps): JSX.Element {
-  const [viewBox, setViewBox] = useState<ViewBox>(
-    () => readSavedView(bundle.mapId) ?? defaultView(bundle),
+  // `useRef`'s initial value is only ever evaluated on the first render, which is exactly "look
+  // at this once, at mount" — a later change to `centerElementId` (or the visitor panning away)
+  // must not keep re-centering the view underneath them.
+  const initialCenterPoint = useRef<{ x: number; y: number } | null>(
+    centerElementId ? elementCenterPoint(bundle.elementsById[centerElementId]) : null,
   );
-  // True if the first paint came from a remembered view — the mount effect then leaves it
-  // alone; false means "first ever visit", so the effect snaps it to the fixed default zoom
-  // sized to the real container.
-  const restoredFromStorage = useRef<boolean>(readSavedView(bundle.mapId) !== null);
+  const [viewBox, setViewBox] = useState<ViewBox>(() =>
+    initialCenterPoint.current
+      ? pointCenteredView(initialCenterPoint.current.x, initialCenterPoint.current.y)
+      : (readSavedView(bundle.mapId) ?? defaultView(bundle)),
+  );
+  // True if the first paint came from a remembered view (or a search jump-to-element) — the
+  // mount effect then leaves it alone; false means "first ever visit", so the effect snaps it to
+  // the fixed default zoom sized to the real container.
+  const restoredFromStorage = useRef<boolean>(
+    initialCenterPoint.current !== null || readSavedView(bundle.mapId) !== null,
+  );
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
     null,

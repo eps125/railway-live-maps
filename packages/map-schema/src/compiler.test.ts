@@ -94,6 +94,56 @@ describe("compileMapDocument", () => {
     expect(bundle).not.toHaveProperty("editorMetadata");
   });
 
+  it("builds the place binding index from station/label elements carrying an identifier, skipping ones with none (Milestone 31)", () => {
+    const placeDoc = MapDocumentSchema.parse({
+      schemaVersion: 1,
+      map: {
+        id: "test",
+        name: "Test",
+        canvas: { width: 100, height: 100, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l1", name: "Labels", order: 0 }],
+      elements: [
+        {
+          id: "station-1",
+          layerId: "l1",
+          type: "station",
+          x: 0,
+          y: 0,
+          name: "Lancaster",
+          crs: "LAN",
+          tiploc: "LANCSTR",
+          stanox: "12345",
+        },
+        {
+          id: "label-1",
+          layerId: "l1",
+          type: "label",
+          x: 10,
+          y: 10,
+          text: "Bay Horse Jn",
+          tiploc: "BAYHORS",
+        },
+        { id: "label-2", layerId: "l1", type: "label", x: 20, y: 20, text: "plain label" },
+      ],
+      bindings: [],
+      editorMetadata: {},
+    });
+
+    const bundle = compileMapDocument(placeDoc);
+    expect(bundle.placeBindingIndex).toEqual([
+      {
+        elementId: "station-1",
+        elementType: "station",
+        tiploc: "LANCSTR",
+        stanox: "12345",
+        crs: "LAN",
+      },
+      { elementId: "label-1", elementType: "label", tiploc: "BAYHORS" },
+    ]);
+  });
+
   it("elementsById iterates in paint order (layer order, not document array order)", () => {
     // doc declares elements track-1, berth-1, signal-1, boundary-1, but all four share layer l1
     // — add a second doc with elements deliberately out of layer order to prove the compiler

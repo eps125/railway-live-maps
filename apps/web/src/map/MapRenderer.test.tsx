@@ -1,7 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompiledMapBundle } from "@railway/map-schema";
-import { MapRenderer, viewBoxAfterPinch, MIN_ZOOM_WIDTH } from "./MapRenderer.js";
+import {
+  MapRenderer,
+  elementCenterPoint,
+  viewBoxAfterPinch,
+  MIN_ZOOM_WIDTH,
+} from "./MapRenderer.js";
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
@@ -32,6 +37,7 @@ function bundle(overrides: Partial<CompiledMapBundle> = {}): CompiledMapBundle {
     elementsById: {},
     berthBindingIndex: {},
     sBitBindingIndex: {},
+    placeBindingIndex: [],
     boundingBox: { minX: 0, minY: 0, maxX: 100, maxY: 100 },
     topologyAdjacency: {},
     continuationLinks: [],
@@ -218,6 +224,44 @@ describe("MapRenderer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(container.querySelector(".map-inspector--run")).not.toBeInTheDocument();
+  });
+
+  it("centerElementId centres the initial view on that element's (x, y), overriding the default view (Milestone 31)", () => {
+    const doc = bundle({
+      boundingBox: { minX: 0, minY: 0, maxX: 1000, maxY: 1000 },
+      elementsById: {
+        "station-1": {
+          id: "station-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "station",
+          x: 900,
+          y: 900,
+          name: "Somewhere Else",
+          fontSize: 16,
+        },
+      },
+    });
+    const { container } = render(
+      <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="station-1" />,
+    );
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    // Centred means the element's point sits in the middle of the viewBox, not at the
+    // bounding-box centre (500, 500) the default view would have used instead.
+    expect(x! + width! / 2).toBeCloseTo(900);
+    expect(y! + height! / 2).toBeCloseTo(900);
+  });
+
+  it("ignores an unresolvable centerElementId (unknown id, or a points-based track/platform) and falls back to the default view", () => {
+    const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 1000, maxY: 1000 } });
+    const { container } = render(
+      <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="does-not-exist" />,
+    );
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x! + width! / 2).toBeCloseTo(500);
+    expect(y! + height! / 2).toBeCloseTo(500);
   });
 
   it("a single-finger touch still pans (proves pointer-based interaction is wired up)", () => {
@@ -534,5 +578,38 @@ describe("viewBoxAfterPinch", () => {
 
   it("returns null for a zero distance rather than dividing by zero", () => {
     expect(viewBoxAfterPinch({ startDistance: 20, origin }, 0)).toBeNull();
+  });
+});
+
+describe("elementCenterPoint", () => {
+  it("returns (x, y) for a point-shaped element", () => {
+    expect(
+      elementCenterPoint({
+        id: "s",
+        layerId: "l",
+        zIndex: 0,
+        type: "station",
+        x: 5,
+        y: 7,
+        name: "X",
+        fontSize: 16,
+      }),
+    ).toEqual({ x: 5, y: 7 });
+  });
+
+  it("returns null for a points-based element (trackPath/platform) and for undefined", () => {
+    expect(
+      elementCenterPoint({
+        id: "t",
+        layerId: "l",
+        zIndex: 0,
+        type: "trackPath",
+        points: [
+          { x: 0, y: 0 },
+          { x: 1, y: 1 },
+        ],
+      }),
+    ).toBeNull();
+    expect(elementCenterPoint(undefined)).toBeNull();
   });
 });

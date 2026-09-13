@@ -8,6 +8,9 @@ import { usePlayback } from "./usePlayback.js";
 
 export interface MapViewProps {
   slug: string;
+  /** Milestone 31: from a places-search click-through (`?center=<elementId>`) — jump to and
+   * centre the initial view on this element instead of the remembered/default view. */
+  centerElementId?: string | null;
 }
 
 const EMPTY_BERTHS_KEY = "rlm.showEmptyBerths";
@@ -34,7 +37,7 @@ function writeShowEmptyBerths(value: boolean): void {
 /** docs/PROJECT_SPEC.md §5: the public map shows live berth activity with a clear
  * connected/stale/data-gap status, and (Milestone 10) can switch to historical playback of a
  * chosen time. */
-export function MapView({ slug }: MapViewProps): JSX.Element {
+export function MapView({ slug, centerElementId = null }: MapViewProps): JSX.Element {
   const { definition, state, error, loading, connectionStatus } = useMapData(slug);
   const [playbackFrom, setPlaybackFrom] = useState<number | null>(null);
   const [showEmptyBerths, setShowEmptyBerths] = useState<boolean>(readShowEmptyBerths);
@@ -89,6 +92,7 @@ export function MapView({ slug }: MapViewProps): JSX.Element {
           berths={state?.berths ?? {}}
           signals={state?.signals ?? {}}
           showEmptyBerths={showEmptyBerths}
+          centerElementId={centerElementId}
         />
       ) : (
         <PlaybackView

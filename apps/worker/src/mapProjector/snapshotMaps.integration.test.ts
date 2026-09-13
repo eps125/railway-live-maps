@@ -31,6 +31,7 @@ function bundle() {
     },
     berthBindingIndex: { [`${AREA}|0001`]: "berth-a" },
     sBitBindingIndex: {},
+    placeBindingIndex: [],
     boundingBox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
     topologyAdjacency: {},
     continuationLinks: [],

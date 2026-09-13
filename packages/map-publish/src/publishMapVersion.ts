@@ -6,6 +6,7 @@ import {
   type CompiledMapBundle,
 } from "@railway/map-schema";
 import { insertMapBindingIndexRows, type Queryable } from "./mapBindingIndex.js";
+import { insertMapPlaceIndexRows } from "./mapPlaceIndex.js";
 
 /** Matches apps/web/src/map/MapRenderer.tsx's own PADDING/MIN_ZOOM_WIDTH constants — same
  * "pad the real content a bit, floor it at a sane minimum" convention, applied here so a
@@ -150,6 +151,7 @@ export async function publishMapVersion(
     throw new Error("Expected map_version insert to return an id");
   }
   await insertMapBindingIndexRows(client, mapVersionId, bundle);
+  await insertMapPlaceIndexRows(client, mapVersionId, bundle);
 
   return { mapId, mapVersionId, versionNumber, bundle, checksum };
 }

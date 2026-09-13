@@ -53,7 +53,12 @@ export function App(): JSX.Element {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminUsersPage />;
   } else if (route.name === "map") {
-    main = <MapView slug={route.slug} />;
+    // Milestone 31: a places-search click-through carries `?center=<elementId>` — read directly
+    // from the URL rather than teaching useRoute about query strings, since only this one route
+    // cares about it. Re-evaluated on every render, so it stays in sync with `navigate()`-driven
+    // route changes (which re-render App via useRoute's own state) without needing its own effect.
+    const centerElementId = new URLSearchParams(window.location.search).get("center");
+    main = <MapView slug={route.slug} centerElementId={centerElementId} />;
   } else {
     main = <LandingPage canCreateMap={isAdmin} canEdit={canEdit} />;
   }

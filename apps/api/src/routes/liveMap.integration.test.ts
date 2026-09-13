@@ -42,6 +42,7 @@ async function publishMinimalMap(
     elementsById: { [elementId]: { id: elementId, type: "berth" } },
     berthBindingIndex: { [`${tdArea}|${berth}`]: elementId },
     sBitBindingIndex: {},
+    placeBindingIndex: [],
     boundingBox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
     topologyAdjacency: {},
     continuationLinks: [],

@@ -283,6 +283,30 @@ describe("PropertyPanel label fields", () => {
 
     expect(fontSizeInput).toHaveValue(20);
   });
+
+  it("commits CRS/TIPLOC/STANOX place identifiers, upper-casing CRS (Milestone 31)", async () => {
+    render(
+      <EditorStateProvider initialDocument={docWithLabel()}>
+        <Select id="label-a" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    const crsInput = await screen.findByLabelText("CRS");
+    fireEvent.change(crsInput, { target: { value: "bhj" } });
+    fireEvent.blur(crsInput);
+    expect(crsInput).toHaveValue("BHJ");
+
+    const tiplocInput = screen.getByLabelText("TIPLOC");
+    fireEvent.change(tiplocInput, { target: { value: "BAYHORS" } });
+    fireEvent.blur(tiplocInput);
+    expect(tiplocInput).toHaveValue("BAYHORS");
+
+    const stanoxInput = screen.getByLabelText("STANOX");
+    fireEvent.change(stanoxInput, { target: { value: "54321" } });
+    fireEvent.blur(stanoxInput);
+    expect(stanoxInput).toHaveValue("54321");
+  });
 });
 
 describe("PropertyPanel layer reassignment", () => {

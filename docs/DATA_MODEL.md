@@ -430,6 +430,23 @@ all-columns unique. Populated automatically by the `publish-map` worker command;
 published before this migration existed were backfilled once via the idempotent
 `backfill-map-bindings` command.
 
+### `map_place_index`
+
+**Implemented (Milestone 31):** migration `0030_map_place_index.sql`. Generated at publication,
+parallel to `map_binding_index` but for `GET /api/v1/places/search` rather than live TD delta
+routing:
+
+- map version
+- element ID
+- element type (`station` or `label`)
+- TIPLOC/STANOX/CRS as present (at least one required — `map_place_index_has_identifier` check)
+
+No uniqueness constraint (unlike `map_binding_index`'s partial unique indexes) — this only powers
+discovery/search, not a routing-correctness-critical path. Populated automatically by
+`publish-map`/the editor's publish route via `insertMapPlaceIndexRows`; no backfill command exists
+for versions published before this migration (none of the currently-published maps had a tagged
+station/label yet, so there was nothing to backfill — add one if that stops being true).
+
 ### `map_state_snapshot`
 
 **Implemented (Milestone 10):** migration `0027_map_state_snapshot.sql`.

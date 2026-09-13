@@ -101,10 +101,12 @@ the Platforms layer with a small positive `zIndex` so it paints above the bars.
 
 ### `station`
 
-A named station: `crs` (optional 3-letter code), `name`, optional `tiploc`, position and font
-size. Renders `name` (plus `[CRS]`) in the standard station-label style. The `crs` is the hook
-the deferred station-berth schedule deduction (ADR 0004 D7) will build on. A zone bracket
-around member platforms is later work.
+A named station: `crs` (optional 3-letter code), `name`, optional `tiploc` and (Milestone 31)
+`stanox`, position and font size. Renders `name` (plus `[CRS]`) in the standard station-label
+style; `tiploc`/`stanox` are not rendered — they're place identifiers for
+`GET /api/v1/places/search` (see §"Place search" below). The `crs` is also the hook the deferred
+station-berth schedule deduction (ADR 0004 D7) will build on. A zone bracket around member
+platforms is later work.
 
 ### `label`
 
@@ -113,7 +115,24 @@ Plain sanitized text with position, alignment and size. `\n` in the text wraps t
 field is a textarea. `align` (left/center/right, defaults to **center** as of 2026-09-11 — a
 multi-line label reads oddly left-anchored by default) is editable via the Properties panel's
 "Align" field; both renderers already center each wrapped line correctly (SVG `textAnchor` per
-`<tspan>`, Konva `align` + a fixed layout width in `anchoredText`).
+`<tspan>`, Konva `align` + a fixed layout width in `anchoredText`). Milestone 31 (owner request):
+a label can also carry optional `crs`/`tiploc`/`stanox` — the same place identifiers a `station`
+already had — so a junction (which gets a plain label, not a `station` element) is searchable by
+name or identifier too. Not rendered, same as a station's `tiploc`/`stanox`.
+
+### Place search (Milestone 31)
+
+Any `station` or `label` carrying at least one of `crs`/`tiploc`/`stanox` becomes a row in
+`map_place_index` at publish time (`compileMapDocument`'s `placeBindingIndex`, parallel to
+`berthBindingIndex`/`sBitBindingIndex` but for discovery rather than live delta routing — no
+uniqueness enforced, since this isn't a routing-correctness-critical path).
+`GET /api/v1/places/search?q=` (public) matches the query against `location_reference`
+(CORPUS-sourced, nationwide, already ingested — no new ingestion needed) by name/CRS/TIPLOC/STANOX,
+left-joined against `map_place_index` restricted to each map's currently-effective version. A hit
+with a covering map is clickable straight to `/map/{slug}?center={elementId}`, which centres the
+public renderer's initial view on that element (`MapRenderer`'s `centerElementId` prop); a hit
+with no covering map renders inert ("not on any published map yet") rather than erroring — map
+scope never gates capture, but it can gate what a search can jump to (CLAUDE.md rule 17).
 
 ### Map metadata
 

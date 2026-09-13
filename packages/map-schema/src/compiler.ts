@@ -19,6 +19,18 @@ export interface CompiledMapBundle {
   berthBindingIndex: Record<string, string>;
   /** `${tdArea}|${address}|${bit}` -> elementId */
   sBitBindingIndex: Record<string, string>;
+  /** Milestone 31: every `station`/`label` element carrying at least one place identifier
+   * (`crs`/`tiploc`/`stanox`) — the source `map_place_index` is populated from at publish time,
+   * for `GET /api/v1/places/search` to join against. An element with none of the three is not
+   * included (nothing to search it by beyond its name, which that endpoint gets from
+   * `location_reference`, not from here). */
+  placeBindingIndex: Array<{
+    elementId: string;
+    elementType: "station" | "label";
+    tiploc?: string;
+    stanox?: string;
+    crs?: string;
+  }>;
   boundingBox: { minX: number; minY: number; maxX: number; maxY: number };
   /** nodeId -> adjacent nodeIds */
   topologyAdjacency: Record<string, string[]>;
@@ -243,6 +255,19 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
       direction: element.direction,
     }));
 
+  const placeBindingIndex: CompiledMapBundle["placeBindingIndex"] = [];
+  for (const element of doc.elements) {
+    if (element.type !== "station" && element.type !== "label") continue;
+    if (!element.crs && !element.tiploc && !element.stanox) continue;
+    placeBindingIndex.push({
+      elementId: element.id,
+      elementType: element.type,
+      ...(element.tiploc ? { tiploc: element.tiploc } : {}),
+      ...(element.stanox ? { stanox: element.stanox } : {}),
+      ...(element.crs ? { crs: element.crs } : {}),
+    });
+  }
+
   return {
     schemaVersion: doc.schemaVersion,
     mapId: doc.map.id,
@@ -253,6 +278,7 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     elementsById,
     berthBindingIndex,
     sBitBindingIndex,
+    placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),
     topologyAdjacency,
     continuationLinks,

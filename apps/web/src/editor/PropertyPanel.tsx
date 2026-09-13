@@ -446,6 +446,11 @@ export function PropertyPanel(): JSX.Element {
             value={element.tiploc ?? ""}
             onCommit={(v) => setProp("tiploc", v || undefined)}
           />
+          <TextField
+            label="STANOX"
+            value={element.stanox ?? ""}
+            onCommit={(v) => setProp("stanox", v || undefined)}
+          />
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <NumberField
@@ -510,6 +515,25 @@ export function PropertyPanel(): JSX.Element {
             value={element.fontSize}
             onCommit={(v) => setProp("fontSize", v)}
           />
+          <TextField
+            label="CRS"
+            value={element.crs ?? ""}
+            onCommit={(v) => setProp("crs", v ? v.toUpperCase() : undefined)}
+          />
+          <TextField
+            label="TIPLOC"
+            value={element.tiploc ?? ""}
+            onCommit={(v) => setProp("tiploc", v || undefined)}
+          />
+          <TextField
+            label="STANOX"
+            value={element.stanox ?? ""}
+            onCommit={(v) => setProp("stanox", v || undefined)}
+          />
+          <p className="field-hint">
+            Optional place identifiers (Milestone 31) — set any of these to make this label findable
+            by name/CRS/TIPLOC/STANOX from the landing page&apos;s place search.
+          </p>
         </>
       )}
 

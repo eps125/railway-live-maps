@@ -181,3 +181,87 @@ describe("runPublishMap (integration): map_binding_index population", () => {
     expect(v2Bindings.find((b) => b.element_id === "berth-a")?.berth).toBe("9999");
   });
 });
+
+/** Adds a station element (crs/tiploc/stanox) and a plain, identifier-less label to the minimal
+ * two-berth document, for Milestone 31's map_place_index coverage. */
+function docWithStation(mapId: string) {
+  const doc = minimalDoc(mapId, "ZZ", "0001", "ZZ", "0002");
+  return {
+    ...doc,
+    elements: [
+      ...doc.elements,
+      {
+        id: "station-1",
+        layerId: "layer-berths",
+        type: "station",
+        x: 50,
+        y: 50,
+        name: "Test Station",
+        crs: "TST",
+        tiploc: "TESTSTN",
+        stanox: "99999",
+      },
+      { id: "label-1", layerId: "layer-berths", type: "label", x: 60, y: 60, text: "plain" },
+    ],
+  };
+}
+
+interface PlaceRow {
+  element_id: string;
+  element_type: string;
+  tiploc: string | null;
+  stanox: string | null;
+  crs: string | null;
+}
+
+async function placesFor(mapVersionId: string): Promise<PlaceRow[]> {
+  const result = await pool.query<PlaceRow>(
+    `select element_id, element_type, tiploc, stanox, crs from map_place_index
+     where map_version_id = $1 order by element_id`,
+    [mapVersionId],
+  );
+  return result.rows;
+}
+
+describe("runPublishMap (integration): map_place_index population", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "railway-publish-map-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  it("publishing a map with a tagged station inserts a matching map_place_index row, and skips an untagged label", async () => {
+    const slug = uniqueSlug();
+    const doc = docWithStation(slug);
+    const filePath = join(dir, "doc.json");
+    await writeFile(filePath, JSON.stringify(doc), "utf8");
+
+    await runPublishMap(testConfig, [slug, filePath]);
+
+    const versionResult = await pool.query<{ id: string }>(
+      `select mv.id as id from map_version mv join map m on m.id = mv.map_id where m.slug = $1`,
+      [slug],
+    );
+    const versionId = versionResult.rows[0]?.id;
+    expect(versionId).toBeDefined();
+
+    const places = await placesFor(versionId!);
+    expect(places).toEqual([
+      {
+        element_id: "station-1",
+        element_type: "station",
+        tiploc: "TESTSTN",
+        stanox: "99999",
+        crs: "TST",
+      },
+    ]);
+  });
+});

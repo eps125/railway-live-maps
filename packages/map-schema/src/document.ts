@@ -130,7 +130,9 @@ const PlatformNumberElementSchema = BaseElementSchema.extend({
 
 /** ADR 0004 D6: a named station. Renders its `name` in the standard station-label style; the
  * optional `crs` is the map-authoring hook for the deferred station-berth schedule deduction
- * (D7). A zone bracket around member platforms is later work. */
+ * (D7). A zone bracket around member platforms is later work. Milestone 31: `stanox` added
+ * alongside the pre-existing `crs`/`tiploc` — all three are place identifiers a station can carry
+ * for the nationwide place search, not rendered on their own. */
 const StationElementSchema = BaseElementSchema.extend({
   type: z.literal("station"),
   x: z.number(),
@@ -138,6 +140,7 @@ const StationElementSchema = BaseElementSchema.extend({
   name: z.string().min(1),
   crs: CrsSchema.optional(),
   tiploc: z.string().optional(),
+  stanox: z.string().optional(),
   fontSize: z.number().positive().default(16),
 });
 
@@ -155,6 +158,12 @@ const LabelElementSchema = BaseElementSchema.extend({
   // set).
   align: z.enum(["left", "center", "right"]).default("center"),
   fontSize: z.number().positive().default(12),
+  /** Milestone 31 (owner request): the same place identifiers `station` already carries, so a
+   * junction (which gets a plain `label`, not a `station`) is searchable by name/CRS/TIPLOC/STANOX
+   * too, not just stations. Metadata only — not rendered, same as a station's `tiploc`/`stanox`. */
+  crs: CrsSchema.optional(),
+  tiploc: z.string().optional(),
+  stanox: z.string().optional(),
 });
 
 const BoundaryElementSchema = BaseElementSchema.extend({

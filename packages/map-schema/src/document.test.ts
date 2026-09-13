@@ -130,6 +130,36 @@ describe("MapDocumentSchema", () => {
     expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
   });
 
+  it("accepts a station stanox and label crs/tiploc/stanox (Milestone 31)", () => {
+    const doc = minimalDoc({
+      elements: [
+        {
+          id: "stn",
+          layerId: "l1",
+          type: "station",
+          x: 0,
+          y: 0,
+          name: "Lancaster",
+          crs: "LAN",
+          tiploc: "LANCSTR",
+          stanox: "12345",
+        },
+        {
+          id: "label-1",
+          layerId: "l1",
+          type: "label",
+          x: 10,
+          y: 10,
+          text: "Bay Horse Jn",
+          crs: "BHJ",
+          tiploc: "BAYHORS",
+          stanox: "54321",
+        },
+      ],
+    });
+    expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
+  });
+
   it("accepts a standalone platformNumber element and signal.renderMode (ADR 0005)", () => {
     const doc = minimalDoc({
       elements: [

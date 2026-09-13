@@ -8,6 +8,7 @@ import { resolveCookieSecure } from "./config.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerTdRoutes } from "./routes/td.js";
 import { registerMapRoutes } from "./routes/maps.js";
+import { registerPlaceRoutes } from "./routes/places.js";
 import { registerScheduleRoutes } from "./routes/schedule.js";
 import { registerVstpRoutes } from "./routes/vstp.js";
 import { registerCurrentRunRoutes } from "./routes/currentRun.js";
@@ -58,6 +59,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   });
   await registerTdRoutes(app, { pool });
   await registerMapRoutes(app, { pool });
+  await registerPlaceRoutes(app, { pool });
   await registerScheduleRoutes(app, { pool });
   await registerVstpRoutes(app, { pool });
   await registerCurrentRunRoutes(app, { pool });

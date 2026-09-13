@@ -27,6 +27,7 @@ const compiledBundle = {
   elementsById: { "berth-1": { id: "berth-1", type: "berth" } },
   berthBindingIndex: { "PX|0512": "berth-1" },
   sBitBindingIndex: {},
+  placeBindingIndex: [],
   boundingBox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
   topologyAdjacency: {},
   continuationLinks: [],

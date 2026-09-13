@@ -24,6 +24,7 @@ const compiledBundle = {
   },
   berthBindingIndex: { "PX|0512": "berth-1" },
   sBitBindingIndex: {},
+  placeBindingIndex: [],
   boundingBox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
   topologyAdjacency: {},
   continuationLinks: [],

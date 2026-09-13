@@ -164,8 +164,22 @@ const LabelElementSchema = BaseElementSchema.extend({
   crs: CrsSchema.optional(),
   tiploc: z.string().optional(),
   stanox: z.string().optional(),
+  /** Milestone 32, folded into `label` 2026-09-13 (owner request — the dedicated `boundary`
+   * element type below is legacy-only from here on; a boundary is now just a label carrying
+   * these fields, rendered in the normal label style rather than a distinct marker). Setting
+   * `adjacentMapSlug` makes this label clickable on the public map, jumping to
+   * `/map/<adjacentMapSlug>` centred on that map's own label/boundary of `adjacentBoundaryName`
+   * (falling back to this label's own `text` when unset) — see `MapRenderer.tsx`. */
+  adjacentMapSlug: z.string().optional(),
+  adjacentBoundaryName: z.string().optional(),
+  direction: z.string().optional(),
 });
 
+/** Legacy — superseded 2026-09-13 by `label`'s `adjacentMapSlug`/`adjacentBoundaryName`/
+ * `direction` fields (owner request: "boundary labels not their own thing anymore", preferring
+ * the normal label visual style). Kept parseable/renderable only so already-published immutable
+ * map versions (docs/CLAUDE.md rule 11) that still contain `boundary` elements keep working; no
+ * longer offered as an editor tool, so no new ones can be authored. */
 const BoundaryElementSchema = BaseElementSchema.extend({
   type: z.literal("boundary"),
   x: z.number(),

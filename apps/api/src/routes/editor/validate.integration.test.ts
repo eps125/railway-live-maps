@@ -79,6 +79,38 @@ describe("POST /api/v1/editor/maps/:slug/validate (integration)", () => {
     }
   });
 
+  it("blocks on a label carrying adjacentMapSlug referencing an unknown adjacent map slug too (Milestone 32, folded into label 2026-09-13)", async () => {
+    const app = await buildApp();
+    try {
+      const doc = baseDoc({
+        elements: [
+          {
+            id: "l1",
+            layerId: "l",
+            type: "label",
+            x: 0,
+            y: 0,
+            text: "Preston PSB",
+            adjacentMapSlug: "totally-unknown-map",
+          },
+        ],
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/editor/maps/test/validate",
+        payload: { canonicalDocument: doc },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.valid).toBe(false);
+      expect(body.errors.some((e: { code: string }) => e.code === "unknown_adjacent_map")).toBe(
+        true,
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("warns when a td berth binding has never been observed, and reports observed ones as valid", async () => {
     const app = await buildApp();
     try {

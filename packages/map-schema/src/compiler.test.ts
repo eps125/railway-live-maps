@@ -116,6 +116,47 @@ describe("compileMapDocument", () => {
     ]);
   });
 
+  it("collects a continuation link from a label carrying adjacentMapSlug too (Milestone 32, folded into label 2026-09-13)", () => {
+    const docWithLabelLink = MapDocumentSchema.parse({
+      ...JSON.parse(JSON.stringify(doc)),
+      elements: [
+        ...doc.elements.filter((element) => element.type !== "boundary"),
+        {
+          id: "label-boundary-1",
+          layerId: "l1",
+          type: "label",
+          x: 0,
+          y: 0,
+          text: "Preston PSB",
+          adjacentMapSlug: "carlisle",
+          adjacentBoundaryName: "Carlisle PSB",
+        },
+      ],
+    });
+    const bundle = compileMapDocument(docWithLabelLink);
+    expect(bundle.continuationLinks).toEqual([
+      {
+        elementId: "label-boundary-1",
+        name: "Preston PSB",
+        adjacentMapSlug: "carlisle",
+        direction: undefined,
+        adjacentBoundaryName: "Carlisle PSB",
+      },
+    ]);
+  });
+
+  it("excludes a boundary/label with no adjacentMapSlug from continuation links — it isn't a link to anywhere", () => {
+    const docWithUnlinked = MapDocumentSchema.parse({
+      ...JSON.parse(JSON.stringify(doc)),
+      elements: [
+        ...doc.elements.filter((element) => element.type !== "boundary"),
+        { id: "label-plain", layerId: "l1", type: "label", x: 0, y: 0, text: "Just a label" },
+      ],
+    });
+    const bundle = compileMapDocument(docWithUnlinked);
+    expect(bundle.continuationLinks).toEqual([]);
+  });
+
   it("strips editorMetadata from the compiled bundle", () => {
     const bundle = compileMapDocument(doc);
     expect(bundle).not.toHaveProperty("editorMetadata");

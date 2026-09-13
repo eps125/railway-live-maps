@@ -405,6 +405,20 @@ gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/
   named after the new map instead of the slug) in one step, returning
   `{ slug, name, mapId, draftRevision }`. The map has no published version yet, so it does not
   appear in `GET /api/v1/maps` until its first publish.
+- `PATCH /api/v1/editor/maps/{slug}` (**admin only**, owner request 2026-09-13) — rename a map's
+  `name` and/or `slug`. Body `{ name?, slug? }`, at least one required; `400 VALIDATION_ERROR` for
+  neither given or an invalid one, `404 MAP_NOT_FOUND` for an unknown slug, `409 DUPLICATE_SLUG` if
+  the new slug is already taken (original left untouched). Also updates the map's `map_draft` row
+  (its own denormalized `slug` column, plus `canonical_document.map.id`/`map.name`) so the next
+  draft save/publish — and the editor's own Properties panel, if open — see the new values.
+  Renaming the slug changes the map's public URL; anything that already linked to the old
+  `/map/{slug}` (bookmarks, a `label`'s `adjacentMapSlug` cross-reference from another map) is not
+  rewritten. Returns `{ mapId, slug, name }`.
+- `DELETE /api/v1/editor/maps/{slug}` (**admin only**, owner request 2026-09-13) — permanently
+  deletes the map row, every published `map_version`, its `map_draft` and draft revision history,
+  and the derived `map_binding_index`/`map_place_index`/`map_state_snapshot` rows for those
+  versions. `404 MAP_NOT_FOUND` for an unknown slug; `204` on success. Never touches nationwide
+  TD/TRUST/etc. event tables (CLAUDE.md rule 17) — only this map's own configuration.
 - `GET /api/v1/editor/maps/{slug}/draft`
 - `PUT /api/v1/editor/maps/{slug}/draft` with optimistic revision check
 - `GET /api/v1/editor/maps/{slug}/revisions`

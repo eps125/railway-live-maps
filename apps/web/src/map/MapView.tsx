@@ -71,14 +71,17 @@ export function MapView({
   }
 
   // Milestone 32: `?boundary=<name>` names a boundary as authored on the *source* map — look up
-  // this map's own boundary element with that name. `centerElementId` (Milestone 31, an actual
-  // elementId) takes priority if somehow both are present; no match just means no centering, not
-  // an error (docs/IMPLEMENTATION_PLAN.md Milestone 32 acceptance).
+  // this map's own boundary/label element with that name (folded into `label` 2026-09-13, so a
+  // match can be either type). `centerElementId` (Milestone 31, an actual elementId) takes
+  // priority if somehow both are present; no match just means no centering, not an error
+  // (docs/IMPLEMENTATION_PLAN.md Milestone 32 acceptance).
   const resolvedCenterElementId =
     centerElementId ??
     (centerBoundaryName
       ? (Object.values(definition.definition.elementsById).find(
-          (el) => el.type === "boundary" && el.name === centerBoundaryName,
+          (el) =>
+            (el.type === "boundary" && el.name === centerBoundaryName) ||
+            (el.type === "label" && el.text === centerBoundaryName),
         )?.id ?? null)
       : null);
 

@@ -24,7 +24,6 @@ describe("defaultLayerIdForTool", () => {
     expect(defaultLayerIdForTool("label", standardLayers)).toBe("layer-labels");
     expect(defaultLayerIdForTool("trackPath", standardLayers)).toBe("layer-track");
     expect(defaultLayerIdForTool("platform", standardLayers)).toBe("layer-track");
-    expect(defaultLayerIdForTool("boundary", standardLayers)).toBe("layer-track");
   });
 
   it("places platform and platformNumber tools on a Platforms layer when one exists (ADR 0005 E3)", () => {

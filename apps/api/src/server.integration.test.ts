@@ -105,6 +105,22 @@ describe("buildServer: role-based route gating (integration)", () => {
       payload: { slug: `should-not-be-created-${randomUUID()}`, name: "x" },
     });
     expect(createMapResponse.statusCode).toBe(403);
+
+    // Owner request (2026-09-13): rename/delete are admin-only too, same as create.
+    const renameResponse = await built.app.inject({
+      method: "PATCH",
+      url: `/api/v1/editor/maps/${randomUUID()}`,
+      headers: { cookie },
+      payload: { name: "x" },
+    });
+    expect(renameResponse.statusCode).toBe(403);
+
+    const deleteResponse = await built.app.inject({
+      method: "DELETE",
+      url: `/api/v1/editor/maps/${randomUUID()}`,
+      headers: { cookie },
+    });
+    expect(deleteResponse.statusCode).toBe(403);
   });
 
   it("admin routes work for a logged-in admin", async () => {
@@ -134,6 +150,23 @@ describe("buildServer: role-based route gating (integration)", () => {
       payload: { slug: `admin-created-${randomUUID()}`, name: "Admin Created Map" },
     });
     expect(createMapResponse.statusCode).toBe(201);
+    const createdSlug = createMapResponse.json().slug as string;
+
+    // Owner request (2026-09-13): an admin session can rename, then delete, that same map.
+    const renameResponse = await built.app.inject({
+      method: "PATCH",
+      url: `/api/v1/editor/maps/${createdSlug}`,
+      headers: { cookie },
+      payload: { name: "Renamed by admin" },
+    });
+    expect(renameResponse.statusCode).toBe(200);
+
+    const deleteResponse = await built.app.inject({
+      method: "DELETE",
+      url: `/api/v1/editor/maps/${createdSlug}`,
+      headers: { cookie },
+    });
+    expect(deleteResponse.statusCode).toBe(204);
   });
 
   it("public routes need no session at all", async () => {

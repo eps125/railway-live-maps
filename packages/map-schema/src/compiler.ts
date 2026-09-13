@@ -1,5 +1,6 @@
 import type {
   BoundaryElement,
+  LabelElement,
   Layer,
   MapDocument,
   MapElement,
@@ -251,15 +252,25 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     topologyAdjacency[edge.toNodeId]?.push(edge.fromNodeId);
   }
 
+  // Milestone 32, folded into `label` 2026-09-13: a continuation link is now authored as a
+  // label carrying `adjacentMapSlug` (normal label style, per owner preference) rather than the
+  // legacy standalone `boundary` type — still supported here too since already-published
+  // immutable versions (CLAUDE.md rule 11) can still contain the old element type.
   const continuationLinks = doc.elements
-    .filter((element): element is BoundaryElement => element.type === "boundary")
-    .map((element) => ({
-      elementId: element.id,
-      name: element.name,
-      adjacentMapSlug: element.adjacentMapSlug,
-      direction: element.direction,
-      adjacentBoundaryName: element.adjacentBoundaryName ?? element.name,
-    }));
+    .filter(
+      (element): element is BoundaryElement | LabelElement =>
+        (element.type === "boundary" || element.type === "label") && !!element.adjacentMapSlug,
+    )
+    .map((element) => {
+      const name = element.type === "boundary" ? element.name : element.text;
+      return {
+        elementId: element.id,
+        name,
+        adjacentMapSlug: element.adjacentMapSlug,
+        direction: element.direction,
+        adjacentBoundaryName: element.adjacentBoundaryName ?? name,
+      };
+    });
 
   const placeBindingIndex: CompiledMapBundle["placeBindingIndex"] = [];
   for (const element of doc.elements) {

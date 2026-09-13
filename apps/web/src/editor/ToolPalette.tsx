@@ -1,5 +1,9 @@
 import { useEditorDispatch, useEditorState, type ToolMode } from "./EditorState.js";
 
+// Milestone 32 (folded into `label` 2026-09-13): no dedicated "Boundary" tool — a boundary link
+// is now just a Label with its Adjacent map slug field set (PropertyPanel.tsx). The legacy
+// `boundary` element type still renders (already-published old versions may have one) but is no
+// longer authorable from here.
 const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "select", label: "Select" },
   { mode: "multiselect", label: "Multiselect" },
@@ -10,7 +14,6 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "platformNumber", label: "Plat. number" },
   { mode: "station", label: "Station" },
   { mode: "label", label: "Label" },
-  { mode: "boundary", label: "Boundary" },
 ];
 
 /** docs/MAP_EDITOR_SPEC.md §6: "Left symbol/tool palette." Clicking a tool arms it; the next

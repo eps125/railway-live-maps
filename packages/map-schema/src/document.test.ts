@@ -160,6 +160,25 @@ describe("MapDocumentSchema", () => {
     expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
   });
 
+  it("accepts a label carrying adjacentMapSlug/adjacentBoundaryName/direction (Milestone 32, folded into label 2026-09-13)", () => {
+    const doc = minimalDoc({
+      elements: [
+        {
+          id: "label-1",
+          layerId: "l1",
+          type: "label",
+          x: 10,
+          y: 10,
+          text: "Preston PSB",
+          adjacentMapSlug: "carlisle",
+          adjacentBoundaryName: "Carlisle PSB",
+          direction: "up",
+        },
+      ],
+    });
+    expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
+  });
+
   it("accepts a standalone platformNumber element and signal.renderMode (ADR 0005)", () => {
     const doc = minimalDoc({
       elements: [

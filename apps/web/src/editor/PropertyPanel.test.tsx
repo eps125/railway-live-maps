@@ -361,6 +361,28 @@ describe("PropertyPanel label fields", () => {
     fireEvent.blur(stanoxInput);
     expect(stanoxInput).toHaveValue("54321");
   });
+
+  it("commits Adjacent map slug and Adjacent boundary name on a label (Milestone 32, folded into label 2026-09-13)", async () => {
+    render(
+      <EditorStateProvider initialDocument={docWithLabel()}>
+        <Select id="label-a" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    const slugInput = await screen.findByLabelText("Adjacent map slug");
+    fireEvent.change(slugInput, { target: { value: "carlisle" } });
+    fireEvent.blur(slugInput);
+    expect(slugInput).toHaveValue("carlisle");
+
+    const adjacentNameInput = screen.getByLabelText("Adjacent boundary name");
+    fireEvent.change(adjacentNameInput, { target: { value: "Carlisle PSB" } });
+    fireEvent.blur(adjacentNameInput);
+    expect(adjacentNameInput).toHaveValue("Carlisle PSB");
+
+    // The label's own Text is untouched by setting the adjacent-side fields.
+    expect(screen.getByLabelText("Text (newlines wrap)")).toHaveValue("Platform 1");
+  });
 });
 
 describe("PropertyPanel layer reassignment", () => {

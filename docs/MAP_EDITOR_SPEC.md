@@ -120,6 +120,17 @@ a label can also carry optional `crs`/`tiploc`/`stanox` — the same place ident
 already had — so a junction (which gets a plain label, not a `station` element) is searchable by
 name or identifier too. Not rendered, same as a station's `tiploc`/`stanox`.
 
+Milestone 32, folded into `label` 2026-09-13 (owner request — no separate element type for this,
+normal label style preferred): a label can also carry optional `adjacentMapSlug`/
+`adjacentBoundaryName`/`direction` to become a **boundary link**. `adjacentBoundaryName` names
+this same physical boundary as it's authored on the adjacent map — kept separate from the label's
+own `text` because the two sides are typically named from their own perspective (e.g. one map's
+"Carlisle PSB" is the other's "Preston PSB" for the identical crossing), not assumed to match.
+When `adjacentMapSlug` is set the label is clickable on the public map (still rendered in the
+normal label style — no marker or icon) and jumps to `/map/<adjacentMapSlug>` centred on the
+target map's own label (or legacy `boundary` element, see below) of that name; falls back to the
+target's default view (never errors) if nothing matches there.
+
 ### Place search (Milestone 31)
 
 Any `station` or `label` carrying at least one of `crs`/`tiploc`/`stanox` becomes a row in
@@ -140,16 +151,14 @@ scope never gates capture, but it can gate what a search can jump to (CLAUDE.md 
 editable in the editor's Properties panel when nothing is selected — the per-map variable for
 naming as more maps are authored. `map.id` (the slug) is fixed.
 
-### `boundary`
+### `boundary` (legacy)
 
-Named map continuation with optional adjacent map slug and direction. Milestone 32: an optional
-`adjacentBoundaryName` names this same boundary as it's authored on the adjacent map — kept
-separate from the element's own `name` because the two sides are typically named from their own
-perspective (e.g. one map's "Carlisle PSB" is the other's "Preston PSB" for the identical
-crossing), not assumed to match. When both `adjacentMapSlug` and `adjacentBoundaryName` are set,
-the boundary is clickable on the public map and jumps to `/map/<adjacentMapSlug>` centred on the
-target map's own boundary element of that name; falls back to the target's default view (never
-errors) if nothing matches there.
+Superseded 2026-09-13 by `label`'s `adjacentMapSlug`/`adjacentBoundaryName`/`direction` fields
+above (owner request: no separate element type, normal label style preferred). Same shape and
+behavior as a boundary-carrying label, kept parseable/renderable only so already-published
+immutable map versions (CLAUDE.md rule 11) that still contain one keep working; the editor no
+longer offers a tool to author new ones (its Properties panel still edits an existing one, for
+whichever map still has one).
 
 ### `group/templateInstance`
 

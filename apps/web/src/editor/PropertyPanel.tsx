@@ -534,12 +534,6 @@ export function PropertyPanel(): JSX.Element {
             Optional place identifiers (Milestone 31) — set any of these to make this label findable
             by name/CRS/TIPLOC/STANOX from the landing page&apos;s place search.
           </p>
-        </>
-      )}
-
-      {element.type === "boundary" && (
-        <>
-          <TextField label="Name" value={element.name} onCommit={(v) => setProp("name", v)} />
           <TextField
             label="Adjacent map slug"
             value={element.adjacentMapSlug ?? ""}
@@ -551,13 +545,35 @@ export function PropertyPanel(): JSX.Element {
             onCommit={(v) => setProp("adjacentBoundaryName", v || undefined)}
           />
           <p className="field-hint">
-            Milestone 32: what this same boundary is called on the adjacent map — often different
-            from this element&apos;s own Name above, since each side is usually named from its own
-            perspective (e.g. this side reads &quot;Carlisle PSB&quot; while the far side reads
-            &quot;Preston PSB&quot; for the identical crossing). Leave blank only if the two sides
-            genuinely share a name. Set both this and Adjacent map slug to make this boundary
-            clickable on the public map.
+            Milestone 32: set Adjacent map slug to make this label a clickable boundary link on the
+            public map — jumps to that map centred on its own same-boundary label. Adjacent boundary
+            name is what this same boundary is called *there*, often different from this
+            label&apos;s own Text above since each side is usually named from its own perspective
+            (e.g. this side reads &quot;Carlisle PSB&quot; while the far side reads &quot;Preston
+            PSB&quot; for the identical crossing) — leave blank only if the two sides genuinely
+            share a name.
           </p>
+        </>
+      )}
+
+      {element.type === "boundary" && (
+        <>
+          <p className="field-hint">
+            Legacy element — superseded 2026-09-13 by a Label with an Adjacent map slug set (see the
+            Label fields above). Editable here only so an already-published boundary from an older
+            map version isn&apos;t stranded; not offered as a tool for new elements.
+          </p>
+          <TextField label="Name" value={element.name} onCommit={(v) => setProp("name", v)} />
+          <TextField
+            label="Adjacent map slug"
+            value={element.adjacentMapSlug ?? ""}
+            onCommit={(v) => setProp("adjacentMapSlug", v || undefined)}
+          />
+          <TextField
+            label="Adjacent boundary name"
+            value={element.adjacentBoundaryName ?? ""}
+            onCommit={(v) => setProp("adjacentBoundaryName", v || undefined)}
+          />
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
         </>

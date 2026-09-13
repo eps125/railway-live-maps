@@ -41,7 +41,8 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 export interface LandingPageProps {
   /** Only an admin session sees the "+ New map" control (Milestone 30's create route is
-   * admin-only, unlike the rest of the editor API). */
+   * admin-only, unlike the rest of the editor API) — and, as of the same-day rename/delete
+   * follow-up, the per-row Rename/Delete controls (same admin-gated API routes). */
   canCreateMap: boolean;
   /** Any editor-or-admin session gets a per-row "Edit" link straight into that map's editor. */
   canEdit: boolean;
@@ -60,6 +61,17 @@ export function LandingPage({ canCreateMap, canEdit }: LandingPageProps): JSX.El
   const [newName, setNewName] = useState("");
   const [newSlug, setNewSlug] = useState("");
   const [slugEdited, setSlugEdited] = useState(false);
+
+  // Owner request (2026-09-13): rename (name/slug) and delete a map, admin-only like create.
+  const [renamingSlug, setRenamingSlug] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renameSlug, setRenameSlug] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  const [confirmDeleteSlug, setConfirmDeleteSlug] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PlaceSearchResult[] | null>(null);
@@ -138,6 +150,57 @@ export function LandingPage({ canCreateMap, canEdit }: LandingPageProps): JSX.El
     }
   }
 
+  function startRename(map: MapListEntry): void {
+    setRenamingSlug(map.slug);
+    setRenameName(map.name);
+    setRenameSlug(map.slug);
+    setRenameError(null);
+  }
+
+  function cancelRename(): void {
+    setRenamingSlug(null);
+    setRenameError(null);
+  }
+
+  async function handleRename(e: React.FormEvent, currentSlug: string): Promise<void> {
+    e.preventDefault();
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(currentSlug)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: renameName, slug: renameSlug }),
+      });
+      if (!response.ok) {
+        setRenameError(await extractError(response, "Failed to rename map."));
+        return;
+      }
+      setRenamingSlug(null);
+      await load();
+    } finally {
+      setRenaming(false);
+    }
+  }
+
+  async function handleDelete(slug: string): Promise<void> {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok && response.status !== 204) {
+        setDeleteError(await extractError(response, "Failed to delete map."));
+        return;
+      }
+      setConfirmDeleteSlug(null);
+      await load();
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (loadError) {
     return (
       <p role="alert" className="app-error">
@@ -157,36 +220,127 @@ export function LandingPage({ canCreateMap, canEdit }: LandingPageProps): JSX.El
           <p className="panel-card panel-card--empty">No maps published yet.</p>
         ) : (
           <ul className="landing-page__maps">
-            {maps.map((map) => (
-              <li key={map.slug} className="landing-page__map-row">
-                <a
-                  href={`/map/${encodeURIComponent(map.slug)}`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate(`/map/${encodeURIComponent(map.slug)}`);
-                  }}
-                >
-                  {map.name}
-                </a>
-                <span
-                  className={`landing-page__status landing-page__status--${map.liveDataStatus}`}
-                >
-                  {map.liveDataStatus}
-                </span>
-                {canEdit && (
+            {maps.map((map) =>
+              renamingSlug === map.slug ? (
+                <li key={map.slug} className="landing-page__map-row">
+                  <form
+                    className="landing-page__rename-form"
+                    onSubmit={(e) => void handleRename(e, map.slug)}
+                  >
+                    {renameError && (
+                      <p role="alert" className="login-form__error">
+                        {renameError}
+                      </p>
+                    )}
+                    <label className="field">
+                      Name
+                      <input
+                        type="text"
+                        value={renameName}
+                        onChange={(e) => setRenameName(e.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="field">
+                      Slug
+                      <input
+                        type="text"
+                        value={renameSlug}
+                        onChange={(e) => setRenameSlug(e.target.value)}
+                        pattern="[a-z0-9]+(-[a-z0-9]+)*"
+                        required
+                      />
+                    </label>
+                    <button type="submit" className="btn btn--primary" disabled={renaming}>
+                      {renaming ? "Saving…" : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={cancelRename}
+                      disabled={renaming}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                </li>
+              ) : (
+                <li key={map.slug} className="landing-page__map-row">
                   <a
-                    className="landing-page__edit-link"
-                    href={`/editor/${encodeURIComponent(map.slug)}`}
+                    href={`/map/${encodeURIComponent(map.slug)}`}
                     onClick={(e) => {
                       e.preventDefault();
-                      navigate(`/editor/${encodeURIComponent(map.slug)}`);
+                      navigate(`/map/${encodeURIComponent(map.slug)}`);
                     }}
                   >
-                    Edit
+                    {map.name}
                   </a>
-                )}
-              </li>
-            ))}
+                  <span
+                    className={`landing-page__status landing-page__status--${map.liveDataStatus}`}
+                  >
+                    {map.liveDataStatus}
+                  </span>
+                  {canEdit && (
+                    <a
+                      className="landing-page__edit-link"
+                      href={`/editor/${encodeURIComponent(map.slug)}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        navigate(`/editor/${encodeURIComponent(map.slug)}`);
+                      }}
+                    >
+                      Edit
+                    </a>
+                  )}
+                  {canCreateMap && (
+                    <button
+                      type="button"
+                      className="landing-page__rename-link"
+                      onClick={() => startRename(map)}
+                    >
+                      Rename
+                    </button>
+                  )}
+                  {canCreateMap && confirmDeleteSlug === map.slug && (
+                    <>
+                      {deleteError && (
+                        <span role="alert" className="login-form__error">
+                          {deleteError}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn--danger"
+                        disabled={deleting}
+                        onClick={() => void handleDelete(map.slug)}
+                      >
+                        {deleting ? "Deleting…" : "Confirm delete"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={deleting}
+                        onClick={() => setConfirmDeleteSlug(null)}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                  {canCreateMap && confirmDeleteSlug !== map.slug && (
+                    <button
+                      type="button"
+                      className="landing-page__delete-link"
+                      onClick={() => {
+                        setDeleteError(null);
+                        setConfirmDeleteSlug(map.slug);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </li>
+              ),
+            )}
           </ul>
         )}
 

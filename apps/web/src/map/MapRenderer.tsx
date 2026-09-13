@@ -42,6 +42,28 @@ const SIGNAL_COLORS: Record<SignalState["state"], string> = {
   off: "#3fb950",
 };
 
+/** Milestone 32 (folded into `label` 2026-09-13): shared click-through for a boundary link,
+ * used by both a `label` carrying `adjacentMapSlug` (the current, preferred way to author one)
+ * and the legacy standalone `boundary` element type still found in already-published immutable
+ * map versions. Looks up the same physical boundary on the adjacent map by
+ * `adjacentBoundaryName`, since the two sides typically name it differently (one map's "Carlisle
+ * PSB" is the other's "Preston PSB" for the identical crossing) — falls back to this element's
+ * own name/text when unset. `undefined` (no `adjacentMapSlug`) means "not a boundary link" — no
+ * click handler at all. */
+function boundaryClickHandler(
+  adjacentMapSlug: string | undefined,
+  adjacentBoundaryName: string | undefined,
+  ownName: string,
+): (() => void) | undefined {
+  if (!adjacentMapSlug) return undefined;
+  return () => {
+    const boundaryName = adjacentBoundaryName ?? ownName;
+    navigate(
+      `/map/${encodeURIComponent(adjacentMapSlug)}?boundary=${encodeURIComponent(boundaryName)}`,
+    );
+  };
+}
+
 /** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
  * removed with the berth-run resolver (ADR 0002) and there's no matched/ambiguous distinction
  * worth showing until run↔schedule correlation is rebuilt. */
@@ -590,6 +612,14 @@ export function MapRenderer({
           if (element.type === "label") {
             // Labels wrap on explicit newlines (`\n`) — each becomes a <tspan> on the next line.
             const lines = element.text.split("\n");
+            // Milestone 32 (folded into `label` 2026-09-13): a label carrying `adjacentMapSlug`
+            // is a boundary link — clickable, normal label style (owner preference), no circle
+            // marker the old standalone `boundary` type drew.
+            const handleClick = boundaryClickHandler(
+              element.adjacentMapSlug,
+              element.adjacentBoundaryName,
+              element.text,
+            );
             return (
               <text
                 key={element.id}
@@ -604,6 +634,8 @@ export function MapRenderer({
                 }
                 fontSize={element.fontSize}
                 fill="#c9d1d9"
+                onClick={handleClick}
+                style={{ cursor: handleClick ? "pointer" : undefined }}
               >
                 {lines.map((line, i) => (
                   <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
@@ -614,24 +646,18 @@ export function MapRenderer({
             );
           }
           if (element.type === "boundary") {
-            // Milestone 32: clicking through to the adjacent map centres it on the same
-            // physical boundary — looked up there by `adjacentBoundaryName`, since the two
-            // sides typically name it differently (one map's "Carlisle PSB" is the other's
-            // "Preston PSB" for the identical crossing), never by matching `name` directly.
-            const targetSlug = element.adjacentMapSlug;
-            const handleClick = targetSlug
-              ? () => {
-                  const boundaryName = element.adjacentBoundaryName ?? element.name;
-                  navigate(
-                    `/map/${encodeURIComponent(targetSlug)}?boundary=${encodeURIComponent(boundaryName)}`,
-                  );
-                }
-              : undefined;
+            // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);
+            // kept rendering only for already-published immutable versions that still have one.
+            const handleClick = boundaryClickHandler(
+              element.adjacentMapSlug,
+              element.adjacentBoundaryName,
+              element.name,
+            );
             return (
               <g
                 key={element.id}
                 onClick={handleClick}
-                style={{ cursor: targetSlug ? "pointer" : "default" }}
+                style={{ cursor: handleClick ? "pointer" : "default" }}
               >
                 <circle cx={element.x} cy={element.y} r={4} fill="#8b949e" />
                 <text x={element.x + 8} y={element.y + 4} fontSize={10} fill="#8b949e">

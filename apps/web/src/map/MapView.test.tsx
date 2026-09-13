@@ -51,6 +51,19 @@ const definition: MapDefinitionResponse = {
         adjacentMapSlug: "carlisle",
         adjacentBoundaryName: "Carlisle PSB",
       },
+      "label-boundary-1": {
+        id: "label-boundary-1",
+        layerId: "l1",
+        zIndex: 0,
+        type: "label",
+        x: 70,
+        y: 70,
+        text: "Shap Summit",
+        align: "left",
+        fontSize: 12,
+        adjacentMapSlug: "carlisle",
+        adjacentBoundaryName: "Shap Summit",
+      },
     },
     berthBindingIndex: { "PX|0512": "berth-1" },
     sBitBindingIndex: {},
@@ -147,6 +160,23 @@ describe("MapView", () => {
     const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(90);
     expect(y! + height! / 2).toBeCloseTo(90);
+  });
+
+  it("resolves ?boundary=<name> to a label carrying adjacentMapSlug too, not just the legacy boundary type (Milestone 32, folded into label 2026-09-13)", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/definition")) return Promise.resolve(jsonResponse(definition));
+      if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(<MapView slug="lancaster" centerBoundaryName="Shap Summit" />);
+    await screen.findByText("2A16");
+
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x! + width! / 2).toBeCloseTo(70);
+    expect(y! + height! / 2).toBeCloseTo(70);
   });
 
   it("falls back to the default view when centerBoundaryName matches no boundary on this map (stale/renamed link, never a hard error)", async () => {

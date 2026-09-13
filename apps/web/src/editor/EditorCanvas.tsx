@@ -135,7 +135,6 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   trackPath: /track/i,
   platform: /platform/i,
   platformNumber: /platform/i,
-  boundary: /track/i,
 };
 
 export function defaultLayerIdForTool(tool: ToolMode, layers: MapLayer[]): string | undefined {
@@ -188,8 +187,6 @@ function defaultElementForTool(
         align: "left",
         fontSize: 12,
       };
-    case "boundary":
-      return { id, layerId, zIndex: 0, type: "boundary", x: point.x, y: point.y, name: "Boundary" };
     case "station":
       return {
         id,

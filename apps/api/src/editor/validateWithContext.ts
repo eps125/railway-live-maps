@@ -4,6 +4,7 @@ import {
   type MapDocument,
   type ValidationIssue,
   type BoundaryElement,
+  type LabelElement,
   type TdBerthBinding,
 } from "@railway/map-schema";
 
@@ -95,9 +96,12 @@ export async function validateDraftInContext(
   const errors: ValidationIssue[] = [...structural.errors];
   const warnings: ValidationIssue[] = [];
 
+  // Milestone 32, folded into `label` 2026-09-13: a boundary link is now authored as a label
+  // carrying `adjacentMapSlug` — still checking the legacy standalone `boundary` type too, since
+  // already-published immutable versions (CLAUDE.md rule 11) can still contain one.
   const boundaryElements = doc.elements.filter(
-    (element): element is BoundaryElement =>
-      element.type === "boundary" && !!element.adjacentMapSlug,
+    (element): element is BoundaryElement | LabelElement =>
+      (element.type === "boundary" || element.type === "label") && !!element.adjacentMapSlug,
   );
   const tdBerthBindings = doc.bindings.filter(
     (binding): binding is TdBerthBinding => binding.type === "tdBerth",

@@ -620,6 +620,60 @@ describe("MapRenderer", () => {
 
     expect(window.location.pathname).toBe("/map/preston");
   });
+
+  it("a label carrying adjacentMapSlug is clickable and navigates like a boundary, but keeps the normal label style (Milestone 32, folded into label 2026-09-13)", () => {
+    window.history.pushState(null, "", "/map/preston");
+    const doc = bundle({
+      elementsById: {
+        "label-1": {
+          id: "label-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "label",
+          x: 5,
+          y: 5,
+          text: "Preston PSB",
+          align: "left",
+          fontSize: 12,
+          adjacentMapSlug: "carlisle",
+          adjacentBoundaryName: "Carlisle PSB",
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    // Normal label style: a plain <text>, no <circle> marker the legacy boundary type drew.
+    expect(container.querySelector("circle")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Preston PSB"));
+
+    expect(window.location.pathname).toBe("/map/carlisle");
+    expect(window.location.search).toBe("?boundary=Carlisle%20PSB");
+  });
+
+  it("a label with no adjacentMapSlug is a plain, non-clickable label as always", () => {
+    window.history.pushState(null, "", "/map/preston");
+    const doc = bundle({
+      elementsById: {
+        "label-1": {
+          id: "label-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "label",
+          x: 5,
+          y: 5,
+          text: "Just a label",
+          align: "left",
+          fontSize: 12,
+        },
+      },
+    });
+
+    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    fireEvent.click(screen.getByText("Just a label"));
+
+    expect(window.location.pathname).toBe("/map/preston");
+  });
 });
 
 describe("viewBoxAfterPinch", () => {

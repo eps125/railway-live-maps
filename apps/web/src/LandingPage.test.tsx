@@ -152,6 +152,164 @@ describe("LandingPage", () => {
     expect(window.location.search).toBe("?center=station-1");
   });
 
+  it("shows no Rename/Delete controls for a non-admin", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(MAPS_BODY))),
+    );
+
+    render(<LandingPage canCreateMap={false} canEdit={true} />);
+    await screen.findByRole("link", { name: "Lancaster" });
+
+    expect(screen.queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
+
+  it("lets an admin rename a map's name and slug via PATCH, then reloads the list (owner request 2026-09-13)", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/maps") return Promise.resolve(jsonResponse(MAPS_BODY));
+      if (url === "/api/v1/editor/maps/lancaster" && init?.method === "PATCH") {
+        return Promise.resolve(jsonResponse({ mapId: "1", slug: "lanc", name: "Lancaster PSB" }));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(<LandingPage canCreateMap={true} canEdit={false} />);
+    await screen.findByRole("link", { name: "Lancaster" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[0]!);
+
+    // Scoped to the rename form — the "+ New map" create form (also visible, canCreateMap=true)
+    // has its own identically-labeled Name/Slug fields.
+    const renameForm = within(container.querySelector(".landing-page__rename-form")!);
+    const nameInput = renameForm.getByLabelText("Name");
+    expect(nameInput).toHaveValue("Lancaster");
+    fireEvent.change(nameInput, { target: { value: "Lancaster PSB" } });
+    const slugInput = renameForm.getByLabelText("Slug");
+    expect(slugInput).toHaveValue("lancaster");
+    fireEvent.change(slugInput, { target: { value: "lanc" } });
+    fireEvent.click(renameForm.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => url === "/api/v1/editor/maps/lancaster")).toBe(
+        true,
+      ),
+    );
+    const patchCall = fetchMock.mock.calls.find(([url]) => url === "/api/v1/editor/maps/lancaster");
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toEqual({
+      name: "Lancaster PSB",
+      slug: "lanc",
+    });
+    // Reloaded the list afterward — GET /api/v1/maps called at least twice (initial + reload).
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === "/api/v1/maps").length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it("shows an error and keeps the rename form open when renaming fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/v1/maps") return Promise.resolve(jsonResponse(MAPS_BODY));
+        if (url === "/api/v1/editor/maps/lancaster" && init?.method === "PATCH") {
+          return Promise.resolve(
+            jsonResponse({ error: { message: 'A map with slug "blackpool" already exists' } }, 409),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const { container } = render(<LandingPage canCreateMap={true} canEdit={false} />);
+    await screen.findByRole("link", { name: "Lancaster" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[0]!);
+    const renameForm = within(container.querySelector(".landing-page__rename-form")!);
+    fireEvent.change(renameForm.getByLabelText("Slug"), { target: { value: "blackpool" } });
+    fireEvent.click(renameForm.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/already exists/i);
+    // Form stays open on failure so the admin can correct it.
+    expect(container.querySelector(".landing-page__rename-form")).toBeInTheDocument();
+  });
+
+  it("lets an admin cancel a rename without calling the API", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(MAPS_BODY))),
+    );
+
+    const { container } = render(<LandingPage canCreateMap={true} canEdit={false} />);
+    await screen.findByRole("link", { name: "Lancaster" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[0]!);
+    const renameForm = within(container.querySelector(".landing-page__rename-form")!);
+    expect(renameForm.getByLabelText("Slug")).toBeInTheDocument();
+    fireEvent.click(renameForm.getByRole("button", { name: "Cancel" }));
+
+    expect(container.querySelector(".landing-page__rename-form")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Lancaster" })).toBeInTheDocument();
+  });
+
+  it("deletes a map only after a second confirming click, then reloads the list", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/maps") return Promise.resolve(jsonResponse(MAPS_BODY));
+      if (url === "/api/v1/editor/maps/lancaster" && init?.method === "DELETE") {
+        return Promise.resolve(jsonResponse(null, 204));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LandingPage canCreateMap={true} canEdit={false} />);
+    await screen.findByRole("link", { name: "Lancaster" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]!);
+    // First click only arms confirmation — no DELETE call yet.
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(false);
+    expect(screen.getByRole("button", { name: "Confirm delete" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            url === "/api/v1/editor/maps/lancaster" &&
+            (init as RequestInit | undefined)?.method === "DELETE",
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("lets an admin cancel a delete confirmation without calling the API", async () => {
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+      if (url === "/api/v1/maps") return Promise.resolve(jsonResponse(MAPS_BODY));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LandingPage canCreateMap={true} canEdit={false} />);
+    await screen.findByRole("link", { name: "Lancaster" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("button", { name: "Confirm delete" })).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(false);
+  });
+
   it("clears results and stops searching when the query is emptied", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url === "/api/v1/maps") return Promise.resolve(jsonResponse(MAPS_BODY));

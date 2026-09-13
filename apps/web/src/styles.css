@@ -1227,6 +1227,47 @@ legend {
   color: var(--color-text-muted);
 }
 
+/* Owner request (2026-09-13): per-row Rename/Delete, admin-only. Buttons rather than links
+   (they're actions, not navigation) but styled to sit inline with the row like the Edit link. */
+.landing-page__rename-link,
+.landing-page__delete-link {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.landing-page__rename-link:hover,
+.landing-page__delete-link:hover {
+  text-decoration: underline;
+}
+
+.landing-page__delete-link {
+  color: var(--color-danger);
+}
+
+.landing-page__rename-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  flex: 1;
+}
+
+.btn--danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #04101f;
+  font-weight: 600;
+}
+
+.btn--danger:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
 .landing-page__places {
   list-style: none;
   margin: 0;

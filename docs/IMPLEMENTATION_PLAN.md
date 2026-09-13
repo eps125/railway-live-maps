@@ -1664,6 +1664,58 @@ today — an inert marker, never a hard error.
   authoring errors degrade to "no centering", never a crash, per the acceptance criteria; matching
   is an exact string comparison on `name` (no normalization/case-insensitivity).
 
+**Follow-up, same day (owner request): the dedicated `boundary` element type folded into
+`label`.** The owner didn't want a separate element type for this at all — a boundary link is now
+just a `label` with `adjacentMapSlug`/`adjacentBoundaryName`/`direction` set, rendered in the
+normal label style (no circle marker), matching the owner's stated preference. `LabelElementSchema`
+gained the three fields; `compileMapDocument`'s `continuationLinks` and `MapRenderer`/`MapView`'s
+click-through and `?boundary=` resolution now recognize either a `label` or the legacy `boundary`
+type; `validateDraftInContext`'s unknown-adjacent-map check does too. The `boundary` type/tool is
+otherwise unchanged from above — kept parseable/renderable (schema, renderer, editor Properties
+panel) but no longer offered in `ToolPalette.tsx`/`EditorCanvas.tsx`'s tool list, since real
+production data already existed: the live `lancaster` (v64) and `mroc-blackpool` (v3) published
+versions, and both maps' current drafts, had genuine `boundary` elements at the time of this
+change — CLAUDE.md rule 11 (published versions immutable) means those are left exactly as they
+were rather than rewritten; the two drafts (still editable, unpublished) were left as-is too
+rather than hand-edited outside the normal editor flow — next time the owner touches that area in
+the editor, recreating it as a label takes seconds now that the fields live there. Tests: new
+cases in `document.test.ts`, `compiler.test.ts` (label-sourced link, explicit exclusion of an
+unlinked label/boundary from `continuationLinks`), `MapRenderer.test.tsx` (label click-through
+keeps the plain-text style, no `<circle>`), `MapView.test.tsx` (`?boundary=` resolves to a label
+too), `PropertyPanel.test.tsx`, and `validate.integration.test.ts` (label-carried
+`adjacentMapSlug` blocks on an unknown target the same way the legacy type does) — the last run
+against a disposable Postgres (`packages/database`'s migrate CLI against a throwaway container),
+not production. `pnpm run build:libs`, `pnpm -r typecheck`, `pnpm run lint`, and the full unit
+suite green.
+
+**Second same-day follow-up (owner request): rename a map's name/slug, and delete a map.** Admin
+UI/API alongside Milestone 30's create-map flow, not previously possible without hand-editing the
+database. `apps/api/src/routes/editor/manageMap.ts` (registered in `server.ts`'s existing
+admin-gated `adminMapScope`, alongside `createMap.ts`): `PATCH /api/v1/editor/maps/{slug}` (body
+`{name?, slug?}`, at least one required) renames, keeping `map_draft`'s own denormalized `slug`
+column and `canonical_document.map.id`/`map.name` in sync in the same transaction so the editor's
+Properties panel and the next publish see the new values too — `409 DUPLICATE_SLUG` on a
+collision, original left untouched; `DELETE /api/v1/editor/maps/{slug}` permanently deletes the
+map, every `map_version`, the `map_draft` and its revision history, and the derived
+`map_binding_index`/`map_place_index`/`map_state_snapshot` rows, as one manual-cascade transaction
+(none of these FKs are `ON DELETE CASCADE` — deletion is meant to be rare and deliberate) — never
+touches nationwide TD/TRUST/etc. event tables (CLAUDE.md rule 17: a map's absence must not affect
+capture/history for its area). `LandingPage.tsx` gained per-row Rename (inline name/slug form,
+admin-only like the existing "+ New map" control) and Delete (two-click confirm — first click arms
+a "Confirm delete"/"Cancel" pair, second actually calls the API) controls. Known limitation:
+renaming a slug changes the map's public URL and is not propagated to anything that already linked
+the old one (a bookmark, or another map's `label.adjacentMapSlug` cross-reference) — same
+"falls back to no centering, never errors" tolerance Milestone 32 already relies on for a stale
+link, not a new gap. Tests: `apps/api/src/routes/editor/manageMap.integration.test.ts` (rename
+name-only/slug/both, duplicate-slug rejection, 404s, delete cascades draft+revisions, explicitly
+asserts `td_berth_event` row count is unchanged by a delete) and two new cases in
+`server.integration.test.ts` (role gating for both routes, end to end through a real login) — all
+run against the same disposable Postgres (this time with a matching disposable Redis alongside it,
+since `server.integration.test.ts` exercises real sessions) rather than production;
+`LandingPage.test.tsx` (admin-only visibility, rename happy path + failure + cancel, delete confirm
+flow + cancel). `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the full unit
+suite green.
+
 ## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[owner's own task — 2026-09-13]`
 
 **The owner will build this map themselves in the editor and report back when it's done — not a

@@ -182,6 +182,56 @@ actually available, and is already mirrored and already surfaced in today's popu
   authoritative run↔schedule link when available) already pointed at garner's
   `trust_activation.cif_schedule_id`; this ADR is what actually makes that the top-priority
   `matchBasis` tier in practice rather than a same-day tie-break.
-- Milestone 35 (station-berth deduction with no headcode at all) builds directly on the STANOX/
-  TIPLOC candidate-set plumbing introduced here, adding the `station_berth_timetable` tier this
-  ADR deliberately leaves out.
+- Milestone 35 builds directly on the STANOX/TIPLOC candidate-set plumbing introduced here, adding
+  the `station_berth_timetable` tier this ADR deliberately left out — see the addendum below for
+  what that tier actually turned out to be (materially different from this ADR's original guess).
+
+## Addendum — Milestone 35: the `station_berth_timetable` tier
+
+Implemented 2026-09-13, same day, after the owner corrected this ADR's original framing of the
+deferred fourth tier ("station-berth deduction when there's no headcode at all"). The real
+scenario is different: a signaller interposes a TD headcode whenever the train is **physically
+present** in the berth — routinely hours before its scheduled departure (stabled overnight, or
+simply early for its next working). A headcode is always present in this scenario; the gap is
+between _when the berth was entered_ and _when the schedule says it should be there_, not a
+missing headcode.
+
+**Design** (confirmed with the owner before implementing, after two earlier proposals were
+identified as wrong — see below):
+
+- Triggers only when the berth is position-scoped (a known "station") **and** STP precedence
+  alone still leaves more than one tied candidate (no single winner, no TRUST activation).
+- Among that tied set, pick whichever candidate's scheduled calling time at the station is
+  **closest to the current moment** (`now`, not `occupancy_entered_at`) — no "already passed"
+  filter. Exactly one closest → matched, `basis: "station_berth_timetable"`. More than one
+  exactly tied → ambiguous at that tier. None with a usable time → falls back to the plain
+  `stp_precedence` ambiguous result (rule 7 — timing didn't help, so nothing is hidden).
+
+**Two rejected designs, kept here because the reasoning matters for anyone touching this later:**
+
+1. _A fixed ±5 minute window against `occupancy_entered_at`._ Wrong — would have excluded the
+   textbook early-interpose case (train sitting 5 hours ahead of its 10:00 departure) outright,
+   the single most common real scenario this tier exists for.
+2. _Closest-to-now, but first dropping any candidate whose scheduled time has "already passed"._
+   Wrong for a different reason: there's no real-time evidence at this tier (that's what
+   `trust_activation`, ranked above it, is for) to say whether a nominally-past time means the
+   working genuinely finished or the train is simply running late. A train scheduled for 10:00
+   and still sitting there at 10:15 must not be excluded just because 10:00 is technically "in
+   the past" — closest-to-now with no passed/future distinction handles both directions
+   correctly (a heavily-delayed early trip losing out to a not-yet-due later repeat of the same
+   headcode is a known, accepted residual edge case, and only actually wrong if it confidently
+   picks the losing one — not a hidden ambiguity).
+
+**Implementation**: `packages/domain/src/schedule/stationBerthTiming.ts` (pure —
+`parseCifTimeToMinutes` for CIF `HHMM`/`HHMMH` strings, `circularDiffMinutes` wrapping at the
+day boundary, `closestToNow` returning every exactly-tied candidate rather than guessing) plus
+the new `timing` parameter on `resolveRunMatch`. `currentRun.ts` fetches each position-scoped
+candidate's best (closest-to-now) calling time at the scoped TIPLOCs only when position-scoped —
+an unscoped (`headcode_only`) search has no station to time-match against, so this tier never
+applies there. No migration — reads the same `cif_schedule_locations` columns Milestone 34
+already joins.
+
+Known limitation carried over from Milestone 34's own note: the author-supplied `berth.crs`/
+`stationId` schema hooks (ADR 0004 D6/D7) are still not consulted as an additional/overriding
+station-identity source — only the SMART-derived STANOX set is used. A berth SMART doesn't cover
+gets no `station_berth_timetable` tier at all, regardless of map-authored CRS metadata.

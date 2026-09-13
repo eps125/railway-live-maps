@@ -11,11 +11,11 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
 → 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
-→ 32 → 34.
+→ 32 → 34 → 35.
 
 **Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
 work first, then the resolver-first backlog):**
-35 → 36 → 37 → 38 → 13 → _Later/unscheduled_. (33 sits outside this sequence — see below.)
+36 → 37 → 38 → 13 → _Later/unscheduled_. (33 sits outside this sequence — see below.)
 
 **Milestone 33 is the owner's own task, not Claude's, done at their leisure** — they'll author the
 Blackpool Line map themselves in the editor and report back when done; do not pick it up as
@@ -1804,15 +1804,55 @@ Popup.test.tsx` and `MapRenderer.test.tsx` updated to the new shape, and the two
   guess, by design, but could show as "no match" for a real train more often than the old
   unscoped behavior did in that edge case — an accepted trade for closing the false-positive risk.
 
-## Milestone 35 — station-berth schedule deduction `[planned]`
+## Milestone 35 — station-berth schedule deduction `[done — 2026-09-13]`
 
-ADR 0004 D7's already-designed extension to Milestone 34: matching a train sitting in a station
-berth to a schedule when there's no TRUST activation at all. Shape already spec'd — TIPLOC-based
-candidate matching within ±5 minutes, a `matchBasis` confidence enum
-(`trust_activation > stp_precedence > station_berth_timetable > headcode_only`), never overriding
-a TRUST-backed pick, always `ambiguous` for multiple candidates. Two spikes named as prerequisites:
-checking whether garner's `td_states`/`livesig` exposes a usable single-winner deduction directly,
-and checking SMART berth→STANOX coverage/quality. Depends on Milestone 34.
+ADR 0004 D7's already-designed extension to Milestone 34. Both prerequisite spikes were actually
+run as part of Milestone 34's own ADR 0006 (not repeated here): garner's `td_states` is not a
+usable shortcut, and SMART berth→STANOX coverage is real and usable.
+
+**Scope corrected by the owner before implementation** (docs/adr/0006's addendum has the full
+back-and-forth): the plan text above described "no TRUST activation at all" as the trigger, but
+the real target scenario is different — a signaller interposes a TD headcode whenever the train
+is **physically present**, routinely hours before its scheduled departure (stabled overnight, or
+early for its next working). A headcode is always present; what's missing is TRUST evidence and
+a clean STP-precedence winner. Two candidate designs were proposed and rejected in conversation
+before landing on the final one — see the ADR addendum for why a fixed ±5 minute window and a
+"drop already-passed times" filter both fail on real scenarios (early interpose, and running
+late, respectively).
+
+**Final design**: when a berth is position-scoped (a known station, Milestone 34's SMART-derived
+STANOX/TIPLOC) and STP precedence alone leaves more than one tied candidate, pick whichever
+candidate's scheduled calling time at that station is closest to _now_ — not to when the berth
+was entered, and with no "already passed" exclusion, since there's no real-time evidence at this
+tier to distinguish "finished" from "running late". Exactly one closest → matched
+(`station_berth_timetable`, the enum's already-agreed rank between `stp_precedence` and
+`headcode_only`); more than one exactly tied → stays ambiguous, never a guess.
+
+**Status: implemented.**
+
+- `packages/domain/src/schedule/stationBerthTiming.ts` (new, pure): `parseCifTimeToMinutes` (CIF
+  `HHMM`/`HHMMH`), `circularDiffMinutes` (wraps at the day boundary), `closestToNow` (returns
+  every exactly-tied candidate, never guesses).
+- `packages/domain/src/schedule/resolveRunMatch.ts`: gained an optional `timing` parameter —
+  when given, tries `station_berth_timetable` before falling back to the plain `stp_precedence`
+  ambiguous result; when omitted, behaves exactly as Milestone 34 left it.
+- `apps/api/src/routes/currentRun.ts`: fetches each position-scoped candidate's best
+  (closest-to-now) calling time at the scoped TIPLOCs — only when position-scoped, since an
+  unscoped (`headcode_only`) search has no station to time-match against. New
+  `londonMinutesSinceMidnight` helper for "now" in the same units. No migration — reuses the
+  `cif_schedule_locations` columns Milestone 34 already joins.
+- Tests: `stationBerthTiming.test.ts` (12 cases), new `resolveRunMatch.test.ts` cases covering
+  early-interpose, running-late, exact-tie and "STP already resolved, timing never consulted";
+  `currentRun.integration.test.ts` gained a `describe("station_berth_timetable tier")` block
+  (seeds schedule times relative to real current London wall-clock time, since the route's `now`
+  isn't injectable) plus a fix to an existing Milestone 34 test whose fixed `"0900"`/`"1000"`
+  seed times were no longer neutral once this tier could resolve them — run against a disposable
+  Postgres, not production. `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the
+  full unit suite green.
+- Known limitation, carried over from Milestone 34: the author-supplied `berth.crs`/`stationId`
+  schema hooks (ADR 0004 D6/D7) are still not consulted as an additional station-identity source
+  — only SMART-derived STANOX. A berth with no SMART coverage gets no `station_berth_timetable`
+  tier regardless of map-authored CRS metadata.
 
 ## Milestone 36 — S-Class bit decoding `[planned]`
 

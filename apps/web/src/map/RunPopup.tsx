@@ -102,7 +102,8 @@ interface CurrentRunResponse {
   headcode: string;
   occupancyEnteredAt: string | null;
   matchStatus: "matched" | "ambiguous" | "unmatched";
-  matchBasis: "trust_activation" | "stp_precedence" | "headcode_only" | null;
+  matchBasis:
+    "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only" | null;
   positionScoped: boolean;
   note: string;
   effective: EffectiveSchedule | null;
@@ -134,6 +135,7 @@ const VARIATION_LABELS: Record<EffectiveMovement["variationStatus"], string> = {
 const MATCH_BASIS_LABELS: Record<NonNullable<CurrentRunResponse["matchBasis"]>, string> = {
   trust_activation: "TRUST activation today",
   stp_precedence: "STP precedence",
+  station_berth_timetable: "closest scheduled call at this station to now",
   headcode_only: "headcode match only — no position data, unscoped, verify",
 };
 

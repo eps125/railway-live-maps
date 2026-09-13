@@ -76,4 +76,90 @@ describe("resolveRunMatch (Milestone 34, docs/adr/0006)", () => {
     // stp_precedence (no activation among the running-today set) and matches on "2" alone.
     expect(result).toEqual({ status: "matched", basis: "stp_precedence", selected: running });
   });
+
+  describe("station_berth_timetable tier (Milestone 35)", () => {
+    function timedCandidate(
+      id: string,
+      timeMinutes: number,
+    ): RunMatchCandidate & {
+      timeMinutes: number;
+    } {
+      return { ...candidate({ scheduleId: id }), timeMinutes };
+    }
+    const byTime = (c: { timeMinutes: number }): number => c.timeMinutes;
+
+    it("does nothing when no timing is given — same two-tier result as Milestone 34", () => {
+      const a = candidate({ scheduleId: "1" });
+      const b = candidate({ scheduleId: "2" });
+      const result = resolveRunMatch([a, b], new Set(), A_MONDAY);
+      expect(result.status).toBe("ambiguous");
+      if (result.status === "ambiguous") expect(result.basis).toBe("stp_precedence");
+    });
+
+    it("breaks an STP tie using whichever candidate's calling time is closest to now, even hours before it — the early-interpose case", () => {
+      const early = timedCandidate("1", 10 * 60); // due 10:00
+      const other = timedCandidate("2", 22 * 60); // due 22:00, same headcode elsewhere today
+      const result = resolveRunMatch(
+        [early, other],
+        new Set(),
+        A_MONDAY,
+        { callingTimeMinutes: byTime, nowMinutes: 5 * 60 }, // interposed at 05:00
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "station_berth_timetable",
+        selected: early,
+      });
+    });
+
+    it("still picks the nominally-passed candidate when it's just running late, not excluded for being in the past", () => {
+      const late = timedCandidate("1", 10 * 60); // due 10:00, still sitting there
+      const laterToday = timedCandidate("2", 22 * 60);
+      const result = resolveRunMatch([late, laterToday], new Set(), A_MONDAY, {
+        callingTimeMinutes: byTime,
+        nowMinutes: 10 * 60 + 15, // now 10:15 — 15 min late, not "already gone"
+      });
+      expect(result).toEqual({
+        status: "matched",
+        basis: "station_berth_timetable",
+        selected: late,
+      });
+    });
+
+    it("stays ambiguous at station_berth_timetable when two candidates are exactly tied for closest to now", () => {
+      const a = timedCandidate("1", 10 * 60);
+      const b = timedCandidate("2", 10 * 60 + 10);
+      const result = resolveRunMatch([a, b], new Set(), A_MONDAY, {
+        callingTimeMinutes: byTime,
+        nowMinutes: 10 * 60 + 5, // exactly 5 min from each
+      });
+      expect(result.status).toBe("ambiguous");
+      if (result.status === "ambiguous") {
+        expect(result.basis).toBe("station_berth_timetable");
+        expect(result.candidates).toEqual([a, b]);
+      }
+    });
+
+    it("falls back to the plain stp_precedence ambiguous result when neither tied candidate has a usable time", () => {
+      const a = candidate({ scheduleId: "1" });
+      const b = candidate({ scheduleId: "2" });
+      const result = resolveRunMatch([a, b], new Set(), A_MONDAY, {
+        callingTimeMinutes: () => null,
+        nowMinutes: 600,
+      });
+      expect(result.status).toBe("ambiguous");
+      if (result.status === "ambiguous") expect(result.basis).toBe("stp_precedence");
+    });
+
+    it("never reaches the timing tier at all when STP precedence already resolves cleanly", () => {
+      const p = { ...timedCandidate("1", 10 * 60), stpIndicator: "P" as const };
+      const o = { ...timedCandidate("2", 5 * 60), stpIndicator: "O" as const }; // closer to now, but that shouldn't matter
+      const result = resolveRunMatch([p, o], new Set(), A_MONDAY, {
+        callingTimeMinutes: byTime,
+        nowMinutes: 5 * 60,
+      });
+      // Overlay beats Permanent outright — timing never gets consulted.
+      expect(result).toEqual({ status: "matched", basis: "stp_precedence", selected: o });
+    });
+  });
 });

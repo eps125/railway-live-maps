@@ -51,7 +51,13 @@ export {
   type RunMatchBasis,
   type RunMatchResult,
   type RunMatchCandidate,
+  type StationTiming,
 } from "./schedule/resolveRunMatch.js";
+export {
+  parseCifTimeToMinutes,
+  circularDiffMinutes,
+  closestToNow,
+} from "./schedule/stationBerthTiming.js";
 export {
   mapToScheduleRow,
   type ScheduleSourceRecord,

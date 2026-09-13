@@ -65,6 +65,27 @@ function uniqueArea(): string {
   return `Z${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
 }
 
+/** Milestone 35: the route computes "now" from a real `new Date()` internally (not injectable),
+ * so these tests seed schedule times relative to the actual current London wall-clock time
+ * rather than a fixed one — mirrors `currentRun.ts`'s own `londonMinutesSinceMidnight`. Returns
+ * an `HHMM` string `offsetMinutes` away (wrapping at the day boundary), for seeding
+ * `cif_schedule_locations` times. */
+function londonHHMMOffsetFromNow(offsetMinutes: number): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  const nowMinutes = hour * 60 + minute;
+  const targetMinutes = (((nowMinutes + offsetMinutes) % 1440) + 1440) % 1440;
+  const targetHour = Math.floor(targetMinutes / 60);
+  const targetMinute = Math.floor(targetMinutes % 60);
+  return `${String(targetHour).padStart(2, "0")}${String(targetMinute).padStart(2, "0")}`;
+}
+
 async function seedOccupiedBerth(
   tdArea: string,
   berth: string,
@@ -441,9 +462,12 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
 
       await seedOccupiedBerth(area, "0007", "7A16");
       const idA = await seedSchedule("7A16", "P");
-      await seedScheduleLocation(idA, 1, tiploc, "LO", { departure: "0900" });
+      // No calling time seeded at all — the Milestone 35 station_berth_timetable tier has
+      // nothing to disambiguate by, so this proves the plain STP-tie case still falls back to
+      // an honest ambiguous stp_precedence result rather than picking one.
+      await seedScheduleLocation(idA, 1, tiploc, "LO");
       const idB = await seedSchedule("7A16", "P");
-      await seedScheduleLocation(idB, 1, tiploc, "LO", { departure: "1000" });
+      await seedScheduleLocation(idB, 1, tiploc, "LO");
       void idA;
       void idB;
 
@@ -526,6 +550,106 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         expect(body.matchStatus).toBe("unmatched");
         expect(body.matchBasis).toBeNull();
         expect(body.candidateSchedules).toEqual([]);
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("station_berth_timetable tier (Milestone 35)", () => {
+    it("matches the candidate scheduled hours in the future over one scheduled soon — the early-interpose case", async () => {
+      const area = uniqueArea();
+      const tiploc = `ST${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Station Loc", stanox);
+      await seedSmartBerthStep(area, "0010", stanox);
+
+      await seedOccupiedBerth(area, "0010", "1X10");
+      // Both same STP precedence (P), so STP alone is ambiguous between them.
+      const dueSoon = await seedSchedule("1X10", "P");
+      await seedScheduleLocation(dueSoon, 1, tiploc, "LO", {
+        departure: londonHHMMOffsetFromNow(30),
+      });
+      const dueLater = await seedSchedule("1X10", "P");
+      await seedScheduleLocation(dueLater, 1, tiploc, "LO", {
+        departure: londonHHMMOffsetFromNow(5 * 60), // interposed hours early — still the real match
+      });
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0010/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("station_berth_timetable");
+        expect(body.effective.scheduleId).toBe(String(dueSoon));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("still matches a candidate whose scheduled time is nominally in the past, when it's the closest — running late, not excluded", async () => {
+      const area = uniqueArea();
+      const tiploc = `LT${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Late Loc", stanox);
+      await seedSmartBerthStep(area, "0011", stanox);
+
+      await seedOccupiedBerth(area, "0011", "2X11");
+      const runningLate = await seedSchedule("2X11", "P");
+      await seedScheduleLocation(runningLate, 1, tiploc, "LO", {
+        departure: londonHHMMOffsetFromNow(-15), // nominally 15 min ago, actually still here
+      });
+      const muchLaterToday = await seedSchedule("2X11", "P");
+      await seedScheduleLocation(muchLaterToday, 1, tiploc, "LO", {
+        departure: londonHHMMOffsetFromNow(10 * 60),
+      });
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0011/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("station_berth_timetable");
+        expect(body.effective.scheduleId).toBe(String(runningLate));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("stays ambiguous when neither STP nor timing can separate two same-headcode candidates", async () => {
+      const area = uniqueArea();
+      const tiploc = `TB${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Tied Loc", stanox);
+      await seedSmartBerthStep(area, "0012", stanox);
+
+      await seedOccupiedBerth(area, "0012", "3X12");
+      const a = await seedSchedule("3X12", "P");
+      await seedScheduleLocation(a, 1, tiploc, "LO", { departure: londonHHMMOffsetFromNow(-5) });
+      const b = await seedSchedule("3X12", "P");
+      await seedScheduleLocation(b, 1, tiploc, "LO", { departure: londonHHMMOffsetFromNow(5) });
+      void a;
+      void b;
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0012/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("ambiguous");
+        expect(body.matchBasis).toBe("station_berth_timetable");
+        expect(body.effective).toBeNull();
       } finally {
         await app.close();
       }

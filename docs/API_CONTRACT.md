@@ -114,21 +114,27 @@ List every observed TD area with first/last event times, C-Class/S-Class counts,
 
 List observed berth identifiers and basic activity statistics for map-authoring and diagnostics.
 
-### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9; rebuilt Milestone 34, docs/adr/0006)
+### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9; rebuilt Milestone 34/35, docs/adr/0006)
 
 The live map's click-a-berth popup, one round trip (`docs/PROJECT_SPEC.md` §5 "Train/run
 popup"). 404 with `error.code: "BERTH_NOT_OCCUPIED"` when the berth has no current occupancy —
 matches "click a **populated** berth."
 
 The berth-run resolver ADR 0002 removed (2026-09-01) was rebuilt on garner (openrail-eps) data by
-ADR 0006 (2026-09-13, Milestone 34) — query-time only, no persisted resolution table or daemon.
-Candidate `cif_schedules` rows (`signalling_id` equals the berth's TD headcode, running today) are
-**position-scoped** first — narrowed to schedules calling at a TIPLOC this berth's SMART data
-(`smart_berth_step`) says is plausible — before any tie-break runs; only when a berth has no SMART
-coverage at all does the search fall back to the unscoped nationwide headcode match, the weakest
-`headcode_only` tier. `matchStatus` is always exactly one of `matched`, `ambiguous` or `unmatched`
-(CLAUDE.md rule 7 — reinstated by this milestone, never silently resolved); `matchBasis` says which
-tier produced it (`trust_activation` > `stp_precedence` > `headcode_only`, ADR 0004 D7's ranking);
+ADR 0006 (2026-09-13, Milestones 34/35) — query-time only, no persisted resolution table or
+daemon. Candidate `cif_schedules` rows (`signalling_id` equals the berth's TD headcode, running
+today) are **position-scoped** first — narrowed to schedules calling at a TIPLOC this berth's
+SMART data (`smart_berth_step`) says is plausible — before any tie-break runs; only when a berth
+has no SMART coverage at all does the search fall back to the unscoped nationwide headcode match,
+the weakest `headcode_only` tier. `matchStatus` is always exactly one of `matched`, `ambiguous` or
+`unmatched` (CLAUDE.md rule 7 — reinstated by Milestone 34, never silently resolved); `matchBasis`
+says which tier produced it (`trust_activation` > `stp_precedence` > `station_berth_timetable` >
+`headcode_only`, ADR 0004 D7's ranking). `station_berth_timetable` (Milestone 35) only applies to
+a position-scoped berth: when STP precedence alone leaves more than one tied candidate, it's
+broken by whichever candidate's scheduled calling time at that station is closest to _now_ — not
+to when the berth was entered (a headcode is often interposed hours before its scheduled
+departure, whenever the train is physically present) and with no "already passed" exclusion (a
+nominally-past time might just mean the train is running late, not that the working finished).
 `positionScoped` says whether SMART-derived scoping was used at all. `effective` (the picked
 schedule's calling points, `trust_activation`, latest `trust_movement`) is present only when
 `matchStatus` is `matched`; `candidateSchedules` lists whichever set was actually considered

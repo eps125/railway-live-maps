@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import {
   TD_PROJECTION_VERSION,
+  circularDiffMinutes,
   decodeTrustMovementFlags,
+  parseCifTimeToMinutes,
   resolveRunMatch,
   signedVariationMinutes,
   type RunMatchCandidate,
@@ -30,6 +32,15 @@ export interface CurrentRunRoutesDeps {
  * if that resolves to one; more than one tied candidate at either tier is `ambiguous`, never a
  * guess (rule 7) — `matchStatus`/`matchBasis`/`positionScoped` on the response say plainly which
  * tier produced the result, or that none did.
+ *
+ * Milestone 35 addendum (docs/adr/0006): when a berth is position-scoped (a known "station") and
+ * STP precedence alone still leaves more than one tied candidate, break the tie by which
+ * candidate's calling time at that station is closest to the current moment — deliberately not
+ * by how close it is to when the berth was entered, since a signaller interposes a headcode
+ * whenever the train is physically present, routinely hours before its scheduled departure (a
+ * train stabled overnight, or simply early for its working). This also correctly keeps a
+ * running-late candidate in play — its nominal time being "in the past" doesn't exclude it,
+ * since there's no real-time evidence at this tier to say the working has actually finished.
  */
 interface CurrentStateRow {
   description: string | null;
@@ -96,6 +107,20 @@ function londonToday(now: Date): string {
   }).format(now);
 }
 
+/** Milestone 35: the current wall-clock time in Europe/London, as minutes since midnight — the
+ * `nowMinutes` the `station_berth_timetable` tier ranks candidates against. */
+function londonMinutesSinceMidnight(now: Date): number {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  return hour * 60 + minute;
+}
+
 /** Milestone 34 (docs/adr/0006): every STANOX a berth's SMART data plausibly places it at — a
  * berth code is only unique within its own TD area's SMART extract, and can genuinely carry more
  * than one (spike: `PX` berth `0491` has 3) — treated as a set throughout, never forced to one. */
@@ -153,6 +178,49 @@ async function queryCandidateSchedules(
     positionScoped ? [headcode, today, tiplocs] : [headcode, today],
   );
   return result.rows;
+}
+
+/** Milestone 35: for each candidate schedule, its best (closest-to-now) parseable calling time
+ * at any of the position-scoped `tiplocs` — a schedule can call at more than one of them (rare
+ * but possible), and each calling row itself may carry more than one time field, so every
+ * candidate is resolved down to a single "best" minutes-since-midnight value here rather than
+ * leaving `resolveRunMatch` to pick among rows. Only called when position-scoped — with no real
+ * station tied to this berth there's nothing to time-match against. */
+async function callingTimeMinutesByScheduleId(
+  pool: Pool,
+  scheduleIds: string[],
+  tiplocs: string[],
+  nowMinutes: number,
+): Promise<Map<string, number>> {
+  if (scheduleIds.length === 0 || tiplocs.length === 0) return new Map();
+  const result = await pool.query<{
+    cif_schedule_id: string;
+    arrival: string | null;
+    departure: string | null;
+    public_arrival: string | null;
+    public_departure: string | null;
+  }>(
+    `select cif_schedule_id::text as cif_schedule_id, arrival, departure, public_arrival, public_departure
+     from cif_schedule_locations
+     where cif_schedule_id = any($1::bigint[]) and tiploc_code = any($2::text[])`,
+    [scheduleIds, tiplocs],
+  );
+
+  const best = new Map<string, number>();
+  for (const row of result.rows) {
+    for (const raw of [row.public_departure, row.public_arrival, row.departure, row.arrival]) {
+      const minutes = parseCifTimeToMinutes(raw);
+      if (minutes === null) continue;
+      const existing = best.get(row.cif_schedule_id);
+      if (
+        existing === undefined ||
+        circularDiffMinutes(minutes, nowMinutes) < circularDiffMinutes(existing, nowMinutes)
+      ) {
+        best.set(row.cif_schedule_id, minutes);
+      }
+    }
+  }
+  return best;
 }
 
 export async function registerCurrentRunRoutes(
@@ -228,14 +296,29 @@ export async function registerCurrentRunRoutes(
           row,
         }));
       const activatedScheduleIds = new Set(activationByScheduleId.keys());
-      const matchResult = resolveRunMatch(matchCandidates, activatedScheduleIds, today);
 
-      // The internal basis (trust_activation/stp_precedence) is only meaningful when the
-      // candidate set was position-scoped — an unscoped fallback match is always the weakest,
-      // `headcode_only` tier regardless of which internal method picked the winner within it
-      // (docs/adr/0006: position-scoping, not the tie-break method, is what this ranking is
-      // about).
-      const matchBasis: "trust_activation" | "stp_precedence" | "headcode_only" | null =
+      // Milestone 35: only a position-scoped berth is a known "station" to time-match against —
+      // an unscoped (headcode_only) search has no station to tie a calling time to.
+      const nowMinutes = londonMinutesSinceMidnight(new Date());
+      const callingTimes = positionScoped
+        ? await callingTimeMinutesByScheduleId(pool, scheduleIds, tiplocs, nowMinutes)
+        : new Map<string, number>();
+      const matchResult = resolveRunMatch(
+        matchCandidates,
+        activatedScheduleIds,
+        today,
+        positionScoped
+          ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
+          : undefined,
+      );
+
+      // The internal basis (trust_activation/stp_precedence/station_berth_timetable) is only
+      // meaningful when the candidate set was position-scoped — an unscoped fallback match is
+      // always the weakest, `headcode_only` tier regardless of which internal method picked the
+      // winner within it (docs/adr/0006: position-scoping, not the tie-break method, is what
+      // this ranking is about).
+      const matchBasis:
+        "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only" | null =
         matchResult.status === "unmatched"
           ? null
           : positionScoped
@@ -412,12 +495,12 @@ export async function registerCurrentRunRoutes(
   );
 }
 
-/** Milestone 34 (docs/adr/0006): plain-language summary of how (or whether) this popup's
- * schedule was picked, shown verbatim in the UI — always honest about confidence, never implying
- * a confirmed RLM identification (garner's data, mirrored). */
+/** Milestone 34/35 (docs/adr/0006 + addendum): plain-language summary of how (or whether) this
+ * popup's schedule was picked, shown verbatim in the UI — always honest about confidence, never
+ * implying a confirmed RLM identification (garner's data, mirrored). */
 function matchNote(
   status: "matched" | "ambiguous" | "unmatched",
-  basis: "trust_activation" | "stp_precedence" | "headcode_only" | null,
+  basis: "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only" | null,
   positionScoped: boolean,
 ): string {
   const scopeNote = positionScoped
@@ -429,6 +512,9 @@ function matchNote(
   }
   if (status === "matched" && basis === "stp_precedence") {
     return `Matched by STP precedence among schedules ${scopeNote}; no TRUST activation seen today — not a confirmed RLM identification.`;
+  }
+  if (status === "matched" && basis === "station_berth_timetable") {
+    return `Matched by which candidate's timetabled call here is closest to now (no TRUST activation, STP alone left more than one) — not a confirmed RLM identification.`;
   }
   if (status === "matched") {
     return `Matched by headcode alone (no SMART position data for this berth) — the weakest evidence tier; verify before trusting this. Not a confirmed RLM identification.`;

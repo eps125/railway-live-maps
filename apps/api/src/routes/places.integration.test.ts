@@ -16,6 +16,17 @@ function uniqueCode(prefix: string): string {
   return `${prefix}${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
 }
 
+/** A random 3-uppercase-letter CRS — a fixed literal here once collided with an unrelated
+ * integration test file's own fixed-literal CRS sharing the same live CI test database (both
+ * suites run against the same Postgres within one CI job), making this test's search join onto
+ * the wrong map. Never hardcode an identifier literal in an integration test again. */
+function randomCrs(): string {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  return Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * letters.length)]).join(
+    "",
+  );
+}
+
 async function seedLocation(overrides: {
   tiploc: string;
   stanox?: string;
@@ -79,8 +90,9 @@ describe("place routes (integration)", () => {
 
   it("finds a location by partial name and reports its currently-effective covering map", async () => {
     const tiploc = uniqueCode("T");
+    const crs = randomCrs();
     const name = `Test Junction ${uniqueCode("N")}`;
-    await seedLocation({ tiploc, crs: "TST", name });
+    await seedLocation({ tiploc, crs, name });
     const slug = `test-place-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
     await publishMapWithPlace(slug, "station-1", tiploc, new Date(0), null);
 
@@ -95,7 +107,7 @@ describe("place routes (integration)", () => {
     expect(match).toEqual({
       tiploc,
       stanox: null,
-      crs: "TST",
+      crs,
       name,
       mapSlug: slug,
       elementId: "station-1",

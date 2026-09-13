@@ -121,9 +121,10 @@ describe("runPublishMap (integration): map_binding_index population", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  afterAll(async () => {
-    await pool.end();
-  });
+  // Pool teardown lives on the *last* describe block in this file (map_place_index, below) —
+  // both share this module-level `pool`, and calling `pool.end()` here would close it out from
+  // under that later block's tests (a real CI failure this milestone hit: "Cannot use a pool
+  // after calling end on the pool").
 
   it("publishing a map inserts matching map_binding_index rows", async () => {
     const slug = uniqueSlug();
@@ -182,9 +183,33 @@ describe("runPublishMap (integration): map_binding_index population", () => {
   });
 });
 
+/** A random 3-uppercase-letter CRS (`CrsSchema`'s `^[A-Z]{3}$` — the runPublishMap CLI validates
+ * against the real schema, so this can't just be an arbitrary string like tiploc/stanox can). */
+function randomCrs(): string {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  return Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * letters.length)]).join(
+    "",
+  );
+}
+
+/** Place identifiers for docWithStation, generated fresh per call — a real CI failure this
+ * milestone hit: a fixed literal CRS reused across two different integration test files sharing
+ * one live test database made an unrelated places.integration.test.ts search join onto *this*
+ * file's map instead of its own. */
+export interface StationIdentifiers {
+  crs: string;
+  tiploc: string;
+  stanox: string;
+}
+
+function randomStationIdentifiers(): StationIdentifiers {
+  const suffix = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+  return { crs: randomCrs(), tiploc: `TEST${suffix}`, stanox: suffix };
+}
+
 /** Adds a station element (crs/tiploc/stanox) and a plain, identifier-less label to the minimal
  * two-berth document, for Milestone 31's map_place_index coverage. */
-function docWithStation(mapId: string) {
+function docWithStation(mapId: string, identifiers: StationIdentifiers) {
   const doc = minimalDoc(mapId, "ZZ", "0001", "ZZ", "0002");
   return {
     ...doc,
@@ -197,9 +222,7 @@ function docWithStation(mapId: string) {
         x: 50,
         y: 50,
         name: "Test Station",
-        crs: "TST",
-        tiploc: "TESTSTN",
-        stanox: "99999",
+        ...identifiers,
       },
       { id: "label-1", layerId: "layer-berths", type: "label", x: 60, y: 60, text: "plain" },
     ],
@@ -240,7 +263,8 @@ describe("runPublishMap (integration): map_place_index population", () => {
 
   it("publishing a map with a tagged station inserts a matching map_place_index row, and skips an untagged label", async () => {
     const slug = uniqueSlug();
-    const doc = docWithStation(slug);
+    const identifiers = randomStationIdentifiers();
+    const doc = docWithStation(slug, identifiers);
     const filePath = join(dir, "doc.json");
     await writeFile(filePath, JSON.stringify(doc), "utf8");
 
@@ -258,9 +282,9 @@ describe("runPublishMap (integration): map_place_index population", () => {
       {
         element_id: "station-1",
         element_type: "station",
-        tiploc: "TESTSTN",
-        stanox: "99999",
-        crs: "TST",
+        tiploc: identifiers.tiploc,
+        stanox: identifiers.stanox,
+        crs: identifiers.crs,
       },
     ]);
   });

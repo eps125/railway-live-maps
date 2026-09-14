@@ -262,3 +262,33 @@ via `EXPLAIN` that this lets the planner prune historical partitions out of the 
 (not just filter them out after scanning), while still generously covering any realistic stabling
 duration. `findOpenedByStep`'s equivalent query was never affected — its exact `entered_at = $3`
 equality against the partition key already pruned correctly on its own.
+
+## Addendum: proactive resolution (2026-09-14)
+
+Investigating a real report (5N92/W85506 showing nothing in the public popup at PX0214/PX0218)
+found that `train_run` had **zero rows** for that train all day, despite several other PX berths
+along its actual route (Lancaster/Garstang/Fylde Jn/Preston proper) having good SMART coverage for
+this exact schedule. The reason: a run was only ever established **reactively, on a popup click**
+(`currentRun.ts`) — this daemon only ever _propagated_ an existing link forward; per the original
+design note above, "never establishes a run itself." A train never clicked at a well-covered berth
+could go completely unidentified for its whole journey, regardless of how resolvable it actually
+was.
+
+Fix: `sweepFreshResolution` (`apps/worker/src/runLineage/projector.ts`), gated by
+`RUN_LINEAGE_FRESH_RESOLUTION_ENABLED` (off by default) and `RUN_LINEAGE_FRESH_RESOLUTION_SCOPE`
+(`mapped`, the default — every TD area referenced by at least one published map's bindings, so one
+bound berth makes the _whole_ area eligible — or `nationwide`). Runs each tick, independently of
+the checkpoint-driven CA/CB batch loop above (left untouched): queries currently-open, still-
+unlinked occupancies in eligible areas from the last 15 minutes, and attempts the same
+`resolveFreshRunMatch` the click path uses (extracted to `@railway/database` so both share one
+implementation — see that function's own doc comment). An in-memory, per-process cooldown (30s)
+stops a still-unmatched occupancy (e.g. one whose TRUST activation hasn't landed yet) from being
+retried every 1s tick. Deliberately a separate sweep rather than folded into the CA/CB batch loop:
+it also naturally covers occupancies a `CC` interpose opens (a train's origin berth — the batch
+loop only ever reads `CA`/`CB`) and boundary crossings with no owner-curated pair (this file's own
+`processBoundaryBatch` comment already anticipated exactly this: "falls back to fresh resolution").
+
+Resource cost, measured against production before enabling this: ~0.0076 fresh-resolution
+attempts/sec for a single mapped area (PX) vs ~1.5/sec nationwide (129,726 new area+headcode
+sightings/day), each ~15-30ms of mostly-indexed DB work — affordable at either scope. Start scoped
+to `mapped` and widen deliberately; RAM, not CPU, is this deployment's tighter constraint.

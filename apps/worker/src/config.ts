@@ -85,6 +85,22 @@ const baseSchema = z.object({
   // effective published map version. Snapshots are a cache/audit of the same reconstruction
   // `/state?at=` performs — 5 min is ample; not latency-sensitive.
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
+  // docs/adr/0007 addendum (2026-09-14): `run-lineage-daemon` only ever *propagated* an existing
+  // run identity along step chains — it never established one itself (currentRun.ts did that on a
+  // click). A train never clicked at a well-covered berth could go completely unidentified for its
+  // whole journey (found investigating a real report: 5N92/W85506, never resolved all day despite
+  // good SMART coverage at several PX berths it passed through). Off by default — same discipline
+  // as every other live-path flag here.
+  RUN_LINEAGE_FRESH_RESOLUTION_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  // "mapped" (default): only TD areas referenced by at least one published map's bindings — if a
+  // map binds one CL berth, every CL berth becomes eligible, not just the bound one. "nationwide":
+  // every TD area, no filter. Measured cost against production before this addendum: ~0.0076
+  // resolutions/sec for a single mapped area (PX) vs ~1.5/sec nationwide, ~15-30ms of mostly-
+  // indexed DB work each — affordable at either scope, but start scoped and widen deliberately.
+  RUN_LINEAGE_FRESH_RESOLUTION_SCOPE: z.enum(["mapped", "nationwide"]).default("mapped"),
 });
 
 export interface Config extends z.infer<typeof baseSchema> {

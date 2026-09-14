@@ -2033,6 +2033,27 @@ new `seedRunLineageCheckpointIfFresh` step that skips a fresh checkpoint straigh
 tail instead of the backlog — sticky matching only helps live movements anyway. Daemon stopped
 during diagnosis, live traffic confirmed unaffected throughout, redeployed clean afterward.
 
+**Proactive resolution addendum, 2026-09-14** (docs/adr/0007): a real train (5N92/W85506) went
+completely unidentified all day because a run was only ever established reactively, on a popup
+click — this daemon only ever _propagated_ an existing link. `sweepFreshResolution`
+(`apps/worker/src/runLineage/projector.ts`) now also proactively resolves any open, unlinked
+occupancy in an eligible TD area each tick, gated by `RUN_LINEAGE_FRESH_RESOLUTION_ENABLED` (off
+by default) and `RUN_LINEAGE_FRESH_RESOLUTION_SCOPE` (`mapped` — every TD area with at least one
+published-map binding — or `nationwide`). The click-path resolution logic
+(`berthStanoxes`/`queryCandidateSchedules`/`resolveRunMatch`/... , previously inlined in
+`currentRun.ts`) moved to `packages/database/src/runResolution.ts` (`resolveFreshRunMatch`) so
+both the click path and this sweep share one implementation — `apps/worker` cannot import from
+`apps/api`, so this couldn't stay api-only. `apps/api/src/lib/runLineage.ts` (`findOpenOccupancy`/
+`findOccupancyLink`/`upsertResolvedLink`) moved there too for the same reason. Tests: 19
+pre-existing `currentRun.integration.test.ts` cases pass unchanged (behavior-preserving
+extraction, verified against a disposable Postgres); 3 new `freshResolution.integration.test.ts`
+cases (establishes a link in a mapped area, skips an unmapped one, cooldown suppresses an
+immediate retry — scoped to each test's own fixture, not the aggregate summary counters, since
+`sweepFreshResolution` deliberately scans every eligible area and the shared integration-test
+database has other files' map/occupancy fixtures in it too). Resource cost measured against
+production before enabling: ~0.0076 resolutions/sec for one mapped area vs ~1.5/sec nationwide,
+~15-30ms of mostly-indexed DB work each.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

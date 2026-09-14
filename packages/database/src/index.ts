@@ -52,3 +52,22 @@ export {
   type AppUser,
   type AppUserWithHash,
 } from "./users.js";
+export {
+  resolveFreshRunMatch,
+  findOpenOccupancy,
+  findOccupancyLink,
+  upsertResolvedLink,
+  getMappedTdAreas,
+  fetchScheduleRowById,
+  buildCandidateSchedules,
+  berthStanoxes,
+  normalizeStp,
+  londonToday,
+  londonMinutesSinceMidnight,
+  type FreshResolutionResult,
+  type OpenOccupancyRef,
+  type OccupancyLink,
+  type ResolvedRunToLink,
+  type CandidateScheduleRow,
+  type ActivationRow,
+} from "./runResolution.js";

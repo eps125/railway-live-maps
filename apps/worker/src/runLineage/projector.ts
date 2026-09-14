@@ -4,6 +4,11 @@ import {
   ensureCheckpoint,
   getCheckpoint,
   advanceCheckpoint,
+  getMappedTdAreas,
+  resolveFreshRunMatch,
+  upsertResolvedLink,
+  londonToday,
+  londonMinutesSinceMidnight,
 } from "@railway/database";
 import { evaluateStepChain, evaluateBoundaryCorroboration } from "@railway/domain";
 
@@ -79,6 +84,8 @@ export interface RunLineageSummary {
   stepChainLinks: number;
   boundaryLinks: number;
   boundaryAmbiguous: number;
+  freshResolutionAttempts: number;
+  freshResolutionLinks: number;
 }
 
 const EMPTY_SUMMARY: RunLineageSummary = {
@@ -87,6 +94,8 @@ const EMPTY_SUMMARY: RunLineageSummary = {
   stepChainLinks: 0,
   boundaryLinks: 0,
   boundaryAmbiguous: 0,
+  freshResolutionAttempts: 0,
+  freshResolutionLinks: 0,
 };
 
 async function findOccupancyLink(
@@ -395,6 +404,121 @@ async function processBoundaryBatch(
       "boundary_correlated",
     );
     if (inserted) summary.boundaryLinks += 1;
+  }
+}
+
+export type FreshResolutionScope = "mapped" | "nationwide";
+
+/** How far back an occupancy could have opened and still be worth a fresh-resolution attempt —
+ * bounds the sweep query to currently-relevant occupancies rather than every open one ever
+ * (there shouldn't be many older than this still lacking a link, but nothing guarantees it). */
+const FRESH_RESOLUTION_LOOKBACK_MINUTES = 15;
+/** Minimum gap between two attempts on the *same* occupancy — an unmatched result (e.g. its TRUST
+ * activation hasn't landed yet) is worth retrying, but not on every 1s tick. */
+const FRESH_RESOLUTION_COOLDOWN_MS = 30_000;
+const FRESH_RESOLUTION_BATCH_LIMIT = 200;
+
+interface OpenUnlinkedOccupancyRow {
+  id: string;
+  entered_at: Date;
+  td_area: string;
+  berth_code: string;
+  description: string;
+}
+
+/** In-memory, per-daemon-process — created once by `run-lineage-daemon` and passed into every
+ * tick's `sweepFreshResolution` call, so cooldowns actually persist across ticks. Never persisted;
+ * a restart just means the next tick's occupancies retry immediately, which is fine (cheap). */
+export function createFreshResolutionCooldown(): Map<string, number> {
+  return new Map();
+}
+
+/**
+ * docs/adr/0007 addendum (2026-09-14): proactively resolves any currently-open, still-unlinked
+ * occupancy in an eligible TD area, instead of waiting for a click (`currentRun.ts`) or an
+ * inheritable step-chain/boundary link (the batch loop above) — the gap that let a real train
+ * (5N92/W85506) go completely unidentified all day despite good SMART coverage at several berths
+ * it passed through, because nobody happened to click it there. Deliberately separate from the
+ * checkpoint-driven CA/CB batch loop above (left untouched — hardened through two real production
+ * incidents the same day) rather than folded into it: this also naturally covers occupancies a
+ * `CC` interpose opens (a train's very first berth — e.g. its origin — which the CA/CB-only batch
+ * loop never reads at all), and boundary crossings with no owner-curated `td_area_boundary` pair
+ * (`processBoundaryBatch`'s own `// falls back to fresh resolution` comment, above).
+ */
+export async function sweepFreshResolution(
+  pool: Pool,
+  scope: FreshResolutionScope,
+  cooldown: Map<string, number>,
+  summary: RunLineageSummary,
+): Promise<void> {
+  const eligibleAreas = scope === "mapped" ? await getMappedTdAreas(pool) : null;
+  if (eligibleAreas && eligibleAreas.size === 0) return; // No published map bindings yet.
+
+  const params: unknown[] = [FRESH_RESOLUTION_BATCH_LIMIT];
+  let areaFilter = "";
+  if (eligibleAreas) {
+    params.push([...eligibleAreas]);
+    areaFilter = "and bo.td_area = any($2::text[])";
+  }
+
+  const { rows } = await pool.query<OpenUnlinkedOccupancyRow>(
+    `select bo.id, bo.entered_at, bo.td_area, bo.berth_code, bo.description
+       from berth_occupancy bo
+      where bo.left_at is null
+        and bo.description is not null
+        and bo.entered_at >= now() - interval '${FRESH_RESOLUTION_LOOKBACK_MINUTES} minutes'
+        and not exists (
+          select 1 from berth_occupancy_run_link l
+          where l.berth_occupancy_id = bo.id and l.occupancy_entered_at = bo.entered_at
+        )
+        ${areaFilter}
+      limit $1`,
+    params,
+  );
+  if (rows.length === 0) return;
+
+  const now = Date.now();
+  const cooldownCutoff = now - FRESH_RESOLUTION_COOLDOWN_MS;
+  // Evict cooldown entries older than the lookback window — those occupancies have aged out of
+  // the query above regardless, so the entry can never be consulted again.
+  const evictBefore = now - FRESH_RESOLUTION_LOOKBACK_MINUTES * 60_000;
+  for (const [key, attemptedAt] of cooldown) {
+    if (attemptedAt < evictBefore) cooldown.delete(key);
+  }
+
+  const nowDate = new Date(now);
+  const today = londonToday(nowDate);
+  const nowMinutes = londonMinutesSinceMidnight(nowDate);
+
+  for (const row of rows) {
+    const key = `${row.id}:${row.entered_at.toISOString()}`;
+    const lastAttempt = cooldown.get(key);
+    if (lastAttempt !== undefined && lastAttempt > cooldownCutoff) continue;
+    cooldown.set(key, now);
+    summary.freshResolutionAttempts += 1;
+
+    const fresh = await resolveFreshRunMatch(pool, {
+      tdArea: row.td_area,
+      berth: row.berth_code,
+      headcode: row.description,
+      today,
+      nowMinutes,
+    });
+    if (fresh.matchStatus !== "matched" || !fresh.effectiveRow || !fresh.matchBasis) continue;
+
+    await upsertResolvedLink(
+      pool,
+      { id: row.id, enteredAt: row.entered_at },
+      {
+        cifScheduleId: fresh.effectiveRow.id,
+        cifTrainUid: fresh.effectiveRow.cif_train_uid,
+        trafficDay: today,
+        matchBasis: fresh.matchBasis,
+        tdArea: row.td_area,
+        berth: row.berth_code,
+      },
+    );
+    summary.freshResolutionLinks += 1;
   }
 }
 

@@ -3,17 +3,26 @@ import type { Pool } from "pg";
 import type { Redis } from "ioredis";
 import {
   TD_PROJECTION_VERSION,
-  circularDiffMinutes,
   decodeTrustMovementFlags,
-  parseCifTimeToMinutes,
-  resolveRunMatch,
   signedVariationMinutes,
-  type RunMatchCandidate,
 } from "@railway/domain";
+import {
+  findOpenOccupancy,
+  findOccupancyLink,
+  upsertResolvedLink,
+  resolveFreshRunMatch,
+  fetchScheduleRowById,
+  buildCandidateSchedules,
+  berthStanoxes,
+  normalizeStp,
+  londonToday,
+  londonMinutesSinceMidnight,
+  type CandidateScheduleRow,
+  type ActivationRow,
+} from "@railway/database";
 import { apiError } from "../lib/queryRange.js";
 import { locationToJson, type CifLocationRowLike } from "./schedule.js";
 import { SESSION_COOKIE_NAME, getSession } from "../auth/session.js";
-import { findOpenOccupancy, findOccupancyLink, upsertResolvedLink } from "../lib/runLineage.js";
 
 export interface CurrentRunRoutesDeps {
   pool: Pool;
@@ -66,29 +75,6 @@ export interface CurrentRunRoutesDeps {
 interface CurrentStateRow {
   description: string | null;
   occupancy_entered_at: Date | null;
-}
-
-interface CandidateScheduleRow {
-  id: string;
-  cif_train_uid: string;
-  cif_stp_indicator: string;
-  days_runs_bitmask: string | null;
-  schedule_start_date: string;
-  schedule_end_date: string;
-  atoc_code: string | null;
-  train_status: string | null;
-  cif_train_service_code: string | null;
-  cif_train_category: string | null;
-  signalling_id: string | null;
-  origin_tiploc: string | null;
-  destination_tiploc: string | null;
-}
-
-interface ActivationRow {
-  cif_schedule_id: string;
-  trust_id: string;
-  deduced: number;
-  created: Date;
 }
 
 interface ActivationExtraRow {
@@ -193,195 +179,6 @@ function toPublicEffective(effective: EffectiveScheduleFull): {
     operatorCode: effective.operatorCode,
     locations: effective.locations,
   };
-}
-
-const STP: ReadonlySet<string> = new Set(["C", "N", "O", "P"]);
-function normalizeStp(value: string): "C" | "N" | "O" | "P" {
-  return STP.has(value) ? (value as "C" | "N" | "O" | "P") : "P";
-}
-
-/** Today's date in Europe/London (traffic day is close enough to the calendar day for this
- * popup — a schedule popup does not need WTT 02:00 boundary precision). */
-function londonToday(now: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/London",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
-
-/** Milestone 35: the current wall-clock time in Europe/London, as minutes since midnight — the
- * `nowMinutes` the `station_berth_timetable` tier ranks candidates against. */
-function londonMinutesSinceMidnight(now: Date): number {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/London",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
-  return hour * 60 + minute;
-}
-
-/** Milestone 34 (docs/adr/0006): every STANOX a berth's SMART data plausibly places it at — a
- * berth code is only unique within its own TD area's SMART extract, and can genuinely carry more
- * than one (spike: `PX` berth `0491` has 3) — treated as a set throughout, never forced to one. */
-async function berthStanoxes(pool: Pool, tdArea: string, berth: string): Promise<string[]> {
-  const result = await pool.query<{ stanox: string }>(
-    `select distinct stanox from smart_berth_step
-     where td_area = $1 and (from_berth = $2 or to_berth = $2) and stanox is not null`,
-    [tdArea, berth],
-  );
-  return result.rows.map((row) => row.stanox);
-}
-
-async function tiplocsForStanoxes(pool: Pool, stanoxes: string[]): Promise<string[]> {
-  if (stanoxes.length === 0) return [];
-  const result = await pool.query<{ tiploc: string }>(
-    `select distinct tiploc from location_reference where stanox = any($1::text[])`,
-    [stanoxes],
-  );
-  return result.rows.map((row) => row.tiploc);
-}
-
-/** Milestone 34 (docs/adr/0006): candidate `cif_schedules` for a headcode running today —
- * position-scoped to `tiplocs` (an `exists` against `cif_schedule_locations`) when given a
- * non-empty set, unscoped (today's whole-country headcode match, the `headcode_only` fallback
- * tier) when `tiplocs` is empty. Same query either way, differing only by that one clause, to
- * keep the two paths from drifting apart. */
-async function queryCandidateSchedules(
-  pool: Pool,
-  headcode: string,
-  today: string,
-  tiplocs: string[],
-): Promise<CandidateScheduleRow[]> {
-  const positionScoped = tiplocs.length > 0;
-  const result = await pool.query<CandidateScheduleRow>(
-    `select s.id, s.cif_train_uid, s.cif_stp_indicator, s.days_runs_bitmask,
-            s.schedule_start_date::text as schedule_start_date,
-            s.schedule_end_date::text as schedule_end_date,
-            s.atoc_code, s.train_status, s.cif_train_service_code, s.cif_train_category,
-            s.signalling_id,
-            (select l.tiploc_code from cif_schedule_locations l
-              where l.cif_schedule_id = s.id order by l.seq_no asc limit 1) as origin_tiploc,
-            (select l.tiploc_code from cif_schedule_locations l
-              where l.cif_schedule_id = s.id order by l.seq_no desc limit 1) as destination_tiploc
-     from cif_schedules s
-     where s.signalling_id = $1 and s.deleted is null
-       and $2::date between s.schedule_start_date and s.schedule_end_date
-       ${
-         positionScoped
-           ? `and exists (
-                select 1 from cif_schedule_locations l
-                where l.cif_schedule_id = s.id and l.tiploc_code = any($3::text[])
-              )`
-           : ""
-       }`,
-    positionScoped ? [headcode, today, tiplocs] : [headcode, today],
-  );
-  return result.rows;
-}
-
-/** Milestone 39 (docs/adr/0007): fetches one known schedule by id — same column shape as
- * `queryCandidateSchedules` — for the lineage-shortcut path, where the schedule is already known
- * from an inherited `berth_occupancy_run_link` rather than found by a headcode/position search. */
-async function fetchScheduleRowById(
-  pool: Pool,
-  scheduleId: string,
-): Promise<CandidateScheduleRow | null> {
-  const result = await pool.query<CandidateScheduleRow>(
-    `select s.id, s.cif_train_uid, s.cif_stp_indicator, s.days_runs_bitmask,
-            s.schedule_start_date::text as schedule_start_date,
-            s.schedule_end_date::text as schedule_end_date,
-            s.atoc_code, s.train_status, s.cif_train_service_code, s.cif_train_category,
-            s.signalling_id,
-            (select l.tiploc_code from cif_schedule_locations l
-              where l.cif_schedule_id = s.id order by l.seq_no asc limit 1) as origin_tiploc,
-            (select l.tiploc_code from cif_schedule_locations l
-              where l.cif_schedule_id = s.id order by l.seq_no desc limit 1) as destination_tiploc
-     from cif_schedules s
-     where s.id = $1 and s.deleted is null`,
-    [scheduleId],
-  );
-  return result.rows[0] ?? null;
-}
-
-/** Shared by both the full headcode/position search and the Milestone 39 lineage-shortcut path
- * (there given a single already-known schedule) — builds the `candidateSchedules` response shape
- * from whichever rows were actually considered. */
-function buildCandidateSchedules(
-  rows: CandidateScheduleRow[],
-  activationByScheduleId: Map<string, ActivationRow>,
-  effectiveScheduleId: string | null,
-) {
-  return rows.map((row) => {
-    const activation = activationByScheduleId.get(row.id);
-    return {
-      scheduleId: row.id,
-      trainUid: row.cif_train_uid,
-      stpIndicator: normalizeStp(row.cif_stp_indicator),
-      source: "GARNER" as const,
-      operatorCode: row.atoc_code,
-      trainStatus: row.train_status,
-      serviceCode: row.cif_train_service_code,
-      category: row.cif_train_category,
-      signallingId: row.signalling_id,
-      scheduleStartDate: row.schedule_start_date,
-      scheduleEndDate: row.schedule_end_date,
-      daysRunsBitmask: row.days_runs_bitmask,
-      originTiploc: row.origin_tiploc,
-      destinationTiploc: row.destination_tiploc,
-      activatedToday: activation !== undefined,
-      trustId: activation?.trust_id ?? null,
-      activationDeduced: activation ? activation.deduced !== 0 : false,
-      isEffective: effectiveScheduleId === row.id,
-    };
-  });
-}
-
-/** Milestone 35: for each candidate schedule, its best (closest-to-now) parseable calling time
- * at any of the position-scoped `tiplocs` — a schedule can call at more than one of them (rare
- * but possible), and each calling row itself may carry more than one time field, so every
- * candidate is resolved down to a single "best" minutes-since-midnight value here rather than
- * leaving `resolveRunMatch` to pick among rows. Only called when position-scoped — with no real
- * station tied to this berth there's nothing to time-match against. */
-async function callingTimeMinutesByScheduleId(
-  pool: Pool,
-  scheduleIds: string[],
-  tiplocs: string[],
-  nowMinutes: number,
-): Promise<Map<string, number>> {
-  if (scheduleIds.length === 0 || tiplocs.length === 0) return new Map();
-  const result = await pool.query<{
-    cif_schedule_id: string;
-    arrival: string | null;
-    departure: string | null;
-    public_arrival: string | null;
-    public_departure: string | null;
-  }>(
-    `select cif_schedule_id::text as cif_schedule_id, arrival, departure, public_arrival, public_departure
-     from cif_schedule_locations
-     where cif_schedule_id = any($1::bigint[]) and tiploc_code = any($2::text[])`,
-    [scheduleIds, tiplocs],
-  );
-
-  const best = new Map<string, number>();
-  for (const row of result.rows) {
-    for (const raw of [row.public_departure, row.public_arrival, row.departure, row.arrival]) {
-      const minutes = parseCifTimeToMinutes(raw);
-      if (minutes === null) continue;
-      const existing = best.get(row.cif_schedule_id);
-      if (
-        existing === undefined ||
-        circularDiffMinutes(minutes, nowMinutes) < circularDiffMinutes(existing, nowMinutes)
-      ) {
-        best.set(row.cif_schedule_id, minutes);
-      }
-    }
-  }
-  return best;
 }
 
 /** Owner request (2026-09-13): real unit/stock allocation for the matched train, mirrored from
@@ -495,88 +292,23 @@ export async function registerCurrentRunRoutes(
           lineageSchedule.id,
         );
       } else {
-        // Milestone 34 (docs/adr/0006): position-scope by this berth's SMART-derived
-        // STANOX(es) first; only when there's no SMART coverage at all for this berth (empty
-        // tiploc set) do we fall back to the unscoped nationwide headcode match — never because
-        // the scoped search itself came back with zero rows, which is real information, not a
-        // reason to widen.
-        const stanoxes = await berthStanoxes(pool, tdArea, berth);
-        const tiplocs = await tiplocsForStanoxes(pool, stanoxes);
-        positionScoped = tiplocs.length > 0;
-
-        const candidateRows = await queryCandidateSchedules(pool, headcode, today, tiplocs);
-        const scheduleIds = candidateRows.map((row) => row.id);
-
-        // TRUST activations for any candidate schedule since the start of today (London). The
-        // cutoff has to be the *instant* midnight-London occurs — `($2::date)::timestamp at time
-        // zone 'Europe/London'` — not `today` reinterpreted in the DB session's zone: under BST,
-        // between 23:00 and 00:00 UTC `today` is already tomorrow's date and
-        // `($2::date)::timestamptz` in a UTC session lands an hour in the future, wrongly
-        // excluding a just-created activation.
-        const activationRows = scheduleIds.length
-          ? (
-              await pool.query<ActivationRow>(
-                `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
-                 from trust_activation
-                 where cif_schedule_id = any($1::bigint[])
-                   and created >= ($2::date)::timestamp at time zone 'Europe/London'
-                 order by created desc`,
-                [scheduleIds, today],
-              )
-            ).rows
-          : [];
-        const activationByScheduleId = new Map<string, ActivationRow>();
-        for (const row of activationRows) {
-          if (!activationByScheduleId.has(row.cif_schedule_id)) {
-            activationByScheduleId.set(row.cif_schedule_id, row);
-          }
-        }
-
-        const matchCandidates: (RunMatchCandidate & { row: CandidateScheduleRow })[] =
-          candidateRows.map((row) => ({
-            scheduleId: row.id,
-            stpIndicator: normalizeStp(row.cif_stp_indicator),
-            scheduleStartDate: row.schedule_start_date,
-            scheduleEndDate: row.schedule_end_date,
-            daysRunsBitmask: row.days_runs_bitmask,
-            row,
-          }));
-        const activatedScheduleIds = new Set(activationByScheduleId.keys());
-
-        // Milestone 35: only a position-scoped berth is a known "station" to time-match
-        // against — an unscoped (headcode_only) search has no station to tie a calling time to.
+        // Milestone 34 (docs/adr/0006), extracted to @railway/database's resolveFreshRunMatch so
+        // apps/worker's proactive sweep (docs/adr/0007 addendum) shares the exact same logic —
+        // see that function's own doc comment for the position-scoping/fallback rules.
         const nowMinutes = londonMinutesSinceMidnight(new Date());
-        const callingTimes = positionScoped
-          ? await callingTimeMinutesByScheduleId(pool, scheduleIds, tiplocs, nowMinutes)
-          : new Map<string, number>();
-        const matchResult = resolveRunMatch(
-          matchCandidates,
-          activatedScheduleIds,
+        const fresh = await resolveFreshRunMatch(pool, {
+          tdArea,
+          berth,
+          headcode,
           today,
-          positionScoped
-            ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
-            : undefined,
-        );
-
-        matchStatus = matchResult.status;
-        // The internal basis (trust_activation/stp_precedence/station_berth_timetable) is only
-        // meaningful when the candidate set was position-scoped — an unscoped fallback match is
-        // always the weakest, `headcode_only` tier regardless of which internal method picked
-        // the winner within it (docs/adr/0006: position-scoping, not the tie-break method, is
-        // what this ranking is about).
-        matchBasis =
-          matchResult.status === "unmatched"
-            ? null
-            : positionScoped
-              ? matchResult.basis
-              : "headcode_only";
-        effectiveRow = matchResult.status === "matched" ? matchResult.selected.row : null;
-        isSolidMatch = matchStatus === "matched" && matchBasis !== "headcode_only";
-        candidateSchedules = buildCandidateSchedules(
-          candidateRows,
-          activationByScheduleId,
-          effectiveRow?.id ?? null,
-        );
+          nowMinutes,
+        });
+        matchStatus = fresh.matchStatus;
+        matchBasis = fresh.matchBasis;
+        positionScoped = fresh.positionScoped;
+        effectiveRow = fresh.effectiveRow;
+        isSolidMatch = fresh.isSolidMatch;
+        candidateSchedules = fresh.candidateSchedules;
 
         // Milestone 39 (docs/adr/0007): a real (non-lineage) match establishes/corrects the link
         // a later physical step can carry forward — never blocks the response on failure.

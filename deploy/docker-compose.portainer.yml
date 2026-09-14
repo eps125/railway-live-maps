@@ -99,6 +99,14 @@ x-worker-env: &worker-env
   # The berth-run resolver was removed with ADR 0002 (2026-09-01); its RESOLVER_* knobs
   # (RESOLVER_EAGER_MAPPED_AREAS_ONLY, RESOLVER_LIVE_WINDOW_HOURS) are gone. Drop them from any
   # existing stack .env.
+  # docs/adr/0007 addendum (2026-09-14): `run-lineage` proactively resolves open, unlinked
+  # occupancies instead of only ever inheriting/reacting to a click — off by default, same
+  # discipline as every other live-path flag. "mapped" (default) only resolves TD areas with at
+  # least one published-map binding; "nationwide" resolves everywhere (measured cost against
+  # production before enabling this addendum: ~0.0076 resolutions/sec for one mapped area vs
+  # ~1.5/sec nationwide — affordable at either scope, but widen deliberately, not by default).
+  RUN_LINEAGE_FRESH_RESOLUTION_ENABLED: ${RUN_LINEAGE_FRESH_RESOLUTION_ENABLED:-false}
+  RUN_LINEAGE_FRESH_RESOLUTION_SCOPE: ${RUN_LINEAGE_FRESH_RESOLUTION_SCOPE:-mapped}
 
 # Owner decision 2026-09-11 (docs/IMPLEMENTATION_PLAN.md): every image-bearing service carries
 # this label so the `watchtower` service (below) knows which containers it's allowed to touch —

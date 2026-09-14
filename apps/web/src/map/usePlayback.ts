@@ -25,8 +25,11 @@ export const PLAYBACK_STEPS_MS = [
 // The /events fetch is windowed in time AND capped in row count (server MAX_LIMIT). On a busy
 // map the row cap, not the time window, is what runs the buffer dry — so refill is driven by
 // how many *unplayed events* are left, paginating with the `after` cursor until `nextCursor`
-// is null (caught up to the requested `to`). `BUFFER_WINDOW_MS` only sets how far past "now"
-// the `to` bound reaches so a fast scrub has somewhere to go.
+// is null (caught up to the requested `to`). `BUFFER_WINDOW_MS` sets how far past the current
+// playback position (seed target, or the advancing clock on refill) the `to` bound reaches —
+// NOT past real "now": nationwide capture makes a from-target-to-now range (the whole history
+// since the jump point, across every TD area) prohibitively expensive to query, and it 504s at
+// the proxy for anything but a very recent jump (fixed 2026-09-14, regression from c4a3429).
 const BUFFER_WINDOW_MS = 30 * 60_000;
 const PAGE_LIMIT = 500;
 const REFILL_WHEN_UNPLAYED_BELOW = 80;
@@ -118,7 +121,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
           fetch(`/api/v1/maps/${slug}/state?at=${encodeURIComponent(atIso)}`),
           fetch(
             `/api/v1/maps/${slug}/events?from=${encodeURIComponent(atIso)}&to=${encodeURIComponent(
-              new Date(Math.max(Date.now(), atMs) + BUFFER_WINDOW_MS).toISOString(),
+              new Date(atMs + BUFFER_WINDOW_MS).toISOString(),
             )}&limit=${PAGE_LIMIT}`,
           ),
         ]);
@@ -150,7 +153,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
     if (refillingRef.current || cursorRef.current === null) return;
     refillingRef.current = true;
     const seekId = seekIdRef.current;
-    const to = new Date(Math.max(Date.now(), clockRef.current) + BUFFER_WINDOW_MS).toISOString();
+    const to = new Date(clockRef.current + BUFFER_WINDOW_MS).toISOString();
     try {
       const res = await fetch(
         `/api/v1/maps/${slug}/events?from=${encodeURIComponent(

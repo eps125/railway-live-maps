@@ -175,20 +175,46 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
     const berthKeys = Object.keys(bundle.berthBindingIndex);
     const tdAreas = berthKeys.map((key) => key.split("|")[0] ?? "");
     const berthCodes = berthKeys.map((key) => key.split("|")[1] ?? "");
+    const distinctTdAreas = tdAreasFromBundle(bundle);
 
+    // `candidates` is `materialized` so the planner can't fold the (td_area, berth_code) pairing
+    // join into it and pick a plan driven by `ingestion_sequence` instead. Without the fence,
+    // Postgres favours the `ingestion_sequence` index (it directly satisfies `order by ... limit`)
+    // over the far more selective `td_berth_event_area_idx (td_area, event_at desc)` — and since
+    // this table is nationwide (every nationwide event <7 days) that scans tens of millions of
+    // other areas' rows before the row cap is reached, timing out (504) at the proxy for anything
+    // but a very recent jump. Filtering `td_area = any(distinct areas)` first (2-4 areas for a
+    // typical map, not 181 unnested berth pairs) forces the composite index; only the resulting
+    // small candidate set then gets the exact (td_area, berth_code) pairing check. Verified via
+    // `EXPLAIN ANALYZE` against production 2026-09-14: ~21s (this table's real nationwide volume)
+    // down to <1s for a 30-minute window (docs/adr — playback 504 investigation).
     const result = await pool.query<TdBerthEventRow>(
-      `select be.ingestion_sequence::text, be.event_at, be.message_type, be.td_area,
-              be.from_berth, be.to_berth, be.description
-         from td_berth_event be
-         join (select unnest($1::text[]) as td_area, unnest($2::text[]) as berth_code) wanted
-           on wanted.td_area = be.td_area
-          and (wanted.berth_code = be.from_berth or wanted.berth_code = be.to_berth)
-        where be.message_type in ('CA', 'CB', 'CC')
-          and be.event_at >= $3 and be.event_at < $4
-          and be.ingestion_sequence > $5
-        order by be.ingestion_sequence asc
-        limit $6`,
-      [tdAreas, berthCodes, rangeResult.range.from, rangeResult.range.to, after, limit],
+      `with candidates as materialized (
+         select be.ingestion_sequence, be.event_at, be.message_type, be.td_area,
+                be.from_berth, be.to_berth, be.description
+           from td_berth_event be
+          where be.td_area = any($1::text[])
+            and be.message_type in ('CA', 'CB', 'CC')
+            and be.event_at >= $2 and be.event_at < $3
+       )
+       select c.ingestion_sequence::text, c.event_at, c.message_type, c.td_area,
+              c.from_berth, c.to_berth, c.description
+         from candidates c
+         join (select unnest($4::text[]) as td_area, unnest($5::text[]) as berth_code) wanted
+           on wanted.td_area = c.td_area
+          and (wanted.berth_code = c.from_berth or wanted.berth_code = c.to_berth)
+        where c.ingestion_sequence > $6
+        order by c.ingestion_sequence asc
+        limit $7`,
+      [
+        distinctTdAreas,
+        rangeResult.range.from,
+        rangeResult.range.to,
+        tdAreas,
+        berthCodes,
+        after,
+        limit,
+      ],
     );
 
     const events: LiveDeltaMessage[] = [];

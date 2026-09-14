@@ -380,7 +380,7 @@ export function RunPopup({
   tdArea,
   berth,
   onClose,
-}: RunPopupProps): JSX.Element {
+}: RunPopupProps): JSX.Element | null {
   const [data, setData] = useState<CurrentRunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -431,6 +431,15 @@ export function RunPopup({
     };
   }, [tdArea, berth]);
 
+  // While the very first fetch is still in flight, render nothing at all rather than a
+  // popup shell that might immediately vanish again. A non-solid public match 404s (see this
+  // component's own 2026-09-13 "close quietly" handling above) — usually within well under a
+  // second — and a title bar + "Loading…" that flashes open then closes reads as the popup
+  // being broken, not as "nothing to show" (reported against PX 0218/0214, 2026-09-14). Once
+  // the first fetch has resolved (`data` or a real `error`), subsequent poll ticks never flip
+  // `loading` back to true, so this only ever hides the opening frame, not a refresh.
+  if (loading) return null;
+
   return (
     <div role="status" className="map-inspector map-inspector--run">
       <div className="map-inspector__title">
@@ -446,10 +455,9 @@ export function RunPopup({
         </button>
       </div>
 
-      {loading ? <p>Loading…</p> : null}
       {error ? <p className="app-error">{error}</p> : null}
 
-      {!loading && !error && data ? (
+      {!error && data ? (
         <>
           <dl>
             <dt>Headcode</dt>

@@ -171,9 +171,13 @@ isn't lost. Every field on this response otherwise behaves identically regardles
 produced the match.
 
 **Unit/stock allocation (owner request, same day), shown to every visitor regardless of login:**
-`unitAllocation` — an array, one entry per unit in the formation (ordered by `position`), mirrored
-from garner's `train_allocation` (migration 0031): `{ unitNo, position, fleetId, vehicles: [...],
-reportedAt }`. Empty when garner has nothing allocated for the matched train today.
+`unitAllocation` — an array, one entry per **currently allocated** unit in the formation (ordered
+by `position`), mirrored from garner's `train_allocation` (migration 0031): `{ unitNo, position,
+fleetId, vehicles: [...], reportedAt }`. `train_allocation` is an append-only log of allocation
+_reports_ — a unit reallocated by control produces a new row per report, not an update to the old
+one — so this endpoint returns only the most recently reported row per `position` (fixed
+2026-09-15; see `docs/IMPLEMENTATION_PLAN.md` Milestone 35's follow-up #6), never every historical
+report. Empty when garner has nothing allocated for the matched train today.
 
 ```json
 {

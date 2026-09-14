@@ -303,14 +303,15 @@ async function seedTrainAllocation(
   unitNo: string,
   position: number,
   vehicles: string,
+  reported: Date = new Date(),
 ): Promise<void> {
   const id = newScheduleId();
   await pool.query(
     `insert into train_allocation (
        id, cif_train_uid, headcode, schedule_start_date, origin_tiploc, dest_tiploc,
        unit_no, "position", fleet_id, vehicles, reported, message_id
-     ) values ($1, $2, 'TEST', $3::date, 'ORIGIN', 'DEST', $4, $5, '465/0', $6, now(), $7)`,
-    [id, cifTrainUid, scheduleStartDate, unitNo, position, vehicles, randomUUID()],
+     ) values ($1, $2, 'TEST', $3::date, 'ORIGIN', 'DEST', $4, $5, '465/0', $6, $7, $8)`,
+    [id, cifTrainUid, scheduleStartDate, unitNo, position, vehicles, reported, randomUUID()],
   );
   createdTrainAllocationIds.push(id);
 }
@@ -895,6 +896,75 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         });
         expect(authResponse.statusCode).toBe(200);
         expect(authResponse.json().unitAllocation).toEqual(anonBody.unitAllocation);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("shows only the most recently reported unit per position when control reallocates it, not every historical report", async () => {
+      // garner's train_allocation is an append-only log of allocation *reports*, not a mutable
+      // "current formation" table — a position reallocated by control produces a new row each
+      // time, not an update to the old one (real production example, 2026-09-14: 1P09/W34091's
+      // position 1 was reallocated 6 times through the day; the popup showed all 6 units as if
+      // simultaneously part of the formation).
+      const area = uniqueArea();
+      const tiploc = `RA${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Realloc Loc", stanox);
+      await seedSmartBerthStep(area, "0019", stanox);
+
+      await seedOccupiedBerth(area, "0019", "1P19");
+      const scheduleId = await seedSchedule("1P19", "P");
+      await seedScheduleLocation(scheduleId, 1, tiploc, "LO", { departure: "0900" });
+      const cifTrainUid = `U${scheduleId}`;
+      const today = londonTodayDateString();
+      const base = Date.now();
+      // Deliberately out of chronological insert order — the fix must sort by `reported`, not by
+      // insertion/row order, to pick the actual latest one.
+      await seedTrainAllocation(
+        cifTrainUid,
+        today,
+        "390107",
+        1,
+        "one",
+        new Date(base - 60_000 * 60),
+      );
+      await seedTrainAllocation(cifTrainUid, today, "390050", 1, "four", new Date(base));
+      await seedTrainAllocation(
+        cifTrainUid,
+        today,
+        "390009",
+        1,
+        "two",
+        new Date(base - 60_000 * 30),
+      );
+      // A second position stays independent — only position 1 was reallocated.
+      await seedTrainAllocation(cifTrainUid, today, "390200", 2, "second", new Date(base));
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0019/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().unitAllocation).toEqual([
+          {
+            unitNo: "390050",
+            position: 1,
+            fleetId: "465/0",
+            vehicles: ["four"],
+            reportedAt: expect.any(String),
+          },
+          {
+            unitNo: "390200",
+            position: 2,
+            fleetId: "465/0",
+            vehicles: ["second"],
+            reportedAt: expect.any(String),
+          },
+        ]);
       } finally {
         await app.close();
       }

@@ -191,11 +191,21 @@ async function queryUnitAllocation(
   cifTrainUid: string,
   serviceDate: string,
 ): Promise<UnitAllocationEntry[]> {
+  // garner's `train_allocation` is an append-only log of allocation *reports*, not a mutable
+  // "current formation" table (its own migration comment assumed the latter) — every time control
+  // swaps a unit, garner emits a brand-new row for the same `position` with a new `id`/`message_id`
+  // rather than updating the old one, and RLM's mirror (upsert-by-id, ADR 0002) faithfully keeps
+  // every one of them. Without `distinct on (position)` here, a position reallocated N times today
+  // shows as N different units in the formation simultaneously (reported 2026-09-14 against 1P09/
+  // W34091: 6 rows, all `position = 1`, real allocation changes through the day — only the last,
+  // 390050, was actually the current unit). `coalesce(reported, synced_at)` falls back to RLM's own
+  // mirror-ingestion time when garner didn't send a `reported` timestamp for a given report; `id`
+  // (garner's own monotonic PK) is the final tiebreak for an exact tie either way.
   const result = await pool.query<UnitAllocationRow>(
-    `select unit_no, "position", fleet_id, vehicles, reported
+    `select distinct on ("position") unit_no, "position", fleet_id, vehicles, reported
      from train_allocation
      where cif_train_uid = $1 and schedule_start_date = $2::date
-     order by "position" asc, unit_no asc`,
+     order by "position" asc, coalesce(reported, synced_at) desc, id desc`,
     [cifTrainUid, serviceDate],
   );
   return result.rows.map((row) => ({

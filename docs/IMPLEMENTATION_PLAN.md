@@ -1920,12 +1920,25 @@ ScheduleLocations` (`apps/worker/src/garner/bridge.ts`) ordered by `sort_time` a
    activation/STP precedence/verify this" language is resolver-internal and only meaningful
    alongside `matchBasis`, which anonymous visitors never receive — kept on the full (logged-in)
    response only. `docs/API_CONTRACT.md`'s reduced-shape description updated to match.
+6. **A unit reallocated by control during the day showed as multiple simultaneous units, not a
+   replacement** (found 2026-09-15 against a real report: 1P09/W34091 showed 6 different 390s in
+   one formation position). `train_allocation` is garner's append-only log of allocation _reports_
+   — a reallocated position gets a brand-new row (new `id`/`message_id`), not an update to the old
+   one; migration 0031's own comment assumed the latter ("one row per unit per formation").
+   `queryUnitAllocation` selected every historical row for the train, not just the current one per
+   position. Fixed with `distinct on (position) ... order by position, coalesce(reported,
+synced_at) desc, id desc` — picks the most recently reported row per position; confirmed against
+   the real production data behind the report (6 rows, one position, correctly reduces to the
+   last-reported unit). `docs/API_CONTRACT.md`'s `unitAllocation` description clarified to say "the
+   current unit," not just "one entry per unit."
 
 Tests: `bridge.test.ts` (+3 `sequenceScheduleLocations` cases), `currentRun.integration.test.ts`
-(+3 assertions: unmatched/ambiguous `unitAllocation`, anonymous `note` absence),
-`RunPopup.test.tsx` (+1 crash-regression case, existing anonymous-view test updated for no
-`note`). Full worker/api/web unit suites green; `currentRun.integration.test.ts` itself needs a
-migrated Postgres, not re-run here — read carefully against the new assertions instead.
+(+3 assertions: unmatched/ambiguous `unitAllocation`, anonymous `note` absence; +1 case for the
+reallocation fix — three reports for one position, one for another, asserts only the
+latest-per-position survives). Full worker/api/web unit suites green; `currentRun.integration.
+test.ts` run against a disposable Postgres (SSH-tunnelled to a throwaway container, per
+`docs/DEPLOYMENT.md`'s testing recipe) — all 20 cases pass. `pnpm -r typecheck` green for
+`@railway/api` and `@railway/web`.
 `pnpm -r typecheck` green for `@railway/api` and `@railway/web`.
 
 ## Milestone 36 — S-Class bit decoding `[planned]`

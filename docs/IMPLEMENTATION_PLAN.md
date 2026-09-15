@@ -2196,9 +2196,43 @@ daily-running same-headcode candidates, one activated today, one activated only 
 must resolve `trust_activation`/matched to today's, never ambiguous), `currentRun.integration.test.ts`
 (+1 integration case, same scenario end-to-end). `pnpm -r typecheck`, `pnpm run lint`, `pnpm run
 format:check`, and the full non-integration Vitest suite (78 files / 524 tests) all pass.
-**Not yet pushed** — held back at the owner's request pending further same-session work; still
-needs the integration suite run against a live Postgres (same standing limitation as Milestones
-39/40) before merge.
+
+First push's CI failed the integration suite — not on the new fix itself, but on a pre-existing
+same-session test (`still counts a TRUST activation created before London midnight for a schedule
+dated only yesterday`) whose own fixture used `Date.now() - 6h` to simulate "last night," which
+doesn't reliably land on _yesterday's_ London calendar date depending on what wall-clock time CI
+happens to run at — once the activation check became properly date-scoped (this milestone's own
+fix), that timing-dependent fixture started failing intermittently instead of the bug it was
+supposed to guard against. Fixed to construct the timestamp from an explicit `${yesterday}T22:00:00Z`
+instead, matching the same safe pattern already used elsewhere in this file. Confirmed the same
+class of bug independently against a second real report (PX 0126, headcode `5S65`) via a direct
+repro against production data.
+
+## Milestone 43 — an unscoped headcode match with only one running candidate is solid `[done — 2026-09-15]`
+
+Design refinement (docs/adr/0008 second addendum), owner-prompted by the `5Z07`/`9S47` reports:
+both were correctly resolved internally (confirmed against the reference site) but hidden from the
+public map because their current berth has no SMART coverage. The owner's observation — "if
+there's only one candidate then surely that's a good match?" — is correct: `headcode_only`'s real
+weakness is the risk of a _different, unrelated_ train sharing the same headcode elsewhere on the
+network (a real, common occurrence — confirmed the same day: headcode `1M73` had two completely
+different real trains running nationwide). When the unscoped search finds exactly one running
+candidate, that risk is provably zero, not merely assumed absent.
+
+Checklist:
+
+- [x] `packages/database/src/runResolution.ts`: `resolveFreshRunMatch`'s `isSolidMatch` also
+      treats an unscoped match as solid when `candidatesRunningOnAny` found exactly one running
+      candidate nationwide; two or more running candidates keeps the existing weak/hidden
+      treatment, even when the resolver itself picks a clean winner. `matchBasis` and the
+      underlying `match_confidence` written to `train_run` (step-chain propagation) are
+      unaffected — response-shaping only.
+- [x] Docs: docs/adr/0008 second addendum, this checklist.
+
+Tests: `currentRun.integration.test.ts` — rewrote the single-unscoped-candidate public-visibility
+case to expect 200 (was 404), added a case confirming two unscoped candidates still 404 even when
+the resolver resolves cleanly via STP precedence. `pnpm -r typecheck`, `pnpm run lint`, `pnpm run
+format:check`, and the full non-integration Vitest suite (78 files / 524 tests) all pass.
 
 ## Later / unscheduled
 

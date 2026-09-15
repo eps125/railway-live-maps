@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import {
   TD_PROJECTION_VERSION,
+  candidatesRunningOnAny,
   circularDiffMinutes,
   confidenceForBasis,
   isSameRunIdentity,
@@ -377,7 +378,18 @@ export async function resolveFreshRunMatch(
         : "headcode_only";
   const effectiveRow = matchResult.status === "matched" ? matchResult.selected.row : null;
   const trafficDay = matchResult.status === "matched" ? matchResult.trafficDay : null;
-  const isSolidMatch = matchResult.status === "matched" && matchBasis !== "headcode_only";
+  // Owner decision (2026-09-15): `headcode_only` is weak because the headcode *could* collide
+  // with an unrelated train elsewhere on the network — but when the unscoped nationwide search
+  // found exactly one running candidate today, that collision risk is provably zero, not merely
+  // assumed absent. `matchBasis` still reports `headcode_only` either way (it genuinely was found
+  // by headcode alone, unscoped) — this only affects whether it's solid enough to show publicly.
+  // Two or more running candidates keeps the existing weak/hidden treatment unchanged.
+  const runningNationwideCount = positionScoped
+    ? null
+    : candidatesRunningOnAny(matchCandidates, serviceDates).length;
+  const isSolidMatch =
+    matchResult.status === "matched" &&
+    (matchBasis !== "headcode_only" || runningNationwideCount === 1);
   const candidateSchedules = buildCandidateSchedules(
     candidateRows,
     todaysActivationByScheduleId,

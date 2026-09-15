@@ -141,3 +141,41 @@ reproducing this exact PX 0107/1Y61 scenario), `currentRun.integration.test.ts` 
 case: two daily-running, position-scoped, same-headcode schedules, one activated today, one
 activated only the day before — must resolve `matched`/`trust_activation` to today's, not
 `ambiguous`).
+
+Also confirmed the same day against a second real report (PX 0126, headcode `5S65`, correct
+schedule `P65371`) via a direct repro against production data (running the built resolver code
+inside the live `run-lineage` container against the real database) — same root cause, same fix.
+
+## Second addendum (2026-09-15): an unscoped match with only one running candidate is solid
+
+Owner observation, prompted by the `5Z07`/`9S47` reports above (both correctly resolved
+internally — confirmed via the reference site — but hidden from the public map because their
+current berth has no SMART coverage): "if there's only one candidate then surely that's a good
+match?"
+
+Re-examining why `headcode_only` (docs/adr/0006) is treated as the weakest tier: the real risk it
+guards against is a **different, unrelated train sharing the same headcode elsewhere on the
+network** — a genuine, common occurrence (confirmed earlier the same day: headcode `1M73` had two
+completely different real trains, `G66797` and `W84884`, both running nationwide on 2026-09-15).
+When the unscoped nationwide search for a headcode finds **exactly one** running candidate for the
+day, that specific risk is provably zero — not merely assumed absent — regardless of whether the
+berth itself has position data to independently verify against.
+
+**Decision** (owner-confirmed): `resolveFreshRunMatch`'s `isSolidMatch` — which gates public/
+anonymous visibility (docs/adr/0006's owner-request addendum) — now also treats an unscoped match
+as solid when the unscoped search returned only one running candidate. Two or more running
+candidates (even when the resolver itself cleanly picks a winner via STP precedence or TRUST
+activation) still keeps the existing weak/hidden treatment — the ambiguity being guarded against
+is "could this headcode mean a different train," not "did the resolver have to break a tie."
+`matchBasis` in the response is unaffected and still reports `headcode_only` either way — it
+genuinely was found by headcode alone; only public-visibility eligibility changed. The
+underlying `match_confidence` written to `train_run` (and therefore what step-chain is willing to
+propagate forward, docs/adr/0007) is also unaffected — this is a narrower, response-shaping change
+only, not a re-grading of the tier's own confidence for lineage purposes.
+
+`packages/database/src/runResolution.ts`: `resolveFreshRunMatch` computes
+`runningNationwideCount` via `candidatesRunningOnAny` (the same function `resolveRunMatch` uses
+internally) over the unscoped candidate set, and folds it into `isSolidMatch`. Tests:
+`currentRun.integration.test.ts` — rewrote the single-unscoped-candidate case to expect a 200 with
+reduced public detail (previously 404), added a new case confirming two unscoped candidates still
+404s even when the resolver itself resolves cleanly via STP precedence (Overlay beats Permanent).

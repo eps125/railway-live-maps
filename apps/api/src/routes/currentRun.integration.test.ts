@@ -843,7 +843,12 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       // alone; only one has an activation from last night, which must still count today.
       await seedScheduleForDateRange("6F06", "P", yesterday, yesterday);
       const activatedId = await seedScheduleForDateRange("6F06", "P", yesterday, yesterday);
-      const lastNight = new Date(Date.now() - 6 * 60 * 60 * 1000); // 6h ago, well before this run
+      // 22:00 UTC on yesterday's date is always within *yesterday's* London calendar day
+      // (23:00 BST or 22:00 GMT, either way still before midnight) — unlike a fixed "N hours
+      // ago" offset, which drifts onto today's calendar date depending on what wall-clock time
+      // this test happens to run at (ADR 0008 addendum: ambiguous-tier regression, 2026-09-15,
+      // once the activation check became date-scoped rather than "anywhere in the window").
+      const lastNight = new Date(`${yesterday}T22:00:00Z`);
       const trustId = await seedActivationAt(activatedId, lastNight);
 
       const app = await buildApp();
@@ -1008,16 +1013,46 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     });
 
-    it("404s NO_PUBLIC_DETAIL for an anonymous request even when matched, if only via the weakest headcode_only tier", async () => {
+    it("returns a reduced public response for an unscoped (headcode_only) match, when the unscoped search found only one running candidate", async () => {
+      // Owner decision (2026-09-15): headcode_only is weak because the headcode *could* collide
+      // with an unrelated train elsewhere — but when the unscoped search found exactly one
+      // running candidate, that collision risk is provably zero, so it's solid enough to show
+      // publicly (matchBasis still reports headcode_only — it genuinely was found by headcode
+      // alone — this only affects public visibility).
       const area = uniqueArea();
       await seedOccupiedBerth(area, "0015", "6X15");
       const scheduleId = await seedSchedule("6X15", "P"); // no SMART data seeded — unscoped match
-      void scheduleId;
       const app = await buildApp();
       try {
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0015/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.effective.scheduleId).toBeUndefined(); // reduced view — internal id withheld
+        expect(body.matchBasis).toBeUndefined();
+        void scheduleId;
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("still 404s NO_PUBLIC_DETAIL for an anonymous request when the unscoped search found more than one running candidate", async () => {
+      // The genuine collision risk `headcode_only` is weak about — two same-headcode, same-day
+      // candidates nationwide with no position data to tell them apart — must stay hidden from
+      // anonymous visitors even though the resolver itself may still confidently pick one via
+      // STP precedence (rule 5: never assume a headcode uniquely identifies a run).
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0027", "7X27");
+      await seedSchedule("7X27", "P");
+      await seedSchedule("7X27", "O"); // Overlay beats Permanent outright — still resolves cleanly
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0027/current-run`,
         });
         expect(response.statusCode).toBe(404);
         expect(response.json().error.code).toBe("NO_PUBLIC_DETAIL");

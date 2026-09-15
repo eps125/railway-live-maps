@@ -38,7 +38,10 @@ const USAGE =
  *    and only works for undoing a scale specifically, whereas `--restore` undoes *any* draft
  *    change back to a known-good point. `map_draft_revision` already keeps a full document
  *    snapshot on every save (migration 0011, retained >= 90 days per docs/PROJECT_SPEC.md §9), so
- *    no new storage is needed for this.
+ *    no new storage is needed for this — except a draft's very first revision (1) never gets its
+ *    own snapshot from the editor's own save path (`getOrSeedDraft` writes `map_draft` directly),
+ *    so every run here backfills one for whatever revision it's about to move away from before
+ *    changing anything, guaranteeing that state is restorable too.
  *
  * Both modes go through the same optimistic-style update the editor's own `PUT .../draft` uses
  * (bump `revision`, insert the new `map_draft_revision` row) so this shows up in the draft's
@@ -135,6 +138,26 @@ export async function runRescaleMapDraft(config: Config, argv: string[]): Promis
         await client.query("rollback");
         return;
       }
+
+      // The editor's own `PUT .../draft` only ever snapshots the revision a save *produces*
+      // (2, 3, ...), never the revision a draft started at (1, always unsnapshotted — `getOrSeedDraft`
+      // inserts `map_draft` directly with no matching `map_draft_revision` row). So a draft that
+      // has only ever been at revision 1 has nothing in `map_draft_revision` yet at all, and
+      // `--restore 1` would find nothing to restore. Backfill the current (pre-change) state under
+      // its own revision number before applying anything, so every past state this tool is about
+      // to move away from is always recoverable — `on conflict do nothing` makes this a no-op for
+      // any revision the editor already snapshotted itself.
+      await client.query(
+        `insert into map_draft_revision (map_draft_id, revision, canonical_document, comment)
+         values ($1, $2, $3, $4)
+         on conflict (map_draft_id, revision) do nothing`,
+        [
+          draft.id,
+          draft.revision,
+          JSON.stringify(draft.canonical_document),
+          "pre-existing state, backfilled by rescale-map-draft-cli before its first change",
+        ],
+      );
 
       const updated = await client.query<{ revision: number }>(
         `update map_draft

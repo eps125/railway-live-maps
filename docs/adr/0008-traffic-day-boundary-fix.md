@@ -98,3 +98,46 @@ correct ambiguity to surface, not a regression the widening introduced.
   extension of this two-date probe.
 - No migration: `train_run.traffic_day` already stored a `date` column (migration 0032); this
   changes which date gets written into it, not the column itself.
+
+## Addendum (2026-09-15): TRUST activation must be checked per resolved date, not per schedule id
+
+Found the same day this ADR shipped, investigating a real report: PX berth 0107, headcode `1Y61`,
+reported `unmatched`/`ambiguous` by the owner despite an obviously correct, confidently-activated
+candidate (`G89843`, confirmed against the reference site). Two schedules — `G89843` (calls PRST
+~10:52) and `G89845` (calls PRST ~20:50) — share this headcode and both call at the same
+position-scoped berth **every day** (`days_runs_bitmask` all-1s). Confirmed by direct SQL: `G89843`
+had a genuine activation from that same morning (08:25); `G89845`'s most recent activation was from
+**the evening before** (18:22 the prior day), for its own prior day's working — its today's-due
+20:50 service hadn't been activated yet.
+
+**Root cause**: widening the TRUST activation SQL query's cutoff to `yesterday`'s midnight (this
+ADR's own fix, above — needed so an overnight train's pre-midnight activation still counts) was
+paired with a flat `activatedScheduleIds: Set<scheduleId>` membership check in `resolveRunMatch` —
+"was there _any_ activation row for this schedule id within the widened window," with no awareness
+of which calendar day each row actually belonged to. For a daily-repeating schedule sharing a
+headcode with another daily-repeating schedule at the same station, this reintroduced exactly the
+kind of false collision the two-date probe was designed to avoid: `G89845`'s stale, entirely
+unrelated prior-day activation started counting as "activated" for _today's_ tier check too,
+alongside `G89843`'s real same-morning one — `activated.length === 2` → wrongly `ambiguous`.
+
+**Fix**: `resolveRunMatch` now takes `activatedDatesByScheduleId: ReadonlyMap<string,
+ReadonlySet<string>>` — schedule id → the specific calendar dates (the activation row's own
+`created`, resolved to its London calendar date) it actually has an activation on — and checks each
+`DatedCandidate` (`candidatesRunningOnAny`'s own scheduleId+resolvedServiceDate pairing) against
+that specific date, not schedule-id membership alone. `packages/database/src/runResolution.ts`
+builds this from the same already-widened activation query (no new SQL, no new round trip) by
+grouping each row under `londonToday(row.created)` instead of collapsing to one row per schedule.
+This fixes both cases correctly with the same structure: an overnight train's activation is dated
+on the same day its resolved `serviceDate` correctly comes out to (yesterday), so it still counts;
+a same-headcode sibling's stale prior-day activation no longer collides with a _different_
+schedule's today occurrence. `buildCandidateSchedules`'s `activatedToday` display field (shown to
+authenticated users in the candidate list) is similarly re-scoped to a `todaysActivationByScheduleId`
+map containing only rows dated specifically `today` — it was inheriting the same "activated
+anywhere in the widened window" imprecision for display purposes, which this also corrects.
+
+No SQL/schema change — same widened query as the original fix, just grouped by the row's own date
+instead of collapsed to "most recent regardless of date." Tests: `resolveRunMatch.test.ts` (+1 case
+reproducing this exact PX 0107/1Y61 scenario), `currentRun.integration.test.ts` (+1 integration
+case: two daily-running, position-scoped, same-headcode schedules, one activated today, one
+activated only the day before — must resolve `matched`/`trust_activation` to today's, not
+`ambiguous`).

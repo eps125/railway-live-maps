@@ -2155,6 +2155,51 @@ the first one (would have failed against the pre-fix code, which calls `/events`
 then never again). Full existing `usePlayback.test.tsx` suite (5 cases) and `pnpm run lint` +
 `apps/web` typecheck all pass.
 
+## Milestone 42 — fix: TRUST activation checked per schedule id only, not per resolved date `[done — 2026-09-15]`
+
+Bugfix (docs/adr/0008 addendum), found the same day Milestone 40 shipped, investigating a real
+report: PX berth 0107, headcode `1Y61`, reported `ambiguous` by the owner despite an obviously
+correct candidate (`G89843`, activated that same morning, confirmed against the reference site).
+Root cause: Milestone 40 widened the TRUST activation SQL cutoff to yesterday's midnight (correct,
+needed for the overnight-train case) but `resolveRunMatch`'s activation check stayed a flat
+`Set<scheduleId>` membership test — "was there _any_ activation row for this schedule id in the
+widened window," with no awareness of which calendar day each row belonged to. `G89843` and
+`G89845` share this headcode and both call at the same position-scoped berth every day; `G89845`'s
+stale activation from **the evening before** (an entirely different, unrelated prior day's working)
+started counting as "activated" for today's tier too, alongside `G89843`'s real same-morning one —
+falsely reporting `ambiguous` instead of matching `G89843` cleanly.
+
+Fix: `resolveRunMatch` now checks each candidate's _own resolved traffic day_ against the specific
+calendar date its activation was actually dated on (`activatedDatesByScheduleId: ReadonlyMap<string,
+ReadonlySet<string>>`), not schedule-id membership alone — built from the same already-widened
+query (no new SQL) by grouping activation rows under their own London calendar date instead of
+collapsing to "most recent regardless of date." Full design/rationale in docs/adr/0008's addendum.
+
+Checklist:
+
+- [x] `packages/domain/src/schedule/resolveRunMatch.ts`: `activatedDatesByScheduleId` replaces the
+      flat `activatedScheduleIds` set; the trust_activation tier now matches per (scheduleId,
+      resolvedDate) pair.
+- [x] `packages/database/src/runResolution.ts`: `resolveFreshRunMatch` groups the widened
+      activation query's rows by their own calendar date instead of collapsing to one row per
+      schedule; `buildCandidateSchedules`'s `activatedToday`/`trustId` display fields re-scoped to
+      a `todaysActivationByScheduleId` map (rows dated specifically `today`), fixing the same
+      imprecision for the authenticated candidate-list display.
+- [x] Docs: docs/adr/0008 addendum, this checklist.
+- [x] `deploy/.env.example`: documented `RUN_LINEAGE_FRESH_RESOLUTION_ENABLED`/`_SCOPE` and
+      `LIVE_WS_HEARTBEAT_INTERVAL_MS`, found missing (owner report) while enabling proactive
+      resolution in production for the first time — real, functioning config knobs the compose
+      file already defaulted, just never surfaced in the example file.
+
+Tests: `resolveRunMatch.test.ts` (+1 case reproducing the exact PX 0107/1Y61 scenario: two
+daily-running same-headcode candidates, one activated today, one activated only the day before —
+must resolve `trust_activation`/matched to today's, never ambiguous), `currentRun.integration.test.ts`
+(+1 integration case, same scenario end-to-end). `pnpm -r typecheck`, `pnpm run lint`, `pnpm run
+format:check`, and the full non-integration Vitest suite (78 files / 524 tests) all pass.
+**Not yet pushed** — held back at the owner's request pending further same-session work; still
+needs the integration suite run against a live Postgres (same standing limitation as Milestones
+39/40) before merge.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

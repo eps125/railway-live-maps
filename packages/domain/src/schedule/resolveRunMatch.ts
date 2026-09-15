@@ -45,10 +45,11 @@ export interface StationTiming<T> {
 }
 
 /**
- * `activatedScheduleIds` are schedule ids with a `trust_activation` row created since the start
- * of whichever `serviceDates` covers the widest net (checked by the caller's SQL) — checked first
- * (CLAUDE.md rule 6: TRUST activation is the authoritative link when available), falling to pure
- * STP precedence only when no single activated candidate exists among the running candidates, and
+ * `activatedDatesByScheduleId` maps a schedule id to the set of calendar dates it has a
+ * `trust_activation` row actually dated on (the activation row's own `created` timestamp,
+ * resolved to a London calendar date — never the query's cutoff bound). Checked first (CLAUDE.md
+ * rule 6: TRUST activation is the authoritative link when available), falling to pure STP
+ * precedence only when no single activated candidate exists among the running candidates, and
  * then (only when `timing` is given — i.e. this berth is a known station) to closest-to-now among
  * the STP-tied candidates. Two or more tied candidates at any tier is `ambiguous`, never a guess
  * (CLAUDE.md rule 7) — the full tied set is returned so the caller can show it honestly rather
@@ -63,17 +64,34 @@ export interface StationTiming<T> {
  * `trafficDay` says which date actually produced it, since that (not necessarily "today") is the
  * real traffic day the caller must use downstream (TRUST activation detail, unit allocation,
  * the link this match gets recorded against).
+ *
+ * ADR 0008 addendum (2026-09-15): the TRUST activation check must be checked **per resolved
+ * date**, not "activated anywhere in the widened window" — a flat scheduleId membership test was
+ * exactly what widening the query window to catch an overnight train's pre-midnight activation
+ * also broke: a *daily-repeating* schedule sharing a headcode (real incident: PX 0107, headcode
+ * `1Y61`, schedules G89843 and G89845 both call there, at 10:52 and 20:50 respectively) gets a
+ * genuinely distinct `trust_activation` row for each real day it runs. Once the query window
+ * widened to include yesterday, G89845's activation from *yesterday evening* (its own prior
+ * day's working, hours before today's 20:50 service is even due) started showing as "activated"
+ * for today's occurrence too, alongside G89843's real same-morning activation — falsely reporting
+ * `ambiguous` instead of matching G89843 cleanly. Matching each candidate's resolved `serviceDate`
+ * against the specific date its activation was actually dated on (not just the schedule id) fixes
+ * both cases correctly: an overnight train's activation is dated on the same day its resolved
+ * `serviceDate` correctly comes out to (yesterday), so it still counts; a same-headcode sibling's
+ * stale prior-day activation no longer collides with today's occurrence of a different schedule.
  */
 export function resolveRunMatch<T extends RunMatchCandidate>(
   candidates: T[],
-  activatedScheduleIds: ReadonlySet<string>,
+  activatedDatesByScheduleId: ReadonlyMap<string, ReadonlySet<string>>,
   serviceDates: readonly string[],
   timing?: StationTiming<T>,
 ): RunMatchResult<T> {
   const running = candidatesRunningOnAny(candidates, serviceDates);
   if (running.length === 0) return { status: "unmatched" };
 
-  const activated = running.filter((dated) => activatedScheduleIds.has(dated.candidate.scheduleId));
+  const activated = running.filter((dated) =>
+    activatedDatesByScheduleId.get(dated.candidate.scheduleId)?.has(dated.serviceDate),
+  );
   if (activated.length === 1) {
     const only = activated[0] as (typeof activated)[number];
     return {

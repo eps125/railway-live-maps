@@ -929,6 +929,47 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         await app.close();
       }
     });
+
+    it("does not let a same-headcode sibling's stale prior-day activation cause a false ambiguous result — the PX 0107 / 1Y61 regression (addendum)", async () => {
+      // Real incident (2026-09-15): both G89843 (activated ~08:25 this morning, for today's
+      // ~10:52 working) and G89845 (last activated the evening before, for ITS OWN prior-day
+      // working — not due again until tonight) share headcode 1Y61 and both call at the same
+      // position-scoped berth every day. Widening the TRUST activation query to also fetch
+      // yesterday's rows (needed for the overnight-train case above) meant G89845's stale
+      // prior-day row started counting as "activated" for today's tier too, wrongly reporting
+      // `ambiguous` instead of matching G89843 cleanly.
+      const area = uniqueArea();
+      const tiploc = `PY${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Prior Day Loc", stanox);
+      await seedSmartBerthStep(area, "0024", stanox);
+
+      await seedOccupiedBerth(area, "0024", "1Y99");
+      const activatedTodayId = await seedSchedule("1Y99", "P");
+      await seedScheduleLocation(activatedTodayId, 1, tiploc, "LO", { departure: "0900" });
+      await seedActivation(activatedTodayId, "1Y99"); // created = now(), i.e. today
+
+      const activatedYesterdayId = await seedSchedule("1Y99", "P");
+      await seedScheduleLocation(activatedYesterdayId, 1, tiploc, "LO", { departure: "2000" });
+      const yesterdayNoon = new Date(`${londonYesterdayDateString()}T12:00:00Z`);
+      await seedActivationAt(activatedYesterdayId, yesterdayNoon);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0024/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("trust_activation");
+        expect(body.effective.scheduleId).toBe(String(activatedTodayId));
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   describe("public/anonymous access (owner request 2026-09-13)", () => {

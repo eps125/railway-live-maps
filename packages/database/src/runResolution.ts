@@ -321,10 +321,27 @@ export async function resolveFreshRunMatch(
         )
       ).rows
     : [];
-  const activationByScheduleId = new Map<string, ActivationRow>();
+  // ADR 0008 addendum: widening the query above to `yesterday` means a row here isn't
+  // necessarily *today's* activation — a daily-repeating schedule sharing this headcode gets its
+  // own distinct activation for each real day it runs, and yesterday's is now inside this window
+  // too. `activatedDatesByScheduleId` keeps every row's own London calendar date (`created`, not
+  // the query's cutoff bound) so `resolveRunMatch` can check a candidate's resolved traffic day
+  // against the specific date it was actually activated on — see that function's own doc comment
+  // for the real incident (PX 0107, headcode 1Y61, G89843 vs G89845) this fixes.
+  const activatedDatesByScheduleId = new Map<string, Set<string>>();
+  // Separately, the single most-recent activation dated specifically *today* per schedule — for
+  // `buildCandidateSchedules`'s display fields (`activatedToday`/`trustId`/`activationDeduced`),
+  // which must stay honestly scoped to today even though the decision logic above now needs the
+  // wider window.
+  const todaysActivationByScheduleId = new Map<string, ActivationRow>();
   for (const row of activationRows) {
-    if (!activationByScheduleId.has(row.cif_schedule_id)) {
-      activationByScheduleId.set(row.cif_schedule_id, row);
+    const activationDate = londonToday(row.created);
+    const dates = activatedDatesByScheduleId.get(row.cif_schedule_id);
+    if (dates) dates.add(activationDate);
+    else activatedDatesByScheduleId.set(row.cif_schedule_id, new Set([activationDate]));
+
+    if (activationDate === today && !todaysActivationByScheduleId.has(row.cif_schedule_id)) {
+      todaysActivationByScheduleId.set(row.cif_schedule_id, row);
     }
   }
 
@@ -338,8 +355,6 @@ export async function resolveFreshRunMatch(
       row,
     }),
   );
-  const activatedScheduleIds = new Set(activationByScheduleId.keys());
-
   // Milestone 35: only a position-scoped berth is a known "station" to time-match against — an
   // unscoped (headcode_only) search has no station to tie a calling time to.
   const callingTimes = positionScoped
@@ -347,7 +362,7 @@ export async function resolveFreshRunMatch(
     : new Map<string, number>();
   const matchResult = resolveRunMatch(
     matchCandidates,
-    activatedScheduleIds,
+    activatedDatesByScheduleId,
     serviceDates,
     positionScoped
       ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
@@ -365,7 +380,7 @@ export async function resolveFreshRunMatch(
   const isSolidMatch = matchResult.status === "matched" && matchBasis !== "headcode_only";
   const candidateSchedules = buildCandidateSchedules(
     candidateRows,
-    activationByScheduleId,
+    todaysActivationByScheduleId,
     effectiveRow?.id ?? null,
   );
 

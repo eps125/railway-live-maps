@@ -30,4 +30,5 @@ export {
   type CompiledMapBundle,
 } from "./compiler.js";
 export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
+export { rescaleMapDocument } from "./rescale.js";
 export { berthRenderRect, pointOnPathAtX, type Rect } from "./geometry.js";

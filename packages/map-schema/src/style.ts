@@ -9,10 +9,19 @@
  * `rowPitch` is provisional: it matches OpenTrainTimes' de-facto pitch of 30, and the owner
  * has flagged it as a value that may change. Everything downstream reads it from here, so a
  * change is a one-line edit.
+ *
+ * `rowPitch`/`weldTolerance` live in the same coordinate space as every element's stored `x`/`y`/
+ * `points[]` — a change to either is a genuine rescale of that space, so it goes hand in hand
+ * with `rescaleMapDocument` (`rescale.ts`) transforming an existing document's coordinates by the
+ * same factor (2026-09-15 owner request: more room between rows, docs/adr/0004 addendum). The
+ * other constants below (`track`, `berth.height`/`charWidth`/`padding`, `signal`,
+ * `platform.height`/`offset`/`numberBox`) are rendered "furniture" sizes, deliberately NOT part
+ * of that rescale — keeping them fixed while `rowPitch` grows is what actually creates more
+ * breathing room between rows, rather than just looking like the whole map was zoomed in.
  */
 export const MAP_STYLE = {
   /** Vertical gap between adjacent parallel running lines. */
-  rowPitch: 30,
+  rowPitch: 45,
   /** The only permitted non-horizontal track slope: rise / run = 1 / 2 (~26.57°). */
   diagonalSlope: 0.5,
   track: {
@@ -24,7 +33,8 @@ export const MAP_STYLE = {
     color: "#3d4a5c",
   },
   berth: {
-    /** Fixed; the box is centred on its bound track's row. Divides `rowPitch`. */
+    /** Fixed pixel size, deliberately not proportional to `rowPitch` (see the module doc
+     * comment) — the box is centred on its bound track's row. */
     height: 20,
     /** Monospace advance per description character, plus `padding` on each side, gives the box
      * width — so every 4-character berth is identical. */
@@ -47,8 +57,11 @@ export const MAP_STYLE = {
      * SVG renderer uses `var(--map-platform-fill, …)` with this as the fallback. */
     color: "#ffa500",
   },
-  /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
-  weldTolerance: 6,
+  /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). In the
+   * same coordinate space as element points (unlike the "furniture" constants above), so it
+   * scales with `rowPitch`/`rescaleMapDocument` to keep meaning the same distance-relative-to-
+   * the-map, not a shrinking fraction of it. */
+  weldTolerance: 9,
 } as const;
 
 /** CSS custom properties the public renderer reads for themeable colours (defined on `:root`

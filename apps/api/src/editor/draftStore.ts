@@ -20,7 +20,9 @@ function blankDocument(slug: string, name: string): MapDocument {
     map: {
       id: slug,
       name,
-      canvas: { width: 2000, height: 800, gridSize: 10 },
+      // 2026-09-15 (docs/adr/0004 addendum): rowPitch went 30 -> 45, so a new map's default grid
+      // scales with it (10 -> 15) to keep MAP_STYLE's rowPitch/gridSize = 3 ratio.
+      canvas: { width: 2000, height: 800, gridSize: 15 },
       timezone: "Europe/London",
     },
     // ADR 0005 E3: a fresh map starts with the conventional layer stack so tracks, platforms,

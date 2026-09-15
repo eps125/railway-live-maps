@@ -2376,6 +2376,63 @@ typecheck` and `pnpm -w format:check` pass; the integration suite needs a live P
 sandbox doesn't have (same limitation noted on earlier milestones) — first real execution is CI's
 `test:integration` job.
 
+## Milestone 48 — increase row pitch/grid size, with a reversible rescale tool `[done — 2026-09-15]`
+
+Feature, owner request: more visual breathing room between rows in the editor/renderer. Design
+discussion landed on scaling the coordinate space (row pitch, grid, and an existing draft's
+geometry) by a factor while deliberately leaving rendered "furniture" sizes (berth box, platform
+bar, signal marker, every `fontSize`) fixed — scaling those too would have made the whole change
+look identical to just zooming the viewport in, which wasn't the goal. See docs/adr/0004's
+addendum for the full reasoning and the ×1.5 factor (rowPitch 30→45, weldTolerance 6→9, new-draft
+default gridSize 10→15).
+
+Two independent pieces:
+
+1. **Style constants** (`packages/map-schema/src/style.ts`): `rowPitch`/`weldTolerance` scaled;
+   `track`/`berth.height`/`charWidth`/`padding`/`signal`/`platform.height`/`offset`/`numberBox`
+   deliberately left as-is.
+2. **`rescaleMapDocument`** (`packages/map-schema/src/rescale.ts`, new): pure transform for an
+   already-drawn document — scales every element's `x`/`y`/`points[]`, topology node positions,
+   and `canvas.width`/`height`/`gridSize`; does not touch `fontSize`, a berth's own stored
+   `width`/`height`, bindings, layers, or `editorMetadata`. Exposed via a new one-shot console
+   command, `rescale-map-draft --slug <slug> --scale <factor> [--dry-run]`
+   (`apps/worker/src/commands/rescaleMapDraft.ts`) — re-validates the result against
+   `MapDocumentSchema`, writes it through the same draft-revision path the editor's own autosave
+   uses (bumps `revision`, inserts a `map_draft_revision` snapshot), and never touches a published
+   version.
+
+**Reversibility** (explicit owner ask): the same command's `--restore <revision>` mode puts an
+exact prior `map_draft_revision` snapshot back as a new revision, rather than an inverse
+`1 / scale` multiply (which would drift on floating point and only undoes a scale specifically).
+`map_draft_revision` already retains a full snapshot per save (migration 0011, ≥ 90 days), so this
+needed no new storage — every successful rescale run prints the exact `--restore` command to
+reverse itself.
+
+Shipped as its own branch/PR (`grid-row-spacing-increase`), separate from the same-day Milestone
+46/47 `"----"`-berth fixes on `main`, specifically so it can be reverted independently if the
+owner doesn't like the result once applied to the real Lancaster draft.
+
+Checklist:
+
+- [x] `packages/map-schema/src/style.ts`: `rowPitch` 30→45, `weldTolerance` 6→9; doc comments
+      explain which constants scale and why the rest deliberately don't.
+- [x] `packages/map-schema/src/rescale.ts` (new): `rescaleMapDocument`, exported from
+      `packages/map-schema/src/index.ts`.
+- [x] `apps/api/src/editor/draftStore.ts`: new-draft blank-document default `gridSize` 10→15.
+- [x] `apps/worker/src/commands/rescaleMapDraft.ts` (new): `--scale`/`--restore`/`--dry-run`;
+      wired into `dispatch.ts`/`index.ts` as `rescale-map-draft`.
+- [x] Docs: docs/adr/0004 addendum (including its D4 table), this checklist.
+
+Tests: `rescale.test.ts` (new, 7 cases — canvas scaling, track/platform point scaling, berth
+position-not-size, signal/platformNumber/station/label/boundary position-not-fontSize, topology
+node scaling, bindings/layers/editorMetadata untouched, round-trip invertibility). Full
+`@railway/map-schema` (67), `@railway/web` (143), `@railway/worker` (94) and `@railway/api` (43)
+non-integration suites all pass. `pnpm -w typecheck` and `pnpm -w format:check` pass.
+`rescaleMapDraft.integration.test.ts` (new, 5 cases: scale + revision bump + snapshot row, dry-run
+writes nothing, restore-after-scale round-trips to the exact original document, missing-revision
+and missing-draft error paths) needs a live Postgres this sandbox doesn't have — first real
+execution is CI's `test:integration` job.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

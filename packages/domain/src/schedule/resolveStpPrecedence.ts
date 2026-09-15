@@ -88,9 +88,7 @@ export function selectEffectiveScheduleAcrossDates<T extends ScheduleCandidate>(
   const running = candidatesRunningOnAny(candidates, serviceDates);
   if (running.length === 0) return { outcome: "none" };
 
-  const highestRank = Math.max(
-    ...running.map((r) => PRECEDENCE_RANK[r.candidate.stpIndicator]),
-  );
+  const highestRank = Math.max(...running.map((r) => PRECEDENCE_RANK[r.candidate.stpIndicator]));
   const topCandidates = running.filter(
     (r) => PRECEDENCE_RANK[r.candidate.stpIndicator] === highestRank,
   );

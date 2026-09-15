@@ -2078,13 +2078,13 @@ every calling point synced. Root cause: every date used throughout the resolver 
 `today`, the SQL candidate-schedule query, `resolveRunMatch`'s pure day-of-week/date-range check,
 the TRUST activation cutoff, and the traffic day written to `berth_occupancy_run_link`) was a
 single shared Europe/London calendar date, with no notion that a schedule crossing midnight
-belongs to *yesterday's* traffic day, not today's.
+belongs to _yesterday's_ traffic day, not today's.
 
 Owner-confirmed approach: probe both today's and yesterday's date, not a full WTT 02:00-boundary
 traffic-day rewrite. See docs/adr/0008 for the full design — in short, `resolveRunMatch` and its
 pure helpers now take an ordered `serviceDates` window instead of one shared date, and tag each
 matched/ambiguous candidate with whichever date it actually runs on; every caller
-(`currentRun.ts`'s fresh-resolution *and* lineage-shortcut paths, `sweepFreshResolution`,
+(`currentRun.ts`'s fresh-resolution _and_ lineage-shortcut paths, `sweepFreshResolution`,
 `attemptStepChainUpgrades`) now threads that resolved `trafficDay` through to the TRUST activation
 detail query, the `train_allocation` unit-allocation lookup, and the link it writes — never a
 hardcoded `today` again.
@@ -2125,7 +2125,7 @@ jumping the playhead forward fixes it for about another 30 minutes each time.
 
 Root cause in `apps/web/src/map/usePlayback.ts`: `GET /events`
 (`apps/api/src/routes/maps.ts`) returns `nextCursor: null` whenever a page comes back with fewer
-rows than the row cap — meaning only "caught up to the `to` bound *that page asked for*," not "no
+rows than the row cap — meaning only "caught up to the `to` bound _that page asked for_," not "no
 more events will ever exist." `refill()` treated a `null` cursor as a permanent stop
 (`if (refillingRef.current || cursorRef.current === null) return;`), and the tick loop's own
 trigger repeated the same guard. For a single map's handful of berths, the very first `/events`

@@ -9,7 +9,7 @@ and ADR 0007's resolver — no data model change, no new tables.
 
 `GET .../current-run` (ADR 0006, Milestone 34/35) and the proactive sweep/step-chain upgrade paths
 built on it (ADR 0007, Milestone 39) all compute a single `today` — `londonToday(new Date())`, the
-Europe/London *calendar* date — and use it everywhere: as the SQL date-range filter for candidate
+Europe/London _calendar_ date — and use it everywhere: as the SQL date-range filter for candidate
 `cif_schedules`, as the day-of-week bitmask check in `resolveRunMatch`'s pure logic, as the TRUST
 activation cutoff, and as the `traffic_day` recorded on a `berth_occupancy_run_link`. `londonToday`'s
 own doc comment already flagged the simplification ("does not need WTT 02:00 boundary precision")
@@ -49,7 +49,7 @@ against one shared date.**
   `candidatesRunningOn`/`selectEffectiveSchedule` (unchanged, still used by
   `apps/api/src/routes/schedule.ts`'s unrelated single-date effective-schedule lookup). Both new
   functions take `serviceDates: readonly string[]` (ordered most-preferred first — callers pass
-  `[today, yesterday]`) and tag each running candidate with the *first* date in that order it
+  `[today, yesterday]`) and tag each running candidate with the _first_ date in that order it
   actually runs on.
 - `resolveRunMatch` (`packages/domain/src/schedule/resolveRunMatch.ts`) takes `serviceDates`
   instead of a single `serviceDate`, and a `matched`/`ambiguous` result now carries the resolved
@@ -60,11 +60,11 @@ against one shared date.**
     steps back a day, reformats), deliberately never touching a real zoned instant so it can't be
     thrown off by the BST/GMT transition.
   - `queryCandidateSchedules` takes `serviceDates` and widens its SQL filter to `schedule_start_date
-    <= max(serviceDates) and schedule_end_date >= min(serviceDates)` — a deliberate superset; the
+<= max(serviceDates) and schedule_end_date >= min(serviceDates)` — a deliberate superset; the
     precise per-date day-of-week check still happens purely, afterward, in `resolveRunMatch`.
   - `resolveFreshRunMatch` computes `yesterday = previousCalendarDate(today)`, probes
     `[today, yesterday]` throughout, widens the TRUST activation cutoff to `created >= yesterday's
-    London midnight`, and returns the resolved `trafficDay` (`null` iff unmatched) alongside
+London midnight`, and returns the resolved `trafficDay` (`null` iff unmatched) alongside
     `effectiveRow`.
 - `apps/api/src/routes/currentRun.ts` and `apps/worker/src/runLineage/projector.ts`
   (`sweepFreshResolution`, `attemptStepChainUpgrades`) all now use the resolver's own
@@ -76,7 +76,7 @@ against one shared date.**
   instead; fixed alongside the fresh-resolution path since it's the same class of bug.
 
 **Ordering (`[today, yesterday]`) matters**: a candidate satisfying both probed dates (the
-overwhelming common case — a permanent, daily-running schedule) resolves to *today*, preserving
+overwhelming common case — a permanent, daily-running schedule) resolves to _today_, preserving
 existing behaviour for every non-overnight match. Only a candidate that runs on yesterday but not
 today (the overnight case this fixes) resolves to yesterday.
 
@@ -92,7 +92,7 @@ correct ambiguity to surface, not a regression the widening introduced.
 - `RunMatchResult`'s `matched`/`ambiguous` shape gained a `trafficDay` field on the matched variant
   — a type-level change to `@railway/domain`'s public API, but with only two real callers
   (`packages/database/src/runResolution.ts`, tests), both updated in the same change.
-- Still not WTT-accurate (a schedule crossing *two* midnights, or a real 02:00 traffic-day
+- Still not WTT-accurate (a schedule crossing _two_ midnights, or a real 02:00 traffic-day
   boundary rather than a calendar one, is out of scope) — deliberately, per the owner's own
   scoping call above. If a future incident needs that precision, it's a separate ADR, not an
   extension of this two-date probe.

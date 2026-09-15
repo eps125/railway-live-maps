@@ -261,10 +261,7 @@ async function seedScheduleForDateRange(
 /** Like `seedActivation`, but backdated to `createdAt` — for docs/adr/0008 fixtures proving an
  * overnight train's activation from *before* London midnight still counts once the calendar
  * rolls over, now that the cutoff widens to yesterday rather than staying pinned to today. */
-async function seedActivationAt(
-  scheduleId: number,
-  createdAt: Date,
-): Promise<string> {
+async function seedActivationAt(scheduleId: number, createdAt: Date): Promise<string> {
   const trustId = `T${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
   createdTrustIds.push(trustId);
   await pool.query(

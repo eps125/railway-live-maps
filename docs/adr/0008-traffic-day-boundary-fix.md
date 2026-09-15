@@ -179,3 +179,62 @@ internally) over the unscoped candidate set, and folds it into `isSolidMatch`. T
 `currentRun.integration.test.ts` — rewrote the single-unscoped-candidate case to expect a 200 with
 reduced public detail (previously 404), added a new case confirming two unscoped candidates still
 404s even when the resolver itself resolves cleanly via STP precedence (Overlay beats Permanent).
+
+## Third addendum (2026-09-15): count distinct trains, extend solid to a clean TRUST-activation win, and propagate confidence into storage
+
+Two further real reports, investigated together per the owner's request to look for anything else
+of the same shape rather than fixing one at a time: PX 0107/headcode `1Y61` (already covered by
+the second addendum above) and **PX 0188/headcode `1C55`** — internally resolved correctly to
+`G89047` (confirmed against the reference site) via a clean `trust_activation` win, but still
+hidden from the public because the _second_ addendum's "exactly one running candidate" rule only
+ever looked at raw schedule **rows**, not distinct physical trains.
+
+**Bug 1 — counting rows instead of trains**: a single `cif_train_uid` routinely has both a
+Permanent and an Overlay/New row simultaneously satisfying today's date and day-of-week bitmask,
+before STP precedence even runs (seen repeatedly this session, e.g. headcode `1S40`'s `G38840`).
+The second addendum's `runningNationwideCount` counted these as _two_ candidates, wrongly treating
+a genuinely unique train as if it might collide with itself, and keeping a perfectly safe match
+hidden. Fixed: count distinct `cif_train_uid` values among the running candidates, not rows.
+
+**Bug 2 (the actual `1C55` case) — a clean TRUST-activation win among multiple trains stayed
+hidden**: the second addendum only ever elevated the _count-of-one_ case. But a `trust_activation`
+row isn't inferred from the headcode text at all — it's created by Network Rail's own systems
+already linked to one specific `cif_schedule_id`, independent of anything this resolver matched
+on. The real risk this tier exists to guard against — two genuinely different trains sharing a
+headcode _both_ getting activated today — is already caught one level up in `resolveRunMatch`
+itself: two activated candidates report `ambiguous`, never a silent pick (CLAUDE.md rule 7,
+already tested since Milestone 34). So by the time `resolveRunMatch`'s own `basis ===
+"trust_activation"` reaches `resolveFreshRunMatch`, it's already _the_ unique activated candidate
+among however many trains/rows shared the headcode — solid regardless of how many there were.
+`stp_precedence` alone, across _different_ train_uids, carries no equivalent guarantee (an Overlay
+outranking a Permanent is only meaningful within one train's own schedule variants, not as a way
+to arbitrate between two unrelated trains) — that basis still needs the distinct-train-count check.
+
+`isSolidMatch` is now: position-scoped (unchanged) **or** `matchResult.basis ===
+"trust_activation"` **or** exactly one distinct train_uid running nationwide.
+
+**Bug 3 — the smarter reasoning above only reached the ephemeral API response, not what
+`upsertResolvedLink` actually stores.** `train_run.match_confidence` was derived purely from
+`matchBasis` via `confidenceForBasis` (`headcode_only` → `weak`, else → `solid`) — a strictly
+narrower rule than `isSolidMatch` above, and completely blind to it. This meant only _freshly_
+resolved occupancies benefited from the smarter reasoning; anything already linked (a prior
+resolution, or a link inherited via step-chain) kept whatever `weak`/`solid` label was computed
+under the old, narrower rule — confirmed live: a fresh occupancy returned full public detail
+immediately, while an already-linked `headcode_only` occupancy from before this fix stayed hidden
+until it naturally re-resolved. Fixed by threading the actual computed value through instead of
+re-deriving it: `ResolvedRunToLink` gains a `matchConfidence: "solid" | "weak"` field, supplied by
+every caller from its own `resolveFreshRunMatch`-computed `isSolidMatch` (`currentRun.ts`'s fresh
+branch, `sweepFreshResolution`, `attemptStepChainUpgrades`), and `upsertResolvedLink` writes that
+value directly rather than calling `confidenceForBasis`. This also means step-chain upgrades
+(docs/adr/0007 second addendum) now correctly recognize _more_ previously-weak links as eligible
+for upgrade once a later berth confirms them, since "eligible for upgrade" already keyed off the
+same stored `match_confidence`. `confidenceForBasis` itself is left in place (still correct as a
+general-purpose rule, still tested) — it's simply no longer this call site's source of truth.
+Links established via `step_chain`/`boundary_correlated` (a separate code path that points at an
+_existing_ `train_run` row rather than creating a new one) are unaffected — they already inherit
+confidence for free by pointing at the same row, never re-deriving it.
+
+Tests: `currentRun.integration.test.ts` — new cases for a same-train Permanent+Overlay pair (must
+be solid), a clean TRUST-activation win among two different trains sharing a headcode (the actual
+`1C55` scenario), and confirmation that an STP-only tie-break across two _different_ trains (no
+activation, no position data) still correctly stays hidden.

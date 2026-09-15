@@ -258,6 +258,29 @@ async function seedScheduleForDateRange(
   return id;
 }
 
+/** Like `seedSchedule`, but with an explicit `cif_train_uid` instead of the usual auto-derived
+ * `U<id>` — for fixtures needing two schedule *rows* (e.g. a Permanent + Overlay pair) that share
+ * one physical train's identity, to distinguish that from two genuinely different trains sharing
+ * a headcode (docs/adr/0008 second addendum). */
+async function seedScheduleForTrainUid(
+  signallingId: string,
+  stpIndicator: "C" | "N" | "O" | "P",
+  trainUid: string,
+): Promise<number> {
+  const id = newScheduleId();
+  await pool.query(
+    `insert into cif_schedules (
+       id, created, cif_stp_indicator, cif_train_uid,
+       runs_mo, runs_tu, runs_we, runs_th, runs_fr, runs_sa, runs_su,
+       schedule_start_date, schedule_end_date, signalling_id, atoc_code, cif_train_service_code
+     ) values ($1, now(), $2, $3, true,true,true,true,true,true,true,
+       (now() - interval '30 days')::date, (now() + interval '30 days')::date, $4, 'NT', '11111000')`,
+    [id, stpIndicator, trainUid, signallingId],
+  );
+  createdScheduleIds.push(id);
+  return id;
+}
+
 /** Like `seedActivation`, but backdated to `createdAt` — for docs/adr/0008 fixtures proving an
  * overnight train's activation from *before* London midnight still counts once the calendar
  * rolls over, now that the cutoff widens to yesterday rather than staying pinned to today. */
@@ -1053,6 +1076,83 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/td/areas/${area}/berths/0027/current-run`,
+        });
+        expect(response.statusCode).toBe(404);
+        expect(response.json().error.code).toBe("NO_PUBLIC_DETAIL");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("returns a reduced public response when two candidate ROWS share one train's identity (Permanent + Overlay), not two different trains", async () => {
+      // The unscoped search's candidate count must be counted by distinct cif_train_uid, not raw
+      // schedule rows — a single physical train routinely has both a Permanent and an Overlay row
+      // simultaneously satisfying today's date/bitmask before STP precedence even runs. Counting
+      // rows would wrongly treat this as "two candidates" and hide a perfectly safe match.
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0028", "8X28");
+      const trainUid = `U${Date.now()}`;
+      await seedScheduleForTrainUid("8X28", "P", trainUid);
+      const overlayId = await seedScheduleForTrainUid("8X28", "O", trainUid); // same train, wins STP
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0028/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        void overlayId;
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("returns a reduced public response when a TRUST activation cleanly picks one of several nationwide candidates, even though more than one train shares the headcode", async () => {
+      // Real report (2026-09-15): PX 0188, headcode 1C55 — two genuinely different real trains
+      // (G89047 and a separate Portsmouth-Horsham service) both scheduled under this headcode
+      // today, with no SMART position data to tell them apart, but only G89047 had a live TRUST
+      // activation. TRUST activation isn't inferred from the headcode text — it's created by
+      // Network Rail's own systems already linked to one specific schedule — and the case where
+      // *two* real trains both get activated is already caught as ambiguous one tier up in
+      // resolveRunMatch (never a silent pick, CLAUDE.md rule 7), so a *clean* activation win here
+      // is solid even amid multiple nationwide candidates.
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0029", "1C55");
+      await seedSchedule("1C55", "P"); // a different, unrelated train sharing the headcode
+      const activatedId = await seedSchedule("1C55", "P");
+      const trustId = await seedActivation(activatedId, "1C55");
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0029/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        void trustId;
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("still 404s when more than one train_uid shares the headcode and STP precedence alone (no activation) breaks the tie", async () => {
+      // The residual risk that must stay hidden: an Overlay beating a Permanent across two
+      // DIFFERENT trains isn't real identity verification — it's meaningful only within one
+      // train's own schedule variants — so without position data or a genuine activation, this
+      // stays weak. (Distinct from the Permanent+Overlay-same-train case above.)
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0030", "9X30");
+      const suffix = randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase();
+      await seedScheduleForTrainUid("9X30", "P", `A${suffix}`);
+      await seedScheduleForTrainUid("9X30", "O", `B${suffix}`); // different train, wins STP
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0030/current-run`,
         });
         expect(response.statusCode).toBe(404);
         expect(response.json().error.code).toBe("NO_PUBLIC_DETAIL");

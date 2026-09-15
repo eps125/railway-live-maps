@@ -2234,6 +2234,46 @@ case to expect 200 (was 404), added a case confirming two unscoped candidates st
 the resolver resolves cleanly via STP precedence. `pnpm -r typecheck`, `pnpm run lint`, `pnpm run
 format:check`, and the full non-integration Vitest suite (78 files / 524 tests) all pass.
 
+## Milestone 44 — count distinct trains, extend solid to a clean TRUST-activation win, propagate confidence into storage `[done — 2026-09-15]`
+
+Bugfix (docs/adr/0008 third addendum), owner-requested proactive pass: investigated a further real
+report (PX 0188, headcode `1C55`, correct train `G89047`) together with a look for anything else
+of the same shape, rather than fixing one report at a time.
+
+Found three related gaps in Milestone 43's own new logic and its reach:
+
+1. `runningNationwideCount` counted raw schedule **rows**, not distinct **trains**
+   (`cif_train_uid`) — a single train routinely has both a Permanent and Overlay row
+   simultaneously satisfying today's date/bitmask, so a genuinely unique train could get
+   miscounted as "two candidates" and wrongly stay hidden.
+2. The `1C55` case itself: a clean `trust_activation` win among _multiple different_ nationwide
+   trains stayed hidden, even though TRUST activation isn't headcode-derived at all — it's an NR
+   signal already linked to one specific schedule — and the real risk (two different trains both
+   getting activated) is already caught as `ambiguous` one tier up (CLAUDE.md rule 7).
+3. Both the Milestone 43 fix and this one only reached the _ephemeral API response_
+   (`isSolidMatch`) — an occupancy that already carried a stored link kept whatever confidence was
+   computed under the old, narrower rule, so the improvement only applied to freshly-resolved
+   occupancies going forward, not retroactively, and step-chain upgrade eligibility didn't benefit
+   either.
+
+Checklist:
+
+- [x] `packages/database/src/runResolution.ts`: `runningNationwideCount` → distinct-train-uid
+      count; `isSolidMatch` also true when `matchResult.basis === "trust_activation"` regardless
+      of how many trains shared the headcode.
+- [x] `ResolvedRunToLink` gains `matchConfidence`, supplied by the caller's own computed
+      `isSolidMatch` instead of being re-derived inside `upsertResolvedLink` via
+      `confidenceForBasis` — all three callers (`currentRun.ts`, `sweepFreshResolution`,
+      `attemptStepChainUpgrades`) updated. `confidenceForBasis` itself is untouched (still correct,
+      still tested) — just no longer this call site's source of truth.
+- [x] Docs: docs/adr/0008 third addendum, this checklist.
+
+Tests: `currentRun.integration.test.ts` — new cases for a same-train Permanent+Overlay pair
+(solid), a clean TRUST-activation win among two different trains sharing a headcode (the actual
+`1C55` scenario), and confirmation an STP-only tie-break across two _different_ trains still stays
+hidden. `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check`, and the full non-integration
+Vitest suite (78 files / 524 tests) all pass.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

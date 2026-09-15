@@ -551,6 +551,7 @@ export async function sweepFreshResolution(
         // against — not necessarily `today` for an overnight train (see resolveRunMatch.ts).
         trafficDay: fresh.trafficDay,
         matchBasis: fresh.matchBasis,
+        matchConfidence: fresh.isSolidMatch ? "solid" : "weak",
         tdArea: row.td_area,
         berth: row.berth_code,
       },
@@ -662,6 +663,9 @@ async function attemptStepChainUpgrades(
         // Traffic-day-boundary fix (docs/adr/0008): see sweepFreshResolution's own note above.
         trafficDay: fresh.trafficDay,
         matchBasis: fresh.matchBasis,
+        // Always "solid" in practice — the `!fresh.isSolidMatch` guard above already continued
+        // past anything weak — but computed the same way as every other caller for consistency.
+        matchConfidence: fresh.isSolidMatch ? "solid" : "weak",
         tdArea: candidate.tdArea,
         berth: candidate.berth,
       },

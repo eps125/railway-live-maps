@@ -3,7 +3,6 @@ import {
   TD_PROJECTION_VERSION,
   candidatesRunningOnAny,
   circularDiffMinutes,
-  confidenceForBasis,
   isSameRunIdentity,
   parseCifTimeToMinutes,
   resolveRunMatch,
@@ -378,18 +377,39 @@ export async function resolveFreshRunMatch(
         : "headcode_only";
   const effectiveRow = matchResult.status === "matched" ? matchResult.selected.row : null;
   const trafficDay = matchResult.status === "matched" ? matchResult.trafficDay : null;
-  // Owner decision (2026-09-15): `headcode_only` is weak because the headcode *could* collide
-  // with an unrelated train elsewhere on the network — but when the unscoped nationwide search
-  // found exactly one running candidate today, that collision risk is provably zero, not merely
-  // assumed absent. `matchBasis` still reports `headcode_only` either way (it genuinely was found
-  // by headcode alone, unscoped) — this only affects whether it's solid enough to show publicly.
-  // Two or more running candidates keeps the existing weak/hidden treatment unchanged.
-  const runningNationwideCount = positionScoped
+  // Owner decision (2026-09-15, docs/adr/0008 addenda): `headcode_only` is weak because the
+  // headcode *could* mean a different, unrelated train elsewhere on the network — but that's a
+  // question of how many *distinct physical trains* (`cif_train_uid`) share it today, not how
+  // many candidate schedule *rows* the SQL returned. A single train_uid routinely has both a
+  // Permanent and an Overlay/New row simultaneously satisfying today's date+bitmask before STP
+  // precedence even runs — counting rows would undercount "genuinely unique" as "two candidates"
+  // and wrongly keep a perfectly safe match hidden. `runningNationwideTrainCount === 1` means the
+  // collision risk is provably zero regardless of tie-break basis.
+  //
+  // Separately: `matchResult.basis === "trust_activation"` is solid even with *more* than one
+  // running train_uid, because TRUST activation isn't inferred from the headcode text at all — a
+  // `trust_activation` row is created by Network Rail's own systems already linked to one specific
+  // `cif_schedule_id`, independent of anything this resolver matched on. The real risk this would
+  // otherwise guard against (two genuinely different trains sharing this headcode *both* having a
+  // live activation today) is already caught one tier up in `resolveRunMatch` itself — two
+  // activated candidates report `ambiguous`, never a silent pick (CLAUDE.md rule 7) — so by the
+  // time `basis === "trust_activation"` reaches here, it's already the *unique* activated
+  // candidate among however many rows/train_uids shared the headcode. `stp_precedence` alone,
+  // across *different* train_uids, carries no such guarantee — an Overlay outranking a Permanent
+  // is meaningful only within one train's own schedule variants, not as a way to choose between
+  // two unrelated trains — so that basis still needs the count check.
+  const runningNationwideTrainCount = positionScoped
     ? null
-    : candidatesRunningOnAny(matchCandidates, serviceDates).length;
+    : new Set(
+        candidatesRunningOnAny(matchCandidates, serviceDates).map(
+          (dated) => dated.candidate.row.cif_train_uid,
+        ),
+      ).size;
   const isSolidMatch =
     matchResult.status === "matched" &&
-    (matchBasis !== "headcode_only" || runningNationwideCount === 1);
+    (positionScoped ||
+      matchResult.basis === "trust_activation" ||
+      runningNationwideTrainCount === 1);
   const candidateSchedules = buildCandidateSchedules(
     candidateRows,
     todaysActivationByScheduleId,
@@ -481,6 +501,14 @@ export interface ResolvedRunToLink {
   cifTrainUid: string;
   trafficDay: string;
   matchBasis: "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only";
+  /** Docs/adr/0008 second addendum (2026-09-15): the caller's own `resolveFreshRunMatch`-computed
+   * `isSolidMatch`, passed through explicitly rather than re-derived here from `matchBasis` alone
+   * (`confidenceForBasis` treats every `headcode_only` match as `weak`, unconditionally — it has
+   * no way to know a specific match was actually the sole running train nationwide, or confirmed
+   * by a genuine TRUST activation among several). Passing it through means a link's *stored*
+   * confidence — and therefore what step-chain is willing to inherit/upgrade to (docs/adr/0007) —
+   * benefits from the same reasoning as the public API response, not just the response itself. */
+  matchConfidence: "solid" | "weak";
   tdArea: string;
   berth: string;
 }
@@ -518,8 +546,7 @@ export async function upsertResolvedLink(
   // record would stay permanently capped at whatever tier first identified it. A same-or-weaker
   // repeat (e.g. the click path's own 5s poll re-confirming the same solid match) still no-ops,
   // exactly as before, so this never churns the DB on every routine re-confirmation.
-  const isUpgrade =
-    existing?.matchConfidence === "weak" && confidenceForBasis(resolved.matchBasis) === "solid";
+  const isUpgrade = existing?.matchConfidence === "weak" && resolved.matchConfidence === "solid";
   if (sameIdentity && !isUpgrade) {
     return; // Already correctly linked at an equal-or-better confidence — nothing to do.
   }
@@ -547,7 +574,7 @@ export async function upsertResolvedLink(
           resolved.cifTrainUid,
           resolved.trafficDay,
           resolved.matchBasis,
-          confidenceForBasis(resolved.matchBasis),
+          resolved.matchConfidence,
           resolved.tdArea,
           resolved.berth,
           existing.trainRunId,
@@ -572,7 +599,7 @@ export async function upsertResolvedLink(
           resolved.cifTrainUid,
           resolved.trafficDay,
           resolved.matchBasis,
-          confidenceForBasis(resolved.matchBasis),
+          resolved.matchConfidence,
           resolved.tdArea,
           resolved.berth,
         ],

@@ -349,6 +349,7 @@ export async function registerCurrentRunRoutes(
               trafficDay: trafficDayForLink,
               matchBasis: basisForLink as
                 "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only",
+              matchConfidence: isSolidMatch ? "solid" : "weak",
               tdArea,
               berth,
             });

@@ -79,14 +79,30 @@ export interface StationTiming<T> {
  * both cases correctly: an overnight train's activation is dated on the same day its resolved
  * `serviceDate` correctly comes out to (yesterday), so it still counts; a same-headcode sibling's
  * stale prior-day activation no longer collides with today's occurrence of a different schedule.
+ *
+ * Movement-progress refinement (2026-09-15, real report: PX 0237, headcode `1M11` — `W33973`
+ * activated this morning vs. a same-headcode Caledonian Sleeper working, `C04561`, activated the
+ * evening before and genuinely still within the probed window, but whose own TRUST movement
+ * history already showed it well past this exact berth, terminated hours earlier). Positive TRUST
+ * movement evidence outranks every tier below it — it's real physical evidence, not inference —
+ * so `alreadyPassedScheduleIds` (a schedule the caller has confirmed, via `trust_movement`, has
+ * already reported a movement at or beyond this berth's own calling point) is filtered out of the
+ * candidate pool *before any tier runs*, not just the `trust_activation` check: a demonstrably
+ * already-gone train must never win by STP precedence or scheduled-time-closeness either. Absence
+ * of movement data is never treated as evidence of anything (could mean "hasn't started yet" or
+ * "a data gap in the mirror") — only ever supplied here when there's genuine positive evidence.
  */
 export function resolveRunMatch<T extends RunMatchCandidate>(
   candidates: T[],
   activatedDatesByScheduleId: ReadonlyMap<string, ReadonlySet<string>>,
   serviceDates: readonly string[],
   timing?: StationTiming<T>,
+  alreadyPassedScheduleIds?: ReadonlySet<string>,
 ): RunMatchResult<T> {
-  const running = candidatesRunningOnAny(candidates, serviceDates);
+  const eligible = alreadyPassedScheduleIds
+    ? candidates.filter((candidate) => !alreadyPassedScheduleIds.has(candidate.scheduleId))
+    : candidates;
+  const running = candidatesRunningOnAny(eligible, serviceDates);
   if (running.length === 0) return { status: "unmatched" };
 
   const activated = running.filter((dated) =>
@@ -109,7 +125,7 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
     };
   }
 
-  const stpOutcome = selectEffectiveScheduleAcrossDates(candidates, serviceDates);
+  const stpOutcome = selectEffectiveScheduleAcrossDates(eligible, serviceDates);
   if (stpOutcome.outcome === "matched") {
     return {
       status: "matched",

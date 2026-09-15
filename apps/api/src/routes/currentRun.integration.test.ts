@@ -1341,4 +1341,83 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     });
   });
+
+  describe("movement-progress refinement (2026-09-15): excluding a demonstrably already-passed candidate", () => {
+    it("excludes an activated candidate whose own TRUST movements already show it past this berth's calling point — the PX 0237 / 1M11 real case", async () => {
+      // Real report: W33973 activated this morning; a same-headcode Caledonian Sleeper working
+      // (C04561) activated the evening before was also genuinely within the probed window, but
+      // its own TRUST movement history already showed it well past this exact berth, terminated
+      // hours earlier. Without the movement filter this reports ambiguous.
+      const area = uniqueArea();
+      const tiploc = `MV${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Movement Test Loc", stanox);
+      await seedSmartBerthStep(area, "0031", stanox);
+
+      await seedOccupiedBerth(area, "0031", "1X31");
+
+      // Still-running candidate: activated, calls here, no movement evidence of having passed.
+      const stillRunningId = await seedSchedule("1X31", "P");
+      await seedScheduleLocation(stillRunningId, 1, tiploc, "LO", { departure: "0900" });
+      await seedActivation(stillRunningId, "1X31");
+
+      // Already-gone candidate: also activated, also calls here (earlier in its own route), but
+      // its own TRUST movements already show it well beyond this point.
+      const alreadyGoneId = await seedSchedule("1X31", "P");
+      await seedScheduleLocation(alreadyGoneId, 1, tiploc, "LO", { departure: "0900" });
+      const downstreamTiploc = `DN${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const downstreamStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(downstreamTiploc, "Downstream Loc", downstreamStanox);
+      await seedScheduleLocation(alreadyGoneId, 2, downstreamTiploc, "LT", { arrival: "1200" });
+      const alreadyGoneTrustId = await seedActivation(alreadyGoneId, "1X31");
+      await seedMovement(alreadyGoneTrustId, downstreamStanox, 0x01, 0);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0031/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("trust_activation");
+        expect(body.effective.scheduleId).toBe(String(stillRunningId));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("stays ambiguous when neither activated candidate has confirmed movement evidence of having passed this berth", async () => {
+      const area = uniqueArea();
+      const tiploc = `MW${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "No Movement Loc", stanox);
+      await seedSmartBerthStep(area, "0032", stanox);
+
+      await seedOccupiedBerth(area, "0032", "1X32");
+      const idA = await seedSchedule("1X32", "P");
+      await seedScheduleLocation(idA, 1, tiploc, "LO", { departure: "0900" });
+      await seedActivation(idA, "1X32");
+      const idB = await seedSchedule("1X32", "P");
+      await seedScheduleLocation(idB, 1, tiploc, "LO", { departure: "0900" });
+      await seedActivation(idB, "1X32");
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0032/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("ambiguous");
+        expect(body.matchBasis).toBe("trust_activation");
+      } finally {
+        await app.close();
+      }
+    });
+  });
 });

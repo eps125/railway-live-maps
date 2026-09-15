@@ -260,6 +260,54 @@ export async function callingTimeMinutesByScheduleId(
   return best;
 }
 
+/**
+ * Movement-progress refinement (2026-09-15, real report: PX 0237, headcode `1M11` — a same-
+ * headcode Caledonian Sleeper working, genuinely activated the evening before and within the
+ * widened trust-activation window, but whose own TRUST movement history already showed it well
+ * past this exact berth, terminated hours earlier). For each `(scheduleId, trustId)` pair —
+ * schedules with *some* activation in the window, worth checking — returns the subset whose own
+ * `trust_movement` history already reports a location at or beyond this berth's own calling
+ * point in that schedule's sequence. Only ever positive evidence: a schedule with no movement
+ * rows at all (hasn't started yet, or a data gap in the garner mirror) is never included here —
+ * `resolveRunMatch` treats absence from this set as "not confirmed gone", never as proof either
+ * way. Position-scoped only — with no real calling point tied to this berth there's nothing to
+ * compare movement progress against.
+ */
+export async function findAlreadyPassedScheduleIds(
+  pool: Queryable,
+  candidates: ReadonlyArray<{ scheduleId: string; trustId: string }>,
+  tiplocs: string[],
+): Promise<Set<string>> {
+  if (candidates.length === 0 || tiplocs.length === 0) return new Set();
+  const result = await pool.query<{ schedule_id: string; passed: boolean }>(
+    `with pairs as (
+       select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id
+     ),
+     berth_seq as (
+       select l.cif_schedule_id, min(l.seq_no) as berth_seq_no
+       from cif_schedule_locations l
+       where l.cif_schedule_id = any($1::bigint[]) and l.tiploc_code = any($3::text[])
+       group by l.cif_schedule_id
+     )
+     select p.schedule_id::text as schedule_id,
+            exists (
+              select 1
+              from trust_movement m
+              join location_reference lr on lr.stanox = m.loc_stanox
+              join cif_schedule_locations l
+                on l.cif_schedule_id = p.schedule_id and l.tiploc_code = lr.tiploc
+              where m.trust_id = p.trust_id
+                and l.seq_no >= coalesce(
+                  (select bs.berth_seq_no from berth_seq bs where bs.cif_schedule_id = p.schedule_id),
+                  2147483647
+                )
+            ) as passed
+     from pairs p`,
+    [candidates.map((c) => c.scheduleId), candidates.map((c) => c.trustId), tiplocs],
+  );
+  return new Set(result.rows.filter((row) => row.passed).map((row) => row.schedule_id));
+}
+
 export interface FreshResolutionResult {
   matchStatus: "matched" | "ambiguous" | "unmatched";
   matchBasis:
@@ -360,6 +408,25 @@ export async function resolveFreshRunMatch(
   const callingTimes = positionScoped
     ? await callingTimeMinutesByScheduleId(pool, scheduleIds, tiplocs, nowMinutes)
     : new Map<string, number>();
+  // Movement-progress refinement: only worth checking when position-scoped (nothing to compare
+  // progress against otherwise) and more than one schedule has *some* activation in the window —
+  // the only situation this filter could actually change anything. Picks each schedule's most
+  // recent trust_id (`activationRows` is ordered `created desc` overall, so the first row seen
+  // per schedule id is its most recent).
+  let alreadyPassedScheduleIds: Set<string> | undefined;
+  if (positionScoped && activatedDatesByScheduleId.size > 1) {
+    const latestTrustIdByScheduleId = new Map<string, string>();
+    for (const row of activationRows) {
+      if (!latestTrustIdByScheduleId.has(row.cif_schedule_id)) {
+        latestTrustIdByScheduleId.set(row.cif_schedule_id, row.trust_id);
+      }
+    }
+    alreadyPassedScheduleIds = await findAlreadyPassedScheduleIds(
+      pool,
+      [...latestTrustIdByScheduleId].map(([scheduleId, trustId]) => ({ scheduleId, trustId })),
+      tiplocs,
+    );
+  }
   const matchResult = resolveRunMatch(
     matchCandidates,
     activatedDatesByScheduleId,
@@ -367,6 +434,7 @@ export async function resolveFreshRunMatch(
     positionScoped
       ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
       : undefined,
+    alreadyPassedScheduleIds,
   );
 
   const matchBasis =

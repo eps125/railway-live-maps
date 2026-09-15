@@ -238,3 +238,52 @@ Tests: `currentRun.integration.test.ts` — new cases for a same-train Permanent
 be solid), a clean TRUST-activation win among two different trains sharing a headcode (the actual
 `1C55` scenario), and confirmation that an STP-only tie-break across two _different_ trains (no
 activation, no position data) still correctly stays hidden.
+
+## Fourth addendum (2026-09-15): exclude an activated candidate demonstrably already gone, using its own TRUST movement history
+
+Real report: PX 0237, headcode `1M11`. `W33973` (Avanti Glasgow→Euston) was activated that
+morning — the correct match. A same-headcode Caledonian Sleeper working, `C04561`, had also been
+activated the evening before, genuinely within the two-date probe window, and its own resolved
+traffic day correctly came out to yesterday — so the third addendum's per-date activation check
+(correctly) still counted it, reporting `ambiguous`. But `C04561`'s own `trust_movement` history,
+confirmed directly, already showed it passing straight through this exact STANOX at 03:11 that
+morning and continuing on to what's almost certainly Euston by 06:39 — over eight hours before the
+current occupancy even opened. It was never a genuine collision; it was a real train that had
+already finished its journey hours earlier.
+
+**Decision** (owner-proposed mechanism, confirmed against the real data before building):
+positive TRUST movement evidence outranks every tier below it — it's direct physical evidence, not
+inference — so it's applied as a filter over the _entire_ candidate pool, before any tier runs
+(not just within `trust_activation`): a schedule whose own movement reports already show it at or
+beyond this berth's calling point is removed before STP precedence or `station_berth_timetable`
+ever get a chance at it either, not just before the activation-ambiguity check.
+
+Two decisions, worked through and confirmed before implementing:
+
+1. **Where it belongs**: inside/before the `trust_activation` tier, never as a later fallback
+   tier. Movement data is TRUST-sourced, same evidence class as the activation itself and stronger
+   than STP precedence or scheduled-time-closeness — placing it _after_ those weaker tiers would
+   let a wrong answer from weaker evidence win before the stronger evidence was ever consulted.
+2. **Absence of movement data**: never treated as evidence of anything, in either direction. A
+   candidate with no movement reports could mean "hasn't started yet" (a completely normal, still
+   -live candidate) or "a data gap in garner's mirror" (a known occurrence) — those can't be told
+   apart from absence alone, so only _positive_ evidence (a movement report at or beyond this
+   berth's own calling point) ever excludes a candidate.
+
+`resolveRunMatch` (`packages/domain/src/schedule/resolveRunMatch.ts`) gains an optional 5th
+parameter, `alreadyPassedScheduleIds?: ReadonlySet<string>` — filters `candidates` before
+`candidatesRunningOnAny` even runs, so every downstream tier sees the same reduced pool.
+`packages/database/src/runResolution.ts` gains `findAlreadyPassedScheduleIds`: for each schedule
+with _some_ activation in the window (only worth checking when position-scoped and more than one
+such schedule exists — the only situation this filter could change anything), resolves that
+schedule's own calling-point `seq_no` at this berth's tiploc(s), then checks whether its
+`trust_id`'s `trust_movement` rows include any location whose `seq_no` (in that same schedule's
+own sequence) is at or beyond it — a single query, joining `location_reference` to translate each
+movement's STANOX back to the schedule's own TIPLOC sequence.
+
+Tests: `resolveRunMatch.test.ts` (+4 pure cases: the real PX 0237/1M11 scenario, confirmation two
+activated candidates stay ambiguous absent movement evidence, confirmation the filter also
+protects the STP tier not just the activation check, and every-candidate-already-passed →
+`unmatched`), `currentRun.integration.test.ts` (+2 integration cases: the real scenario end-to-end,
+and confirmation two activated candidates with no movement evidence either way still correctly
+stay ambiguous).

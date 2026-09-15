@@ -2274,6 +2274,38 @@ Tests: `currentRun.integration.test.ts` — new cases for a same-train Permanent
 hidden. `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check`, and the full non-integration
 Vitest suite (78 files / 524 tests) all pass.
 
+## Milestone 45 — exclude an activated candidate demonstrably already gone, using its own TRUST movement history `[done — 2026-09-15]`
+
+Feature (docs/adr/0008 fourth addendum), owner-proposed and confirmed against real production data
+before building: PX 0237, headcode `1M11` — `W33973` (correct) and a same-headcode Caledonian
+Sleeper working (`C04561`) were both genuinely activated within the two-date probe window,
+correctly reporting `ambiguous`. But `C04561`'s own `trust_movement` history showed it passing
+straight through this exact location over eight hours earlier and on to what's almost certainly
+Euston shortly after — a real train, already finished, not a genuine collision.
+
+Positive TRUST movement evidence outranks every tier below it (direct physical evidence, not
+inference), so it filters the entire candidate pool before any tier runs — not just the
+`trust_activation` check. Absence of movement data is never used to exclude a candidate (could
+mean "hasn't started yet" or "a data gap in the mirror") — only a positive report at or beyond this
+berth's own calling point does.
+
+Checklist:
+
+- [x] `packages/domain/src/schedule/resolveRunMatch.ts`: optional 5th parameter
+      `alreadyPassedScheduleIds`, filters `candidates` before any tier (including STP precedence
+      and `station_berth_timetable`) ever sees them.
+- [x] `packages/database/src/runResolution.ts`: new `findAlreadyPassedScheduleIds` — only queried
+      when position-scoped and more than one schedule has some activation in the window; resolves
+      each schedule's own calling-point `seq_no` at this berth, checks whether its `trust_id`'s
+      movements report a location at or beyond it in that same schedule's sequence.
+- [x] Docs: docs/adr/0008 fourth addendum, this checklist.
+
+Tests: `resolveRunMatch.test.ts` (+4 pure cases, including the real PX 0237/1M11 scenario and
+confirmation the filter also protects the STP tier), `currentRun.integration.test.ts` (+2 cases,
+the real scenario end-to-end and a no-movement-evidence-either-way case staying ambiguous). `pnpm
+-r typecheck`, `pnpm run lint`, `pnpm run format:check`, and the full non-integration Vitest suite
+(78 files / 528 tests) all pass.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

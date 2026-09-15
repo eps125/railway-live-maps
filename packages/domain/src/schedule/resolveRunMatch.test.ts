@@ -299,4 +299,80 @@ describe("resolveRunMatch (Milestone 34, docs/adr/0006)", () => {
       });
     });
   });
+
+  describe("movement-progress refinement (2026-09-15): excluding a demonstrably already-passed candidate", () => {
+    it("resolves cleanly when one of two activated candidates has already passed this berth — the PX 0237 / 1M11 real case", () => {
+      // Real report: W33973 activated this morning; a same-headcode Caledonian Sleeper working
+      // (C04561) activated the evening before was also genuinely within the probed window, but
+      // its own TRUST movement history already showed it well past this exact berth, terminated
+      // hours earlier. Without the movement filter this reports ambiguous; with it, the
+      // already-gone candidate is excluded before the ambiguity check ever runs.
+      const stillRunning = candidate({ scheduleId: "1" }); // W33973
+      const alreadyGone = candidate({ scheduleId: "2" }); // C04561
+      const result = resolveRunMatch(
+        [stillRunning, alreadyGone],
+        activatedOn(["1", A_MONDAY], ["2", A_MONDAY]),
+        [A_MONDAY],
+        undefined,
+        new Set(["2"]),
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "trust_activation",
+        selected: stillRunning,
+        trafficDay: A_MONDAY,
+      });
+    });
+
+    it("stays ambiguous when neither activated candidate has confirmed movement evidence of having passed", () => {
+      const a = candidate({ scheduleId: "1" });
+      const b = candidate({ scheduleId: "2" });
+      const result = resolveRunMatch(
+        [a, b],
+        activatedOn(["1", A_MONDAY], ["2", A_MONDAY]),
+        [A_MONDAY],
+        undefined,
+        new Set(), // no positive evidence either way — absence of data excludes nothing
+      );
+      expect(result.status).toBe("ambiguous");
+      if (result.status === "ambiguous") {
+        expect(result.basis).toBe("trust_activation");
+        expect(result.candidates).toEqual([a, b]);
+      }
+    });
+
+    it("also excludes an already-passed candidate from the STP-precedence tier, not just the trust_activation check", () => {
+      // Neither candidate is activated, so this falls straight to STP precedence — an
+      // already-gone candidate must never win there either, since it's confirmed physically
+      // absent regardless of which tier would otherwise have picked it.
+      const wouldWinStp = candidate({ scheduleId: "1", stpIndicator: "O" }); // already gone
+      const fallback = candidate({ scheduleId: "2", stpIndicator: "P" });
+      const result = resolveRunMatch(
+        [wouldWinStp, fallback],
+        activatedOn(),
+        [A_MONDAY],
+        undefined,
+        new Set(["1"]),
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "stp_precedence",
+        selected: fallback,
+        trafficDay: A_MONDAY,
+      });
+    });
+
+    it("is unmatched when every running candidate has confirmed movement evidence of already passing", () => {
+      const a = candidate({ scheduleId: "1" });
+      const b = candidate({ scheduleId: "2" });
+      const result = resolveRunMatch(
+        [a, b],
+        activatedOn(),
+        [A_MONDAY],
+        undefined,
+        new Set(["1", "2"]),
+      );
+      expect(result).toEqual({ status: "unmatched" });
+    });
+  });
 });

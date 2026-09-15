@@ -24,6 +24,14 @@ const TICK_INTERVAL_MS = 1_000;
  * default, same discipline as every other live-path flag. The cooldown map is created once here
  * (not inside the sweep) so it actually persists across ticks — see `sweepFreshResolution`'s own
  * doc comment.
+ *
+ * Second addendum (2026-09-15): the same flag/scope also gates step-chain *upgrades* — a weak
+ * (`headcode_only`) identity established at a berth with no SMART coverage, then inherited
+ * unchanged via step-chain into a well-covered berth further down the route, now gets a fresh,
+ * position-scoped second look there instead of staying permanently capped at the weak tier (found
+ * against a real report: a train correctly identified by headcode alone at an uncovered origin
+ * berth, then stepping through Preston/Lancaster/Carnforth — all well-covered — without the match
+ * ever strengthening). See `processStepChainBatch`'s own doc comment.
  */
 export async function runRunLineageDaemon(config: Config): Promise<void> {
   const pool = createPool({ connectionString: config.DATABASE_URL, statementTimeoutMs: 15_000 });
@@ -47,7 +55,11 @@ export async function runRunLineageDaemon(config: Config): Promise<void> {
     label: "run-lineage-daemon",
     intervalMs: TICK_INTERVAL_MS,
     tick: async () => {
-      const summary: RunLineageSummary = await runProjectRunLineage(pool);
+      const summary: RunLineageSummary = await runProjectRunLineage(pool, {
+        freshResolutionScope: config.RUN_LINEAGE_FRESH_RESOLUTION_ENABLED
+          ? config.RUN_LINEAGE_FRESH_RESOLUTION_SCOPE
+          : null,
+      });
       if (config.RUN_LINEAGE_FRESH_RESOLUTION_ENABLED) {
         await sweepFreshResolution(
           pool,

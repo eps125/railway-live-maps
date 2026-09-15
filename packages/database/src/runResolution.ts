@@ -432,8 +432,8 @@ export async function upsertResolvedLink(
   resolved: ResolvedRunToLink,
 ): Promise<void> {
   const existing = await findOccupancyLink(pool, occupancy);
-  if (
-    existing &&
+  const sameIdentity =
+    existing !== null &&
     existing.cifScheduleId !== null &&
     isSameRunIdentity(
       {
@@ -446,9 +446,17 @@ export async function upsertResolvedLink(
         cifTrainUid: resolved.cifTrainUid,
         trafficDay: resolved.trafficDay,
       },
-    )
-  ) {
-    return; // Already correctly linked — nothing to do.
+    );
+  // docs/adr/0007 addendum (2026-09-15): the same schedule confirmed again at a *stronger*
+  // confidence tier than what's already recorded (a step-chain-inherited weak/headcode_only link
+  // reaching a well-covered berth, say) is a real correction worth writing — not a no-op — or the
+  // record would stay permanently capped at whatever tier first identified it. A same-or-weaker
+  // repeat (e.g. the click path's own 5s poll re-confirming the same solid match) still no-ops,
+  // exactly as before, so this never churns the DB on every routine re-confirmation.
+  const isUpgrade =
+    existing?.matchConfidence === "weak" && confidenceForBasis(resolved.matchBasis) === "solid";
+  if (sameIdentity && !isUpgrade) {
+    return; // Already correctly linked at an equal-or-better confidence — nothing to do.
   }
 
   const client = await pool.connect();

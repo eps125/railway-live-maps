@@ -7,10 +7,15 @@ import {
   getMappedTdAreas,
   resolveFreshRunMatch,
   upsertResolvedLink,
+  findOccupancyLink,
   londonToday,
   londonMinutesSinceMidnight,
 } from "@railway/database";
-import { evaluateStepChain, evaluateBoundaryCorroboration } from "@railway/domain";
+import {
+  evaluateStepChain,
+  evaluateBoundaryCorroboration,
+  isSameRunIdentity,
+} from "@railway/domain";
 
 /**
  * Milestone 39 (docs/adr/0007): threads an already-`resolved` run identity forward along
@@ -57,6 +62,7 @@ interface TdStepEventRow {
   message_type: "CA" | "CB";
   from_berth: string;
   to_berth: string | null;
+  description: string | null;
   ingestion_sequence: string;
 }
 
@@ -65,6 +71,9 @@ interface CaStepRow {
   td_area: string;
   from_berth: string;
   to_berth: string;
+  /** The headcode the step carried into `to_berth` — needed only for a step-chain upgrade
+   * attempt (see `UpgradeCandidate`); the inheritance path itself never looks at it. */
+  description: string | null;
 }
 
 interface CbCancelRow {
@@ -82,6 +91,7 @@ export interface RunLineageSummary {
   batches: number;
   processedEvents: number;
   stepChainLinks: number;
+  stepChainUpgrades: number;
   boundaryLinks: number;
   boundaryAmbiguous: number;
   freshResolutionAttempts: number;
@@ -92,23 +102,12 @@ const EMPTY_SUMMARY: RunLineageSummary = {
   batches: 0,
   processedEvents: 0,
   stepChainLinks: 0,
+  stepChainUpgrades: 0,
   boundaryLinks: 0,
   boundaryAmbiguous: 0,
   freshResolutionAttempts: 0,
   freshResolutionLinks: 0,
 };
-
-async function findOccupancyLink(
-  client: PoolClient,
-  occupancy: OccupancyRef,
-): Promise<{ trainRunId: string } | null> {
-  const { rows } = await client.query<{ train_run_id: string }>(
-    `select train_run_id from berth_occupancy_run_link
-     where berth_occupancy_id = $1 and occupancy_entered_at = $2`,
-    [occupancy.id, occupancy.entered_at],
-  );
-  return rows[0] ? { trainRunId: rows[0].train_run_id } : null;
-}
 
 async function duringFeedGap(client: PoolClient, tdArea: string, at: Date): Promise<boolean> {
   const { rows } = await client.query<{ exists: boolean }>(
@@ -194,10 +193,28 @@ async function findOpenedByStep(
   return rows[0] ?? null;
 }
 
+/**
+ * docs/adr/0007 addendum (2026-09-15): a step-chain inheritance whose source link is only
+ * `weak` (`headcode_only` — established at a berth with no SMART coverage at all) is worth a
+ * fresh, position-scoped second look at the berth it just stepped into, once that berth's own
+ * transaction has committed. Collected here rather than resolved inline: `resolveFreshRunMatch`/
+ * `upsertResolvedLink` need their own connection/transaction (matching how the click path and
+ * `sweepFreshResolution` already use them), not the batch's own `client`.
+ */
+interface UpgradeCandidate {
+  occupancy: OccupancyRef;
+  tdArea: string;
+  berth: string;
+  headcode: string;
+  source: { cifScheduleId: string | null; cifTrainUid: string; trafficDay: string };
+}
+
 async function processStepChainBatch(
   client: PoolClient,
   rows: CaStepRow[],
   summary: RunLineageSummary,
+  eligibleAreas: Set<string> | "nationwide" | null,
+  upgradeCandidates: UpgradeCandidate[],
 ): Promise<void> {
   for (const row of rows) {
     const toOccupancy = await findOpenedByStep(
@@ -214,7 +231,12 @@ async function processStepChainBatch(
       row.from_berth,
       row.raw_event_normalized_at_utc,
     );
-    const sourceLink = fromOccupancy ? await findOccupancyLink(client, fromOccupancy) : null;
+    const sourceLink = fromOccupancy
+      ? await findOccupancyLink(client, {
+          id: fromOccupancy.id,
+          enteredAt: fromOccupancy.entered_at,
+        })
+      : null;
     const gapped = await duringFeedGap(client, row.td_area, row.raw_event_normalized_at_utc);
 
     const verdict = evaluateStepChain({
@@ -225,7 +247,28 @@ async function processStepChainBatch(
     if (!verdict.propagate || !sourceLink) continue;
 
     const inserted = await insertLink(client, toOccupancy, sourceLink.trainRunId, "step_chain");
-    if (inserted) summary.stepChainLinks += 1;
+    if (!inserted) continue;
+    summary.stepChainLinks += 1;
+
+    // A solidly-established identity has nothing to gain from a second look — only a weak one
+    // (never because the scoped search at the *source* berth came back empty on its own merits;
+    // this berth's own position data might simply be better).
+    if (sourceLink.matchConfidence !== "weak" || eligibleAreas === null || !row.description) {
+      continue;
+    }
+    const areaEligible = eligibleAreas === "nationwide" || eligibleAreas.has(row.td_area);
+    if (!areaEligible) continue;
+    upgradeCandidates.push({
+      occupancy: toOccupancy,
+      tdArea: row.td_area,
+      berth: row.to_berth,
+      headcode: row.description,
+      source: {
+        cifScheduleId: sourceLink.cifScheduleId,
+        cifTrainUid: sourceLink.cifTrainUid,
+        trafficDay: sourceLink.trafficDay,
+      },
+    });
   }
 }
 
@@ -249,12 +292,6 @@ async function findBoundaryPair(
     [tdArea, berth],
   );
   return rows[0] ? { pairedArea: rows[0].area, pairedBerth: rows[0].berth } : null;
-}
-
-interface RunForCorroboration {
-  cifScheduleId: string | null;
-  cifTrainUid: string;
-  trafficDay: string;
 }
 
 async function scheduleCallsNearInWindow(
@@ -326,31 +363,19 @@ async function processBoundaryBatch(
       row.raw_event_normalized_at_utc,
     );
     if (!fromOccupancy) continue;
-    const link = await findOccupancyLink(client, fromOccupancy);
+    const link = await findOccupancyLink(client, {
+      id: fromOccupancy.id,
+      enteredAt: fromOccupancy.entered_at,
+    });
     if (!link) continue;
 
     const pair = await findBoundaryPair(client, row.td_area, row.from_berth);
     if (!pair) continue; // No owner-curated boundary here — falls back to fresh resolution.
 
-    const { rows: runRows } = await client.query<{
-      cif_schedule_id: string | null;
-      cif_train_uid: string;
-      traffic_day: string;
-    }>(
-      `select cif_schedule_id, cif_train_uid, traffic_day::text as traffic_day from train_run where id = $1`,
-      [link.trainRunId],
-    );
-    const runRow = runRows[0];
-    if (!runRow) continue;
-    // A cast (`as RunForCorroboration`) here would type-lie: the query returns snake_case keys,
-    // not the camelCase ones below — caught by CI, 2026-09-14, the boundary-corroboration test
-    // silently saw `run.cifScheduleId` as `undefined` and both corroboration checks short-
-    // circuited to `false` no matter what the real data said.
-    const run: RunForCorroboration = {
-      cifScheduleId: runRow.cif_schedule_id,
-      cifTrainUid: runRow.cif_train_uid,
-      trafficDay: runRow.traffic_day,
-    };
+    // The shared @railway/database findOccupancyLink already joins train_run, so link itself
+    // carries cifScheduleId/cifTrainUid/trafficDay — no separate re-query needed (this used to
+    // hand-roll one against the worker-private, trainRunId-only findOccupancyLink).
+    const run = link;
 
     const windowStart = row.raw_event_normalized_at_utc;
     const windowEnd = new Date(windowStart.getTime() + BOUNDARY_CANDIDATE_WINDOW_MINUTES * 60_000);
@@ -366,7 +391,10 @@ async function processBoundaryBatch(
     // Only candidates not already claimed by some other run are real candidates here.
     const unclaimedCandidates: OccupancyRef[] = [];
     for (const candidate of candidateRows) {
-      const existing = await findOccupancyLink(client, candidate);
+      const existing = await findOccupancyLink(client, {
+        id: candidate.id,
+        enteredAt: candidate.entered_at,
+      });
       if (!existing) unclaimedCandidates.push(candidate);
     }
     if (unclaimedCandidates.length === 0) continue;
@@ -567,8 +595,77 @@ export async function seedRunLineageCheckpointIfFresh(pool: Pool): Promise<void>
   }
 }
 
+/**
+ * docs/adr/0007 addendum (2026-09-15): resolves each `UpgradeCandidate` `processStepChainBatch`
+ * collected — using `pool` (not the batch's own `client`), matching `sweepFreshResolution`'s own
+ * reasoning: a resolution's write should commit or fail on its own, independent of whatever
+ * transaction its *candidacy* was discovered inside. Never touches a candidate whose fresh result
+ * doesn't independently confirm the exact same train (`isSameRunIdentity`) — a different train
+ * sharing the headcode must never overwrite an existing link, upgrade or not.
+ */
+async function attemptStepChainUpgrades(
+  pool: Pool,
+  candidates: UpgradeCandidate[],
+  summary: RunLineageSummary,
+): Promise<void> {
+  if (candidates.length === 0) return;
+  const now = new Date();
+  const today = londonToday(now);
+  const nowMinutes = londonMinutesSinceMidnight(now);
+
+  for (const candidate of candidates) {
+    const fresh = await resolveFreshRunMatch(pool, {
+      tdArea: candidate.tdArea,
+      berth: candidate.berth,
+      headcode: candidate.headcode,
+      today,
+      nowMinutes,
+    });
+    if (
+      fresh.matchStatus !== "matched" ||
+      !fresh.effectiveRow ||
+      !fresh.matchBasis ||
+      !fresh.isSolidMatch ||
+      candidate.source.cifScheduleId === null ||
+      !isSameRunIdentity(
+        {
+          cifScheduleId: fresh.effectiveRow.id,
+          cifTrainUid: fresh.effectiveRow.cif_train_uid,
+          trafficDay: today,
+        },
+        {
+          cifScheduleId: candidate.source.cifScheduleId,
+          cifTrainUid: candidate.source.cifTrainUid,
+          trafficDay: candidate.source.trafficDay,
+        },
+      )
+    ) {
+      continue;
+    }
+
+    await upsertResolvedLink(
+      pool,
+      { id: candidate.occupancy.id, enteredAt: candidate.occupancy.entered_at },
+      {
+        cifScheduleId: fresh.effectiveRow.id,
+        cifTrainUid: fresh.effectiveRow.cif_train_uid,
+        trafficDay: today,
+        matchBasis: fresh.matchBasis,
+        tdArea: candidate.tdArea,
+        berth: candidate.berth,
+      },
+    );
+    summary.stepChainUpgrades += 1;
+  }
+}
+
 export interface RunLineageOptions {
   batchSize?: number;
+  /** `null`/omitted disables step-chain-upgrade attempts entirely (same
+   * `RUN_LINEAGE_FRESH_RESOLUTION_ENABLED`/`_SCOPE` config `sweepFreshResolution` uses — this is
+   * the same category of extra DB work, so it shares the same on/off switch and scope rather than
+   * introducing a second one). */
+  freshResolutionScope?: FreshResolutionScope | null;
 }
 
 export async function runProjectRunLineage(
@@ -584,6 +681,16 @@ export async function runProjectRunLineage(
   );
   await ensureCheckpoint(pool, definitionId);
 
+  // Resolved once per call (the daemon calls this once per 1s tick) rather than per inner batch
+  // iteration below — cheap either way, but there's no reason to re-query it if a backlog needs
+  // several batches to drain in one call.
+  const eligibleAreas: Set<string> | "nationwide" | null =
+    options.freshResolutionScope === "nationwide"
+      ? "nationwide"
+      : options.freshResolutionScope === "mapped"
+        ? await getMappedTdAreas(pool)
+        : null;
+
   const summary: RunLineageSummary = { ...EMPTY_SUMMARY };
 
   for (;;) {
@@ -592,7 +699,7 @@ export async function runProjectRunLineage(
 
     const batch = await pool.query<TdStepEventRow>(
       `select raw_event_id, raw_event_normalized_at_utc, td_area, message_type,
-              from_berth, to_berth, ingestion_sequence
+              from_berth, to_berth, description, ingestion_sequence
        from td_berth_event
        where ingestion_sequence > $1 and message_type in ('CA', 'CB')
        order by ingestion_sequence
@@ -610,6 +717,7 @@ export async function runProjectRunLineage(
         td_area: r.td_area,
         from_berth: r.from_berth,
         to_berth: r.to_berth as string,
+        description: r.description,
       }));
     const cbRows: CbCancelRow[] = batch.rows
       .filter((r) => r.message_type === "CB")
@@ -619,10 +727,11 @@ export async function runProjectRunLineage(
         from_berth: r.from_berth,
       }));
 
+    const upgradeCandidates: UpgradeCandidate[] = [];
     const client = await pool.connect();
     try {
       await client.query("begin");
-      await processStepChainBatch(client, caRows, summary);
+      await processStepChainBatch(client, caRows, summary, eligibleAreas, upgradeCandidates);
       await processBoundaryBatch(client, cbRows, summary);
       const maxSequence = batch.rows.reduce(
         (max, r) => (BigInt(r.ingestion_sequence) > max ? BigInt(r.ingestion_sequence) : max),
@@ -636,6 +745,7 @@ export async function runProjectRunLineage(
     } finally {
       client.release();
     }
+    await attemptStepChainUpgrades(pool, upgradeCandidates, summary);
 
     if (batch.rows.length < batchSize) break;
   }

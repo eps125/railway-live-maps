@@ -150,7 +150,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   );
 
   const refill = useCallback(async () => {
-    if (refillingRef.current || cursorRef.current === null) return;
+    if (refillingRef.current) return;
     refillingRef.current = true;
     const seekId = seekIdRef.current;
     const to = new Date(clockRef.current + BUFFER_WINDOW_MS).toISOString();
@@ -159,7 +159,13 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
         `/api/v1/maps/${slug}/events?from=${encodeURIComponent(
           seedFromRef.current,
         )}&to=${encodeURIComponent(to)}&after=${encodeURIComponent(
-          cursorRef.current,
+          // `nextCursor` is `null` whenever the server caught up to the *previously requested*
+          // `to` bound — not "no more events, ever" (docs/adr — playback stall investigation,
+          // 2026-09-15). `to` grows every refill as `clockRef.current` advances, so a `null`
+          // cursor here just means "resume from the start of this window" (the server's own
+          // `after` default, matching an initial `seed()` fetch with no cursor at all) — never a
+          // reason to stop refilling.
+          cursorRef.current ?? "0",
         )}&limit=${PAGE_LIMIT}`,
       );
       if (!res.ok || seekId !== seekIdRef.current) return;
@@ -211,11 +217,11 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
       setClock(next);
 
       // Refill before the buffer runs dry — driven by unplayed-event count, not time window,
-      // because the server caps rows per page. `refill` no-ops once `nextCursor` is null.
-      if (
-        cursorRef.current !== null &&
-        buffer.length - bufferIdxRef.current < REFILL_WHEN_UNPLAYED_BELOW
-      ) {
+      // because the server caps rows per page. Deliberately does NOT skip this when the last
+      // page's `nextCursor` was null — a null cursor only means "caught up to the `to` bound
+      // requested last time," and `refill`'s own `to` keeps growing with the clock, so there may
+      // well be more events beyond it once real time (or the playback clock) has moved on.
+      if (buffer.length - bufferIdxRef.current < REFILL_WHEN_UNPLAYED_BELOW) {
         void refill();
       }
     }, TICK_MS);

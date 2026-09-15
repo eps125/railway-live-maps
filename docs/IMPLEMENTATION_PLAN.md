@@ -2117,6 +2117,44 @@ lint`, and every non-integration Vitest suite touched by this change were run an
 integration suite needs a live Postgres this sandbox doesn't have, matching the same limitation
 Milestone 39 already noted — first real execution is CI's `test:integration` job.
 
+## Milestone 41 — fix: playback buffer stopped refilling forever after its first quiet page `[done — 2026-09-15]`
+
+Bugfix, reported by the owner mid-session (2026-09-15): trains stop stepping roughly 30 minutes
+into playback ("went to 0430 and watched at 60×; by 0500 trains had stopped stepping"), and
+jumping the playhead forward fixes it for about another 30 minutes each time.
+
+Root cause in `apps/web/src/map/usePlayback.ts`: `GET /events`
+(`apps/api/src/routes/maps.ts`) returns `nextCursor: null` whenever a page comes back with fewer
+rows than the row cap — meaning only "caught up to the `to` bound *that page asked for*," not "no
+more events will ever exist." `refill()` treated a `null` cursor as a permanent stop
+(`if (refillingRef.current || cursorRef.current === null) return;`), and the tick loop's own
+trigger repeated the same guard. For a single map's handful of berths, the very first `/events`
+page (fetched by `seed()`, covering `BUFFER_WINDOW_MS` = 30 minutes) routinely comes back under
+the row cap already — so refilling was disabled from the start of every playback session. The
+playback clock itself doesn't pause when the buffer runs dry (it keeps advancing every tick
+regardless of whether there's anything left to apply) — so berths silently froze in place exactly
+`BUFFER_WINDOW_MS` after the seed point, while the clock kept moving. `jumpTo`/`step` call `seed()`,
+which re-fetches fresh (and resets the cursor), buying another ~30 minutes before hitting the same
+wall.
+
+Fix: a `null` cursor now means "resume from the start of this window" (the server's own `after`
+default, `"0"`) rather than "stop refilling forever." `refill()`'s `to` bound is recomputed from
+`clockRef.current` on every call, so a later attempt with a bigger window can find events a
+previous, narrower query genuinely didn't have yet.
+
+Checklist:
+
+- [x] `apps/web/src/map/usePlayback.ts`: removed the `cursorRef.current === null` early-return in
+      `refill()` and the matching gate in the tick loop's refill trigger; `after` defaults to
+      `"0"` (matching the server) instead of refusing to build the request URL at all.
+- [x] Docs: this checklist.
+
+Tests: new case in `usePlayback.test.tsx` — after an initial null-cursor `/events` page, repeated
+ticks with the buffer still empty keep issuing new `/events` requests rather than stopping after
+the first one (would have failed against the pre-fix code, which calls `/events` exactly once and
+then never again). Full existing `usePlayback.test.tsx` suite (5 cases) and `pnpm run lint` +
+`apps/web` typecheck all pass.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

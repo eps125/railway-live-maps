@@ -180,4 +180,59 @@ describe("usePlayback", () => {
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("after=cur-1"))).toBe(true);
     expect(screen.getByTestId("b1").textContent).toBe("PAGE2");
   });
+
+  it("keeps retrying refill after a null-cursor page instead of stalling forever — the buffer-freeze regression", async () => {
+    // Real incident (2026-09-15): a quiet map's initial /events page routinely comes back with
+    // fewer than the row cap (`nextCursor: null`) well before the 30-minute buffer window it
+    // asked for is actually exhausted of *real* events — that's "caught up to what was asked
+    // for," not "nothing more will ever exist." The old code treated a null cursor as a
+    // permanent stop, so trains froze once the buffer ran out and never resumed, even on a later
+    // tick with a `to` bound that had moved well past the exhausted one.
+    vi.useFakeTimers();
+    const at = Date.now() - 60_000;
+    let eventsCallCount = 0;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/state")) {
+        return Promise.resolve(
+          jsonResponse({
+            mapSlug: "lancaster",
+            mapVersion: 1,
+            asOf: new Date(at).toISOString(),
+            sourceSequence: 1,
+            mode: "historical",
+            quality: { status: "ok", gaps: [] },
+            berths: {},
+            signals: {},
+          }),
+        );
+      }
+      // Every /events call — the seed's own fetch and every refill — comes back genuinely empty
+      // with a null cursor, simulating a quiet map with nothing left in any queried window.
+      eventsCallCount += 1;
+      return Promise.resolve(
+        jsonResponse({ mapSlug: "lancaster", mapVersion: 1, events: [], nextCursor: null }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    function Probe(): JSX.Element {
+      const pb = usePlayback("lancaster", at);
+      return (
+        <button type="button" onClick={pb.play}>
+          play
+        </button>
+      );
+    }
+    render(<Probe />);
+    await vi.runOnlyPendingTimersAsync(); // resolve seed — one /events call, nextCursor: null
+    expect(eventsCallCount).toBe(1);
+
+    screen.getByText("play").click();
+    // Many ticks at the default (1×) speed, well within the live-edge cap — the empty buffer
+    // stays under the refill threshold the whole time, so every tick should attempt another
+    // refill rather than giving up after the first null cursor.
+    for (let i = 0; i < 20; i += 1) await vi.advanceTimersByTimeAsync(200);
+
+    expect(eventsCallCount).toBeGreaterThan(1);
+  });
 });

@@ -2306,6 +2306,76 @@ the real scenario end-to-end and a no-movement-evidence-either-way case staying 
 -r typecheck`, `pnpm run lint`, `pnpm run format:check`, and the full non-integration Vitest suite
 (78 files / 528 tests) all pass.
 
+## Milestone 46 — fix: live berth state showed raw `"----"` instead of treating it as "no train" `[done — 2026-09-15]`
+
+Bugfix, reported by the owner: a berth at Lancaster displayed literal `----` live, but the same
+berth never showed anything during playback — "OTT has this issue too but Traksy does not."
+
+Root cause: two separate pure functions turn a CA/CB/CC event into berth-state changes.
+`applyCA`/`applyCB`/`applyCC` (`packages/domain/src/td/berthReducer.ts`) — used by the history
+projector for `berth_occupancy` — correctly treat a `descr` of `"----"` (the real TD convention for
+a signaller manually blanking a berth, docs/DATA_MODEL.md §"C-Class projection behavior") as "no
+train": never opens an occupancy for it. `berthChangesForEvent`
+(`packages/domain/src/td/berthChanges.ts`) — used by the live path (`berth_current_state`, WS live
+deltas) **and** the playback `/events` endpoint — never implemented that exclusion despite its own
+doc comment claiming to mirror `berthReducer.ts`'s semantics exactly (CLAUDE.md rule 13), and no
+test covered `"----"` for it. So live rendered the raw placeholder as if it were a real headcode,
+while `/state?at=` (built from `berth_occupancy`, which never recorded it) correctly never did —
+live and playback disagreed about whether the berth was "occupied by `----`".
+
+Fix: `berthChangesForEvent`'s CA/CC `to`-berth changes now report `description: null` (a
+`berth.cleared`-shaped change) when the raw `descr` is the shared `NULL_DESCRIPTION` constant,
+exported from `berthReducer.ts` so the two functions can't diverge again. CB is unaffected (it
+never carried a `to` change). No DB migration: pre-existing `"----"` rows already written to
+`berth_current_state` self-heal on that berth's next real event.
+
+Checklist:
+
+- [x] `packages/domain/src/td/berthReducer.ts`: exported `NULL_DESCRIPTION`.
+- [x] `packages/domain/src/td/berthChanges.ts`: CA/CC `to` changes map `NULL_DESCRIPTION` to
+      `description: null`; doc comment now describes the actual (matching) behavior.
+- [x] Docs: this checklist.
+
+Tests: `berthChanges.test.ts` (+2 cases: CA and CC with `descr: "----"`, mirroring the existing
+`berthReducer.test.ts` cases). Full `@railway/domain`, `@railway/worker`, and `@railway/api`
+non-integration Vitest suites (107 + 94 + 43 tests) all pass, `pnpm -w typecheck`, and
+`pnpm -w format:check` all pass.
+
+## Milestone 47 — fix: editor's manual berth-clear silently no-op'd when there was no open `berth_occupancy` row `[done — 2026-09-15]`
+
+Bugfix, found immediately after Milestone 46 while the owner tried the editor's "Clear" button on
+exactly the stuck `"----"` berth that milestone was about: the button reported success but the
+berth kept showing the same description afterwards.
+
+Root cause in `apps/api/src/routes/editor/berthActions.ts`'s `POST
+/api/v1/editor/berths/{tdArea}/{berth}/clear`: it only updated `berth_current_state` inside `if
+(open)`, where `open` came from `findOpenOccupancy` (a `berth_occupancy` row with `left_at is
+null`). But `berth_current_state` and `berth_occupancy` are independently written (ADR 0003), and
+a berth whose live state came from a `NULL_DESCRIPTION`/`"----"` step never had an occupancy
+opened for it at all (Milestone 46's whole subject) — so `open` was always null for exactly this
+case, the `berth_current_state` update was skipped entirely, and the click quietly wrote only an
+`operator_berth_action` audit row with `cleared: false`, leaving the berth showing the same stale
+value. This defeated the endpoint's own stated purpose ("a manual override for a berth stuck
+showing a stale description") for the specific case it's most needed.
+
+Fix: also read `berth_current_state.description` directly (`findCurrentDescription`); clear
+`berth_current_state` whenever _either_ an open occupancy exists _or_ the current-state row shows
+something, not only the former. Closing the occupancy (when one exists) stays a separate step.
+
+Checklist:
+
+- [x] `apps/api/src/routes/editor/berthActions.ts`: added `findCurrentDescription`; the
+      `berth_current_state` update now runs whenever `open !== null || current !== null`;
+      `previousDescription` falls back to `current` when there's no occupancy row.
+- [x] Docs: this checklist.
+
+Tests: `berthActions.integration.test.ts` (+1 case: a `berth_current_state` row with no matching
+open `berth_occupancy` row still gets cleared, with `closed_occupancy_id: null` in the audit log);
+existing two cases (real open occupancy; already-clear berth) still pass unchanged. `pnpm -w
+typecheck` and `pnpm -w format:check` pass; the integration suite needs a live Postgres this
+sandbox doesn't have (same limitation noted on earlier milestones) — first real execution is CI's
+`test:integration` job.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

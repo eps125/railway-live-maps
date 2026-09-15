@@ -36,17 +36,38 @@ async function findOpenOccupancy(
   return { occupancyId: row.id, enteredAt: row.entered_at, description: row.description };
 }
 
+/** `berth_current_state` can show a description with no matching open `berth_occupancy` row —
+ * always for a berth whose live state came from a `NULL_DESCRIPTION` ("----") step (those never
+ * open an occupancy at all, see `berthReducer.ts`), and in principle for any other
+ * live/history divergence between the two independently-written tables (ADR 0003). Read directly
+ * so a clear isn't silently skipped just because `findOpenOccupancy` found nothing. */
+async function findCurrentDescription(
+  client: PoolClient,
+  tdArea: string,
+  berthCode: string,
+): Promise<string | null> {
+  const result = await client.query<{ description: string | null }>(
+    `select description
+     from berth_current_state
+     where projection_version = $1 and td_area = $2 and berth_code = $3`,
+    [TD_PROJECTION_VERSION, tdArea, berthCode],
+  );
+  return result.rows[0]?.description ?? null;
+}
+
 /**
  * `POST /api/v1/editor/berths/{tdArea}/{berth}/clear` (private editor surface, role-gated like
  * every other route in this directory — Milestone 29) — a manual override for a berth stuck showing
  * a stale description, most likely because a feed connection gap silently dropped the real
  * step/clear event for it (TD is delta-only; there is no automatic backfill for a dropped
- * message). Deliberately a *live-only* override, not a fabricated feed event: it updates
- * `berth_current_state`/`berth_occupancy` directly (the same two tables
- * `apps/worker/src/td/projector.ts`'s `closeOccupancy` effect writes to) rather than inventing a
- * `raw_feed_event` row, so `project-td --rebuild` will not replay it — see
- * `operator_berth_action`'s migration comment. Every use is recorded there with a required
- * `reason`, satisfying CLAUDE.md's "do not silently repair source data."
+ * message), or because it's live-only state with no `berth_occupancy` row at all (a
+ * `NULL_DESCRIPTION`/"----" step never opens one — see `findCurrentDescription`). Deliberately a
+ * *live-only* override, not a fabricated feed event: it updates `berth_current_state`/
+ * `berth_occupancy` directly (the same two tables `apps/worker/src/td/projector.ts`'s
+ * `closeOccupancy` effect writes to) rather than inventing a `raw_feed_event` row, so
+ * `project-td --rebuild` will not replay it — see `operator_berth_action`'s migration comment.
+ * Every use is recorded there with a required `reason`, satisfying CLAUDE.md's "do not silently
+ * repair source data."
  */
 export async function registerEditorBerthActionRoutes(
   app: FastifyInstance,
@@ -69,6 +90,8 @@ export async function registerEditorBerthActionRoutes(
         await client.query("begin");
 
         const open = await findOpenOccupancy(client, tdArea, berth);
+        const current = await findCurrentDescription(client, tdArea, berth);
+        const hadSomethingLive = open !== null || current !== null;
 
         if (open) {
           await client.query(
@@ -76,6 +99,8 @@ export async function registerEditorBerthActionRoutes(
              where id = $1`,
             [open.occupancyId],
           );
+        }
+        if (hadSomethingLive) {
           await client.query(
             `update berth_current_state
              set description = null, occupancy_id = null, occupancy_entered_at = null,
@@ -96,8 +121,8 @@ export async function registerEditorBerthActionRoutes(
         return {
           tdArea,
           berth,
-          cleared: open !== null,
-          previousDescription: open?.description ?? null,
+          cleared: hadSomethingLive,
+          previousDescription: open?.description ?? current,
         };
       } catch (error) {
         await client.query("rollback");

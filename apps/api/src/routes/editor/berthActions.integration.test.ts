@@ -140,6 +140,54 @@ describe("POST /api/v1/editor/berths/:tdArea/:berth/clear (integration)", () => 
     }
   });
 
+  it('clears berth_current_state with no matching open berth_occupancy row (e.g. a "----" step, which never opens one)', async () => {
+    const area = uniqueArea();
+    await pool.query(
+      `insert into berth_current_state (
+         projection_version, td_area, berth_code, description, occupancy_id, occupancy_entered_at,
+         event_at, source_event_id, source_event_normalized_at_utc, source_ingestion_sequence
+       ) values ($1, $2, $3, $4, null, null, now(), null, now(), 0)`,
+      [TD_PROJECTION_VERSION, area, "0777", "----"],
+    );
+
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/editor/berths/${area}/0777/clear`,
+        payload: { reason: "stuck showing ---- with no occupancy row" },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        tdArea: area,
+        berth: "0777",
+        cleared: true,
+        previousDescription: "----",
+      });
+
+      const state = await pool.query(
+        `select description, occupancy_id from berth_current_state
+         where projection_version = $1 and td_area = $2 and berth_code = $3`,
+        [TD_PROJECTION_VERSION, area, "0777"],
+      );
+      expect(state.rows[0]).toMatchObject({ description: null, occupancy_id: null });
+
+      const audit = await pool.query(
+        `select action_type, reason, closed_occupancy_id from operator_berth_action
+         where td_area = $1 and berth_code = $2`,
+        [area, "0777"],
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]).toMatchObject({
+        action_type: "clear",
+        reason: "stuck showing ---- with no occupancy row",
+        closed_occupancy_id: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("is idempotent — clearing an already-clear berth reports cleared: false and still records the attempt", async () => {
     const area = uniqueArea();
     const app = await buildApp();

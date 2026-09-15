@@ -34,7 +34,7 @@ export interface BerthReducerResult {
  * compared against a from-berth's real description (comparing a placeholder against a real
  * headcode isn't a meaningful mismatch — see checkFromMismatch's own call sites below).
  */
-const NULL_DESCRIPTION = "----";
+export const NULL_DESCRIPTION = "----";
 
 export interface ApplyCAInput {
   fromBerth: string;

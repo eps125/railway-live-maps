@@ -62,4 +62,35 @@ describe("berthChangesForEvent", () => {
       { tdArea: "PX", berth: "0195", description: "4S45", eventAt: "2026-09-03T10:00:00.000Z" },
     ]);
   });
+
+  it('CA with descr "----" (signaller manual clear, not a real headcode): `to` reports as cleared, not as occupied by "----"', () => {
+    expect(
+      berthChangesForEvent({
+        messageType: "CA",
+        tdArea: "PX",
+        fromBerth: "0193",
+        toBerth: "0195",
+        description: "----",
+        eventAt: "2026-09-03T10:00:00.000Z",
+      }),
+    ).toEqual([
+      { tdArea: "PX", berth: "0193", description: null, eventAt: "2026-09-03T10:00:00.000Z" },
+      { tdArea: "PX", berth: "0195", description: null, eventAt: "2026-09-03T10:00:00.000Z" },
+    ]);
+  });
+
+  it('CC with descr "----": `to` reports as cleared, not as occupied by "----" — matches applyCC never opening an occupancy for it', () => {
+    expect(
+      berthChangesForEvent({
+        messageType: "CC",
+        tdArea: "PX",
+        fromBerth: null,
+        toBerth: "0200",
+        description: "----",
+        eventAt: "2026-09-03T10:02:00.000Z",
+      }),
+    ).toEqual([
+      { tdArea: "PX", berth: "0200", description: null, eventAt: "2026-09-03T10:02:00.000Z" },
+    ]);
+  });
 });

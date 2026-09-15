@@ -17,16 +17,12 @@ function uniqueArea(): string {
   return `Z${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
 }
 
-/** Seeds a fully-linked open occupancy — raw_archive_object -> feed_frame -> raw_feed_event ->
- * berth_occupancy -> berth_current_state (with occupancy_id set), mirroring exactly what
- * apps/worker/src/td/projector.ts's `openOccupancy` effect writes — unlike the simpler
- * testSupport/tdEvents.ts helper, which never sets occupancy_id and so can't exercise the clear
- * endpoint's real "is this berth actually open" check. */
-async function seedOpenOccupancy(
+/** Seeds a real, FK-satisfying raw_feed_event (raw_archive_object -> feed_frame ->
+ * raw_feed_event) — berth_current_state.source_event_id is `not null` with a FK to this table, so
+ * every seeded berth_current_state row in this suite needs one, occupancy or not. */
+async function seedRawFeedEvent(
   tdArea: string,
-  berth: string,
-  description: string,
-): Promise<{ occupancyId: string }> {
+): Promise<{ id: string; ingestionSequence: string; normalizedAt: Date }> {
   const archiveResult = await pool.query<{ id: string }>(
     `insert into raw_archive_object (object_key, bucket, content_sha256, compressed_size_bytes, source_kind)
      values ($1, 'test-bucket', $2, 1, 'broker-frame') returning id`,
@@ -37,17 +33,33 @@ async function seedOpenOccupancy(
      values ('TD', '/topic/TD_ALL_SIG_AREA', now(), $1, $2) returning id`,
     [randomUUID(), archiveResult.rows[0]!.id],
   );
-  const now = new Date();
+  const normalizedAt = new Date();
   const eventResult = await pool.query<{ id: string; ingestion_sequence: string }>(
     `insert into raw_feed_event (
        frame_id, child_index, feed_name, event_type, message_class, td_area, raw_event_json,
        normalized_event_at_utc, received_at_utc, semantic_hash, parse_status, parse_version
      ) values ($1, 0, 'TD', 'CC', 'C', $2, '{}', $3, $3, $4, 'parsed', 1)
      returning id, ingestion_sequence`,
-    [frameResult.rows[0]!.id, tdArea, now, randomUUID()],
+    [frameResult.rows[0]!.id, tdArea, normalizedAt, randomUUID()],
   );
-  const eventId = eventResult.rows[0]!.id;
-  const ingestionSequence = eventResult.rows[0]!.ingestion_sequence;
+  return {
+    id: eventResult.rows[0]!.id,
+    ingestionSequence: eventResult.rows[0]!.ingestion_sequence,
+    normalizedAt,
+  };
+}
+
+/** Seeds a fully-linked open occupancy — raw_feed_event -> berth_occupancy ->
+ * berth_current_state (with occupancy_id set), mirroring exactly what
+ * apps/worker/src/td/projector.ts's `openOccupancy` effect writes — unlike the simpler
+ * testSupport/tdEvents.ts helper, which never sets occupancy_id and so can't exercise the clear
+ * endpoint's real "is this berth actually open" check. */
+async function seedOpenOccupancy(
+  tdArea: string,
+  berth: string,
+  description: string,
+): Promise<{ occupancyId: string }> {
+  const event = await seedRawFeedEvent(tdArea);
 
   const occupancyResult = await pool.query<{ id: string }>(
     `insert into berth_occupancy (
@@ -55,7 +67,7 @@ async function seedOpenOccupancy(
        entry_event_id, entry_event_normalized_at_utc, entry_reason
      ) values ($1, $2, $3, $4, $5, $6, $5, 'cc_interpose')
      returning id`,
-    [TD_PROJECTION_VERSION, tdArea, berth, description, now, eventId],
+    [TD_PROJECTION_VERSION, tdArea, berth, description, event.normalizedAt, event.id],
   );
   const occupancyId = occupancyResult.rows[0]!.id;
 
@@ -70,13 +82,39 @@ async function seedOpenOccupancy(
       berth,
       description,
       occupancyId,
-      now,
-      eventId,
-      ingestionSequence,
+      event.normalizedAt,
+      event.id,
+      event.ingestionSequence,
     ],
   );
 
   return { occupancyId };
+}
+
+/** Seeds a berth_current_state row with NO matching berth_occupancy row at all — exactly what a
+ * "----" step produces (berthReducer.ts's applyCC never opens an occupancy for it), and the case
+ * `findOpenOccupancy` alone can't see. Still needs a real raw_feed_event for the FK. */
+async function seedOrphanedCurrentState(
+  tdArea: string,
+  berth: string,
+  description: string,
+): Promise<void> {
+  const event = await seedRawFeedEvent(tdArea);
+  await pool.query(
+    `insert into berth_current_state (
+       projection_version, td_area, berth_code, description, occupancy_id, occupancy_entered_at,
+       event_at, source_event_id, source_event_normalized_at_utc, source_ingestion_sequence
+     ) values ($1, $2, $3, $4, null, null, $5, $6, $5, $7)`,
+    [
+      TD_PROJECTION_VERSION,
+      tdArea,
+      berth,
+      description,
+      event.normalizedAt,
+      event.id,
+      event.ingestionSequence,
+    ],
+  );
 }
 
 async function buildApp() {
@@ -142,13 +180,7 @@ describe("POST /api/v1/editor/berths/:tdArea/:berth/clear (integration)", () => 
 
   it('clears berth_current_state with no matching open berth_occupancy row (e.g. a "----" step, which never opens one)', async () => {
     const area = uniqueArea();
-    await pool.query(
-      `insert into berth_current_state (
-         projection_version, td_area, berth_code, description, occupancy_id, occupancy_entered_at,
-         event_at, source_event_id, source_event_normalized_at_utc, source_ingestion_sequence
-       ) values ($1, $2, $3, $4, null, null, now(), null, now(), 0)`,
-      [TD_PROJECTION_VERSION, area, "0777", "----"],
-    );
+    await seedOrphanedCurrentState(area, "0777", "----");
 
     const app = await buildApp();
     try {

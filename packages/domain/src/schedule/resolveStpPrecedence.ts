@@ -31,7 +31,7 @@ const PRECEDENCE_RANK: Record<ScheduleCandidate["stpIndicator"], number> = {
   P: 1,
 };
 
-function runsOnDate(candidate: ScheduleCandidate, serviceDate: string): boolean {
+export function runsOnDate(candidate: ScheduleCandidate, serviceDate: string): boolean {
   const start = candidate.scheduleStartDate;
   const end = candidate.scheduleEndDate;
   if (serviceDate < start || serviceDate > end) return false;
@@ -40,6 +40,65 @@ function runsOnDate(candidate: ScheduleCandidate, serviceDate: string): boolean 
   const utcDay = new Date(`${serviceDate}T00:00:00Z`).getUTCDay(); // 0 = Sunday
   const mondayIndexedDay = (utcDay + 6) % 7; // 0 = Monday .. 6 = Sunday
   return candidate.daysRunsBitmask.charAt(mondayIndexedDay) === "1";
+}
+
+/** One candidate paired with whichever `serviceDate` it was actually found running on — see
+ * `candidatesRunningOnAny`. */
+export interface DatedCandidate<T> {
+  candidate: T;
+  serviceDate: string;
+}
+
+/**
+ * Traffic-day-boundary fix (docs/adr/0008): like `candidatesRunningOn`, but probes each of
+ * `serviceDates` (ordered most-preferred first — callers pass `[today, yesterday]`) rather than a
+ * single shared date, and tags every result with whichever date it actually matched. A single
+ * shared `serviceDate` string across every candidate is exactly what made an overnight-running
+ * train's still-valid, yesterday-dated schedule invisible the instant the calendar rolled over
+ * past London midnight (the schedule genuinely doesn't run "today" — it never claimed to — but it
+ * still governs the traffic day it was actually created for). A candidate is checked against
+ * `serviceDates` in order and tagged with the *first* one it runs on — a candidate can only ever
+ * belong to one traffic day at a time even if its date range/bitmask would technically satisfy
+ * more than one of the dates being probed (e.g. a genuine daily-running permanent schedule), and
+ * preferring the first (most-recent) date keeps today's own service the default pick in the
+ * overwhelmingly common non-overnight case.
+ */
+export function candidatesRunningOnAny<T extends ScheduleCandidate>(
+  candidates: T[],
+  serviceDates: readonly string[],
+): DatedCandidate<T>[] {
+  const result: DatedCandidate<T>[] = [];
+  for (const candidate of candidates) {
+    for (const serviceDate of serviceDates) {
+      if (runsOnDate(candidate, serviceDate)) {
+        result.push({ candidate, serviceDate });
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/** Multi-date counterpart to `selectEffectiveSchedule` — same STP precedence rule, applied across
+ * whichever of `serviceDates` each candidate actually runs on rather than one shared date. */
+export function selectEffectiveScheduleAcrossDates<T extends ScheduleCandidate>(
+  candidates: T[],
+  serviceDates: readonly string[],
+): StpPrecedenceResult<DatedCandidate<T>> {
+  const running = candidatesRunningOnAny(candidates, serviceDates);
+  if (running.length === 0) return { outcome: "none" };
+
+  const highestRank = Math.max(
+    ...running.map((r) => PRECEDENCE_RANK[r.candidate.stpIndicator]),
+  );
+  const topCandidates = running.filter(
+    (r) => PRECEDENCE_RANK[r.candidate.stpIndicator] === highestRank,
+  );
+
+  if (topCandidates.length === 1) {
+    return { outcome: "matched", selected: topCandidates[0] as DatedCandidate<T> };
+  }
+  return { outcome: "ambiguous", candidates: topCandidates };
 }
 
 /** Milestone 34 (docs/adr/0006): the "running today" half of `selectEffectiveSchedule`, exposed

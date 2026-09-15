@@ -116,6 +116,15 @@ function londonTodayDateString(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
 }
 
+/** The calendar day before `londonTodayDateString()` — for seeding an overnight train's schedule
+ * as if it only ever covered yesterday's traffic day (docs/adr/0008's fix), deterministically
+ * regardless of what time of day this test actually runs. */
+function londonYesterdayDateString(): string {
+  const today = new Date(`${londonTodayDateString()}T00:00:00Z`);
+  today.setUTCDate(today.getUTCDate() - 1);
+  return today.toISOString().slice(0, 10);
+}
+
 /** Milestone 35: the route computes "now" from a real `new Date()` internally (not injectable),
  * so these tests seed schedule times relative to the actual current London wall-clock time
  * rather than a fixed one — mirrors `currentRun.ts`'s own `londonMinutesSinceMidnight`. Returns
@@ -223,6 +232,52 @@ async function seedSchedule(
   );
   createdScheduleIds.push(id);
   return id;
+}
+
+/** Like `seedSchedule`, but with an explicit `schedule_start_date`/`schedule_end_date` instead of
+ * the usual "always covers today" ±30-day window — for docs/adr/0008 fixtures that need a
+ * schedule to be valid on exactly one specific calendar date (e.g. only yesterday's), regardless
+ * of what time of day the test actually runs. */
+async function seedScheduleForDateRange(
+  signallingId: string,
+  stpIndicator: "C" | "N" | "O" | "P",
+  startDate: string,
+  endDate: string,
+): Promise<number> {
+  const id = newScheduleId();
+  await pool.query(
+    `insert into cif_schedules (
+       id, created, cif_stp_indicator, cif_train_uid,
+       runs_mo, runs_tu, runs_we, runs_th, runs_fr, runs_sa, runs_su,
+       schedule_start_date, schedule_end_date, signalling_id, atoc_code, cif_train_service_code
+     ) values ($1, now(), $2, $3, true,true,true,true,true,true,true,
+       $4::date, $5::date, $6, 'NT', '11111000')`,
+    [id, stpIndicator, `U${id}`, startDate, endDate, signallingId],
+  );
+  createdScheduleIds.push(id);
+  return id;
+}
+
+/** Like `seedActivation`, but backdated to `createdAt` — for docs/adr/0008 fixtures proving an
+ * overnight train's activation from *before* London midnight still counts once the calendar
+ * rolls over, now that the cutoff widens to yesterday rather than staying pinned to today. */
+async function seedActivationAt(
+  scheduleId: number,
+  createdAt: Date,
+): Promise<string> {
+  const trustId = `T${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+  createdTrustIds.push(trustId);
+  await pool.query(
+    `insert into trust_activation (trust_id, created, cif_schedule_id, deduced)
+     values ($1, $2, $3, 0)`,
+    [trustId, createdAt, scheduleId],
+  );
+  await pool.query(
+    `insert into trust_activation_extra (trust_id, created, train_uid, toc_id, schedule_wtt_id)
+     values ($1, $2, $3, 'NT', $4)`,
+    [trustId, createdAt, `U${scheduleId}`, `W${scheduleId}`],
+  );
+  return trustId;
 }
 
 async function seedScheduleLocation(
@@ -748,6 +803,131 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         expect(body.matchStatus).toBe("ambiguous");
         expect(body.matchBasis).toBe("station_berth_timetable");
         expect(body.effective).toBeNull();
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("traffic-day boundary (docs/adr/0008)", () => {
+    // Real incident this fixes (2026-09-14): PX 0052, headcode 5F05, train UID W33229, departed
+    // 23:28 the previous night, its schedule dated only that one day — went `unmatched` the
+    // instant the London calendar rolled over past midnight, even though it was still genuinely
+    // running. These fixtures pin the schedule to *yesterday's* date explicitly so the test is
+    // deterministic regardless of what time of day it actually runs, rather than needing to wait
+    // for real midnight.
+    it("still matches a schedule dated only yesterday, not unmatched the instant the calendar rolls over", async () => {
+      const area = uniqueArea();
+      const yesterday = londonYesterdayDateString();
+      await seedOccupiedBerth(area, "0020", "5F05");
+      const scheduleId = await seedScheduleForDateRange("5F05", "P", yesterday, yesterday);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0020/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.effective.scheduleId).toBe(String(scheduleId));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("still counts a TRUST activation created before London midnight for a schedule dated only yesterday", async () => {
+      const area = uniqueArea();
+      const yesterday = londonYesterdayDateString();
+      await seedOccupiedBerth(area, "0021", "6F06");
+      // Two same-precedence candidates, both dated only yesterday — would be ambiguous by STP
+      // alone; only one has an activation from last night, which must still count today.
+      await seedScheduleForDateRange("6F06", "P", yesterday, yesterday);
+      const activatedId = await seedScheduleForDateRange("6F06", "P", yesterday, yesterday);
+      const lastNight = new Date(Date.now() - 6 * 60 * 60 * 1000); // 6h ago, well before this run
+      const trustId = await seedActivationAt(activatedId, lastNight);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0021/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("headcode_only");
+        expect(body.effective.scheduleId).toBe(String(activatedId));
+        expect(body.effective.activation).toMatchObject({ trustId });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("keys unit allocation by the match's actual traffic day, not hardcoded today, for a yesterday-dated schedule", async () => {
+      const area = uniqueArea();
+      const yesterday = londonYesterdayDateString();
+      await seedOccupiedBerth(area, "0022", "7F07");
+      const scheduleId = await seedScheduleForDateRange("7F07", "P", yesterday, yesterday);
+      const cifTrainUid = `U${scheduleId}`;
+      await seedTrainAllocation(cifTrainUid, yesterday, "390050", 1, "one two");
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0022/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.unitAllocation).toEqual([
+          {
+            unitNo: "390050",
+            position: 1,
+            fleetId: "465/0",
+            vehicles: ["one", "two"],
+            reportedAt: expect.any(String),
+          },
+        ]);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("prefers today's own instance over yesterday's when a schedule covers both", async () => {
+      // The common, non-overnight case must keep behaving exactly as before: given a schedule
+      // that genuinely runs both today and yesterday, the match should resolve against today.
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0023", "8F08");
+      const scheduleId = await seedSchedule("8F08", "P"); // covers now ± 30 days, i.e. both dates
+      const cifTrainUid = `U${scheduleId}`;
+      const today = londonTodayDateString();
+      await seedTrainAllocation(cifTrainUid, today, "390100", 1, "abc");
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0023/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.unitAllocation).toEqual([
+          {
+            unitNo: "390100",
+            position: 1,
+            fleetId: "465/0",
+            vehicles: ["abc"],
+            reportedAt: expect.any(String),
+          },
+        ]);
       } finally {
         await app.close();
       }

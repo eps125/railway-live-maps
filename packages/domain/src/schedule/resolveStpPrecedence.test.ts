@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { selectEffectiveSchedule, type ScheduleCandidate } from "./resolveStpPrecedence.js";
+import {
+  selectEffectiveSchedule,
+  candidatesRunningOnAny,
+  selectEffectiveScheduleAcrossDates,
+  type ScheduleCandidate,
+} from "./resolveStpPrecedence.js";
 
 function candidate(overrides: Partial<ScheduleCandidate>): ScheduleCandidate {
   return {
@@ -71,5 +76,37 @@ describe("selectEffectiveSchedule", () => {
     const p = candidate({ daysRunsBitmask: null });
     const result = selectEffectiveSchedule([p], A_MONDAY);
     expect(result).toEqual({ outcome: "matched", selected: p });
+  });
+});
+
+// 2026-08-09 is a Sunday, the day before A_MONDAY.
+const SUNDAY_BEFORE = "2026-08-09";
+
+describe("candidatesRunningOnAny / selectEffectiveScheduleAcrossDates (docs/adr/0008)", () => {
+  it("tags a candidate with the first (most-preferred) date it runs on among several probed", () => {
+    const p = candidate({});
+    const result = candidatesRunningOnAny([p], [A_MONDAY, SUNDAY_BEFORE]);
+    expect(result).toEqual([{ candidate: p, serviceDate: A_MONDAY }]);
+  });
+
+  it("falls through to a later probed date when the candidate doesn't run on the first", () => {
+    const sundayOnly = candidate({ daysRunsBitmask: "0000001" });
+    const result = candidatesRunningOnAny([sundayOnly], [A_MONDAY, SUNDAY_BEFORE]);
+    expect(result).toEqual([{ candidate: sundayOnly, serviceDate: SUNDAY_BEFORE }]);
+  });
+
+  it("omits a candidate that runs on neither probed date", () => {
+    const neither = candidate({ daysRunsBitmask: "0000000" });
+    expect(candidatesRunningOnAny([neither], [A_MONDAY, SUNDAY_BEFORE])).toEqual([]);
+  });
+
+  it("selectEffectiveScheduleAcrossDates picks the STP winner across the whole multi-date pool", () => {
+    const p = candidate({ stpIndicator: "P" });
+    const o = candidate({ stpIndicator: "O", daysRunsBitmask: "0000001" }); // Sunday only
+    const result = selectEffectiveScheduleAcrossDates([p, o], [A_MONDAY, SUNDAY_BEFORE]);
+    expect(result).toEqual({
+      outcome: "matched",
+      selected: { candidate: o, serviceDate: SUNDAY_BEFORE },
+    });
   });
 });

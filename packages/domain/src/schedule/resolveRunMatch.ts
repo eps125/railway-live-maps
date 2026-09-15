@@ -1,6 +1,6 @@
 import {
-  candidatesRunningOn,
-  selectEffectiveSchedule,
+  candidatesRunningOnAny,
+  selectEffectiveScheduleAcrossDates,
   type ScheduleCandidate,
 } from "./resolveStpPrecedence.js";
 import { closestToNow } from "./stationBerthTiming.js";
@@ -22,7 +22,7 @@ import { closestToNow } from "./stationBerthTiming.js";
 export type RunMatchBasis = "trust_activation" | "stp_precedence" | "station_berth_timetable";
 
 export type RunMatchResult<T> =
-  | { status: "matched"; basis: RunMatchBasis; selected: T }
+  | { status: "matched"; basis: RunMatchBasis; selected: T; trafficDay: string }
   | { status: "ambiguous"; basis: RunMatchBasis; candidates: T[] }
   | { status: "unmatched" };
 
@@ -46,38 +46,62 @@ export interface StationTiming<T> {
 
 /**
  * `activatedScheduleIds` are schedule ids with a `trust_activation` row created since the start
- * of `serviceDate` (London) — checked first (CLAUDE.md rule 6: TRUST activation is the
- * authoritative link when available), falling to pure STP precedence only when no single
- * activated candidate exists among today's running candidates, and then (only when `timing` is
- * given — i.e. this berth is a known station) to closest-to-now among the STP-tied candidates.
- * Two or more tied candidates at any tier is `ambiguous`, never a guess (CLAUDE.md rule 7) — the
- * full tied set is returned so the caller can show it honestly rather than picking arbitrarily.
+ * of whichever `serviceDates` covers the widest net (checked by the caller's SQL) — checked first
+ * (CLAUDE.md rule 6: TRUST activation is the authoritative link when available), falling to pure
+ * STP precedence only when no single activated candidate exists among the running candidates, and
+ * then (only when `timing` is given — i.e. this berth is a known station) to closest-to-now among
+ * the STP-tied candidates. Two or more tied candidates at any tier is `ambiguous`, never a guess
+ * (CLAUDE.md rule 7) — the full tied set is returned so the caller can show it honestly rather
+ * than picking arbitrarily.
+ *
+ * `serviceDates` is ordered most-preferred first (callers pass `[today, yesterday]`) — traffic-
+ * day-boundary fix (docs/adr/0008): a single shared date made an overnight train's still-valid,
+ * yesterday-dated schedule invisible the instant the calendar rolled over past London midnight.
+ * Each candidate is independently checked against every date in `serviceDates` and matched
+ * against the first (most-preferred) one it actually runs on — see
+ * `candidatesRunningOnAny`/`selectEffectiveScheduleAcrossDates`. A `matched` result's own
+ * `trafficDay` says which date actually produced it, since that (not necessarily "today") is the
+ * real traffic day the caller must use downstream (TRUST activation detail, unit allocation,
+ * the link this match gets recorded against).
  */
 export function resolveRunMatch<T extends RunMatchCandidate>(
   candidates: T[],
   activatedScheduleIds: ReadonlySet<string>,
-  serviceDate: string,
+  serviceDates: readonly string[],
   timing?: StationTiming<T>,
 ): RunMatchResult<T> {
-  const runningToday = candidatesRunningOn(candidates, serviceDate);
-  if (runningToday.length === 0) return { status: "unmatched" };
+  const running = candidatesRunningOnAny(candidates, serviceDates);
+  if (running.length === 0) return { status: "unmatched" };
 
-  const activated = runningToday.filter((candidate) =>
-    activatedScheduleIds.has(candidate.scheduleId),
-  );
+  const activated = running.filter((dated) => activatedScheduleIds.has(dated.candidate.scheduleId));
   if (activated.length === 1) {
-    return { status: "matched", basis: "trust_activation", selected: activated[0] as T };
+    const only = activated[0] as (typeof activated)[number];
+    return {
+      status: "matched",
+      basis: "trust_activation",
+      selected: only.candidate,
+      trafficDay: only.serviceDate,
+    };
   }
   if (activated.length > 1) {
-    return { status: "ambiguous", basis: "trust_activation", candidates: activated };
+    return {
+      status: "ambiguous",
+      basis: "trust_activation",
+      candidates: activated.map((dated) => dated.candidate),
+    };
   }
 
-  const stpOutcome = selectEffectiveSchedule(runningToday, serviceDate);
+  const stpOutcome = selectEffectiveScheduleAcrossDates(candidates, serviceDates);
   if (stpOutcome.outcome === "matched") {
-    return { status: "matched", basis: "stp_precedence", selected: stpOutcome.selected };
+    return {
+      status: "matched",
+      basis: "stp_precedence",
+      selected: stpOutcome.selected.candidate,
+      trafficDay: stpOutcome.selected.serviceDate,
+    };
   }
   if (stpOutcome.outcome === "none") {
-    // Can't actually happen: `runningToday` (which `selectEffectiveSchedule` re-derives
+    // Can't actually happen: `running` (which `selectEffectiveScheduleAcrossDates` re-derives
     // internally) is already non-empty at this point — kept only so TS can narrow below.
     return { status: "unmatched" };
   }
@@ -85,16 +109,30 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
   if (timing) {
     const closest = closestToNow(
       stpOutcome.candidates,
-      timing.callingTimeMinutes,
+      (dated) => timing.callingTimeMinutes(dated.candidate),
       timing.nowMinutes,
     );
     if (closest.length === 1) {
-      return { status: "matched", basis: "station_berth_timetable", selected: closest[0] as T };
+      const only = closest[0] as (typeof closest)[number];
+      return {
+        status: "matched",
+        basis: "station_berth_timetable",
+        selected: only.candidate,
+        trafficDay: only.serviceDate,
+      };
     }
     if (closest.length > 1) {
-      return { status: "ambiguous", basis: "station_berth_timetable", candidates: closest };
+      return {
+        status: "ambiguous",
+        basis: "station_berth_timetable",
+        candidates: closest.map((dated) => dated.candidate),
+      };
     }
   }
 
-  return { status: "ambiguous", basis: "stp_precedence", candidates: stpOutcome.candidates };
+  return {
+    status: "ambiguous",
+    basis: "stp_precedence",
+    candidates: stpOutcome.candidates.map((dated) => dated.candidate),
+  };
 }

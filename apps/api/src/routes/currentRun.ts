@@ -277,6 +277,12 @@ export async function registerCurrentRunRoutes(
       let effectiveRow: CandidateScheduleRow | null;
       let candidateSchedules: ReturnType<typeof buildCandidateSchedules>;
       let isSolidMatch: boolean;
+      // Traffic-day-boundary fix (docs/adr/0008): the real traffic day `effectiveRow` was matched
+      // against — `today` for the overwhelming majority of matches, but genuinely `today`'s
+      // *previous* day for an overnight train whose schedule only that earlier date covers. Never
+      // hardcode `today` downstream (TRUST activation detail, unit allocation, the link written
+      // below) — use this instead, since it's the one that's actually correct for this match.
+      let effectiveTrafficDay: string | null = null;
 
       if (lineageSchedule && occupancyLink) {
         matchStatus = "matched";
@@ -286,6 +292,9 @@ export async function registerCurrentRunRoutes(
         positionScoped = (await berthStanoxes(pool, tdArea, berth)).length > 0;
         effectiveRow = lineageSchedule;
         isSolidMatch = occupancyLink.matchConfidence === "solid";
+        // The link's own `traffic_day` (docs/adr/0007) is already the traffic day this schedule
+        // was actually resolved against — not necessarily "today" for a still-open overnight run.
+        effectiveTrafficDay = occupancyLink.trafficDay;
         const activation = (
           await pool.query<ActivationRow>(
             `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
@@ -293,7 +302,7 @@ export async function registerCurrentRunRoutes(
              where cif_schedule_id = $1
                and created >= ($2::date)::timestamp at time zone 'Europe/London'
              order by created desc limit 1`,
-            [lineageSchedule.id, today],
+            [lineageSchedule.id, effectiveTrafficDay],
           )
         ).rows[0];
         candidateSchedules = buildCandidateSchedules(
@@ -319,17 +328,25 @@ export async function registerCurrentRunRoutes(
         effectiveRow = fresh.effectiveRow;
         isSolidMatch = fresh.isSolidMatch;
         candidateSchedules = fresh.candidateSchedules;
+        effectiveTrafficDay = fresh.trafficDay;
 
         // Milestone 39 (docs/adr/0007): a real (non-lineage) match establishes/corrects the link
         // a later physical step can carry forward — never blocks the response on failure.
-        if (matchStatus === "matched" && effectiveRow && openOccupancy && matchBasis) {
+        if (
+          matchStatus === "matched" &&
+          effectiveRow &&
+          openOccupancy &&
+          matchBasis &&
+          effectiveTrafficDay
+        ) {
           const scheduleForLink = effectiveRow;
           const basisForLink = matchBasis;
+          const trafficDayForLink = effectiveTrafficDay;
           try {
             await upsertResolvedLink(pool, openOccupancy, {
               cifScheduleId: scheduleForLink.id,
               cifTrainUid: scheduleForLink.cif_train_uid,
-              trafficDay: today,
+              trafficDay: trafficDayForLink,
               matchBasis: basisForLink as
                 "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only",
               tdArea,
@@ -343,6 +360,8 @@ export async function registerCurrentRunRoutes(
 
       let effective: EffectiveScheduleFull | null = null;
       if (effectiveRow) {
+        // `effectiveTrafficDay` is always set whenever `effectiveRow` is (both branches above set
+        // it together) — `?? today` only guards TypeScript's narrowing, never a real fallback.
         const activation =
           (
             await pool.query<ActivationRow>(
@@ -351,7 +370,7 @@ export async function registerCurrentRunRoutes(
                where cif_schedule_id = $1
                  and created >= ($2::date)::timestamp at time zone 'Europe/London'
                order by created desc limit 1`,
-              [effectiveRow.id, today],
+              [effectiveRow.id, effectiveTrafficDay ?? today],
             )
           ).rows[0] ?? null;
 
@@ -483,7 +502,7 @@ export async function registerCurrentRunRoutes(
       // popup's unconditional `unitAllocation.length` (no effective schedule -> blank page,
       // reported 2026-09-14 against PX 0127/0133, both `unmatched` today).
       const unitAllocation = effectiveRow
-        ? await queryUnitAllocation(pool, effectiveRow.cif_train_uid, today)
+        ? await queryUnitAllocation(pool, effectiveRow.cif_train_uid, effectiveTrafficDay ?? today)
         : [];
 
       // Owner request (2026-09-13): a "solid" match — matched, and not the weakest unscoped

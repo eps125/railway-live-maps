@@ -63,6 +63,7 @@ export {
   berthStanoxes,
   normalizeStp,
   londonToday,
+  previousCalendarDate,
   londonMinutesSinceMidnight,
   type FreshResolutionResult,
   type OpenOccupancyRef,

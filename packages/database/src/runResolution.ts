@@ -57,6 +57,18 @@ export function londonToday(now: Date): string {
   }).format(now);
 }
 
+/** The calendar date immediately before `dateStr` (`YYYY-MM-DD`) — pure calendar-string
+ * arithmetic, deliberately never touching a real zoned instant, so it can't be thrown off by a
+ * DST transition the way `new Date(dateStr) - 24h` could be. Traffic-day-boundary fix (docs/adr/
+ * 0008): the "yesterday" half of the two-date window `resolveFreshRunMatch` now probes, so an
+ * overnight-running train's still-valid, yesterday-dated schedule doesn't disappear the instant
+ * the calendar rolls over past London midnight. */
+export function previousCalendarDate(dateStr: string): string {
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
 /** Milestone 35: the current wall-clock time in Europe/London, as minutes since midnight — the
  * `nowMinutes` the `station_berth_timetable` tier ranks candidates against. */
 export function londonMinutesSinceMidnight(now: Date): number {
@@ -96,18 +108,27 @@ export async function tiplocsForStanoxes(pool: Queryable, stanoxes: string[]): P
   return result.rows.map((row) => row.tiploc);
 }
 
-/** Milestone 34 (docs/adr/0006): candidate `cif_schedules` for a headcode running today —
- * position-scoped to `tiplocs` (an `exists` against `cif_schedule_locations`) when given a
- * non-empty set, unscoped (today's whole-country headcode match, the `headcode_only` fallback
- * tier) when `tiplocs` is empty. Same query either way, differing only by that one clause, to
- * keep the two paths from drifting apart. */
+/** Milestone 34 (docs/adr/0006): candidate `cif_schedules` for a headcode running on any of
+ * `serviceDates` — position-scoped to `tiplocs` (an `exists` against `cif_schedule_locations`)
+ * when given a non-empty set, unscoped (whole-country headcode match, the `headcode_only`
+ * fallback tier) when `tiplocs` is empty. Same query either way, differing only by that one
+ * clause, to keep the two paths from drifting apart.
+ *
+ * Traffic-day-boundary fix (docs/adr/0008): `serviceDates` is a small window (today and
+ * yesterday, from `resolveFreshRunMatch`) rather than a single date — the SQL filter only needs
+ * to check the schedule's date *range* overlaps that window (`start <= max(serviceDates) and end
+ * >= min(serviceDates)`); the precise per-date day-of-week bitmask check still happens afterward,
+ * purely, in `resolveRunMatch` (`runsOnDate`/`candidatesRunningOnAny`) — this is deliberately a
+ * superset, not a second copy of that logic. */
 export async function queryCandidateSchedules(
   pool: Queryable,
   headcode: string,
-  today: string,
+  serviceDates: readonly string[],
   tiplocs: string[],
 ): Promise<CandidateScheduleRow[]> {
   const positionScoped = tiplocs.length > 0;
+  const maxDate = serviceDates.reduce((a, b) => (a > b ? a : b));
+  const minDate = serviceDates.reduce((a, b) => (a < b ? a : b));
   const result = await pool.query<CandidateScheduleRow>(
     `select s.id, s.cif_train_uid, s.cif_stp_indicator, s.days_runs_bitmask,
             s.schedule_start_date::text as schedule_start_date,
@@ -120,16 +141,16 @@ export async function queryCandidateSchedules(
               where l.cif_schedule_id = s.id order by l.seq_no desc limit 1) as destination_tiploc
      from cif_schedules s
      where s.signalling_id = $1 and s.deleted is null
-       and $2::date between s.schedule_start_date and s.schedule_end_date
+       and s.schedule_start_date <= $2::date and s.schedule_end_date >= $3::date
        ${
          positionScoped
            ? `and exists (
                 select 1 from cif_schedule_locations l
-                where l.cif_schedule_id = s.id and l.tiploc_code = any($3::text[])
+                where l.cif_schedule_id = s.id and l.tiploc_code = any($4::text[])
               )`
            : ""
        }`,
-    positionScoped ? [headcode, today, tiplocs] : [headcode, today],
+    positionScoped ? [headcode, maxDate, minDate, tiplocs] : [headcode, maxDate, minDate],
   );
   return result.rows;
 }
@@ -247,6 +268,13 @@ export interface FreshResolutionResult {
   effectiveRow: CandidateScheduleRow | null;
   isSolidMatch: boolean;
   candidateSchedules: ReturnType<typeof buildCandidateSchedules>;
+  /** The actual traffic day `effectiveRow` was matched against — `today` in the overwhelming
+   * majority of cases, but `previousCalendarDate(today)` for an overnight train whose schedule
+   * only the earlier date covers (docs/adr/0008). `null` iff `effectiveRow` is `null`. Callers
+   * must use this, not a hardcoded `today`, for anything keyed by the match's traffic day: the
+   * TRUST activation cutoff for `effectiveRow`'s full detail, `train_allocation` lookups, and the
+   * `trafficDay` recorded on a `berth_occupancy_run_link`. */
+  trafficDay: string | null;
 }
 
 /**
@@ -262,17 +290,25 @@ export async function resolveFreshRunMatch(
   args: { tdArea: string; berth: string; headcode: string; today: string; nowMinutes: number },
 ): Promise<FreshResolutionResult> {
   const { tdArea, berth, headcode, today, nowMinutes } = args;
+  // Traffic-day-boundary fix (docs/adr/0008): probe both today and yesterday (London), ordered
+  // most-preferred first, throughout — never just `today` alone. See resolveRunMatch.ts's own
+  // doc comment for why a single shared date was the actual root cause of the overnight-train
+  // matching bug (2026-09-14 incident, PX 0052/5F05/W33229).
+  const yesterday = previousCalendarDate(today);
+  const serviceDates = [today, yesterday] as const;
 
   const stanoxes = await berthStanoxes(pool, tdArea, berth);
   const tiplocs = await tiplocsForStanoxes(pool, stanoxes);
   const positionScoped = tiplocs.length > 0;
 
-  const candidateRows = await queryCandidateSchedules(pool, headcode, today, tiplocs);
+  const candidateRows = await queryCandidateSchedules(pool, headcode, serviceDates, tiplocs);
   const scheduleIds = candidateRows.map((row) => row.id);
 
-  // TRUST activations for any candidate schedule since the start of today (London). The cutoff
-  // has to be the *instant* midnight-London occurs — see currentRun.ts's own historical note on
-  // why `($2::date)::timestamp at time zone 'Europe/London'` matters under BST.
+  // TRUST activations for any candidate schedule since the start of *yesterday* (London), not
+  // today — the earlier of the two probed dates, so an overnight train activated before midnight
+  // still shows as activated after it. The cutoff has to be the *instant* midnight-London occurs
+  // — see currentRun.ts's own historical note on why `($2::date)::timestamp at time zone
+  // 'Europe/London'` matters under BST.
   const activationRows = scheduleIds.length
     ? (
         await pool.query<ActivationRow>(
@@ -281,7 +317,7 @@ export async function resolveFreshRunMatch(
            where cif_schedule_id = any($1::bigint[])
              and created >= ($2::date)::timestamp at time zone 'Europe/London'
            order by created desc`,
-          [scheduleIds, today],
+          [scheduleIds, yesterday],
         )
       ).rows
     : [];
@@ -312,7 +348,7 @@ export async function resolveFreshRunMatch(
   const matchResult = resolveRunMatch(
     matchCandidates,
     activatedScheduleIds,
-    today,
+    serviceDates,
     positionScoped
       ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
       : undefined,
@@ -325,6 +361,7 @@ export async function resolveFreshRunMatch(
         ? matchResult.basis
         : "headcode_only";
   const effectiveRow = matchResult.status === "matched" ? matchResult.selected.row : null;
+  const trafficDay = matchResult.status === "matched" ? matchResult.trafficDay : null;
   const isSolidMatch = matchResult.status === "matched" && matchBasis !== "headcode_only";
   const candidateSchedules = buildCandidateSchedules(
     candidateRows,
@@ -339,6 +376,7 @@ export async function resolveFreshRunMatch(
     effectiveRow,
     isSolidMatch,
     candidateSchedules,
+    trafficDay,
   };
 }
 

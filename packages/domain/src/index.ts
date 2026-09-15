@@ -43,8 +43,12 @@ export {
 export {
   selectEffectiveSchedule,
   candidatesRunningOn,
+  runsOnDate,
+  candidatesRunningOnAny,
+  selectEffectiveScheduleAcrossDates,
   type ScheduleCandidate,
   type StpPrecedenceResult,
+  type DatedCandidate,
 } from "./schedule/resolveStpPrecedence.js";
 export {
   resolveRunMatch,

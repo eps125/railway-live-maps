@@ -532,7 +532,14 @@ export async function sweepFreshResolution(
       today,
       nowMinutes,
     });
-    if (fresh.matchStatus !== "matched" || !fresh.effectiveRow || !fresh.matchBasis) continue;
+    if (
+      fresh.matchStatus !== "matched" ||
+      !fresh.effectiveRow ||
+      !fresh.matchBasis ||
+      !fresh.trafficDay
+    ) {
+      continue;
+    }
 
     await upsertResolvedLink(
       pool,
@@ -540,7 +547,9 @@ export async function sweepFreshResolution(
       {
         cifScheduleId: fresh.effectiveRow.id,
         cifTrainUid: fresh.effectiveRow.cif_train_uid,
-        trafficDay: today,
+        // Traffic-day-boundary fix (docs/adr/0008): the traffic day this match actually resolved
+        // against — not necessarily `today` for an overnight train (see resolveRunMatch.ts).
+        trafficDay: fresh.trafficDay,
         matchBasis: fresh.matchBasis,
         tdArea: row.td_area,
         berth: row.berth_code,
@@ -625,13 +634,14 @@ async function attemptStepChainUpgrades(
       fresh.matchStatus !== "matched" ||
       !fresh.effectiveRow ||
       !fresh.matchBasis ||
+      !fresh.trafficDay ||
       !fresh.isSolidMatch ||
       candidate.source.cifScheduleId === null ||
       !isSameRunIdentity(
         {
           cifScheduleId: fresh.effectiveRow.id,
           cifTrainUid: fresh.effectiveRow.cif_train_uid,
-          trafficDay: today,
+          trafficDay: fresh.trafficDay,
         },
         {
           cifScheduleId: candidate.source.cifScheduleId,
@@ -649,7 +659,8 @@ async function attemptStepChainUpgrades(
       {
         cifScheduleId: fresh.effectiveRow.id,
         cifTrainUid: fresh.effectiveRow.cif_train_uid,
-        trafficDay: today,
+        // Traffic-day-boundary fix (docs/adr/0008): see sweepFreshResolution's own note above.
+        trafficDay: fresh.trafficDay,
         matchBasis: fresh.matchBasis,
         tdArea: candidate.tdArea,
         berth: candidate.berth,

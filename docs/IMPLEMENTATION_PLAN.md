@@ -2067,6 +2067,56 @@ database has other files' map/occupancy fixtures in it too). Resource cost measu
 production before enabling: ~0.0076 resolutions/sec for one mapped area vs ~1.5/sec nationwide,
 ~15-30ms of mostly-indexed DB work each.
 
+## Milestone 40 — traffic-day boundary fix for the berth-run resolver `[done — 2026-09-15]`
+
+Bugfix (docs/adr/0008), found 2026-09-14 investigating a real report and carried over two
+sessions before being fixed properly rather than rushed: PX berth 0052, headcode `5F05` (train UID
+`W33229`, Preston → Edge Hill Depot, departed 23:28 the previous night), went `unmatched` the
+instant the London calendar rolled over past midnight, even though the train was still genuinely
+running and its schedule (dated only the previous day) still existed in the garner mirror with
+every calling point synced. Root cause: every date used throughout the resolver (`currentRun.ts`'s
+`today`, the SQL candidate-schedule query, `resolveRunMatch`'s pure day-of-week/date-range check,
+the TRUST activation cutoff, and the traffic day written to `berth_occupancy_run_link`) was a
+single shared Europe/London calendar date, with no notion that a schedule crossing midnight
+belongs to *yesterday's* traffic day, not today's.
+
+Owner-confirmed approach: probe both today's and yesterday's date, not a full WTT 02:00-boundary
+traffic-day rewrite. See docs/adr/0008 for the full design — in short, `resolveRunMatch` and its
+pure helpers now take an ordered `serviceDates` window instead of one shared date, and tag each
+matched/ambiguous candidate with whichever date it actually runs on; every caller
+(`currentRun.ts`'s fresh-resolution *and* lineage-shortcut paths, `sweepFreshResolution`,
+`attemptStepChainUpgrades`) now threads that resolved `trafficDay` through to the TRUST activation
+detail query, the `train_allocation` unit-allocation lookup, and the link it writes — never a
+hardcoded `today` again.
+
+Checklist:
+
+- [x] `packages/domain/src/schedule/resolveStpPrecedence.ts`: additive `candidatesRunningOnAny`/
+      `selectEffectiveScheduleAcrossDates` (multi-date), existing single-date functions untouched
+      (still used by `apps/api/src/routes/schedule.ts`'s unrelated lookup).
+- [x] `packages/domain/src/schedule/resolveRunMatch.ts`: `serviceDates: readonly string[]` instead
+      of `serviceDate: string`; `matched`/`ambiguous` results carry the resolved `trafficDay`.
+- [x] `packages/database/src/runResolution.ts`: `previousCalendarDate` (pure calendar-string
+      arithmetic, DST-safe); `queryCandidateSchedules` widened to a `serviceDates` window;
+      `resolveFreshRunMatch` probes `[today, yesterday]`, widens the TRUST activation cutoff, and
+      returns `trafficDay`.
+- [x] `apps/api/src/routes/currentRun.ts` and `apps/worker/src/runLineage/projector.ts`: use the
+      resolver's own `trafficDay`, not hardcoded `today`, everywhere it flows downstream —
+      including the Milestone 39 lineage-shortcut path, which had `occupancyLink.trafficDay`
+      available all along but wasn't using it.
+- [x] Docs: docs/adr/0008 (new), this checklist.
+
+Tests: `resolveStpPrecedence.test.ts` (+4 cases, multi-date probing), `resolveRunMatch.test.ts`
+(rewritten for the array signature, +4 new cases covering the exact overnight scenario and the
+"both dates satisfied → prefers today" non-regression case), `runResolution.test.ts` (new,
+`previousCalendarDate` incl. the real BST→GMT transition date and a leap day),
+`currentRun.integration.test.ts` (+4 cases: yesterday-only schedule still matches, a pre-midnight
+TRUST activation still counts, unit allocation keys off the resolved traffic day not `today`, and
+today-vs-yesterday preference when a schedule satisfies both). `pnpm -r typecheck`, `pnpm run
+lint`, and every non-integration Vitest suite touched by this change were run and passed; the
+integration suite needs a live Postgres this sandbox doesn't have, matching the same limitation
+Milestone 39 already noted — first real execution is CI's `test:integration` job.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

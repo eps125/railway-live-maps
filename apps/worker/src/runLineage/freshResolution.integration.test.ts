@@ -458,6 +458,11 @@ describe("processStepChainBatch upgrade (integration)", () => {
   it("leaves the inherited weak link untouched when the destination berth has no position data of its own either", async () => {
     const today = londonToday(new Date());
     const scheduleId = await insertMinimalSchedule("UPGRADE2", "5U02");
+    // A second, different train sharing this headcode — docs/adr/0008 third addendum made an
+    // unscoped match with only one nationwide candidate solid on its own; without this sibling,
+    // a fresh look at 0510 would find UPGRADE2 as the sole candidate and correctly upgrade it,
+    // defeating this test's actual point (no *genuinely* better evidence exists at either berth).
+    await insertMinimalSchedule("UPGRADE2B", "5U02");
 
     const occA = await insertOpenOccupancy({
       area: AREA_UPGRADE,

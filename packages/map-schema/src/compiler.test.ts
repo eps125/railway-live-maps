@@ -76,6 +76,17 @@ describe("compileMapDocument", () => {
     expect(bundle.boundingBox).toEqual({ minX: 0, minY: 0, maxX: 50, maxY: 30 });
   });
 
+  it("carries map.homePoint through to the compiled bundle when set, leaves it undefined otherwise (2026-09-16)", () => {
+    const bundle = compileMapDocument(doc);
+    expect(bundle.homePoint).toBeUndefined();
+
+    const docWithHomePoint = MapDocumentSchema.parse({
+      ...doc,
+      map: { ...doc.map, homePoint: { x: 15, y: 25 } },
+    });
+    expect(compileMapDocument(docWithHomePoint).homePoint).toEqual({ x: 15, y: 25 });
+  });
+
   it("builds bidirectional topology adjacency", () => {
     const bundle = compileMapDocument(doc);
     expect(bundle.topologyAdjacency["n1"]).toEqual(["n2"]);

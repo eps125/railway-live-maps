@@ -52,6 +52,11 @@ export type EditorAction =
   /** Map-level display name (shown as the map's heading on the public renderer). Not part of
    * the element command model, so it's a plain state update with no undo entry. */
   | { type: "setMapName"; name: string }
+  /** Map-level home point (owner request, 2026-09-16): the point the public renderer centres on
+   * for a visitor with no remembered view yet — see `MapRenderer.tsx`'s `defaultView`. Same
+   * "plain state update, no undo entry" treatment as `setMapName`; `point: null` clears it back
+   * to the plain bounding-box centre. */
+  | { type: "setMapHomePoint"; point: { x: number; y: number } | null }
   | { type: "markSynced" };
 
 function reducer(state: EditorState, action: EditorAction): EditorState {
@@ -110,6 +115,22 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         document: { ...state.document, map: { ...state.document.map, name: action.name } },
         dirty: true,
       };
+    case "setMapHomePoint": {
+      const current = state.document.map.homePoint;
+      const next = action.point ?? undefined;
+      const unchanged =
+        (current === undefined && next === undefined) ||
+        (current !== undefined &&
+          next !== undefined &&
+          current.x === next.x &&
+          current.y === next.y);
+      if (unchanged) return state;
+      return {
+        ...state,
+        document: { ...state.document, map: { ...state.document.map, homePoint: next } },
+        dirty: true,
+      };
+    }
     case "setDocument":
       return {
         ...state,

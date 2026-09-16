@@ -269,6 +269,44 @@ describe("MapRenderer", () => {
     expect(y! + height! / 2).toBeCloseTo(500);
   });
 
+  it("centres the default view on bundle.homePoint when set, instead of the bounding-box centre (2026-09-16)", () => {
+    const doc = bundle({
+      boundingBox: { minX: 0, minY: 0, maxX: 1000, maxY: 1000 },
+      homePoint: { x: 250, y: 300 },
+    });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x! + width! / 2).toBeCloseTo(250);
+    expect(y! + height! / 2).toBeCloseTo(300);
+  });
+
+  it("an explicit centerElementId still takes priority over bundle.homePoint", () => {
+    const doc = bundle({
+      boundingBox: { minX: 0, minY: 0, maxX: 1000, maxY: 1000 },
+      homePoint: { x: 250, y: 300 },
+      elementsById: {
+        "station-1": {
+          id: "station-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "station",
+          x: 900,
+          y: 900,
+          name: "Somewhere Else",
+          fontSize: 16,
+        },
+      },
+    });
+    const { container } = render(
+      <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="station-1" />,
+    );
+    const svg = container.querySelector("svg")!;
+    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x! + width! / 2).toBeCloseTo(900);
+    expect(y! + height! / 2).toBeCloseTo(900);
+  });
+
   it("a single-finger touch still pans (proves pointer-based interaction is wired up)", () => {
     const doc = bundle();
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);

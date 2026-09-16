@@ -111,7 +111,17 @@ export function MapView({
       </div>
 
       {playbackFrom === null ? (
+        // Keyed by mapId (2026-09-16 fix): `navigate()` is a client-side pushState, so clicking
+        // a boundary link or a places-search result from *within* an already-mounted map page
+        // updates this component's props in place rather than remounting it. MapRenderer's
+        // centering (and its per-map saved-view restore) is deliberately mount-only state — an
+        // `useRef`/lazy `useState` initializer that intentionally does not react to a later prop
+        // change, so the visitor's own panning isn't fought — so without a key tied to the map's
+        // identity, navigating from one map to another left it centred on whatever the previous
+        // map's mount had computed (in practice: the new map's plain bounding-box centre, not the
+        // requested boundary/search point). The key forces a genuine remount on every map change.
         <MapRenderer
+          key={definition.definition.mapId}
           bundle={definition.definition}
           berths={state?.berths ?? {}}
           signals={state?.signals ?? {}}
@@ -169,6 +179,7 @@ function PlaybackView({
         </p>
       ) : null}
       <MapRenderer
+        key={bundle.mapId}
         bundle={bundle}
         berths={pb.berths}
         signals={pb.signals}

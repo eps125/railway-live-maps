@@ -2376,6 +2376,69 @@ typecheck` and `pnpm -w format:check` pass; the integration suite needs a live P
 sandbox doesn't have (same limitation noted on earlier milestones) — first real execution is CI's
 `test:integration` job.
 
+## Milestone 48 — fix: boundary-link centering broke on in-place map navigation; add a per-map home point `[done — 2026-09-16]`
+
+Two owner requests together: (1) clicking a boundary label correctly navigated to the adjacent map
+but landed nowhere near the intended crossing — near the whole map's bounding-box centre instead;
+(2) a way to set, per map, the point the public renderer lands on when you click into it from the
+home page.
+
+**Root cause of (1):** `useRoute.ts`'s `navigate()` is a client-side `pushState` — it never
+unmounts/remounts `MapView`/`MapRenderer` when the route's `slug` changes, since both render from
+the same JSX position in `App.tsx` with no `key`. `MapRenderer`'s centering (`initialCenterPoint`,
+and the initial `viewBox`/`restoredFromStorage` values) is deliberately mount-only state (a
+`useRef`/lazy `useState` initializer, documented as such) — correct for "don't fight a visitor's
+own panning on a later prop change", but it meant clicking a boundary link from an already-open map
+page updated `centerElementId` on the *same* `MapRenderer` instance, which never re-evaluated it.
+The view fell through to whatever the mount-time effect did instead — in practice, the new map's
+plain bounding-box centre. Existing tests never caught this because every one of them called RTL's
+`render()` fresh per case, which is itself a mount — none exercised a same-instance `slug` change
+via `rerender()`, the actual shape of an in-app navigation.
+
+**Fix:** `apps/web/src/map/MapView.tsx` — `<MapRenderer key={bundle.mapId} .../>` at both render
+sites (live and playback), forcing a genuine remount whenever the displayed map's identity changes,
+restoring correct one-time-at-mount semantics for the boundary/search centering and the per-map
+saved-view restore.
+
+**Home point (2):** `packages/map-schema/src/document.ts` — `MapMetaSchema` gains optional
+`homePoint: {x, y}`. `packages/map-schema/src/compiler.ts` — `CompiledMapBundle.homePoint`
+(optional; `exactOptionalPropertyTypes` means it's spread in only when set, never assigned a
+literal `undefined`). `apps/web/src/map/MapRenderer.tsx` — `defaultView` centres on
+`bundle.homePoint` when set, else the previous bounding-box centre; this is exactly the "first-ever
+visit, or Reset view" default, so it covers "clicking this map from the home page" without touching
+a returning visitor's remembered pan/zoom, and an explicit `centerElementId`/`centerBoundaryName`
+(search or boundary-link click-through) still takes priority. Editor: `EditorState.tsx` gained
+`setMapHomePoint` (mirrors the existing `setMapName` — plain state update, no undo entry, `point:
+null` clears it); `PropertyPanel.tsx`'s no-selection "Map" fieldset gained Home point X/Y number
+fields plus a Clear button, next to the existing map-name field.
+
+Checklist:
+
+- [x] `apps/web/src/map/MapView.tsx`: key both `MapRenderer` render sites by `bundle.mapId`.
+- [x] `packages/map-schema/src/document.ts`: `MapMetaSchema.homePoint` (optional point).
+- [x] `packages/map-schema/src/compiler.ts`: `CompiledMapBundle.homePoint`, conditionally spread.
+- [x] `apps/web/src/map/MapRenderer.tsx`: `defaultView` prefers `bundle.homePoint`.
+- [x] `apps/web/src/editor/EditorState.tsx`: `setMapHomePoint` action + reducer case.
+- [x] `apps/web/src/editor/PropertyPanel.tsx`: Home point X/Y fields + Clear button.
+- [x] Docs: `docs/MAP_EDITOR_SPEC.md` §"Map metadata"; this checklist.
+
+Tests: `document.test.ts` (`homePoint` parses, omitted when unset); `compiler.test.ts` (carried
+through when set, `undefined` otherwise); `MapRenderer.test.tsx` (`homePoint` overrides the
+bounding-box centre; an explicit `centerElementId` still wins over it); `MapView.test.tsx` — a new
+regression case that renders once with `slug="lancaster"`, then `rerender()`s the *same* instance
+with `slug="carlisle"` and a `?boundary=` name (simulating the real in-app click-through, not a
+fresh mount), asserting the view lands on carlisle's own boundary point rather than lancaster's
+stale one or carlisle's bounding-box centre — this test reproduced the bug before the `key` fix and
+passes after it; `PropertyPanel.test.tsx` (home point fields commit X/Y independently, Clear
+resets). `pnpm run build:libs`, `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` (only
+pre-existing unrelated files still flagged) and the full unit suite (`packages/map-schema`: 62
+passed; `apps/web`: 147 passed) all green.
+
+Known limitations: `homePoint` is a raw author-typed X/Y pair (matching how every other
+element-level coordinate is authored in this editor) — no click-on-canvas-to-set convenience yet;
+the boundary-link correspondence itself is still entirely author-maintained (Milestone 32's known
+limitation, unchanged here).
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

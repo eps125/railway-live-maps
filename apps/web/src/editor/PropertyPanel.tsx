@@ -261,6 +261,40 @@ export function PropertyPanel(): JSX.Element {
               value={doc.map.name}
               onCommit={(name) => dispatch({ type: "setMapName", name })}
             />
+            <p className="field-hint">
+              Home point — where the public map centres for a visitor with no remembered view yet
+              (e.g. clicking this map from the home page). Leave unset to use the map&apos;s plain
+              bounding-box centre instead.
+            </p>
+            <NumberField
+              label="Home point X"
+              value={doc.map.homePoint?.x ?? 0}
+              onCommit={(x) =>
+                dispatch({
+                  type: "setMapHomePoint",
+                  point: { x, y: doc.map.homePoint?.y ?? 0 },
+                })
+              }
+            />
+            <NumberField
+              label="Home point Y"
+              value={doc.map.homePoint?.y ?? 0}
+              onCommit={(y) =>
+                dispatch({
+                  type: "setMapHomePoint",
+                  point: { x: doc.map.homePoint?.x ?? 0, y },
+                })
+              }
+            />
+            {doc.map.homePoint ? (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => dispatch({ type: "setMapHomePoint", point: null })}
+              >
+                Clear home point
+              </button>
+            ) : null}
           </fieldset>
           <p className="panel-card--empty">Select an element to edit it.</p>
         </aside>

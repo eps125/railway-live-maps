@@ -136,6 +136,35 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("PropertyPanel map metadata", () => {
+  it("shows no home point fields by default, commits X/Y, then clears it (2026-09-16)", async () => {
+    render(
+      <EditorStateProvider initialDocument={baseDoc()}>
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    expect(await screen.findByLabelText("Name (shown as the map heading)")).toHaveValue("m");
+    // Unset by default — no Clear button yet.
+    expect(screen.queryByText("Clear home point")).not.toBeInTheDocument();
+
+    const xInput = screen.getByLabelText("Home point X");
+    const yInput = screen.getByLabelText("Home point Y");
+    fireEvent.change(xInput, { target: { value: "120" } });
+    fireEvent.blur(xInput);
+    fireEvent.change(yInput, { target: { value: "-30" } });
+    fireEvent.blur(yInput);
+    expect(xInput).toHaveValue(120);
+    expect(yInput).toHaveValue(-30);
+
+    const clearButton = await screen.findByText("Clear home point");
+    fireEvent.click(clearButton);
+    expect(screen.queryByText("Clear home point")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Home point X")).toHaveValue(0);
+    expect(screen.getByLabelText("Home point Y")).toHaveValue(0);
+  });
+});
+
 describe("PropertyPanel BindingFields", () => {
   it("does not keep showing the previous element's binding after selecting a different one", async () => {
     vi.stubGlobal(

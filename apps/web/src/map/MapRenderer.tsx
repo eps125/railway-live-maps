@@ -251,11 +251,13 @@ function writeSavedView(mapId: string, v: ViewBox): void {
 
 /** A fixed-magnification view centred on the map's content. `pxW/pxH` are the real container
  * pixel size when known (so the zoom is genuinely constant across screens); before the
- * container is measured, nominal values keep the first paint sensible. */
+ * container is measured, nominal values keep the first paint sensible. Centres on the author-set
+ * `bundle.homePoint` (owner request, 2026-09-16 — "used when you click on the map from the home
+ * page") when set, falling back to the bounding-box centre otherwise. */
 function defaultView(bundle: CompiledMapBundle, pxW = 1200, pxH = 700): ViewBox {
   const { minX, minY, maxX, maxY } = bundle.boundingBox;
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
+  const cx = bundle.homePoint?.x ?? (minX + maxX) / 2;
+  const cy = bundle.homePoint?.y ?? (minY + maxY) / 2;
   const width = Math.max(pxW * DEFAULT_UNITS_PER_PX, MIN_ZOOM_WIDTH);
   const height = Math.max(pxH * DEFAULT_UNITS_PER_PX, MIN_ZOOM_WIDTH);
   return { x: cx - width / 2, y: cy - height / 2, width, height };

@@ -17,6 +17,12 @@ const MapMetaSchema = z.object({
   name: z.string().min(1),
   canvas: CanvasSchema,
   timezone: z.string().min(1),
+  /** Owner request (2026-09-16): the point the public renderer centres on for a visitor with no
+   * remembered view yet (a landing-page click-through, or the "Reset view" button) — distinct
+   * from the bounding-box centre `defaultView` falls back to when unset. Author-set in the editor
+   * only; never inferred. An explicit `centerElementId`/`centerBoundaryName` (a places-search or
+   * boundary-link click-through) still takes priority over this — see MapRenderer.tsx. */
+  homePoint: PointSchema.optional(),
 });
 
 const LayerSchema = z.object({

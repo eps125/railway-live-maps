@@ -14,6 +14,10 @@ export interface CompiledMapBundle {
   mapName: string;
   canvas: { width: number; height: number; gridSize: number };
   timezone: string;
+  /** Owner request (2026-09-16): the point the public renderer centres on when a visitor has no
+   * remembered view (landing-page click-through / "Reset view"), overriding the bounding-box
+   * centre `boundingBox` alone would otherwise imply. `undefined` when the author hasn't set one. */
+  homePoint?: { x: number; y: number };
   layers: MapDocument["layers"];
   elementsById: Record<string, MapElement>;
   /** `${tdArea}|${berth}` -> elementId */
@@ -291,6 +295,7 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     mapName: doc.map.name,
     canvas: doc.map.canvas,
     timezone: doc.map.timezone,
+    ...(doc.map.homePoint ? { homePoint: doc.map.homePoint } : {}),
     layers: doc.layers,
     elementsById,
     berthBindingIndex,

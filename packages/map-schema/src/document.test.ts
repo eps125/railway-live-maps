@@ -25,6 +25,26 @@ describe("MapDocumentSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts an optional map.homePoint and omits it when unset (2026-09-16)", () => {
+    const withPoint = MapDocumentSchema.safeParse(
+      minimalDoc({
+        map: {
+          id: "test",
+          name: "Test",
+          canvas: { width: 100, height: 100, gridSize: 10 },
+          timezone: "Europe/London",
+          homePoint: { x: 42, y: -7 },
+        },
+      }),
+    );
+    expect(withPoint.success).toBe(true);
+    if (withPoint.success) expect(withPoint.data.map.homePoint).toEqual({ x: 42, y: -7 });
+
+    const withoutPoint = MapDocumentSchema.safeParse(minimalDoc());
+    expect(withoutPoint.success).toBe(true);
+    if (withoutPoint.success) expect(withoutPoint.data.map.homePoint).toBeUndefined();
+  });
+
   it("rejects an unsupported element type", () => {
     const result = MapDocumentSchema.safeParse(
       minimalDoc({ elements: [{ id: "e1", layerId: "l1", type: "unknownThing" }] }),

@@ -151,6 +151,13 @@ scope never gates capture, but it can gate what a search can jump to (CLAUDE.md 
 editable in the editor's Properties panel when nothing is selected — the per-map variable for
 naming as more maps are authored. `map.id` (the slug) is fixed.
 
+Optional `map.homePoint` (owner request, 2026-09-16), also editable there as X/Y fields: the point
+the public renderer centres its fixed-magnification default view on for a visitor with no
+remembered view yet — a landing-page click-through, or the "Reset view" button — instead of the
+map's plain bounding-box centre. An explicit boundary-link or places-search click-through
+(`?boundary=`/`?center=`) still takes priority over it, and a returning visitor's saved pan/zoom
+(`localStorage`, per map) is untouched either way.
+
 ### `boundary` (legacy)
 
 Superseded 2026-09-13 by `label`'s `adjacentMapSlug`/`adjacentBoundaryName`/`direction` fields

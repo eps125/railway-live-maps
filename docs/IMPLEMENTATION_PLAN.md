@@ -2389,7 +2389,7 @@ the same JSX position in `App.tsx` with no `key`. `MapRenderer`'s centering (`in
 and the initial `viewBox`/`restoredFromStorage` values) is deliberately mount-only state (a
 `useRef`/lazy `useState` initializer, documented as such) — correct for "don't fight a visitor's
 own panning on a later prop change", but it meant clicking a boundary link from an already-open map
-page updated `centerElementId` on the *same* `MapRenderer` instance, which never re-evaluated it.
+page updated `centerElementId` on the _same_ `MapRenderer` instance, which never re-evaluated it.
 The view fell through to whatever the mount-time effect did instead — in practice, the new map's
 plain bounding-box centre. Existing tests never caught this because every one of them called RTL's
 `render()` fresh per case, which is itself a mount — none exercised a same-instance `slug` change
@@ -2425,7 +2425,7 @@ Checklist:
 Tests: `document.test.ts` (`homePoint` parses, omitted when unset); `compiler.test.ts` (carried
 through when set, `undefined` otherwise); `MapRenderer.test.tsx` (`homePoint` overrides the
 bounding-box centre; an explicit `centerElementId` still wins over it); `MapView.test.tsx` — a new
-regression case that renders once with `slug="lancaster"`, then `rerender()`s the *same* instance
+regression case that renders once with `slug="lancaster"`, then `rerender()`s the _same_ instance
 with `slug="carlisle"` and a `?boundary=` name (simulating the real in-app click-through, not a
 fresh mount), asserting the view lands on carlisle's own boundary point rather than lancaster's
 stale one or carlisle's bounding-box centre — this test reproduced the bug before the `key` fix and

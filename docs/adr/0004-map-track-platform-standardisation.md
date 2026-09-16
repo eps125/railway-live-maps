@@ -93,20 +93,20 @@ The "Route C" hybrid (author in a lane model, emit polylines, keep the lane mode
 
 One shared constant module in `packages/map-schema`, consumed by compiler, renderer and editor:
 
-| Constant                  | Value                                   | Note                                                                            |
-| ------------------------- | --------------------------------------- | ------------------------------------------------------------------------------- |
-| Row pitch                 | ~~30~~ **45**                           | matches OTT; owner may revisit — revisited 2026-09-15, see addendum below       |
-| Diagonal slope            | **1:2** (26.57°)                        | only permitted non-horizontal track angle (optional 1:1 for tight spaces)       |
-| Track stroke width        | 3                                       | casing 5 reserved for a later halo pass                                         |
-| `stroke-linejoin`         | `round`                                 | `stroke-linecap` stays `butt`                                                   |
-| Berth box height          | 20                                      | fixed, centred on the row; no longer an exact row-pitch divisor, see below      |
-| Berth box width           | `chars × charWidth + 2 × pad`           | monospace; every 4-char berth identical                                         |
-| Signal offset from track  | 12                                      | standard perpendicular gap                                                      |
-| Endpoint weld tolerance   | ~~6~~ **9**                             | editor endpoint magnet + D2 interim weld; scales with row pitch, see below      |
-| Grid size                 | ~~10~~ **15** (new drafts)              | 1/3 of row pitch; an existing draft's own value scales via `rescaleMapDocument` |
-| Platform fill             | `#FFA500`                               | Traksy orange; CSS token `--map-platform-fill`, overrideable                    |
-| Platform schematic height | 12                                      | offset from the track by the signal-offset gap                                  |
-| Platform number box       | white fill, `#2d3644` border, dark text | Traksy pattern                                                                  |
+| Constant                  | Value                                   | Note                                                                      |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------------------------- |
+| Row pitch                 | **30**                                  | matches OTT; owner may revisit                                            |
+| Diagonal slope            | **1:2** (26.57°)                        | only permitted non-horizontal track angle (optional 1:1 for tight spaces) |
+| Track stroke width        | 3                                       | casing 5 reserved for a later halo pass                                   |
+| `stroke-linejoin`         | `round`                                 | `stroke-linecap` stays `butt`                                             |
+| Berth box height          | 20                                      | fixed, centred on the row, divides the row pitch                          |
+| Berth box width           | `chars × charWidth + 2 × pad`           | monospace; every 4-char berth identical                                   |
+| Signal offset from track  | 12                                      | standard perpendicular gap                                                |
+| Endpoint weld tolerance   | 6                                       | editor endpoint magnet + D2 interim weld                                  |
+| Grid size                 | 10                                      | unchanged; 1/3 of row pitch                                               |
+| Platform fill             | `#FFA500`                               | Traksy orange; CSS token `--map-platform-fill`, overrideable              |
+| Platform schematic height | 12                                      | offset from the track by the signal-offset gap                            |
+| Platform number box       | white fill, `#2d3644` border, dark text | Traksy pattern                                                            |
 
 ### D5 — Empty berths
 
@@ -167,36 +167,3 @@ CLAUDE.md rules 5 and 7 remain held in abeyance. This ADR only:
   correlation).
 - No change to CLAUDE.md non-negotiables. Rules 5 and 7 stay in abeyance exactly as ADR 0002
   left them; D7 explicitly neither reinstates nor weakens them.
-
-## Addendum (2026-09-15): row pitch and grid size increased, existing drafts rescaled
-
-Owner request: more visual breathing room between adjacent rows. D4's table flagged row pitch as
-"owner may revisit" from the start.
-
-- `MAP_STYLE.rowPitch`: 30 → **45**. `MAP_STYLE.weldTolerance`: 6 → **9** (same ×1.5 factor — it's
-  a distance tolerance measured in the same coordinate space as element points, not a rendered
-  size, so it has to scale with that space to keep meaning "the same closeness," not a shrinking
-  fraction of it). New drafts' default `canvas.gridSize`: 10 → **15**, keeping D4's `gridSize =
-rowPitch / 3` ratio.
-- Deliberately **not** scaled: every other D4 constant (track stroke width, berth box
-  height/char-width/padding, signal offset/radius, platform height/offset/number-box) and each
-  element's own stored `fontSize`/`width`/`height`. Scaling those too would have made the whole
-  change indistinguishable from zooming the viewport in — same relative spacing, just bigger.
-  Leaving them fixed while only the row-pitch coordinate space grows is what actually produces
-  more empty space between rows.
-- `packages/map-schema/src/rescale.ts` (`rescaleMapDocument`) is the corresponding coordinate
-  transform for an _already-drawn_ document: every element's `x`/`y`/`points[]`, topology node
-  positions, and `canvas.width`/`height`/`gridSize` scale by the same factor; the "furniture"
-  constants above and each element's own `fontSize`/`width`/`height` do not. Track and platform
-  polylines scale both endpoints, which also keeps every diagonal segment's fixed 1:2 slope intact
-  (rise and run scale together).
-- Applying it to a real draft is `rescale-map-draft --slug <slug> --scale 1.5`
-  (`apps/worker/src/commands/rescaleMapDraft.ts`), which re-validates the result against
-  `MapDocumentSchema`, writes it as a new draft revision (same path the editor's own autosave
-  uses), and leaves the map unpublished until reviewed. `--dry-run` reports what it would do
-  without writing.
-- Reversibility: the same command's `--restore <revision>` mode puts an exact prior
-  `map_draft_revision` snapshot back as a new revision — not an inverse `1/1.5` scale, which would
-  drift on floating point and only undoes a scale specifically. `map_draft_revision` already keeps
-  a full snapshot per save (migration 0011, retained ≥ 90 days), so this needed no new storage.
-  Every rescale run prints the exact `--restore` command to reverse itself.

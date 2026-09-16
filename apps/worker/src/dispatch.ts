@@ -19,7 +19,6 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "snapshot-maps",
   "repair-open-occupancies",
   "manage-users",
-  "rescale-map-draft",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

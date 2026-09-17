@@ -519,7 +519,7 @@ the web-app replacement for a one-off manual SQL query.
   last 7 days up to now). `400 VALIDATION_ERROR` for a missing `tdAreas`/`headcode`,
   `400 INVALID_TIME_RANGE` for a bad or too-wide range. Returns
   `{ events: [{ id, tdArea, messageType, fromBerth, toBerth, description, eventAt,
-  ingestionSequence }], nextCursor }` ordered by `event_at` ascending (then `id`), cursor-paginated
+ingestionSequence }], nextCursor }` ordered by `event_at` ascending (then `id`), cursor-paginated
   like the history routes above.
 
 Reached through the admin-only "Berths" nav item → "Query Berths" page (`/admin/berths/query` in

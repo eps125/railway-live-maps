@@ -2785,7 +2785,7 @@ matches the rest of the admin section) with a "Load more" button for pagination.
 Files changed:
 
 - `apps/api/src/routes/admin/berthQuery.ts` (new), `apps/api/src/routes/admin/
-  berthQuery.integration.test.ts` (new) — the query route and its integration test (fixture rows
+berthQuery.integration.test.ts` (new) — the query route and its integration test (fixture rows
   via the existing `testSupport/tdEvents.ts` helper).
 - `apps/api/src/server.ts` — registers the route in its own `requireRole("admin", ...)`-gated scope,
   same pattern as the TD-boundaries/admin-map scopes.

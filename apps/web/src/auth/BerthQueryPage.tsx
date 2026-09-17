@@ -1,10 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
 import { navigate } from "../useRoute.js";
-
-interface TdAreaSummary {
-  tdArea: string;
-}
 
 interface BerthEvent {
   id: string;
@@ -37,6 +33,15 @@ function stepLabel(messageType: string): string {
   return STEP_LABELS[messageType] ?? messageType;
 }
 
+/** Mirrors the server's own `tdAreas` parsing (`apps/api/src/routes/admin/berthQuery.ts`) so the
+ * client-side "at least one area" check agrees with what the API will actually accept. */
+function parseAreas(value: string): string[] {
+  return value
+    .split(",")
+    .map((area) => area.trim().toUpperCase())
+    .filter((area) => area.length > 0);
+}
+
 /**
  * Milestone 51: admin-only "Query Berths" tool — the web-app replacement for asking for a one-off
  * SQL query against `td_berth_event` by hand. Queries the raw C-Class event log directly (not the
@@ -44,10 +49,7 @@ function stepLabel(messageType: string): string {
  * in time order across one or more TD areas for a given headcode/description and time range.
  */
 export function BerthQueryPage(): JSX.Element {
-  const [availableAreas, setAvailableAreas] = useState<string[] | null>(null);
-  const [areasLoadError, setAreasLoadError] = useState<string | null>(null);
-
-  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
+  const [areasInput, setAreasInput] = useState("");
   const [headcode, setHeadcode] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -57,28 +59,9 @@ export function BerthQueryPage(): JSX.Element {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadAreas(): Promise<void> {
-      try {
-        const response = await fetch("/api/v1/td/areas");
-        if (!response.ok) {
-          setAreasLoadError(
-            await extractError(response, `Failed to load TD areas (${response.status})`),
-          );
-          return;
-        }
-        const body = await readApiJson<{ areas: TdAreaSummary[] }>(response);
-        setAvailableAreas(body.areas.map((a) => a.tdArea).sort());
-      } catch {
-        setAreasLoadError("Failed to load TD areas.");
-      }
-    }
-    void loadAreas();
-  }, []);
-
-  function buildQueryUrl(after: string | null): string {
+  function buildQueryUrl(areas: string[], after: string | null): string {
     const params = new URLSearchParams();
-    params.set("tdAreas", selectedAreas.join(","));
+    params.set("tdAreas", areas.join(","));
     params.set("headcode", headcode.trim().toUpperCase());
     if (from) params.set("from", new Date(from).toISOString());
     if (to) params.set("to", new Date(to).toISOString());
@@ -88,14 +71,15 @@ export function BerthQueryPage(): JSX.Element {
 
   async function handleSearch(e: React.FormEvent): Promise<void> {
     e.preventDefault();
-    if (selectedAreas.length === 0) {
-      setSearchError("Select at least one train describer area.");
+    const areas = parseAreas(areasInput);
+    if (areas.length === 0) {
+      setSearchError("Enter at least one train describer area.");
       return;
     }
     setSearching(true);
     setSearchError(null);
     try {
-      const response = await fetch(buildQueryUrl(null));
+      const response = await fetch(buildQueryUrl(areas, null));
       if (!response.ok) {
         setEvents(null);
         setNextCursor(null);
@@ -119,7 +103,7 @@ export function BerthQueryPage(): JSX.Element {
     setSearching(true);
     setSearchError(null);
     try {
-      const response = await fetch(buildQueryUrl(nextCursor));
+      const response = await fetch(buildQueryUrl(parseAreas(areasInput), nextCursor));
       if (!response.ok) {
         setSearchError(await extractError(response, "Search failed."));
         return;
@@ -154,31 +138,16 @@ export function BerthQueryPage(): JSX.Element {
         local time; the maximum range per search is 7 days.
       </p>
 
-      {areasLoadError && (
-        <p role="alert" className="app-error">
-          {areasLoadError}
-        </p>
-      )}
-
       <form className="panel-card" onSubmit={(e) => void handleSearch(e)}>
-        <label className="field" htmlFor="berth-query-areas">
+        <label className="field">
           Train describer area(s)
+          <input
+            type="text"
+            value={areasInput}
+            onChange={(e) => setAreasInput(e.target.value)}
+            placeholder="e.g. PX, LA"
+          />
         </label>
-        <select
-          id="berth-query-areas"
-          multiple
-          size={Math.min(8, Math.max(4, availableAreas?.length ?? 4))}
-          value={selectedAreas}
-          onChange={(e) =>
-            setSelectedAreas(Array.from(e.target.selectedOptions, (opt) => opt.value))
-          }
-        >
-          {(availableAreas ?? []).map((area) => (
-            <option key={area} value={area}>
-              {area}
-            </option>
-          ))}
-        </select>
 
         <label className="field">
           Headcode

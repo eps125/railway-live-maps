@@ -5,9 +5,7 @@ import { AdminBerthsPage } from "./AdminBerthsPage.js";
 describe("AdminBerthsPage", () => {
   it("links to the Query Berths tool", () => {
     render(<AdminBerthsPage />);
-    expect(screen.getByRole("link", { name: "Query Berths" })).toHaveAttribute(
-      "href",
-      "/admin/berths/query",
-    );
+    const heading = screen.getByRole("heading", { name: "Query Berths" });
+    expect(heading.closest("a")).toHaveAttribute("href", "/admin/berths/query");
   });
 });

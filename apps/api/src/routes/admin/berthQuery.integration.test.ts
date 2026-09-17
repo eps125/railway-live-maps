@@ -57,7 +57,9 @@ describe("admin berth query route (integration)", () => {
     expect(new Date(body.events[0].eventAt).getTime()).toBeLessThanOrEqual(
       new Date(body.events[1].eventAt).getTime(),
     );
-    expect(body.events[0]).toMatchObject({ toBerth: "0001", messageType: "CB" });
+    // recordObservedBerthEvent's messageType rule: fromBerth+toBerth -> CA, toBerth only -> CC,
+    // fromBerth only -> CB (see apps/api/src/testSupport/tdEvents.ts).
+    expect(body.events[0]).toMatchObject({ toBerth: "0001", messageType: "CC" });
     expect(body.events[1]).toMatchObject({ fromBerth: "0001", toBerth: "0002", messageType: "CA" });
 
     await app.close();

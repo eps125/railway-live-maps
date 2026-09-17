@@ -306,6 +306,14 @@ button {
   min-width: 0;
 }
 
+/* `.field`'s own children (the input) are flex items of ITS OWN flex-column context, so they
+ * carry their own separate `min-width: auto` floor (a classic nested-flexbox trap) — this input
+ * ignored the `.field`'s shrink above and kept its browser-default intrinsic width, overflowing
+ * the fixed 300px `.editor-panels` column and clipping the Remove button off entirely. */
+.field-row--combined-member .field input {
+  min-width: 0;
+}
+
 .berth-clear-list {
   list-style: none;
   margin: 0;
@@ -342,6 +350,12 @@ fieldset {
   border-radius: var(--radius-md);
   padding: 0.65rem 0 0.1rem;
   margin: 0 0 0.75rem;
+  /* Browsers give <fieldset> a special intrinsic sizing algorithm that refuses to shrink below
+   * its content's min-content width (unlike an ordinary block box) — invisible while every field
+   * inside stacked one per line, but a combined berth's side-by-side member row exposed it: the
+   * fieldset grew past the fixed-width .editor-panels column instead of letting that row's own
+   * fields shrink, overflowing the whole panel and clipping its Remove button off-screen. */
+  min-width: 0;
 }
 
 legend {
@@ -1199,22 +1213,40 @@ legend {
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
-/* Milestone 51: "Berths" admin hub — a plain link list, same card language as everything else
- * under .admin-users-page, so tooling added later just adds another <li>. */
-.admin-berths-page__tools {
-  list-style: none;
-  padding: 0;
-  margin: 0;
+/* Milestone 51: "Berths" admin hub — each tool is a clickable card, so the page reads as a small
+ * dashboard rather than a bare link list; tooling added later just adds another card. */
+.berths-hub {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.6rem;
 }
 
-.admin-berths-page__tools li {
-  padding: 0.75rem;
+.berths-hub__tool {
+  display: block;
+  padding: 0.85rem 1rem;
+  background: var(--color-bg-panel);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-inset);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.berths-hub__tool:hover {
+  border-color: var(--color-accent);
+}
+
+.berths-hub__tool h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.berths-hub__tool p {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
 }
 
 /* Milestone 51: "Query Berths" results table is wider than the 720px admin-users-page column

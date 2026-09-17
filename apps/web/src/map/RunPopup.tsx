@@ -591,8 +591,8 @@ export function RunPopup({
       clearInterval(intervalId);
     };
     // resolvedMembers/fetchMember are recreated every render — membersKey is the stable,
-    // content-based dependency that actually decides when to restart polling.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // content-based dependency that actually decides when to restart polling (this project has
+    // no react-hooks/exhaustive-deps lint rule configured to flag the omission).
   }, [membersKey]);
 
   const allSettled = resolvedMembers.every((m) => statesByKey[memberKey(m)] !== undefined);

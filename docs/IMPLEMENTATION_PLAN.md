@@ -2459,7 +2459,7 @@ reinstated) is read as the run's new effective destination everywhere.
 chain (`trust_changeid`, bounded to 8 hops) and, across every id in that chain, the latest Change
 of Origin, latest not-yet-reinstated part-cancellation (read as the new destination), and every
 Change of Location. `apps/api/src/routes/currentRun.ts` applies these: `effective.originTiploc`/
-`destinationTiploc`/`locations[]` become *current* values (in place, no strikethrough — owner
+`destinationTiploc`/`locations[]` become _current_ values (in place, no strikethrough — owner
 request, deliberately different from openrail's own detail page); `latestMovement` now searches
 every id in the identity chain, not just the activation's original one (a real secondary bug fix —
 a movement reported under a post-Change-of-Identity id was previously invisible to this endpoint).
@@ -2470,15 +2470,16 @@ view; the reduced (anonymous) view is unchanged beyond now showing current value
 
 **openrail (`C:\Projects\openrail-master`) — implemented but not build/deploy-verified (see Known
 limitations):**
+
 - `livetrain.c` (`/rail/livetrain` detail page): the schedule table now strikes through calling
   points before a Change of Origin's new starting point, and the header strikes through a
   superseded TRUST id alongside the new one from a Change of Identity — both already-fetched by
   the existing message-log queries, now also applied to the schedule table/header rather than only
   logged. A Change of Location strikes through the original calling point and inserts the revised
-  one as a new row below it (owner's explicit detail-page spec — the one surface that *does* use
+  one as a new row below it (owner's explicit detail-page spec — the one surface that _does_ use
   strikethrough, unlike RLM's live map or openrail's own summary/board pages below).
 - `liverail.c` (`SUMMARY`/`DEPART`/`PANEL` modes — the summary/departure boards `report_train_
-  summary` renders): the `destination` column (or, for a row where this station is where the train
+summary` renders): the `destination` column (or, for a row where this station is where the train
   terminates, the "From `<origin>`" text) is overridden (no strikethrough) from a Change of Origin
   or an in-effect part-cancellation, mirroring the owner's spec for these board pages. The visible
   4-character headcode column is deliberately **not** replaced with a raw TRUST id on a Change of
@@ -2508,7 +2509,7 @@ Tests: `packages/database` — existing `runResolution.test.ts` unaffected (pure
 currentRun.integration.test.ts` — new `"TRUST change events reflected as the run's effective state
 (docs/adr/0009)"` block: Change of Origin overrides `originTiploc`/`originChange`; a part-
 cancellation overrides `destinationTiploc`/`destinationChange` and reverts once reinstated; Change
-of Identity surfaces `identityChange` and a movement reported under the *new* id is still found;
+of Identity surfaces `identityChange` and a movement reported under the _new_ id is still found;
 Change of Location replaces a calling point in place. `apps/web/src/map/RunPopup.test.tsx` — new
 case asserting the full view shows the revised origin/destination/TRUST-id alongside what each used
 to be. `pnpm run build:libs`, `pnpm --filter @railway/database run build`, `pnpm --filter
@@ -2525,6 +2526,7 @@ case in that file already uses and pass typecheck, but need a real run (CI, or a
 Postgres per `docs/adr/0002`'s bridge-testing recipe) before this milestone is fully trusted.
 
 Known limitations:
+
 - **The openrail (C) changes are unverified beyond visual review against the existing code.** This
   environment has no C compiler (`gcc` unavailable) and no access to build/run `openrail-master`'s
   CGI binaries, so `livetrain.c`/`liverail.c` were edited by close analogy to the surrounding
@@ -2539,7 +2541,7 @@ Known limitations:
   confirmed correct against real data.
 - `liverail.c`'s origin/destination override (unlike its movement/status lookup) checks only the
   activation's original `trust_id`, not the full identity chain — a Change of Origin or
-  part-cancellation filed under a *post-Change-of-Identity* id would be missed on these board
+  part-cancellation filed under a _post-Change-of-Identity_ id would be missed on these board
   pages. Narrower than the RLM/`livetrain.c` treatment, kept this way deliberately to limit how much
   unverifiable C changed in one pass; follow-up once this milestone's build is confirmed.
 - No display headcode is derived from a Change of Identity's new TRUST id anywhere in openrail (see

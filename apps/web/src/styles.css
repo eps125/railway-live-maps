@@ -292,6 +292,20 @@ button {
   margin-bottom: 0.4rem;
 }
 
+/* A combined berth's extra member rows (docs/MAP_EDITOR_SPEC.md's berth section) — each gets a
+ * proper labelled `.field` (not a bare input) so it matches every other field in this panel, and
+ * the two fields share the row's width evenly with the Remove button bottom-aligned against the
+ * inputs rather than centred against the taller label+input block. */
+.field-row--combined-member {
+  align-items: flex-end;
+}
+
+.field-row--combined-member .field {
+  flex: 1;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
 .berth-clear-list {
   list-style: none;
   margin: 0;
@@ -1183,6 +1197,30 @@ legend {
 .users-table td {
   padding: 0.4rem 0.5rem;
   border-bottom: 1px solid var(--color-border-subtle);
+}
+
+/* Milestone 51: "Berths" admin hub — a plain link list, same card language as everything else
+ * under .admin-users-page, so tooling added later just adds another <li>. */
+.admin-berths-page__tools {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.admin-berths-page__tools li {
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-inset);
+}
+
+/* Milestone 51: "Query Berths" results table is wider than the 720px admin-users-page column
+ * (six columns of raw event data), so it gets its own max-width on top of that shared class. */
+.berth-query-page {
+  max-width: 960px;
 }
 
 /* Milestone 30: map-list landing page. Milestone 31 adds the right-hand place search column. */

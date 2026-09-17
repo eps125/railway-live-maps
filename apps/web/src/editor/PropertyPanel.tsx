@@ -143,21 +143,33 @@ function CombinedMemberRow({
   }
 
   return (
-    <div className="field-row">
-      <input
-        aria-label={`Combined member ${member.combinedOrder ?? ""} TD area`}
-        list="observed-td-areas"
-        value={area}
-        onChange={(e) => setArea(e.target.value)}
-        onBlur={commit}
-      />
-      <input
-        aria-label={`Combined member ${member.combinedOrder ?? ""} berth`}
-        list={`observed-berths-${member.id}`}
-        value={berth}
-        onChange={(e) => setBerth(e.target.value)}
-        onBlur={commit}
-      />
+    <div className="field-row field-row--combined-member">
+      {/* `.field` (not a `<label>`) — a plain field's visible "TD area"/"Berth" text is
+          identical to this row's, and getByLabelText matches on wrapping-label text regardless
+          of a differing aria-label, so two real <label>s reading the same thing would collide.
+          A <div> gets the exact same box/spacing styling (the CSS targets `.field input`, not
+          specifically a <label>) without an implicit label association — this input's only
+          accessible name is its aria-label. */}
+      <div className="field">
+        <span aria-hidden="true">TD area</span>
+        <input
+          aria-label={`Combined member ${member.combinedOrder ?? ""} TD area`}
+          list="observed-td-areas"
+          value={area}
+          onChange={(e) => setArea(e.target.value)}
+          onBlur={commit}
+        />
+      </div>
+      <div className="field">
+        <span aria-hidden="true">Berth</span>
+        <input
+          aria-label={`Combined member ${member.combinedOrder ?? ""} berth`}
+          list={`observed-berths-${member.id}`}
+          value={berth}
+          onChange={(e) => setBerth(e.target.value)}
+          onBlur={commit}
+        />
+      </div>
       <datalist id={`observed-berths-${member.id}`}>
         {berths.map((b) => (
           <option key={b} value={b} />

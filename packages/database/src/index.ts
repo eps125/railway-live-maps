@@ -65,10 +65,13 @@ export {
   londonToday,
   previousCalendarDate,
   londonMinutesSinceMidnight,
+  fetchTrustChanges,
   type FreshResolutionResult,
   type OpenOccupancyRef,
   type OccupancyLink,
   type ResolvedRunToLink,
   type CandidateScheduleRow,
   type ActivationRow,
+  type TrustChangeSummary,
+  type TrustLocationChange,
 } from "./runResolution.js";

@@ -78,6 +78,21 @@ afterAll(async () => {
     ]);
   }
   if (createdTrustIds.length > 0) {
+    // docs/adr/0009: the mirrored "change" tables — cleaned up first since none of them carry a
+    // foreign key back to trust_activation (ADR 0002's deliberate choice), so ordering here is
+    // just tidiness, not a constraint requirement.
+    await pool.query("delete from trust_changeorigin where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
+    await pool.query("delete from trust_changeid where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
+    await pool.query("delete from trust_changelocation where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
+    await pool.query("delete from trust_cancellation where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
     await pool.query("delete from trust_movement where trust_id = any($1::text[])", [
       createdTrustIds,
     ]);
@@ -343,6 +358,55 @@ async function seedMovement(
        trust_id, created, platform, loc_stanox, actual_timestamp, timetable_variation, flags
      ) values ($1, now(), '4', $2, now(), $3, $4)`,
     [trustId, locStanox, timetableVariation, flags],
+  );
+}
+
+/** docs/adr/0009: garner's TRUST Change of Origin mirror (migration 0025) — `locStanox` is the
+ * STANOX the run now actually originates from. */
+async function seedChangeOrigin(trustId: string, locStanox: string, reason = "OP"): Promise<void> {
+  await pool.query(
+    `insert into trust_changeorigin (trust_id, created, reason, loc_stanox) values ($1, now(), $2, $3)`,
+    [trustId, reason, locStanox],
+  );
+}
+
+/** docs/adr/0009: garner's TRUST Change of Identity mirror — `newTrustId` is registered with
+ * `createdTrustIds` too, so `afterAll` cleans up whatever it wrote under the new identity as well
+ * as the old one. */
+async function seedChangeId(trustId: string, newTrustId: string): Promise<void> {
+  createdTrustIds.push(newTrustId);
+  await pool.query(
+    `insert into trust_changeid (trust_id, created, new_trust_id) values ($1, now(), $2)`,
+    [trustId, newTrustId],
+  );
+}
+
+/** docs/adr/0009: garner's TRUST Change of Location mirror — revises one scheduled calling point
+ * from `originalStanox` to `stanox`. */
+async function seedChangeLocation(
+  trustId: string,
+  originalStanox: string,
+  stanox: string,
+): Promise<void> {
+  await pool.query(
+    `insert into trust_changelocation (trust_id, created, original_stanox, stanox) values ($1, now(), $2, $3)`,
+    [trustId, originalStanox, stanox],
+  );
+}
+
+/** docs/adr/0009: garner's TRUST Cancellation mirror — a part-cancellation (`reinstate = 0`, a
+ * `locStanox`) is read as the run's new effective destination (owner-confirmed 2026-09-17 reading:
+ * TRUST has no dedicated "change of destination" message); `reinstate = 1` cancels that back out. */
+async function seedCancellation(
+  trustId: string,
+  locStanox: string,
+  reinstate: 0 | 1,
+  reason = "OP",
+): Promise<void> {
+  await pool.query(
+    `insert into trust_cancellation (trust_id, created, reason, type, loc_stanox, reinstate)
+     values ($1, now(), $2, 'P', $3, $4)`,
+    [trustId, reason, locStanox, reinstate],
   );
 }
 
@@ -1415,6 +1479,154 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         const body = response.json();
         expect(body.matchStatus).toBe("ambiguous");
         expect(body.matchBasis).toBe("trust_activation");
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("TRUST change events reflected as the run's effective state (docs/adr/0009)", () => {
+    it("shows a Change of Origin's location as the new origin, alongside what it used to be", async () => {
+      const area = uniqueArea();
+      const originalOriginTiploc = `OO${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const newOriginTiploc = `NO${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const newOriginStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(originalOriginTiploc, "Original Origin");
+      await seedLocationReference(newOriginTiploc, "Revised Origin", newOriginStanox);
+
+      await seedOccupiedBerth(area, "0100", "1A01");
+      const scheduleId = await seedSchedule("1A01", "P");
+      await seedScheduleLocation(scheduleId, 1, originalOriginTiploc, "LO", { departure: "0900" });
+      const trustId = await seedActivation(scheduleId, "1A01");
+      await seedChangeOrigin(trustId, newOriginStanox);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0100/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.effective.originTiploc).toBe(newOriginTiploc);
+        expect(body.effective.originName).toBe("Revised Origin");
+        expect(body.effective.originChange).toMatchObject({
+          previousTiploc: originalOriginTiploc,
+          previousName: "Original Origin",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("shows a part-cancellation's location as the new destination, but not once it's reinstated", async () => {
+      const area = uniqueArea();
+      const originalDestTiploc = `OD${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const newDestTiploc = `ND${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const newDestStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(originalDestTiploc, "Original Dest");
+      await seedLocationReference(newDestTiploc, "Revised Dest", newDestStanox);
+
+      await seedOccupiedBerth(area, "0101", "1A02");
+      const scheduleId = await seedSchedule("1A02", "P");
+      await seedScheduleLocation(scheduleId, 1, originalDestTiploc, "LT", { arrival: "1000" });
+      const trustId = await seedActivation(scheduleId, "1A02");
+      await seedCancellation(trustId, newDestStanox, 0);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0101/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.effective.destinationTiploc).toBe(newDestTiploc);
+        expect(body.effective.destinationName).toBe("Revised Dest");
+        expect(body.effective.destinationChange).toMatchObject({
+          previousTiploc: originalDestTiploc,
+          previousName: "Original Dest",
+        });
+
+        // Reinstated: the destination reverts to the schedule's own, unrevised one.
+        await seedCancellation(trustId, newDestStanox, 1);
+        const afterReinstate = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0101/current-run`,
+          headers: await authHeaders(),
+        });
+        const afterBody = afterReinstate.json();
+        expect(afterBody.effective.destinationTiploc).toBe(originalDestTiploc);
+        expect(afterBody.effective.destinationChange).toBeNull();
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("shows a Change of Identity's new TRUST id, and still finds movements reported under it", async () => {
+      const area = uniqueArea();
+      await seedOccupiedBerth(area, "0102", "1A03");
+      const scheduleId = await seedSchedule("1A03", "P");
+      const trustId = await seedActivation(scheduleId, "1A03");
+      const newTrustId = `T${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+      await seedChangeId(trustId, newTrustId);
+      // Reported under the *new* identity only — proves the movement lookup follows the chain
+      // rather than staying pinned to the activation's original trust_id.
+      const movedStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedMovement(newTrustId, movedStanox, 0x01, 0);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0102/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.effective.activation.trustId).toBe(trustId);
+        expect(body.effective.identityChange).toMatchObject({
+          previousTrustId: trustId,
+          newTrustId,
+        });
+        expect(body.effective.latestMovement).toMatchObject({ trustId: newTrustId });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("replaces a revised calling point with its Change of Location target, in place, not struck through (only openrail's own detail page strikes it through)", async () => {
+      const area = uniqueArea();
+      const originalTiploc = `OL${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const originalStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      const newTiploc = `NL${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const newStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(originalTiploc, "Original Call", originalStanox);
+      await seedLocationReference(newTiploc, "Revised Call", newStanox);
+
+      await seedOccupiedBerth(area, "0103", "1A04");
+      const scheduleId = await seedSchedule("1A04", "P");
+      await seedScheduleLocation(scheduleId, 1, originalTiploc, "LI", { arrival: "1000" });
+      const trustId = await seedActivation(scheduleId, "1A04");
+      await seedChangeLocation(trustId, originalStanox, newStanox);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0103/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        const locations = body.effective.locations as Array<{
+          tiploc: string;
+          locationName: string | null;
+        }>;
+        expect(locations).toHaveLength(1);
+        expect(locations[0]).toMatchObject({ tiploc: newTiploc, locationName: "Revised Call" });
       } finally {
         await app.close();
       }

@@ -143,6 +143,23 @@ schedule's calling points, `trust_activation`, latest `trust_movement`) is prese
 (position-scoped or the unscoped fallback). A `note` states the basis in plain language, always
 naming this as garner's data, not a confirmed RLM identification.
 
+**Current, not just scheduled (Milestone 49, docs/adr/0009):** `effective.originTiploc`/
+`originName`/`destinationTiploc`/`destinationName` and each entry in `effective.locations` are the
+run's **current** origin/destination/calling points — overridden from the static schedule's
+LO/LT/calling-point TIPLOCs when garner has mirrored a TRUST Change of Origin, Change of Location,
+or a part-cancellation (read as the run's new effective destination — TRUST has no dedicated
+"change of destination" message; owner-confirmed reading, 2026-09-17) for it. `effective.locations`
+never marks a revised calling point specially (no strikethrough, no "was" text) — it's simply
+replaced in place; that treatment is deliberately different from openrail's own `/rail/livetrain`
+detail page, which strikes the old value through instead. `effective.activation.trustId` stays the
+_original_ activation's own TRUST id even after a Change of Identity — the run's current id is
+`effective.identityChange.newTrustId` when present. Movement/latest-report lookups (`latestMovement`)
+follow a Change of Identity to the new id automatically. Full/authenticated response only:
+`effective.originChange`/`destinationChange` (`{ previousTiploc, previousName, changedAt, reason }`,
+`null` when nothing changed) and `effective.identityChange`
+(`{ previousTrustId, newTrustId, changedAt }`, `null` when the identity hasn't changed) — omitted
+from the anonymous/reduced shape below along with every other TRUST/resolver-internal field.
+
 **Role-gated response (owner request, same day):** a logged-in session (any role) gets the full
 shape below. An anonymous request (no session cookie — viewing the map itself never needs one)
 gets `404 NO_PUBLIC_DETAIL` unless the match is **solid** — the weakest `headcode_only` tier is
@@ -214,8 +231,11 @@ report. Empty when garner has nothing allocated for the matched train today.
     "operatorCode": "NT",
     "originTiploc": "PRST",
     "originName": "Preston",
+    "originChange": null,
     "destinationTiploc": "LANCSTR",
     "destinationName": "Lancaster",
+    "destinationChange": null,
+    "identityChange": null,
     "activation": {
       "trustId": "729S93MT10",
       "deduced": false,

@@ -74,6 +74,23 @@ interface EffectiveMovement {
   nextReportStanox: string | null;
 }
 
+/** docs/adr/0009: a change currently in effect for this run's origin/destination — full/
+ * authenticated response only (see `PublicEffectiveSchedule`'s own comment). `originTiploc`/
+ * `destinationTiploc` on `EffectiveSchedule` are already the *current* values; this is only the
+ * "what it used to be, and when" detail. */
+interface EffectiveChangeDetail {
+  previousTiploc: string | null;
+  previousName: string | null;
+  changedAt: string;
+  reason: string | null;
+}
+
+interface EffectiveIdentityChange {
+  previousTrustId: string;
+  newTrustId: string;
+  changedAt: string;
+}
+
 interface EffectiveSchedule {
   scheduleId: string;
   trainUid: string;
@@ -84,8 +101,11 @@ interface EffectiveSchedule {
   category: string | null;
   originTiploc: string | null;
   originName: string | null;
+  originChange: EffectiveChangeDetail | null;
   destinationTiploc: string | null;
   destinationName: string | null;
+  destinationChange: EffectiveChangeDetail | null;
+  identityChange: EffectiveIdentityChange | null;
   activation: EffectiveActivation | null;
   latestMovement: EffectiveMovement | null;
   locations: EffectiveLocation[];
@@ -207,6 +227,17 @@ function formatLocation(tiploc: string | null, name: string | null): string {
   return name ? `${name} (${tiploc})` : tiploc;
 }
 
+/** docs/adr/0009: the "was X, changed at HH:MM" suffix for a revised origin/destination — never
+ * struck through here (owner request 2026-09-17, unlike openrail's own detail page); this is the
+ * live map's `originTiploc`/`destinationTiploc` already being the *current* value, with this just
+ * naming what it used to be. */
+function changeSuffix(change: EffectiveChangeDetail): string {
+  const was = change.previousTiploc
+    ? formatLocation(change.previousTiploc, change.previousName)
+    : "no scheduled value";
+  return ` (was ${was}, changed ${formatIso(change.changedAt)})`;
+}
+
 function variationText(m: EffectiveMovement): string {
   const status = VARIATION_LABELS[m.variationStatus];
   if (m.variationMinutes === null || m.variationMinutes === 0) return status;
@@ -304,9 +335,15 @@ function FullEffectiveDetail({ data }: { data: FullCurrentRunResponse }): JSX.El
         <dt>Service code</dt>
         <dd>{effective.serviceCode ?? "—"}</dd>
         <dt>Origin</dt>
-        <dd>{formatLocation(effective.originTiploc, effective.originName)}</dd>
+        <dd>
+          {formatLocation(effective.originTiploc, effective.originName)}
+          {effective.originChange ? changeSuffix(effective.originChange) : ""}
+        </dd>
         <dt>Destination</dt>
-        <dd>{formatLocation(effective.destinationTiploc, effective.destinationName)}</dd>
+        <dd>
+          {formatLocation(effective.destinationTiploc, effective.destinationName)}
+          {effective.destinationChange ? changeSuffix(effective.destinationChange) : ""}
+        </dd>
       </dl>
 
       {effective.activation ? (
@@ -315,6 +352,9 @@ function FullEffectiveDetail({ data }: { data: FullCurrentRunResponse }): JSX.El
           <dd>
             {effective.activation.trustId}
             {effective.activation.deduced ? " (deduced)" : ""}
+            {effective.identityChange
+              ? ` — now ${effective.identityChange.newTrustId} (changed ${formatIso(effective.identityChange.changedAt)})`
+              : ""}
           </dd>
           <dt>Activated</dt>
           <dd>{formatIso(effective.activation.activatedAt)}</dd>

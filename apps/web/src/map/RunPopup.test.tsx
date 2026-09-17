@@ -468,6 +468,91 @@ describe("RunPopup", () => {
     expect(screen.queryByText(/Failed to load/)).not.toBeInTheDocument();
   });
 
+  it("reflects a TRUST Change of Origin/Identity and a part-cancellation's new destination (docs/adr/0009)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(
+            baseBody({
+              berth: "0519",
+              description: "2A16",
+              headcode: "2A16",
+              matchStatus: "matched",
+              matchBasis: "trust_activation",
+              positionScoped: true,
+              note: NOTE,
+              effective: {
+                scheduleId: "42",
+                trainUid: "U12345",
+                stpIndicator: "P",
+                operatorCode: "NT",
+                trainStatus: "P",
+                serviceCode: "22222000",
+                category: "OO",
+                // Effective (current) values — already revised, per docs/adr/0009.
+                originTiploc: "PRST",
+                originName: "Preston",
+                originChange: {
+                  previousTiploc: "CARLILE",
+                  previousName: "Carlisle",
+                  changedAt: "2026-09-17T08:00:00.000Z",
+                  reason: "OP",
+                },
+                destinationTiploc: "OXENHLM",
+                destinationName: "Oxenholme Lake District",
+                destinationChange: {
+                  previousTiploc: "LANCSTR",
+                  previousName: "Lancaster",
+                  changedAt: "2026-09-17T08:10:00.000Z",
+                  reason: "OP",
+                },
+                identityChange: {
+                  previousTrustId: "623A16MT09",
+                  newTrustId: "729S93MT10",
+                  changedAt: "2026-09-17T08:05:00.000Z",
+                },
+                activation: {
+                  trustId: "623A16MT09",
+                  deduced: false,
+                  activatedAt: "2026-09-17T07:30:00.000Z",
+                  trainUid: "U12345",
+                  tocId: "NT",
+                  scheduleWttId: "U12345",
+                  scheduleType: "P",
+                  originDepartureAt: "2026-09-17T07:30:00.000Z",
+                },
+                latestMovement: null,
+                locations: [],
+              },
+              candidateSchedules: [],
+            }),
+          ),
+        ),
+      ),
+    );
+
+    render(
+      <RunPopup
+        elementId="berth-8"
+        displayName="Berth 8"
+        tdArea="PX"
+        berth="0519"
+        onClose={() => {}}
+      />,
+    );
+
+    // Origin/destination shown are the new (effective) ones, not the schedule's original.
+    expect(await screen.findByText(/Preston \(PRST\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Oxenholme Lake District \(OXENHLM\)/)).toBeInTheDocument();
+    // ...with what they used to be named alongside, not silently overwritten.
+    expect(screen.getByText(/was Carlisle \(CARLILE\)/)).toBeInTheDocument();
+    expect(screen.getByText(/was Lancaster \(LANCSTR\)/)).toBeInTheDocument();
+    // The new TRUST identity is shown against the original activation's own TRUST ID.
+    expect(screen.getByText(/623A16MT09/)).toBeInTheDocument();
+    expect(screen.getByText(/now 729S93MT10/)).toBeInTheDocument();
+  });
+
   it("renders the reduced, departure-board-style view for an anonymous solid match — no Picked by, no candidate list", async () => {
     vi.stubGlobal(
       "fetch",

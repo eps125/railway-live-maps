@@ -2439,6 +2439,120 @@ element-level coordinate is authored in this editor) — no click-on-canvas-to-s
 the boundary-link correspondence itself is still entirely author-maintained (Milestone 32's known
 limitation, unchanged here).
 
+## Milestone 49 — TRUST Change of Origin/Identity/Location and part-cancellation reflected as current state, not just a message log `[RLM side done — 2026-09-17; openrail side implemented, unverified — see Known limitations]`
+
+Owner report, 2026-09-17: garner already mirrors TRUST's Change of Origin/Identity/Location
+messages (migration 0025), but nothing downstream ever reads them back into anything a viewer
+actually sees — not openrail's own summary/departure/arrival boards, not its `/rail/livetrain`
+detail page's schedule table (only its top-of-page message log), not RLM's own `current-run`
+popup. A retimed-mid-route or re-identified train was showing exactly as if nothing had happened.
+Full design/decision record: `docs/adr/0009`.
+
+Two things confirmed with the owner before implementing: (1) plan and implement all three affected
+surfaces together rather than one at a time, even though they span this repo and the separate
+`openrail-master` (legacy C, no test suite, no local compiler in this environment) codebase; (2)
+TRUST has no "change of destination" message — a part-cancellation's own location (not yet
+reinstated) is read as the run's new effective destination everywhere.
+
+**RLM (`current-run` resolver/API/web popup) — this repo, fully typecheck/lint/test-verified:**
+`packages/database/src/runResolution.ts` gained `fetchTrustChanges` — resolves the TRUST identity
+chain (`trust_changeid`, bounded to 8 hops) and, across every id in that chain, the latest Change
+of Origin, latest not-yet-reinstated part-cancellation (read as the new destination), and every
+Change of Location. `apps/api/src/routes/currentRun.ts` applies these: `effective.originTiploc`/
+`destinationTiploc`/`locations[]` become *current* values (in place, no strikethrough — owner
+request, deliberately different from openrail's own detail page); `latestMovement` now searches
+every id in the identity chain, not just the activation's original one (a real secondary bug fix —
+a movement reported under a post-Change-of-Identity id was previously invisible to this endpoint).
+New full/authenticated-only response fields: `effective.originChange`/`destinationChange`/
+`identityChange` (each `null` when nothing of that kind has happened). `apps/web/src/map/
+RunPopup.tsx` shows the "was X, changed at HH:MM" detail alongside the current values in the full
+view; the reduced (anonymous) view is unchanged beyond now showing current values.
+
+**openrail (`C:\Projects\openrail-master`) — implemented but not build/deploy-verified (see Known
+limitations):**
+- `livetrain.c` (`/rail/livetrain` detail page): the schedule table now strikes through calling
+  points before a Change of Origin's new starting point, and the header strikes through a
+  superseded TRUST id alongside the new one from a Change of Identity — both already-fetched by
+  the existing message-log queries, now also applied to the schedule table/header rather than only
+  logged. A Change of Location strikes through the original calling point and inserts the revised
+  one as a new row below it (owner's explicit detail-page spec — the one surface that *does* use
+  strikethrough, unlike RLM's live map or openrail's own summary/board pages below).
+- `liverail.c` (`SUMMARY`/`DEPART`/`PANEL` modes — the summary/departure boards `report_train_
+  summary` renders): the `destination` column (or, for a row where this station is where the train
+  terminates, the "From `<origin>`" text) is overridden (no strikethrough) from a Change of Origin
+  or an in-effect part-cancellation, mirroring the owner's spec for these board pages. The visible
+  4-character headcode column is deliberately **not** replaced with a raw TRUST id on a Change of
+  Identity — this codebase has no verified logic anywhere for deriving a display headcode from a
+  TRUST id string, and guessing at one risked showing something actively wrong on a live board;
+  instead, the movement-status lookup this function already does (used for the board's own
+  on-time/late/cancelled indicator) now searches every id in the run's identity chain, the same
+  real bug `currentRun.ts`'s `latestMovement` had — a status/movement report filed under a
+  post-Change-of-Identity id was previously invisible to this board too.
+
+Checklist:
+
+- [x] `packages/database/src/runResolution.ts`: `fetchTrustChanges` (+ `TrustChangeSummary`/
+      `TrustLocationChange` exports).
+- [x] `apps/api/src/routes/currentRun.ts`: apply effective origin/destination/locations/identity;
+      chain-aware `latestMovement` lookup; `originChange`/`destinationChange`/`identityChange`
+      fields (full response only).
+- [x] `apps/web/src/map/RunPopup.tsx`: display current values + "was X" change detail.
+- [x] `docs/API_CONTRACT.md`, `docs/adr/0009`: documented.
+- [x] `openrail-master/livetrain.c`: detail-page strikethrough (origin cutoff, location
+      strike-and-insert, identity strike-and-replace).
+- [x] `openrail-master/liverail.c`: `report_train_summary` origin/destination override +
+      identity-chain-aware movement/status lookup (SUMMARY/DEPART/PANEL boards).
+
+Tests: `packages/database` — existing `runResolution.test.ts` unaffected (pure-function cases only;
+`fetchTrustChanges` is DB-integration, covered below); `apps/api/src/routes/
+currentRun.integration.test.ts` — new `"TRUST change events reflected as the run's effective state
+(docs/adr/0009)"` block: Change of Origin overrides `originTiploc`/`originChange`; a part-
+cancellation overrides `destinationTiploc`/`destinationChange` and reverts once reinstated; Change
+of Identity surfaces `identityChange` and a movement reported under the *new* id is still found;
+Change of Location replaces a calling point in place. `apps/web/src/map/RunPopup.test.tsx` — new
+case asserting the full view shows the revised origin/destination/TRUST-id alongside what each used
+to be. `pnpm run build:libs`, `pnpm --filter @railway/database run build`, `pnpm --filter
+@railway/api run typecheck`, `pnpm --filter @railway/web run typecheck`, `pnpm exec eslint` (the
+touched files), `pnpm exec prettier --check` (the touched files) all clean; full non-integration
+`pnpm exec vitest run` green (537/537; two unrelated pre-existing tests — `places.test.ts`,
+`vstp.test.ts` — flake under full-suite parallel load in this sandbox and pass individually,
+confirmed unrelated to this change before and after).
+
+**The `currentRun.integration.test.ts` additions could not actually be run in this environment** —
+integration tests need a real, migrated Postgres (`DATABASE_URL`) and this sandbox has neither
+Docker nor a local Postgres available. They're written to the same seeding patterns every other
+case in that file already uses and pass typecheck, but need a real run (CI, or against a disposable
+Postgres per `docs/adr/0002`'s bridge-testing recipe) before this milestone is fully trusted.
+
+Known limitations:
+- **The openrail (C) changes are unverified beyond visual review against the existing code.** This
+  environment has no C compiler (`gcc` unavailable) and no access to build/run `openrail-master`'s
+  CGI binaries, so `livetrain.c`/`liverail.c` were edited by close analogy to the surrounding
+  (also-unverified-by-tooling, hand-rolled) code in the same files, but never compiled, linked, or
+  exercised against a real `openrail-eps` database. Build (`make livetrain.cgi liverail.cgi`) and
+  manual verification against real change-of-origin/id/location/cancellation data is required
+  before deploying to the production CGI host.
+- **openrail's `FULL`/`FREIGHT` combined arrival-and-departure board** (`report_train`, distinct
+  from `report_train_summary`) was **not** updated in this pass — same class of change, deliberately
+  held back to keep the unverifiable C surface smaller for the first review, rather than spreading
+  risk across a fourth function. Follow-up once `report_train_summary`'s treatment has been
+  confirmed correct against real data.
+- `liverail.c`'s origin/destination override (unlike its movement/status lookup) checks only the
+  activation's original `trust_id`, not the full identity chain — a Change of Origin or
+  part-cancellation filed under a *post-Change-of-Identity* id would be missed on these board
+  pages. Narrower than the RLM/`livetrain.c` treatment, kept this way deliberately to limit how much
+  unverifiable C changed in one pass; follow-up once this milestone's build is confirmed.
+- No display headcode is derived from a Change of Identity's new TRUST id anywhere in openrail (see
+  above) — RLM's own `identityChange.newTrustId` is the only place a viewer can currently see the
+  new TRUST id itself; openrail shows it only in `livetrain.c`'s existing message log (now with the
+  old id struck through).
+- Change of Location is matched to a calling point by STANOX→TIPLOC lookup, which (like every other
+  such lookup already in this codebase) can be ambiguous when one STANOX legitimately maps to more
+  than one TIPLOC (platform-level TIPLOCs sharing a station STANOX) — an existing, accepted
+  imprecision, not one this change introduces.
+- The identity-chain walk is bounded to 8 hops as a cycle-safety measure, not a believed real limit
+  — no chain anywhere near that long has been observed.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

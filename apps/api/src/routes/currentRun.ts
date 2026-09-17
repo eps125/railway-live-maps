@@ -17,6 +17,7 @@ import {
   normalizeStp,
   londonToday,
   londonMinutesSinceMidnight,
+  fetchTrustChanges,
   type CandidateScheduleRow,
   type ActivationRow,
 } from "@railway/database";
@@ -114,6 +115,25 @@ interface UnitAllocationEntry {
   reportedAt: string | null;
 }
 
+/** docs/adr/0009: a TRUST Change of Origin/Identity, or a part-cancellation (owner-confirmed
+ * 2026-09-17 reading: its own location is the run's new effective destination — TRUST has no
+ * dedicated "change of destination" message), in effect for the matched run right now. `null`
+ * when nothing of that kind has happened. Full/authenticated response only — see
+ * `toPublicEffective`'s own doc comment for why: this reads as resolver-internal/diagnostic detail,
+ * the same reasoning that already keeps TRUST ids and the `deduced` flag out of the public view. */
+interface EffectiveChangeDetail {
+  previousTiploc: string | null;
+  previousName: string | null;
+  changedAt: string;
+  reason: string | null;
+}
+
+interface EffectiveIdentityChange {
+  previousTrustId: string;
+  newTrustId: string;
+  changedAt: string;
+}
+
 /** The full, authenticated-only shape of the resolved schedule's detail. `toPublicEffective`
  * below reduces this to the anonymous view. */
 interface EffectiveScheduleFull {
@@ -125,10 +145,17 @@ interface EffectiveScheduleFull {
   trainStatus: string | null;
   serviceCode: string | null;
   category: string | null;
+  /** Milestone 49 (docs/adr/0009): the run's *current* origin/destination — overridden from the
+   * static schedule's LO/LT tiploc when a Change of Origin/part-cancellation is in effect. Always
+   * the field to display; `originChange`/`destinationChange` below are the "what it used to be and
+   * when" detail. */
   originTiploc: string | null;
   originName: string | null;
+  originChange: EffectiveChangeDetail | null;
   destinationTiploc: string | null;
   destinationName: string | null;
+  destinationChange: EffectiveChangeDetail | null;
+  identityChange: EffectiveIdentityChange | null;
   activation: {
     trustId: string;
     deduced: boolean;
@@ -384,6 +411,11 @@ export async function registerCurrentRunRoutes(
           )
         ).rows;
 
+        // docs/adr/0009: what's actually true for this run right now, beyond the static schedule —
+        // resolved before `latestMovement` below, since a Change of Identity means movements can
+        // arrive under a *different* TRUST id than the one that activated it.
+        const trustChanges = activation ? await fetchTrustChanges(pool, activation.trust_id) : null;
+
         let activationExtra: ActivationExtraRow | undefined;
         let latestMovement: MovementRow | undefined;
         if (activation) {
@@ -399,18 +431,26 @@ export async function registerCurrentRunRoutes(
               `select trust_id, loc_stanox, platform, actual_timestamp, planned_timestamp,
                       gbtt_timestamp, timetable_variation, flags, next_report_stanox
                from trust_movement
-               where trust_id = $1
+               where trust_id = any($1::text[])
                order by actual_timestamp desc nulls last, created desc
                limit 1`,
-              [activation.trust_id],
+              [trustChanges?.trustIdChain ?? [activation.trust_id]],
             )
           ).rows[0];
         }
 
-        // TIPLOC / STANOX -> human-readable names (CORPUS mirror, location_reference).
+        // TIPLOC / STANOX -> human-readable names (CORPUS mirror, location_reference). Includes
+        // any revised origin/destination/calling-point tiplocs docs/adr/0009 resolved above, so
+        // they're named in this same query rather than a second round trip.
         const tiplocsNeeded = new Set<string>(locations.map((l) => l.tiploc_code));
         if (effectiveRow.origin_tiploc) tiplocsNeeded.add(effectiveRow.origin_tiploc);
         if (effectiveRow.destination_tiploc) tiplocsNeeded.add(effectiveRow.destination_tiploc);
+        if (trustChanges?.originTiploc) tiplocsNeeded.add(trustChanges.originTiploc);
+        if (trustChanges?.destinationTiploc) tiplocsNeeded.add(trustChanges.destinationTiploc);
+        for (const change of trustChanges?.locationChanges ?? []) {
+          if (change.originalTiploc) tiplocsNeeded.add(change.originalTiploc);
+          if (change.tiploc) tiplocsNeeded.add(change.tiploc);
+        }
         const nameByTiploc = new Map<string, string>();
         if (tiplocsNeeded.size > 0) {
           const nameResult = await pool.query<{ tiploc: string; name: string | null }>(
@@ -430,6 +470,51 @@ export async function registerCurrentRunRoutes(
 
         const flags = latestMovement ? decodeTrustMovementFlags(latestMovement.flags) : null;
 
+        // docs/adr/0009: the run's current origin/destination — the static schedule's LO/LT tiploc,
+        // overridden when a Change of Origin / part-cancellation is in effect. `effectiveRow.*`
+        // stays as the "previous" value in the *Change detail, exactly what it names.
+        const originTiploc = trustChanges?.originTiploc ?? effectiveRow.origin_tiploc;
+        const destinationTiploc =
+          trustChanges?.destinationTiploc ?? effectiveRow.destination_tiploc;
+        const originChange: EffectiveChangeDetail | null =
+          trustChanges?.originTiploc && trustChanges.originChangedAt
+            ? {
+                previousTiploc: effectiveRow.origin_tiploc,
+                previousName: effectiveRow.origin_tiploc
+                  ? (nameByTiploc.get(effectiveRow.origin_tiploc) ?? null)
+                  : null,
+                changedAt: trustChanges.originChangedAt,
+                reason: trustChanges.originChangeReason,
+              }
+            : null;
+        const destinationChange: EffectiveChangeDetail | null =
+          trustChanges?.destinationTiploc && trustChanges.destinationChangedAt
+            ? {
+                previousTiploc: effectiveRow.destination_tiploc,
+                previousName: effectiveRow.destination_tiploc
+                  ? (nameByTiploc.get(effectiveRow.destination_tiploc) ?? null)
+                  : null,
+                changedAt: trustChanges.destinationChangedAt,
+                reason: trustChanges.destinationChangeReason,
+              }
+            : null;
+        const identityChange: EffectiveIdentityChange | null =
+          trustChanges?.previousTrustId && trustChanges.identityChangedAt
+            ? {
+                previousTrustId: trustChanges.previousTrustId,
+                newTrustId: trustChanges.effectiveTrustId,
+                changedAt: trustChanges.identityChangedAt,
+              }
+            : null;
+        // A Change of Location revises one scheduled calling point in place — reflected here (not
+        // struck through: owner request 2026-09-17, unlike openrail's own detail page), matched by
+        // the *original* tiploc a change refers to.
+        const locationChangeByOriginalTiploc = new Map(
+          (trustChanges?.locationChanges ?? [])
+            .filter((change) => change.originalTiploc && change.tiploc)
+            .map((change) => [change.originalTiploc as string, change]),
+        );
+
         effective = {
           scheduleId: effectiveRow.id,
           trainUid: effectiveRow.cif_train_uid,
@@ -439,14 +524,13 @@ export async function registerCurrentRunRoutes(
           trainStatus: effectiveRow.train_status,
           serviceCode: effectiveRow.cif_train_service_code,
           category: effectiveRow.cif_train_category,
-          originTiploc: effectiveRow.origin_tiploc,
-          originName: effectiveRow.origin_tiploc
-            ? (nameByTiploc.get(effectiveRow.origin_tiploc) ?? null)
-            : null,
-          destinationTiploc: effectiveRow.destination_tiploc,
-          destinationName: effectiveRow.destination_tiploc
-            ? (nameByTiploc.get(effectiveRow.destination_tiploc) ?? null)
-            : null,
+          originTiploc,
+          originName: originTiploc ? (nameByTiploc.get(originTiploc) ?? null) : null,
+          originChange,
+          destinationTiploc,
+          destinationName: destinationTiploc ? (nameByTiploc.get(destinationTiploc) ?? null) : null,
+          destinationChange,
+          identityChange,
           activation: activation
             ? {
                 trustId: activation.trust_id,
@@ -490,10 +574,15 @@ export async function registerCurrentRunRoutes(
                   nextReportStanox: latestMovement.next_report_stanox,
                 }
               : null,
-          locations: locations.map((row) => ({
-            ...locationToJson(row),
-            locationName: nameByTiploc.get(row.tiploc_code) ?? null,
-          })),
+          locations: locations.map((row) => {
+            const change = locationChangeByOriginalTiploc.get(row.tiploc_code);
+            const tiploc = change?.tiploc ?? row.tiploc_code;
+            return {
+              ...locationToJson(row),
+              tiploc,
+              locationName: nameByTiploc.get(tiploc) ?? null,
+            };
+          }),
         };
       }
 

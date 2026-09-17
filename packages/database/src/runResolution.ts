@@ -179,6 +179,157 @@ export async function fetchScheduleRowById(
   return result.rows[0] ?? null;
 }
 
+export interface TrustLocationChange {
+  originalStanox: string;
+  originalTiploc: string | null;
+  stanox: string;
+  tiploc: string | null;
+  changedAt: string;
+}
+
+export interface TrustChangeSummary {
+  /** The TRUST id actually current for this run right now — the activation's own id, unless a
+   * Change of Identity has superseded it. Everything TRUST-id-keyed that reads "now" (movements,
+   * the unit-allocation link is by train_uid so unaffected) must key off this, not the activation's
+   * original id. */
+  effectiveTrustId: string;
+  /** Every TRUST id this run has been known by, oldest first — `[activationTrustId]` when no
+   * Change of Identity has happened. Used to search the change tables across the whole run, since a
+   * change can arrive either side of a later identity change. */
+  trustIdChain: string[];
+  previousTrustId: string | null;
+  identityChangedAt: string | null;
+  originStanox: string | null;
+  originTiploc: string | null;
+  originChangedAt: string | null;
+  originChangeReason: string | null;
+  destinationStanox: string | null;
+  destinationTiploc: string | null;
+  destinationChangedAt: string | null;
+  destinationChangeReason: string | null;
+  locationChanges: TrustLocationChange[];
+}
+
+const MAX_IDENTITY_CHAIN_HOPS = 8;
+
+/**
+ * docs/adr/0009: garner already mirrors TRUST's Change of Origin / Change of Identity / Change of
+ * Location / (partial) Cancellation messages verbatim (migration 0025, `trust_changeorigin`/
+ * `trust_changeid`/`trust_changelocation`/`trust_cancellation`) — this reduces them to "what's
+ * actually true for this run right now," the same derived-projection discipline CLAUDE.md already
+ * requires of current state and history (rule 3), just applied to a schedule's origin/destination/
+ * calling points/identity instead of a berth's occupancy.
+ *
+ * Identity is resolved first, walking `trust_changeid` forward one hop at a time (bounded by
+ * `MAX_IDENTITY_CHAIN_HOPS` — a same-id cycle in production data is the real hazard being guarded
+ * against, not a genuinely long chain). Origin/destination/location changes are then read across
+ * every id the run has ever been known by (`trustIdChain`), not just the latest, and each reduced
+ * to its single latest event — a change can legitimately arrive either side of a later identity
+ * change.
+ *
+ * A destination change is read from `trust_cancellation`, not a dedicated "change of destination"
+ * message (TRUST has none) — owner-confirmed reading (2026-09-17): a part-cancellation's own
+ * `loc_stanox` is the point the train now actually terminates at, so it *is* the run's new
+ * effective destination, as long as the latest cancellation-family event for this run is a
+ * cancellation and not a later reinstatement (`reinstate <> 0`) of it.
+ */
+export async function fetchTrustChanges(
+  pool: Queryable,
+  activationTrustId: string,
+): Promise<TrustChangeSummary> {
+  const chain: string[] = [activationTrustId];
+  let identityChangedAt: string | null = null;
+  let current = activationTrustId;
+  for (let hop = 0; hop < MAX_IDENTITY_CHAIN_HOPS; hop++) {
+    const result = await pool.query<{ created: Date; new_trust_id: string }>(
+      `select created, new_trust_id from trust_changeid where trust_id = $1 order by created desc limit 1`,
+      [current],
+    );
+    const row = result.rows[0];
+    if (!row || chain.includes(row.new_trust_id)) break;
+    identityChangedAt = row.created.toISOString();
+    current = row.new_trust_id;
+    chain.push(current);
+  }
+  const effectiveTrustId = current;
+  const previousTrustId = effectiveTrustId === activationTrustId ? null : activationTrustId;
+
+  const [originResult, cancellationResult, locationResult] = await Promise.all([
+    pool.query<{ created: Date; reason: string | null; loc_stanox: string | null }>(
+      `select created, reason, loc_stanox from trust_changeorigin
+       where trust_id = any($1::text[]) order by created desc limit 1`,
+      [chain],
+    ),
+    pool.query<{
+      created: Date;
+      reason: string | null;
+      loc_stanox: string | null;
+      reinstate: number;
+    }>(
+      `select created, reason, loc_stanox, reinstate from trust_cancellation
+       where trust_id = any($1::text[]) order by created desc limit 1`,
+      [chain],
+    ),
+    pool.query<{ created: Date; original_stanox: string; stanox: string }>(
+      `select created, original_stanox, stanox from trust_changelocation
+       where trust_id = any($1::text[]) order by created asc`,
+      [chain],
+    ),
+  ]);
+
+  const originRow = originResult.rows[0] ?? null;
+  const cancellationRow = cancellationResult.rows[0] ?? null;
+  // In effect only while not reinstated — the *latest* cancellation-family event for this run
+  // decides that, mirroring how openrail's own livetrain.c already treats `reinstate` as "back to
+  // Activated" for the same trust_id.
+  const destinationInEffect =
+    cancellationRow !== null &&
+    Number(cancellationRow.reinstate) === 0 &&
+    !!cancellationRow.loc_stanox;
+  const destinationStanox = destinationInEffect ? (cancellationRow?.loc_stanox ?? null) : null;
+
+  const stanoxesNeeded = new Set<string>();
+  if (originRow?.loc_stanox) stanoxesNeeded.add(originRow.loc_stanox);
+  if (destinationStanox) stanoxesNeeded.add(destinationStanox);
+  for (const row of locationResult.rows) {
+    stanoxesNeeded.add(row.original_stanox);
+    stanoxesNeeded.add(row.stanox);
+  }
+  const tiplocByStanox = new Map<string, string>();
+  if (stanoxesNeeded.size > 0) {
+    const tiplocResult = await pool.query<{ stanox: string; tiploc: string }>(
+      `select distinct on (stanox) stanox, tiploc from location_reference
+       where stanox = any($1::text[]) order by stanox, tiploc`,
+      [[...stanoxesNeeded]],
+    );
+    for (const row of tiplocResult.rows) tiplocByStanox.set(row.stanox, row.tiploc);
+  }
+
+  return {
+    effectiveTrustId,
+    trustIdChain: chain,
+    previousTrustId,
+    identityChangedAt,
+    originStanox: originRow?.loc_stanox ?? null,
+    originTiploc: originRow?.loc_stanox ? (tiplocByStanox.get(originRow.loc_stanox) ?? null) : null,
+    originChangedAt: originRow ? originRow.created.toISOString() : null,
+    originChangeReason: originRow?.reason ?? null,
+    destinationStanox,
+    destinationTiploc: destinationStanox ? (tiplocByStanox.get(destinationStanox) ?? null) : null,
+    destinationChangedAt: destinationInEffect
+      ? (cancellationRow?.created.toISOString() ?? null)
+      : null,
+    destinationChangeReason: destinationInEffect ? (cancellationRow?.reason ?? null) : null,
+    locationChanges: locationResult.rows.map((row) => ({
+      originalStanox: row.original_stanox,
+      originalTiploc: tiplocByStanox.get(row.original_stanox) ?? null,
+      stanox: row.stanox,
+      tiploc: tiplocByStanox.get(row.stanox) ?? null,
+      changedAt: row.created.toISOString(),
+    })),
+  };
+}
+
 /** Shared by both the full headcode/position search and the Milestone 39 lineage-shortcut path
  * (there given a single already-known schedule) — builds the `candidateSchedules` response shape
  * from whichever rows were actually considered. */

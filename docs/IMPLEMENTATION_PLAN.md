@@ -2755,6 +2755,70 @@ without closing, closes once every member is vacant), `MapRenderer.test.tsx` (+1
 click opens a popup with both members). `pnpm run typecheck` clean, `pnpm run test` 566/566,
 `pnpm exec prettier --check` clean on every touched file.
 
+## Milestone 51 — admin "Query Berths" tool (2026-09-17)
+
+Owner request: a self-service replacement for repeatedly asking for a one-off manual SQL query
+against `td_berth_event` — an admin-only page under a new "Berths" nav item where the owner can
+pick one or more TD areas, a headcode, and a date/time range, and get every matching berth step
+back in time order (from/to berth, step type), instead of going through chat each time.
+
+Design: a new admin-gated `GET /api/v1/admin/berths/query` route reads `td_berth_event` directly
+(not the `berth_occupancy` projection the existing `/api/v1/descriptions/:description/history`
+route reads) so results show every individual CA/CB/CC/CT step, not just resulting occupancy
+intervals. `tdAreas` (comma-separated, required, at least one) and `headcode` (matched against
+`description`, required) are both mandatory — the area filter keeps the query on
+`td_berth_event_area_idx (td_area, event_at desc)` (migration 0006) rather than scanning
+nationwide, and ordering by `event_at` (not a global sequence column) means the query-plan pitfall
+already on file for this table doesn't apply here. `from`/`to` reuse the existing bounded-range
+helper (`parseTimeRange`, max 7 days, defaults to the last 7 days), and results are cursor-paginated
+like the other history routes.
+
+The web app gets a new "Berths" nav item (admin only, same gate as "Users"/"TD boundaries") that
+opens a hub page (`/admin/berths`, `AdminBerthsPage.tsx`) rather than jumping straight to the tool —
+deliberately, so tooling added under "Berths" later doesn't need a new top-level nav entry each
+time. Its one current link goes to "Query Berths" (`/admin/berths/query`, `BerthQueryPage.tsx`): a
+multi-select of TD areas (populated from the existing `GET /api/v1/td/areas`), a headcode field,
+and `datetime-local` from/to fields, submitting to the new route and rendering results in a table
+(reusing the existing `.admin-users-page`/`.users-table`/`.panel-card`/`.field` classes so the page
+matches the rest of the admin section) with a "Load more" button for pagination.
+
+Files changed:
+
+- `apps/api/src/routes/admin/berthQuery.ts` (new), `apps/api/src/routes/admin/
+  berthQuery.integration.test.ts` (new) — the query route and its integration test (fixture rows
+  via the existing `testSupport/tdEvents.ts` helper).
+- `apps/api/src/server.ts` — registers the route in its own `requireRole("admin", ...)`-gated scope,
+  same pattern as the TD-boundaries/admin-map scopes.
+- `apps/web/src/useRoute.ts`, `apps/web/src/useRoute.test.ts` — `/admin/berths` and
+  `/admin/berths/query` routes.
+- `apps/web/src/App.tsx`, `apps/web/src/App.test.tsx` — admin gate for both new routes, "Berths" nav
+  link (active for either route), page wiring.
+- `apps/web/src/auth/AdminBerthsPage.tsx` (new, + test) — the "Berths" hub page.
+- `apps/web/src/auth/BerthQueryPage.tsx` (new, + test) — the query tool itself.
+- `apps/web/src/styles.css` — `.admin-berths-page__tools` (hub link list), `.berth-query-page`
+  (wider max-width than the shared 720px admin column, for the six-column results table).
+- `docs/API_CONTRACT.md` §4a — documents the new endpoint.
+
+Acceptance criteria: only an admin session sees the "Berths" nav link or can reach either new route
+(a non-admin or logged-out visit redirects, matching every other `/admin/*` route); searching
+requires at least one TD area and a non-empty headcode; results are raw berth-to-berth steps in
+ascending time order, scoped to exactly the requested area(s)/headcode/range; nationwide capture
+and every other admin page are unaffected (additive routes/nav only).
+
+Tests run: `pnpm run typecheck` (all packages/apps clean), `pnpm exec vitest run` (571/571, full
+unit suite, including the new `useRoute`/`App`/`AdminBerthsPage`/`BerthQueryPage` cases),
+`pnpm exec prettier --check` clean on every touched file. The new integration test
+(`berthQuery.integration.test.ts`) was written against this session's real fixture helper but not
+executed here — no local `DATABASE_URL`/Postgres was available in this environment; run
+`pnpm run test:integration` against a real database before merging.
+
+Migrations/configuration: none — no schema change, reuses existing `td_berth_event` columns and
+indexes.
+
+Known limitations / follow-up: no CSV/export option; no saved/recent searches; the TD-area picker
+is a plain multi-select rather than a searchable/checkbox list (fine at the current ~dozens of
+observed areas, may want revisiting if that grows much further).
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

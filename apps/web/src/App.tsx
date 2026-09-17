@@ -7,6 +7,8 @@ import { useSession, roleAtLeast } from "./auth/useSession.js";
 import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
+import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
+import { BerthQueryPage } from "./auth/BerthQueryPage.js";
 
 export function App(): JSX.Element {
   const route = useRoute();
@@ -28,7 +30,13 @@ export function App(): JSX.Element {
       navigate("/rlm-login");
     } else if (route.name === "editorPicker") {
       navigate("/");
-    } else if ((route.name === "adminUsers" || route.name === "adminTdBoundaries") && !isAdmin) {
+    } else if (
+      (route.name === "adminUsers" ||
+        route.name === "adminTdBoundaries" ||
+        route.name === "adminBerths" ||
+        route.name === "adminBerthQuery") &&
+      !isAdmin
+    ) {
       navigate(isAuthenticated ? "/" : "/rlm-login");
     }
   }, [route.name, sessionLoading, canEdit, isAdmin, isAuthenticated]);
@@ -56,6 +64,12 @@ export function App(): JSX.Element {
   } else if (route.name === "adminTdBoundaries") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <TdBoundariesPage />;
+  } else if (route.name === "adminBerths") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminBerthsPage />;
+  } else if (route.name === "adminBerthQuery") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthQueryPage />;
   } else if (route.name === "map") {
     // Milestone 31: a places-search click-through carries `?center=<elementId>` — read directly
     // from the URL rather than teaching useRoute about query strings, since only this one route
@@ -119,6 +133,23 @@ export function App(): JSX.Element {
               }}
             >
               TD boundaries
+            </a>
+          )}
+          {isAdmin && (
+            <a
+              className="app-nav__link"
+              href="/admin/berths"
+              aria-current={
+                route.name === "adminBerths" || route.name === "adminBerthQuery"
+                  ? "page"
+                  : undefined
+              }
+              onClick={(e) => {
+                e.preventDefault();
+                navigate("/admin/berths");
+              }}
+            >
+              Berths
             </a>
           )}
           {isAuthenticated ? (

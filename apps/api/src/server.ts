@@ -19,6 +19,7 @@ import { registerManageMapRoutes } from "./routes/editor/manageMap.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
 import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
+import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
 import { requireRole } from "./auth/requireRole.js";
 import { createPollingDeltaSource } from "./live/pollingDeltaSource.js";
 import { createRedisDeltaSource } from "./live/redisDeltaSource.js";
@@ -109,6 +110,13 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (tdBoundaryScope) => {
     tdBoundaryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerTdBoundaryRoutes(tdBoundaryScope, { pool });
+  });
+
+  // Admin-only ad hoc td_berth_event lookup ("Query Berths" under the web app's "Berths" nav) —
+  // same gate as the other admin diagnostics/reference-data scopes above.
+  await app.register(async (berthQueryScope) => {
+    berthQueryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
+    await registerBerthQueryRoutes(berthQueryScope, { pool });
   });
 
   // Milestone 30: creating a map is admin-only, unlike the rest of `/api/v1/editor/*` above

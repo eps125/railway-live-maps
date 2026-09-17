@@ -8,14 +8,17 @@ export type Route =
   | { name: "editorPicker" }
   | { name: "login" }
   | { name: "adminUsers" }
-  | { name: "adminTdBoundaries" };
+  | { name: "adminTdBoundaries" }
+  | { name: "adminBerths" }
+  | { name: "adminBerthQuery" };
 
 /** Minimal hand-rolled router for the small set of route shapes this app needs (`/` the Milestone
  * 30 map-list landing page, `/map/:slug` the public map, `/editor/:slug` the Milestone 11/12
  * editor for a given map, `/rlm-login` and `/admin/users` added in Milestone 29, `/admin/
- * td-boundaries` added in Milestone 39) — deliberately not `react-router-dom`, matching this
- * repo's established "hand-roll over dependency" style (the STOMP client) for a genuinely tiny
- * routing need. Revisit if the editor ever needs its own sub-navigation. */
+ * td-boundaries` added in Milestone 39, `/admin/berths` and `/admin/berths/query` added in
+ * Milestone 51) — deliberately not `react-router-dom`, matching this repo's established
+ * "hand-roll over dependency" style (the STOMP client) for a genuinely tiny routing need. Revisit
+ * if the editor ever needs its own sub-navigation. */
 export function useRoute(): Route {
   const [pathname, setPathname] = useState(() => window.location.pathname);
 
@@ -28,6 +31,8 @@ export function useRoute(): Route {
   if (pathname.startsWith("/rlm-login")) return { name: "login" };
   if (pathname.startsWith("/admin/users")) return { name: "adminUsers" };
   if (pathname.startsWith("/admin/td-boundaries")) return { name: "adminTdBoundaries" };
+  if (pathname.startsWith("/admin/berths/query")) return { name: "adminBerthQuery" };
+  if (pathname.startsWith("/admin/berths")) return { name: "adminBerths" };
 
   const editorMatch = /^\/editor\/([^/]+)\/?$/.exec(pathname);
   if (editorMatch) return { name: "editor", slug: decodeURIComponent(editorMatch[1]!) };

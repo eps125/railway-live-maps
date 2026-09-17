@@ -1,0 +1,105 @@
+import type { FastifyInstance } from "fastify";
+import type { Pool } from "pg";
+import { apiError, parseLimit, parseTimeRange } from "../../lib/queryRange.js";
+
+export interface BerthQueryRoutesDeps {
+  pool: Pool;
+}
+
+interface BerthEventRow {
+  id: string;
+  td_area: string;
+  message_type: string;
+  from_berth: string | null;
+  to_berth: string | null;
+  description: string | null;
+  event_at: Date;
+  ingestion_sequence: string;
+}
+
+function eventResponse(row: BerthEventRow) {
+  return {
+    id: row.id,
+    tdArea: row.td_area,
+    messageType: row.message_type,
+    fromBerth: row.from_berth,
+    toBerth: row.to_berth,
+    description: row.description,
+    eventAt: row.event_at.toISOString(),
+    ingestionSequence: row.ingestion_sequence,
+  };
+}
+
+interface QueryQuerystring {
+  tdAreas?: string;
+  headcode?: string;
+  from?: string;
+  to?: string;
+  after?: string;
+  limit?: string;
+}
+
+/**
+ * Admin-only ad hoc `td_berth_event` lookup by TD area(s) + headcode + time range (the "Query
+ * Berths" tool under the web app's "Berths" nav item) — replaces manually asking for a one-off SQL
+ * query against raw C-Class events. Unlike `/api/v1/descriptions/:description/history` (which
+ * reads the `berth_occupancy` *projection*, one row per dwell), this reads `td_berth_event`
+ * directly so the result shows every individual CA/CB/CC/CT step with its from/to berth pair, not
+ * just the resulting occupancy interval.
+ *
+ * `tdAreas` is required (comma-separated list) so the query always has the selective
+ * `(td_area, event_at)` index (`td_berth_event_area_idx`, migration 0006) to lean on — see
+ * memory/docs on the ingestion_sequence-vs-area-index planner pitfall confirmed on this same
+ * table; ordering here is by `event_at` (part of that index), not a global sequence column, so the
+ * planner has no reason to prefer anything else.
+ */
+export async function registerBerthQueryRoutes(
+  app: FastifyInstance,
+  deps: BerthQueryRoutesDeps,
+): Promise<void> {
+  const { pool } = deps;
+
+  app.get<{ Querystring: QueryQuerystring }>(
+    "/api/v1/admin/berths/query",
+    async (request, reply) => {
+      const tdAreas = (request.query.tdAreas ?? "")
+        .split(",")
+        .map((area) => area.trim().toUpperCase())
+        .filter((area) => area.length > 0);
+      if (tdAreas.length === 0) {
+        reply.code(400);
+        return apiError("VALIDATION_ERROR", "tdAreas (comma-separated, at least one) is required");
+      }
+
+      const headcode = (request.query.headcode ?? "").trim();
+      if (!headcode) {
+        reply.code(400);
+        return apiError("VALIDATION_ERROR", "headcode is required");
+      }
+
+      const rangeResult = parseTimeRange(request.query);
+      if (!rangeResult.ok) {
+        reply.code(400);
+        return rangeResult.error;
+      }
+      const limit = parseLimit(request.query.limit);
+      const after = request.query.after ?? "0";
+
+      const result = await pool.query<BerthEventRow>(
+        `select id, td_area, message_type, from_berth, to_berth, description, event_at,
+                ingestion_sequence
+         from td_berth_event
+         where td_area = any($1) and description = $2
+           and event_at >= $3 and event_at < $4 and id > $5
+         order by event_at asc, id asc
+         limit $6`,
+        [tdAreas, headcode, rangeResult.range.from, rangeResult.range.to, after, limit],
+      );
+
+      const events = result.rows.map(eventResponse);
+      const last = result.rows.at(-1);
+
+      reply.send({ events, nextCursor: result.rows.length === limit && last ? last.id : null });
+    },
+  );
+}

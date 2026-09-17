@@ -509,6 +509,22 @@ createdBy, createdAt }] }`.
 Managed through the admin-only "TD boundaries" page (`/admin/td-boundaries` in the web app), which
 is this same API.
 
+**Berth query (Milestone 51), admin only:** ad hoc lookup of raw `td_berth_event` rows (the
+CA/CB/CC/CT step log, not the `berth_occupancy` projection) by TD area(s) + headcode + time range —
+the web-app replacement for a one-off manual SQL query.
+
+- `GET /api/v1/admin/berths/query?tdAreas=&headcode=&from=&to=&after=&limit=` — `tdAreas` is a
+  required comma-separated list (at least one); `headcode` (matched against `description`) is
+  required. `from`/`to` follow the same bounded-range rules as §6 (max 7 days, defaults to the
+  last 7 days up to now). `400 VALIDATION_ERROR` for a missing `tdAreas`/`headcode`,
+  `400 INVALID_TIME_RANGE` for a bad or too-wide range. Returns
+  `{ events: [{ id, tdArea, messageType, fromBerth, toBerth, description, eventAt,
+  ingestionSequence }], nextCursor }` ordered by `event_at` ascending (then `id`), cursor-paginated
+  like the history routes above.
+
+Reached through the admin-only "Berths" nav item → "Query Berths" page (`/admin/berths/query` in
+the web app) — a hub page (`/admin/berths`) sits above it for tooling added here later.
+
 ## 4. Editor API
 
 **Protected (Milestone 29, see §4a):** every route below requires a valid session at the `editor`

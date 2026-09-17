@@ -30,6 +30,7 @@ describe("App", () => {
     // reached via a per-map "Edit" link on the landing page), so it's never present at all.
     expect(screen.queryByRole("link", { name: "Editor" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Users" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Berths" })).not.toBeInTheDocument();
   });
 
   it("shows the Users nav link and a log-out control for a logged-in admin", async () => {
@@ -49,6 +50,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("link", { name: "Users" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Berths" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /log out \(boss\)/i })).toBeInTheDocument();
   });
 

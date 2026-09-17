@@ -44,6 +44,14 @@ describe("useRoute", () => {
     expect(renderHook(() => useRoute()).result.current).toEqual({ name: "adminUsers" });
   });
 
+  it("parses /admin/berths and /admin/berths/query", () => {
+    setPath("/admin/berths");
+    expect(renderHook(() => useRoute()).result.current).toEqual({ name: "adminBerths" });
+
+    setPath("/admin/berths/query");
+    expect(renderHook(() => useRoute()).result.current).toEqual({ name: "adminBerthQuery" });
+  });
+
   it("decodes an encoded slug", () => {
     setPath("/map/a%20b");
     const { result } = renderHook(() => useRoute());

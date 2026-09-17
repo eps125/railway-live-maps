@@ -511,6 +511,8 @@ describe("RunPopup", () => {
                   previousTrustId: "623A16MT09",
                   newTrustId: "729S93MT10",
                   changedAt: "2026-09-17T08:05:00.000Z",
+                  previousHeadcode: "3A16",
+                  newHeadcode: "9S93",
                 },
                 activation: {
                   trustId: "623A16MT09",
@@ -551,6 +553,8 @@ describe("RunPopup", () => {
     // The new TRUST identity is shown against the original activation's own TRUST ID.
     expect(screen.getByText(/623A16MT09/)).toBeInTheDocument();
     expect(screen.getByText(/now 729S93MT10/)).toBeInTheDocument();
+    // ...and its decoded headcode change (docs/adr/0010).
+    expect(screen.getByText(/headcode 3A16 → 9S93/)).toBeInTheDocument();
   });
 
   it("renders the reduced, departure-board-style view for an anonymous solid match — no Picked by, no candidate list", async () => {

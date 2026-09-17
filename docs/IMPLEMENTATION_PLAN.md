@@ -2544,16 +2544,50 @@ Known limitations:
   part-cancellation filed under a _post-Change-of-Identity_ id would be missed on these board
   pages. Narrower than the RLM/`livetrain.c` treatment, kept this way deliberately to limit how much
   unverifiable C changed in one pass; follow-up once this milestone's build is confirmed.
-- No display headcode is derived from a Change of Identity's new TRUST id anywhere in openrail (see
-  above) — RLM's own `identityChange.newTrustId` is the only place a viewer can currently see the
-  new TRUST id itself; openrail shows it only in `livetrain.c`'s existing message log (now with the
-  old id struck through).
 - Change of Location is matched to a calling point by STANOX→TIPLOC lookup, which (like every other
   such lookup already in this codebase) can be ambiguous when one STANOX legitimately maps to more
   than one TIPLOC (platform-level TIPLOCs sharing a station STANOX) — an existing, accepted
   imprecision, not one this change introduces.
 - The identity-chain walk is bounded to 8 hops as a cycle-safety measure, not a believed real limit
   — no chain anywhere near that long has been observed.
+
+### Addendum (2026-09-17): a Change of Identity can change the run's own headcode — resolver fix, not just display
+
+Owner correction against the first pass above, backed by a real example from the owner's own
+`openrail` instance and a real resolver failure the owner had already hit: docs/adr/0010. Two
+things this milestone's first pass got wrong or missed entirely —
+
+1. `livetrain.c`'s message log "Change ID" row should never be struck through (reverted to plain
+   text) — the struck-through-old/new treatment belongs on the page's own `<h2>` title instead,
+   showing the _headcode_ change (decoded from the TRUST id), not the raw TRUST id itself.
+2. TRUST's 10-character id encodes the run's own 4-character headcode within it (`426C02C417` ->
+   `420C02C417` is headcode `6C02` -> `0C02`) — and the RLM resolver's headcode/position search
+   (ADR 0006) had no way to find a run once its headcode changed this way, since
+   `cif_schedules.signalling_id` never retroactively updates. Confirmed by the owner as a _real,
+   already-observed_ false match, not a hypothetical: "it matched to a totally different 0C02
+   elsewhere."
+
+Fixed: `packages/domain/src/trust/trustId.ts` (`headcodeFromTrustId`, +tests);
+`packages/database/src/runResolution.ts` (`findSchedulesByIdentityHeadcodeChange`, merged into
+`resolveFreshRunMatch`'s candidate pool); `EffectiveIdentityChange`/`fetchTrustChanges` gain
+`previousHeadcode`/`newHeadcode`; `RunPopup.tsx` shows it. openrail: `livetrain.c`'s message log
+reverted (no strikethrough), its `<h2>` title gains the struck-through-old/new headcode instead;
+`liverail.c`'s board pages now also override the displayed headcode column (previously deliberately
+left alone, pending exactly this verification).
+
+Tests: `packages/domain` — `trustId.test.ts` (the real example + length-guard cases).
+`apps/api/src/routes/currentRun.integration.test.ts` — new `"a Change of Identity can change the
+run's own headcode... (docs/adr/0010)"` block: the real 6C02→0C02 scenario now matches correctly
+via `trust_activation`; a genuine coincidental collision (both activated) now reports `ambiguous`
+rather than silently matching the wrong train; `identityChange.previousHeadcode`/`newHeadcode`
+surfaced correctly once matched. `apps/web/src/map/RunPopup.test.tsx` — updated case asserts the
+decoded headcode change is shown. `pnpm --filter @railway/domain run build`, `pnpm --filter
+@railway/database run build`, `pnpm --filter @railway/api run typecheck`, `pnpm --filter
+@railway/web run typecheck`, `pnpm exec eslint`/`pnpm exec prettier --check` (touched files) all
+clean; `RunPopup.test.tsx`/`trustId.test.ts` pass. As with the rest of this milestone, the new
+integration test cases could not actually be run (no Postgres in this environment), and the
+openrail (C) corrections could not be compiled here either — see the parent milestone's own "Known
+limitations" for both caveats, which still apply.
 
 ## Later / unscheduled
 

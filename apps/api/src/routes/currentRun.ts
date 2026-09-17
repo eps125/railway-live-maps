@@ -132,6 +132,11 @@ interface EffectiveIdentityChange {
   previousTrustId: string;
   newTrustId: string;
   changedAt: string;
+  /** docs/adr/0010: the run's own reporting headcode, decoded from each TRUST id — a Change of
+   * Identity confirmed to change this for real (2026-09-17 incident: trust_id "426C02C417" ->
+   * "420C02C417" is headcode 6C02 -> 0C02). `null` when either id isn't decodable. */
+  previousHeadcode: string | null;
+  newHeadcode: string | null;
 }
 
 /** The full, authenticated-only shape of the resolved schedule's detail. `toPublicEffective`
@@ -504,6 +509,8 @@ export async function registerCurrentRunRoutes(
                 previousTrustId: trustChanges.previousTrustId,
                 newTrustId: trustChanges.effectiveTrustId,
                 changedAt: trustChanges.identityChangedAt,
+                previousHeadcode: trustChanges.previousHeadcode,
+                newHeadcode: trustChanges.newHeadcode,
               }
             : null;
         // A Change of Location revises one scheduled calling point in place — reflected here (not

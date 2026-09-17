@@ -330,6 +330,18 @@ async function seedScheduleLocation(
   );
 }
 
+/** docs/adr/0010: an activation under an *exact*, caller-chosen 10-character trust_id — needed
+ * (unlike `seedActivation`'s random id) whenever a test cares about the TRUST id's own encoding,
+ * e.g. `findSchedulesByIdentityHeadcodeChange`'s headcode-from-trust_id decoding. */
+async function seedActivationWithTrustId(scheduleId: number, trustId: string): Promise<void> {
+  createdTrustIds.push(trustId);
+  await pool.query(
+    `insert into trust_activation (trust_id, created, cif_schedule_id, deduced)
+     values ($1, now(), $2, 0)`,
+    [trustId, scheduleId],
+  );
+}
+
 async function seedActivation(scheduleId: number, signallingId: string): Promise<string> {
   const trustId = `T${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
   createdTrustIds.push(trustId);
@@ -1627,6 +1639,98 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         }>;
         expect(locations).toHaveLength(1);
         expect(locations[0]).toMatchObject({ tiploc: newTiploc, locationName: "Revised Call" });
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("a Change of Identity can change the run's own headcode, not just its TRUST id (docs/adr/0010)", () => {
+    it("finds the correct schedule via the identity chain when the plain headcode search would miss it — the real 6C02→0C02 incident", async () => {
+      const area = uniqueArea();
+      // The schedule is (and stays) booked under its *original* headcode — garner never
+      // retroactively updates cif_schedules.signalling_id.
+      const correctId = await seedSchedule("6C02", "P");
+      // "426C02C417": 2-digit start hour "42" + headcode "6C02" + 2-char TOC "C4" + day-of-month
+      // "17" - the exact real trust_id from the reported incident.
+      await seedActivationWithTrustId(correctId, "426C02C417");
+      // The Change of Identity: new headcode 0C02, same start-hour/TOC/day-of-month digits as the
+      // real example.
+      await seedChangeId("426C02C417", "420C02C417");
+
+      // The TD berth itself now shows the *new* headcode 0C02, exactly as the signaller would
+      // interpose it post-rename - a plain queryCandidateSchedules(headcode="0C02") search would
+      // never find `correctId` (booked as 6C02) at all.
+      await seedOccupiedBerth(area, "0200", "0C02");
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0200/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("trust_activation");
+        expect(body.effective.scheduleId).toBe(String(correctId));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("stays ambiguous rather than silently matching a different, unrelated train that genuinely carries the new headcode — the reported false-match scenario", async () => {
+      const area = uniqueArea();
+      const correctId = await seedSchedule("6C02", "P");
+      await seedActivationWithTrustId(correctId, "436C02C517");
+      await seedChangeId("436C02C517", "430C02C517");
+
+      // A completely different, real train that genuinely carries headcode 0C02 elsewhere on the
+      // network today, coincidentally also activated - the exact ambiguity this fix must still
+      // honestly surface (CLAUDE.md rule 7), not resolve by guessing.
+      const coincidentalId = await seedSchedule("0C02", "P");
+      await seedActivation(coincidentalId, "0C02");
+
+      await seedOccupiedBerth(area, "0201", "0C02");
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0201/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("ambiguous");
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("surfaces the decoded headcode change on the resolved run once matched", async () => {
+      const area = uniqueArea();
+      const correctId = await seedSchedule("6C02", "P");
+      await seedActivationWithTrustId(correctId, "446C02C617");
+      await seedChangeId("446C02C617", "440C02C617");
+      await seedOccupiedBerth(area, "0202", "0C02");
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0202/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.effective.identityChange).toMatchObject({
+          previousTrustId: "446C02C617",
+          newTrustId: "440C02C617",
+          previousHeadcode: "6C02",
+          newHeadcode: "0C02",
+        });
       } finally {
         await app.close();
       }

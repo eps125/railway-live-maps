@@ -3,6 +3,7 @@ import {
   TD_PROJECTION_VERSION,
   candidatesRunningOnAny,
   circularDiffMinutes,
+  headcodeFromTrustId,
   isSameRunIdentity,
   parseCifTimeToMinutes,
   resolveRunMatch,
@@ -155,6 +156,55 @@ export async function queryCandidateSchedules(
   return result.rows;
 }
 
+/**
+ * docs/adr/0010: `queryCandidateSchedules` above finds a schedule by its *originally booked*
+ * headcode (`cif_schedules.signalling_id`, which garner never retroactively updates) — a TRUST
+ * Change of Identity can change a run's actual reporting headcode (confirmed against a real
+ * incident, 2026-09-17: trust_id `"426C02C417"` -> `"420C02C417"` is headcode `6C02` -> `0C02`),
+ * so once that's happened the TD berth itself shows the *new* headcode while the booked schedule
+ * stays keyed by the old one. A plain headcode search then finds nothing for the correct run, or
+ * worse, a *different*, unrelated real train that genuinely carries the new headcode elsewhere —
+ * exactly the false-positive risk CLAUDE.md rule 5 exists to guard against, and confirmed to have
+ * actually happened before this fix (a real run silently matched to the wrong train).
+ *
+ * Finds every schedule reachable by walking the other direction: a `trust_changeid` row whose
+ * `new_trust_id` decodes (`headcodeFromTrustId`'s own format, applied here directly in SQL) to
+ * this exact headcode, joined back to that *old* trust_id's own `trust_activation` to recover the
+ * `cif_schedule_id` it was actually activated against. `resolveFreshRunMatch` merges whatever
+ * this returns into the ordinary candidate pool (deduplicated) rather than picking one itself —
+ * from there it's just another candidate, competing fairly through the same
+ * `trust_activation`/STP/ambiguity rules as everything else (CLAUDE.md rule 7: two genuinely
+ * competing activated candidates report `ambiguous`, never a silent guess, which is exactly the
+ * safe outcome even in the rare case a coincidental same-new-headcode collision exists).
+ */
+export async function findSchedulesByIdentityHeadcodeChange(
+  pool: Queryable,
+  headcode: string,
+  sinceDate: string,
+  tiplocs: string[],
+): Promise<string[]> {
+  const positionScoped = tiplocs.length > 0;
+  const result = await pool.query<{ cif_schedule_id: string }>(
+    `select distinct ta.cif_schedule_id::text as cif_schedule_id
+     from trust_changeid tci
+     join trust_activation ta on ta.trust_id = tci.trust_id
+     where ta.cif_schedule_id is not null
+       and length(tci.new_trust_id) = 10
+       and substring(tci.new_trust_id from 3 for 4) = $1
+       and tci.created >= ($2::date)::timestamp at time zone 'Europe/London'
+       ${
+         positionScoped
+           ? `and exists (
+                select 1 from cif_schedule_locations l
+                where l.cif_schedule_id = ta.cif_schedule_id and l.tiploc_code = any($3::text[])
+              )`
+           : ""
+       }`,
+    positionScoped ? [headcode, sinceDate, tiplocs] : [headcode, sinceDate],
+  );
+  return result.rows.map((row) => row.cif_schedule_id);
+}
+
 /** Milestone 39 (docs/adr/0007): fetches one known schedule by id — same column shape as
  * `queryCandidateSchedules` — for the lineage-shortcut path, where the schedule is already known
  * from an inherited `berth_occupancy_run_link` rather than found by a headcode/position search. */
@@ -199,6 +249,12 @@ export interface TrustChangeSummary {
   trustIdChain: string[];
   previousTrustId: string | null;
   identityChangedAt: string | null;
+  /** docs/adr/0010: the headcode `previousTrustId`/`effectiveTrustId` each decode to
+   * (`headcodeFromTrustId`) — `null` when there's been no identity change, or either id isn't the
+   * expected 10 characters. This is the same headcode a Change of Identity actually changes for
+   * matching purposes (`findSchedulesByIdentityHeadcodeChange`); these fields are for display. */
+  previousHeadcode: string | null;
+  newHeadcode: string | null;
   originStanox: string | null;
   originTiploc: string | null;
   originChangedAt: string | null;
@@ -310,6 +366,8 @@ export async function fetchTrustChanges(
     trustIdChain: chain,
     previousTrustId,
     identityChangedAt,
+    previousHeadcode: previousTrustId ? headcodeFromTrustId(previousTrustId) : null,
+    newHeadcode: previousTrustId ? headcodeFromTrustId(effectiveTrustId) : null,
     originStanox: originRow?.loc_stanox ?? null,
     originTiploc: originRow?.loc_stanox ? (tiplocByStanox.get(originRow.loc_stanox) ?? null) : null,
     originChangedAt: originRow ? originRow.created.toISOString() : null,
@@ -500,7 +558,28 @@ export async function resolveFreshRunMatch(
   const tiplocs = await tiplocsForStanoxes(pool, stanoxes);
   const positionScoped = tiplocs.length > 0;
 
-  const candidateRows = await queryCandidateSchedules(pool, headcode, serviceDates, tiplocs);
+  const headcodeMatchedRows = await queryCandidateSchedules(pool, headcode, serviceDates, tiplocs);
+  // docs/adr/0010: also find any schedule reachable only via a TRUST Change of Identity that
+  // renamed a run *to* this exact headcode (see findSchedulesByIdentityHeadcodeChange's own doc
+  // comment) — merged in here, deduplicated, so it flows through every tier below exactly like an
+  // ordinary headcode-matched candidate rather than being special-cased or silently preferred.
+  const identityChangeScheduleIds = await findSchedulesByIdentityHeadcodeChange(
+    pool,
+    headcode,
+    yesterday,
+    tiplocs,
+  );
+  const headcodeMatchedIds = new Set(headcodeMatchedRows.map((row) => row.id));
+  const extraIdentityChangeIds = identityChangeScheduleIds.filter(
+    (id) => !headcodeMatchedIds.has(id),
+  );
+  const identityChangeRows =
+    extraIdentityChangeIds.length > 0
+      ? (
+          await Promise.all(extraIdentityChangeIds.map((id) => fetchScheduleRowById(pool, id)))
+        ).filter((row): row is CandidateScheduleRow => row !== null)
+      : [];
+  const candidateRows = [...headcodeMatchedRows, ...identityChangeRows];
   const scheduleIds = candidateRows.map((row) => row.id);
 
   // TRUST activations for any candidate schedule since the start of *yesterday* (London), not

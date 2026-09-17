@@ -89,6 +89,8 @@ interface EffectiveIdentityChange {
   previousTrustId: string;
   newTrustId: string;
   changedAt: string;
+  previousHeadcode: string | null;
+  newHeadcode: string | null;
 }
 
 interface EffectiveSchedule {
@@ -353,7 +355,10 @@ function FullEffectiveDetail({ data }: { data: FullCurrentRunResponse }): JSX.El
             {effective.activation.trustId}
             {effective.activation.deduced ? " (deduced)" : ""}
             {effective.identityChange
-              ? ` — now ${effective.identityChange.newTrustId} (changed ${formatIso(effective.identityChange.changedAt)})`
+              ? ` — now ${effective.identityChange.newTrustId} (changed ${formatIso(effective.identityChange.changedAt)})` +
+                (effective.identityChange.previousHeadcode && effective.identityChange.newHeadcode
+                  ? ` — headcode ${effective.identityChange.previousHeadcode} → ${effective.identityChange.newHeadcode}`
+                  : "")
               : ""}
           </dd>
           <dt>Activated</dt>

@@ -66,6 +66,7 @@ export {
   previousCalendarDate,
   londonMinutesSinceMidnight,
   fetchTrustChanges,
+  findSchedulesByIdentityHeadcodeChange,
   type FreshResolutionResult,
   type OpenOccupancyRef,
   type OccupancyLink,

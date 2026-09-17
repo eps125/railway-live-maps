@@ -104,6 +104,7 @@ export {
   type ApplyUnidentifiedInput,
 } from "./trust/runReducer.js";
 export { computeServiceDate } from "./trust/serviceDate.js";
+export { headcodeFromTrustId } from "./trust/trustId.js";
 export {
   extractMovementReport,
   runningIndicationText,

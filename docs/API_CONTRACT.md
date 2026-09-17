@@ -157,8 +157,22 @@ _original_ activation's own TRUST id even after a Change of Identity — the run
 follow a Change of Identity to the new id automatically. Full/authenticated response only:
 `effective.originChange`/`destinationChange` (`{ previousTiploc, previousName, changedAt, reason }`,
 `null` when nothing changed) and `effective.identityChange`
-(`{ previousTrustId, newTrustId, changedAt }`, `null` when the identity hasn't changed) — omitted
-from the anonymous/reduced shape below along with every other TRUST/resolver-internal field.
+(`{ previousTrustId, newTrustId, changedAt, previousHeadcode, newHeadcode }`, `null` when the
+identity hasn't changed) — omitted from the anonymous/reduced shape below along with every other
+TRUST/resolver-internal field.
+
+**A Change of Identity can change the run's own headcode, not just its TRUST id (Milestone 49
+addendum, docs/adr/0010):** a TRUST id encodes this run's 4-character reporting headcode within it
+(confirmed against a real incident, 2026-09-17: trust_id `"426C02C417"` -> `"420C02C417"` is
+headcode `6C02` -> `0C02`) — `identityChange.previousHeadcode`/`newHeadcode` decode it. This is not
+just a display concern: garner's `cif_schedules.signalling_id` never retroactively updates, so once
+this has happened the TD berth itself shows the _new_ headcode while the booked schedule stays keyed
+by the old one, and the ordinary headcode/position candidate search would either find nothing or —
+worse — a different, unrelated real train that genuinely carries the new headcode elsewhere. The
+resolver now also searches for a schedule reachable via exactly this kind of identity change and
+merges it into the ordinary candidate pool, so it competes fairly through the same
+`trust_activation`/ambiguity rules as everything else (CLAUDE.md rule 7 — two genuinely competing
+candidates still report `ambiguous`, never a silent guess).
 
 **Role-gated response (owner request, same day):** a logged-in session (any role) gets the full
 shape below. An anonymous request (no session cookie — viewing the map itself never needs one)

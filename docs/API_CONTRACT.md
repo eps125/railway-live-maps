@@ -148,7 +148,10 @@ naming this as garner's data, not a confirmed RLM identification.
 run's **current** origin/destination/calling points — overridden from the static schedule's
 LO/LT/calling-point TIPLOCs when garner has mirrored a TRUST Change of Origin, Change of Location,
 or a part-cancellation (read as the run's new effective destination — TRUST has no dedicated
-"change of destination" message; owner-confirmed reading, 2026-09-17) for it. `effective.locations`
+"change of destination" message; owner-confirmed reading, 2026-09-17) for it. A Change of Location
+that revises the schedule's own first/last calling point is read as an origin/destination change
+too, not just a mid-journey calling-point revision (docs/adr/0011) — whichever of that and the
+dedicated mechanism above actually happened later wins. `effective.locations`
 never marks a revised calling point specially (no strikethrough, no "was" text) — it's simply
 replaced in place; that treatment is deliberately different from openrail's own `/rail/livetrain`
 detail page, which strikes the old value through instead. `effective.activation.trustId` stays the

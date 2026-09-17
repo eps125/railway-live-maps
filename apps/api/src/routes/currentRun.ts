@@ -419,7 +419,14 @@ export async function registerCurrentRunRoutes(
         // docs/adr/0009: what's actually true for this run right now, beyond the static schedule —
         // resolved before `latestMovement` below, since a Change of Identity means movements can
         // arrive under a *different* TRUST id than the one that activated it.
-        const trustChanges = activation ? await fetchTrustChanges(pool, activation.trust_id) : null;
+        const trustChanges = activation
+          ? await fetchTrustChanges(
+              pool,
+              activation.trust_id,
+              effectiveRow.origin_tiploc,
+              effectiveRow.destination_tiploc,
+            )
+          : null;
 
         let activationExtra: ActivationExtraRow | undefined;
         let latestMovement: MovementRow | undefined;

@@ -2589,6 +2589,40 @@ integration test cases could not actually be run (no Postgres in this environmen
 openrail (C) corrections could not be compiled here either — see the parent milestone's own "Known
 limitations" for both caveats, which still apply.
 
+**Update, same day:** both caveats above no longer apply to this addendum specifically — CI ran the
+new integration tests for real (catching and fixing two real test-isolation/assertion bugs, not a
+resolver bug — see the commit history) and compiled the openrail changes cleanly (zero new compiler
+warnings against the edited code). Still no runtime verification against a real `openrail-eps`
+database for the C side; see the parent milestone's own "Known limitations."
+
+### Second addendum (2026-09-17): a Change of Location revising the origin/destination point is an origin/destination change too
+
+Owner report against a real train (`W32435`): its last calling point (`NY DBS`) was changed via a
+Change of Location to `Carlisle Kingmoor Sidings (DRS)` — and being the schedule's own final
+calling point, that's a destination change, not merely a revised mid-journey stop. Confirmed by the
+owner as symmetric for the origin point too. Full record: docs/adr/0011.
+
+Fixed: `fetchTrustChanges` (`packages/database/src/runResolution.ts`) gains
+`originTiploc`/`destinationTiploc` parameters, matches `trust_changelocation` rows against them,
+and picks the later of that and the existing `trust_changeorigin`/part-cancellation mechanisms.
+openrail: `livetrain.c`'s `<h2>` title gains the same origin/destination merge (previously untouched
+by any of this milestone), and its "Signalling ID" row (distinct from the title) now also gets the
+struck-through-headcode treatment; `liverail.c`'s board-page origin/destination override gains the
+same boundary-matching check.
+
+Tests: `apps/api/src/routes/currentRun.integration.test.ts` — two new cases (destination via the
+real NY DBS→Carlisle Kingmoor Sidings scenario; origin, symmetrically). `pnpm --filter
+@railway/database run build`, `pnpm --filter @railway/api run typecheck`, `pnpm exec
+eslint`/`pnpm exec prettier --check` (touched files), full non-integration `pnpm exec vitest run`
+(539/539) all clean.
+
+Known limitation (documented in docs/adr/0011, not fixed in this pass): unlike the TypeScript side,
+the two C-side additions check the changelocation-boundary match _unconditionally after_ the
+existing `trust_changeorigin`/cancellation check, not timestamp-compared against it — a same-
+boundary event of the older kind arriving chronologically _after_ a changelocation event would
+still lose to it on openrail's pages. Deliberately accepted to keep the uncompiled C surface small;
+revisit only if a real case shows it mattering.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

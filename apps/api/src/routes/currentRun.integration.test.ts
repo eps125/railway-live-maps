@@ -1747,4 +1747,80 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     });
   });
+
+  describe("a Change of Location revising the origin/destination point is an origin/destination change too (docs/adr/0011)", () => {
+    it("reflects a Change of Location at the destination point as the new destination — the real NY DBS → Carlisle Kingmoor Sidings (DRS) case", async () => {
+      const area = uniqueArea();
+      const originalDestTiploc = `ND${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const originalDestStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      const revisedDestTiploc = `RD${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const revisedDestStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(originalDestTiploc, "NY DBS", originalDestStanox);
+      await seedLocationReference(
+        revisedDestTiploc,
+        "Carlisle Kingmoor Sidings (DRS)",
+        revisedDestStanox,
+      );
+
+      await seedOccupiedBerth(area, "0300", "6C31");
+      const scheduleId = await seedSchedule("6C31", "P");
+      await seedScheduleLocation(scheduleId, 1, originalDestTiploc, "LT", { arrival: "1400" });
+      const trustId = await seedActivation(scheduleId, "6C31");
+      // A Change of Location whose *original* point is the schedule's own last calling point
+      // (the LT/destination record) - not a mid-journey calling point, the destination itself.
+      await seedChangeLocation(trustId, originalDestStanox, revisedDestStanox);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0300/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.effective.destinationTiploc).toBe(revisedDestTiploc);
+        expect(body.effective.destinationName).toBe("Carlisle Kingmoor Sidings (DRS)");
+        expect(body.effective.destinationChange).toMatchObject({
+          previousTiploc: originalDestTiploc,
+          previousName: "NY DBS",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("reflects a Change of Location at the origin point as the new origin, symmetrically (owner-confirmed, 2026-09-17)", async () => {
+      const area = uniqueArea();
+      const originalOriginTiploc = `NO${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const originalOriginStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      const revisedOriginTiploc = `RO${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const revisedOriginStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(originalOriginTiploc, "Original Origin", originalOriginStanox);
+      await seedLocationReference(revisedOriginTiploc, "Revised Origin", revisedOriginStanox);
+
+      await seedOccupiedBerth(area, "0301", "6C32");
+      const scheduleId = await seedSchedule("6C32", "P");
+      await seedScheduleLocation(scheduleId, 1, originalOriginTiploc, "LO", { departure: "0900" });
+      const trustId = await seedActivation(scheduleId, "6C32");
+      // A Change of Location whose *original* point is the schedule's own first calling point
+      // (the LO/origin record) - symmetric with the destination case above.
+      await seedChangeLocation(trustId, originalOriginStanox, revisedOriginStanox);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0301/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.effective.originTiploc).toBe(revisedOriginTiploc);
+        expect(body.effective.originName).toBe("Revised Origin");
+      } finally {
+        await app.close();
+      }
+    });
+  });
 });

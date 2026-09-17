@@ -288,10 +288,21 @@ const MAX_IDENTITY_CHAIN_HOPS = 8;
  * `loc_stanox` is the point the train now actually terminates at, so it *is* the run's new
  * effective destination, as long as the latest cancellation-family event for this run is a
  * cancellation and not a later reinstatement (`reinstate <> 0`) of it.
+ *
+ * docs/adr/0011: a Change of Location that revises the schedule's own first/last calling point
+ * (`originTiploc`/`destinationTiploc`, the caller's already-known static LO/LT) is an origin/
+ * destination change too, not just a mid-journey calling-point revision — owner-confirmed,
+ * 2026-09-17, symmetrically for both ends. Origin has two possible sources (`trust_changeorigin`
+ * and a boundary-matching Change of Location); destination has two as well (an in-effect
+ * part-cancellation and a boundary-matching Change of Location) — whichever actually happened
+ * *later* wins, since both are genuine, independent ways the same fact can change and either can
+ * follow the other.
  */
 export async function fetchTrustChanges(
   pool: Queryable,
   activationTrustId: string,
+  originTiploc: string | null,
+  destinationTiploc: string | null,
 ): Promise<TrustChangeSummary> {
   const chain: string[] = [activationTrustId];
   let identityChangedAt: string | null = null;
@@ -342,11 +353,12 @@ export async function fetchTrustChanges(
     cancellationRow !== null &&
     Number(cancellationRow.reinstate) === 0 &&
     !!cancellationRow.loc_stanox;
-  const destinationStanox = destinationInEffect ? (cancellationRow?.loc_stanox ?? null) : null;
 
   const stanoxesNeeded = new Set<string>();
   if (originRow?.loc_stanox) stanoxesNeeded.add(originRow.loc_stanox);
-  if (destinationStanox) stanoxesNeeded.add(destinationStanox);
+  if (destinationInEffect && cancellationRow?.loc_stanox) {
+    stanoxesNeeded.add(cancellationRow.loc_stanox);
+  }
   for (const row of locationResult.rows) {
     stanoxesNeeded.add(row.original_stanox);
     stanoxesNeeded.add(row.stanox);
@@ -361,6 +373,72 @@ export async function fetchTrustChanges(
     for (const row of tiplocResult.rows) tiplocByStanox.set(row.stanox, row.tiploc);
   }
 
+  const locationChanges: TrustLocationChange[] = locationResult.rows.map((row) => ({
+    originalStanox: row.original_stanox,
+    originalTiploc: tiplocByStanox.get(row.original_stanox) ?? null,
+    stanox: row.stanox,
+    tiploc: tiplocByStanox.get(row.stanox) ?? null,
+    changedAt: row.created.toISOString(),
+  }));
+
+  interface Contribution {
+    stanox: string;
+    tiploc: string | null;
+    changedAt: string;
+    reason: string | null;
+  }
+  /** Two independent, genuine ways the same fact (this run's origin, or its destination) can
+   * change — whichever actually happened *later* wins; either can legitimately follow the other. */
+  function latestOf(a: Contribution | null, b: Contribution | null): Contribution | null {
+    if (!a) return b;
+    if (!b) return a;
+    return a.changedAt >= b.changedAt ? a : b;
+  }
+
+  const fromChangeOrigin: Contribution | null = originRow
+    ? {
+        stanox: originRow.loc_stanox ?? "",
+        tiploc: originRow.loc_stanox ? (tiplocByStanox.get(originRow.loc_stanox) ?? null) : null,
+        changedAt: originRow.created.toISOString(),
+        reason: originRow.reason,
+      }
+    : null;
+  // `.at(-1)`: locationChanges is ordered oldest-first, so the last match is the latest one.
+  const changeLocationAtOrigin = originTiploc
+    ? (locationChanges.filter((lc) => lc.originalTiploc === originTiploc).at(-1) ?? null)
+    : null;
+  const fromChangeLocationAtOrigin: Contribution | null = changeLocationAtOrigin
+    ? {
+        stanox: changeLocationAtOrigin.stanox,
+        tiploc: changeLocationAtOrigin.tiploc,
+        changedAt: changeLocationAtOrigin.changedAt,
+        reason: null,
+      }
+    : null;
+  const effectiveOrigin = latestOf(fromChangeOrigin, fromChangeLocationAtOrigin);
+
+  const fromCancellation: Contribution | null =
+    destinationInEffect && cancellationRow?.loc_stanox
+      ? {
+          stanox: cancellationRow.loc_stanox,
+          tiploc: tiplocByStanox.get(cancellationRow.loc_stanox) ?? null,
+          changedAt: cancellationRow.created.toISOString(),
+          reason: cancellationRow.reason,
+        }
+      : null;
+  const changeLocationAtDestination = destinationTiploc
+    ? (locationChanges.filter((lc) => lc.originalTiploc === destinationTiploc).at(-1) ?? null)
+    : null;
+  const fromChangeLocationAtDestination: Contribution | null = changeLocationAtDestination
+    ? {
+        stanox: changeLocationAtDestination.stanox,
+        tiploc: changeLocationAtDestination.tiploc,
+        changedAt: changeLocationAtDestination.changedAt,
+        reason: null,
+      }
+    : null;
+  const effectiveDestination = latestOf(fromCancellation, fromChangeLocationAtDestination);
+
   return {
     effectiveTrustId,
     trustIdChain: chain,
@@ -368,23 +446,15 @@ export async function fetchTrustChanges(
     identityChangedAt,
     previousHeadcode: previousTrustId ? headcodeFromTrustId(previousTrustId) : null,
     newHeadcode: previousTrustId ? headcodeFromTrustId(effectiveTrustId) : null,
-    originStanox: originRow?.loc_stanox ?? null,
-    originTiploc: originRow?.loc_stanox ? (tiplocByStanox.get(originRow.loc_stanox) ?? null) : null,
-    originChangedAt: originRow ? originRow.created.toISOString() : null,
-    originChangeReason: originRow?.reason ?? null,
-    destinationStanox,
-    destinationTiploc: destinationStanox ? (tiplocByStanox.get(destinationStanox) ?? null) : null,
-    destinationChangedAt: destinationInEffect
-      ? (cancellationRow?.created.toISOString() ?? null)
-      : null,
-    destinationChangeReason: destinationInEffect ? (cancellationRow?.reason ?? null) : null,
-    locationChanges: locationResult.rows.map((row) => ({
-      originalStanox: row.original_stanox,
-      originalTiploc: tiplocByStanox.get(row.original_stanox) ?? null,
-      stanox: row.stanox,
-      tiploc: tiplocByStanox.get(row.stanox) ?? null,
-      changedAt: row.created.toISOString(),
-    })),
+    originStanox: effectiveOrigin?.stanox ?? null,
+    originTiploc: effectiveOrigin?.tiploc ?? null,
+    originChangedAt: effectiveOrigin?.changedAt ?? null,
+    originChangeReason: effectiveOrigin?.reason ?? null,
+    destinationStanox: effectiveDestination?.stanox ?? null,
+    destinationTiploc: effectiveDestination?.tiploc ?? null,
+    destinationChangedAt: effectiveDestination?.changedAt ?? null,
+    destinationChangeReason: effectiveDestination?.reason ?? null,
+    locationChanges,
   };
 }
 

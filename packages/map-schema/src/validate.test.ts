@@ -193,6 +193,116 @@ describe("validateMapDocument", () => {
     expect(result.errors.some((e) => e.code === "duplicate_berth_binding")).toBe(false);
   });
 
+  it("accepts a combined berth: 3 tdBerth bindings sharing one elementId with distinct combinedOrder", () => {
+    const doc = baseDoc({
+      bindings: [
+        {
+          id: "bind-a",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "A001",
+          combinedOrder: 1,
+        },
+        {
+          id: "bind-b",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "B001",
+          combinedOrder: 2,
+        },
+        {
+          id: "bind-c",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "C001",
+          combinedOrder: 3,
+        },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.valid).toBe(true);
+  });
+
+  it("flags a combined berth with more than 4 members", () => {
+    // combinedOrder itself is schema-capped at 4 (z.max(4)), so a 5th member necessarily repeats
+    // one — that's fine here, this test only cares that the group-size check fires regardless.
+    const doc = baseDoc({
+      bindings: [1, 2, 3, 4, 5].map((n) => ({
+        id: `bind-${n}`,
+        elementId: "berth-1",
+        type: "tdBerth",
+        tdArea: "PX",
+        berth: `${n}001`,
+        combinedOrder: Math.min(n, 4),
+      })),
+    });
+    const result = validateMapDocument(doc);
+    expect(result.errors.some((e) => e.code === "combined_berth_too_many_members")).toBe(true);
+  });
+
+  it("flags a combined berth where not every member sets combinedOrder", () => {
+    const doc = baseDoc({
+      bindings: [
+        {
+          id: "bind-a",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "A001",
+          combinedOrder: 1,
+        },
+        { id: "bind-b", elementId: "berth-1", type: "tdBerth", tdArea: "PX", berth: "B001" },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.errors.some((e) => e.code === "combined_berth_missing_order")).toBe(true);
+  });
+
+  it("flags a combined berth whose members share the same combinedOrder", () => {
+    const doc = baseDoc({
+      bindings: [
+        {
+          id: "bind-a",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "A001",
+          combinedOrder: 1,
+        },
+        {
+          id: "bind-b",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "B001",
+          combinedOrder: 1,
+        },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.errors.some((e) => e.code === "combined_berth_duplicate_order")).toBe(true);
+  });
+
+  it("flags a lone binding that sets combinedOrder with no sibling to combine with", () => {
+    const doc = baseDoc({
+      bindings: [
+        {
+          id: "bind-a",
+          elementId: "berth-1",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "A001",
+          combinedOrder: 1,
+        },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.errors.some((e) => e.code === "combined_order_without_group")).toBe(true);
+  });
+
   it("flags a berth element inhibited by itself", () => {
     const doc = baseDoc({
       elements: [

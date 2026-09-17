@@ -590,6 +590,24 @@ legend {
   max-width: 360px;
   max-height: 80vh;
   overflow-y: auto;
+  /* The title bar (with the close button) manages its own padding below, sticky to the top of
+   * this scrolling box, so it never scrolls out of view — see `.map-inspector--run
+   * .map-inspector__title`. */
+  padding: 0;
+}
+
+.map-inspector--run .map-inspector__title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.75rem 0.9rem;
+  background: rgba(21, 27, 35, 0.94);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.map-inspector--run .map-inspector__body {
+  padding: 0.75rem 0.9rem;
 }
 
 .map-inspector--run dl {
@@ -599,6 +617,23 @@ legend {
 
 .map-inspector--run dl:last-of-type {
   border-bottom: none;
+}
+
+/* Combined berths (Milestone 50): each occupied member's section, successively, with a divider
+ * between two that are both actually rendered — the adjacent-sibling combinator naturally skips
+ * a gap left by a vacant member (which renders nothing, not a hidden placeholder), so the
+ * divider count always matches what's really on screen. */
+.map-inspector__member + .map-inspector__member {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--color-border-subtle);
+}
+
+.map-inspector__member-heading {
+  margin: 0 0 0.3rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-accent-hover);
 }
 
 .map-inspector__schedule {

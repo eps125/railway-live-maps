@@ -36,6 +36,11 @@ export {
   MAP_DELTA_PROJECTION_VERSION,
 } from "./mapDelta/projectionVersion.js";
 export {
+  joinCombinedBerthState,
+  type CombinedBerthMember,
+  type CombinedBerthState,
+} from "./mapDelta/combinedBerth.js";
+export {
   VSTP_NORMALIZATION_VERSION,
   VSTP_PROJECTION_NAME,
   VSTP_PROJECTION_VERSION,

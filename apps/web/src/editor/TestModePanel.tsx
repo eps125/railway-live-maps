@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { applyCA, applyCB, applyCC, type OpenOccupancySnapshot } from "@railway/domain";
+import {
+  applyCA,
+  applyCB,
+  applyCC,
+  joinCombinedBerthState,
+  type OpenOccupancySnapshot,
+} from "@railway/domain";
 import type { TdBerthBinding } from "@railway/map-schema";
 import { useEditorState } from "./EditorState.js";
 
@@ -44,7 +50,6 @@ export function useTestModePanel(slug: string): TestModePanelResult {
   const [clearing, setClearing] = useState(false);
 
   const tdBerthBindings = doc.bindings.filter((b): b is TdBerthBinding => b.type === "tdBerth");
-  const bindingByKey = new Map(tdBerthBindings.map((b) => [`${b.tdArea}|${b.berth}`, b]));
 
   async function pollLiveState(): Promise<void> {
     try {
@@ -159,16 +164,35 @@ export function useTestModePanel(slug: string): TestModePanelResult {
   function keyToPreview(
     openByKeyMap: Record<string, OpenOccupancySnapshot>,
   ): Record<string, PreviewEntry> {
-    const result: Record<string, PreviewEntry> = {};
-    for (const [key, occupancy] of Object.entries(openByKeyMap)) {
-      const binding = bindingByKey.get(key);
-      if (binding) result[binding.elementId] = { description: occupancy.description };
-    }
-    // Elements bound but not open show explicitly cleared, not "no overlay at all" — otherwise
-    // a cleared berth would fall back to showing its static displayName, which isn't what a
-    // "clear this berth" simulation should look like.
+    // Grouped by elementId (not assigned 1:1 per binding) because a combined berth (owner
+    // request 2026-09-17) has more than one binding sharing one elementId — assigning per
+    // binding here previously let the last one processed silently clobber every earlier
+    // member's simulated state for that element.
+    const membersByElement = new Map<string, TdBerthBinding[]>();
     for (const binding of tdBerthBindings) {
-      if (!(binding.elementId in result)) result[binding.elementId] = { description: null };
+      const list = membersByElement.get(binding.elementId) ?? [];
+      list.push(binding);
+      membersByElement.set(binding.elementId, list);
+    }
+    const result: Record<string, PreviewEntry> = {};
+    for (const [elementId, members] of membersByElement) {
+      const joined = joinCombinedBerthState(
+        members.map((binding) => {
+          const occupancy = openByKeyMap[`${binding.tdArea}|${binding.berth}`];
+          return {
+            tdArea: binding.tdArea,
+            berth: binding.berth,
+            order: binding.combinedOrder ?? 1,
+            description: occupancy?.description ?? null,
+            enteredAt: occupancy?.enteredAt ?? null,
+          };
+        }),
+      );
+      // Elements bound but not open show explicitly cleared, not "no overlay at all" — otherwise
+      // a cleared berth would fall back to showing its static displayName, which isn't what a
+      // "clear this berth" simulation should look like. `joinCombinedBerthState` already returns
+      // `{ description: null, ... }` for an all-vacant group, so this falls out for free.
+      result[elementId] = { description: joined.description };
     }
     return result;
   }

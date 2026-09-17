@@ -222,6 +222,78 @@ describe("PropertyPanel BindingFields", () => {
     expect(areaInput).toHaveValue("PX");
     expect(berthInput).toHaveValue("0186");
   });
+
+  it("combines an already-bound berth with another via '+ Combine with another berth' (owner request 2026-09-17)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/td/areas/")) return Promise.resolve(jsonResponse({ berths: [] }));
+        if (url.includes("/td/areas")) return Promise.resolve(jsonResponse({ areas: [] }));
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    renderPanel(baseDoc(), "berth-a");
+    expect(await screen.findByLabelText("TD area")).toHaveValue("PX");
+
+    fireEvent.click(screen.getByText("+ Combine with another berth"));
+
+    // A second member row appears, defaulted to the primary's TD area with an empty berth.
+    const memberArea = await screen.findByLabelText("Combined member 2 TD area");
+    const memberBerth = screen.getByLabelText("Combined member 2 berth");
+    expect(memberArea).toHaveValue("PX");
+    expect(memberBerth).toHaveValue("");
+
+    fireEvent.change(memberBerth, { target: { value: "B001" } });
+    fireEvent.blur(memberBerth);
+
+    // The primary binding is untouched, and the hint explaining combined-berth display appears.
+    expect(await screen.findByText(/Combined berth/)).toBeInTheDocument();
+    expect(screen.getByLabelText("TD area")).toHaveValue("PX");
+    expect(screen.getByLabelText("Berth")).toHaveValue("0100");
+    expect(screen.getByLabelText("Combined member 2 berth")).toHaveValue("B001");
+  });
+
+  it("removing a combined berth's second member leaves a plain single binding", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/td/areas/")) return Promise.resolve(jsonResponse({ berths: [] }));
+        if (url.includes("/td/areas")) return Promise.resolve(jsonResponse({ areas: [] }));
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const doc = baseDoc();
+    doc.bindings = [
+      {
+        id: "bind-a",
+        elementId: "berth-a",
+        type: "tdBerth",
+        tdArea: "PX",
+        berth: "0100",
+        allowDuplicate: false,
+        combinedOrder: 1,
+      },
+      {
+        id: "bind-a2",
+        elementId: "berth-a",
+        type: "tdBerth",
+        tdArea: "PX",
+        berth: "0101",
+        allowDuplicate: false,
+        combinedOrder: 2,
+      },
+    ];
+    renderPanel(doc, "berth-a");
+
+    expect(await screen.findByLabelText("Combined member 2 berth")).toHaveValue("0101");
+    fireEvent.click(screen.getByText("Remove"));
+
+    expect(screen.queryByLabelText("Combined member 2 berth")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("TD area")).toHaveValue("PX");
+    expect(screen.getByLabelText("Berth")).toHaveValue("0100");
+  });
 });
 
 describe("PropertyPanel Inhibited by", () => {

@@ -22,6 +22,13 @@ export interface CompiledMapBundle {
   elementsById: Record<string, MapElement>;
   /** `${tdArea}|${berth}` -> elementId */
   berthBindingIndex: Record<string, string>;
+  /** `${tdArea}|${berth}` -> that binding's `combinedOrder`, present only for a binding that is
+   * part of a combined-berth group (docs/MAP_EDITOR_SPEC.md's berth section, owner request
+   * 2026-09-17). Absent for every ordinary, non-combined binding. Optional at the type level (not
+   * just empty) because a map version published before this field existed has a
+   * `compiled_runtime_bundle` (CLAUDE.md rule 11: immutable) with no such key at all — every
+   * reader must treat a missing bundle-level `berthBindingOrder` the same as an empty one. */
+  berthBindingOrder?: Record<string, number>;
   /** `${tdArea}|${address}|${bit}` -> elementId */
   sBitBindingIndex: Record<string, string>;
   /** Milestone 31: every `station`/`label` element carrying at least one place identifier
@@ -238,10 +245,13 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   }
 
   const berthBindingIndex: Record<string, string> = {};
+  const berthBindingOrder: Record<string, number> = {};
   const sBitBindingIndex: Record<string, string> = {};
   for (const binding of doc.bindings) {
     if (binding.type === "tdBerth") {
-      berthBindingIndex[`${binding.tdArea}|${binding.berth}`] = binding.elementId;
+      const key = `${binding.tdArea}|${binding.berth}`;
+      berthBindingIndex[key] = binding.elementId;
+      if (binding.combinedOrder !== undefined) berthBindingOrder[key] = binding.combinedOrder;
     } else {
       sBitBindingIndex[`${binding.tdArea}|${binding.address}|${binding.bit}`] = binding.elementId;
     }
@@ -299,6 +309,7 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     layers: doc.layers,
     elementsById,
     berthBindingIndex,
+    berthBindingOrder,
     sBitBindingIndex,
     placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),

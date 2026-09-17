@@ -441,6 +441,13 @@ Then ordered deltas:
 message — both were removed with the berth-run resolver (ADR 0002, 2026-09-01). Run↔schedule
 correlation on the live map is deferred to a later garner-sourced phase.
 
+For a combined berth (Milestone 50, docs/MAP_EDITOR_SPEC.md's berth section — up to 4 physical
+berths sharing one `elementId`), `description`/`enteredAt` are the _joined_ state across every
+currently-occupied member, not just whichever one changed; `tdArea`/`berth` still identify the one
+physical berth whose change triggered this message. The message shape itself is unchanged — the
+join happens server-side before publish, so no client or playback-replay code needs to know a
+combined berth exists.
+
 Other messages:
 
 - `berth.cleared`

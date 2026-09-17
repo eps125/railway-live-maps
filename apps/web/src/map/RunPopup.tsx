@@ -178,11 +178,23 @@ function isFullResponse(data: CurrentRunResponse): data is FullCurrentRunRespons
   return "candidateSchedules" in data;
 }
 
+export interface RunPopupMember {
+  tdArea: string;
+  berth: string;
+}
+
 export interface RunPopupProps {
   elementId: string;
   displayName: string;
   tdArea: string;
   berth: string;
+  /** Combined berth (Milestone 50, owner request 2026-09-17, docs/MAP_EDITOR_SPEC.md's berth
+   * section): every physical berth sharing this map element, in `combinedOrder`. Omitted (or a
+   * single-entry array) for a plain berth — every existing caller passing only `tdArea`/`berth`
+   * is unaffected. When there's more than one, each occupied member's detail is shown in its own
+   * section, successively, separated by a divider — rather than a picker that only shows one
+   * member at a time (owner offered both, 2026-09-17; this shows everything with no extra click). */
+  members?: RunPopupMember[];
   onClose: () => void;
 }
 
@@ -419,89 +431,42 @@ function PublicEffectiveDetail({ data }: { data: PublicCurrentRunResponse }): JS
   );
 }
 
-export function RunPopup({
-  elementId,
-  displayName,
+function memberKey(member: RunPopupMember): string {
+  return `${member.tdArea}|${member.berth}`;
+}
+
+interface MemberState {
+  data: CurrentRunResponse | null;
+  error: string | null;
+  /** `null` = first fetch still in flight. */
+  occupied: boolean | null;
+}
+
+/** One member's fetched-and-settled detail, pure display — no fetching of its own. Split out from
+ * the fetch loop (now owned by `RunPopup` itself, one effect for every member) so a combined
+ * berth's members never double-fetch and the "don't show the shell until everything has settled"
+ * gate can live in one place. */
+function RunPopupMemberSection({
   tdArea,
   berth,
-  onClose,
-}: RunPopupProps): JSX.Element | null {
-  const [data, setData] = useState<CurrentRunResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setData(null);
-
-    function fetchOnce(): void {
-      fetch(
-        `/api/v1/td/areas/${encodeURIComponent(tdArea)}/berths/${encodeURIComponent(berth)}/current-run`,
-      )
-        .then(async (response) => {
-          if (response.status === 404) {
-            // Owner request (2026-09-13): a 404 here always means "nothing to show this
-            // visitor" — either the berth genuinely isn't occupied any more, or (anonymous,
-            // `NO_PUBLIC_DETAIL`) the match isn't solid enough to show publicly. Either way the
-            // honest behaviour is to close quietly, not display an error.
-            if (!cancelled) onClose();
-            return null;
-          }
-          if (!response.ok) throw new Error(`Failed to load run detail (${response.status})`);
-          return (await response.json()) as CurrentRunResponse;
-        })
-        .then((body) => {
-          if (!cancelled && body) {
-            setData(body);
-            setError(null);
-          }
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) {
-            setError(err instanceof Error ? err.message : "Failed to load run detail");
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    }
-
-    fetchOnce();
-    const intervalId = setInterval(fetchOnce, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-  }, [tdArea, berth]);
-
-  // While the very first fetch is still in flight, render nothing at all rather than a
-  // popup shell that might immediately vanish again. A non-solid public match 404s (see this
-  // component's own 2026-09-13 "close quietly" handling above) — usually within well under a
-  // second — and a title bar + "Loading…" that flashes open then closes reads as the popup
-  // being broken, not as "nothing to show" (reported against PX 0218/0214, 2026-09-14). Once
-  // the first fetch has resolved (`data` or a real `error`), subsequent poll ticks never flip
-  // `loading` back to true, so this only ever hides the opening frame, not a refresh.
-  if (loading) return null;
-
+  showHeading,
+  state,
+}: {
+  tdArea: string;
+  berth: string;
+  showHeading: boolean;
+  state: MemberState;
+}): JSX.Element | null {
+  if (!state.occupied) return null;
+  const { data, error } = state;
   return (
-    <div role="status" className="map-inspector map-inspector--run">
-      <div className="map-inspector__title">
-        <span>
-          {displayName || elementId}
-          <span className="map-inspector__subtitle">
-            {" "}
-            · {tdArea} {berth}
-          </span>
-        </span>
-        <button type="button" className="map-inspector__close" aria-label="Close" onClick={onClose}>
-          ×
-        </button>
-      </div>
-
+    <div className="map-inspector__member">
+      {showHeading ? (
+        <p className="map-inspector__member-heading">
+          {tdArea} {berth}
+        </p>
+      ) : null}
       {error ? <p className="app-error">{error}</p> : null}
-
       {!error && data ? (
         <>
           <dl>
@@ -553,6 +518,129 @@ export function RunPopup({
           ) : null}
         </>
       ) : null}
+    </div>
+  );
+}
+
+export function RunPopup({
+  elementId,
+  displayName,
+  tdArea,
+  berth,
+  members,
+  onClose,
+}: RunPopupProps): JSX.Element | null {
+  const resolvedMembers = members && members.length > 0 ? members : [{ tdArea, berth }];
+  const membersKey = resolvedMembers.map(memberKey).join(",");
+  const [statesByKey, setStatesByKey] = useState<Record<string, MemberState>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatesByKey({});
+
+    function fetchMember(member: RunPopupMember): void {
+      const key = memberKey(member);
+      fetch(
+        `/api/v1/td/areas/${encodeURIComponent(member.tdArea)}/berths/${encodeURIComponent(member.berth)}/current-run`,
+      )
+        .then(async (response) => {
+          if (response.status === 404) {
+            // Owner request (2026-09-13): a 404 here always means "nothing to show for this
+            // member" — either it genuinely isn't occupied any more, or (anonymous,
+            // `NO_PUBLIC_DETAIL`) the match isn't solid enough to show publicly. This member's
+            // own section just omits itself; the whole popup closes only once every member does.
+            if (!cancelled) {
+              setStatesByKey((prev) => ({
+                ...prev,
+                [key]: { data: null, error: null, occupied: false },
+              }));
+            }
+            return null;
+          }
+          if (!response.ok) throw new Error(`Failed to load run detail (${response.status})`);
+          return (await response.json()) as CurrentRunResponse;
+        })
+        .then((body) => {
+          if (!cancelled && body) {
+            setStatesByKey((prev) => ({
+              ...prev,
+              [key]: { data: body, error: null, occupied: true },
+            }));
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setStatesByKey((prev) => ({
+              ...prev,
+              [key]: {
+                data: null,
+                error: err instanceof Error ? err.message : "Failed to load run detail",
+                occupied: true, // shown, not silently dropped — a genuine fetch failure is worth surfacing
+              },
+            }));
+          }
+        });
+    }
+
+    for (const member of resolvedMembers) fetchMember(member);
+    const intervalId = setInterval(() => {
+      for (const member of resolvedMembers) fetchMember(member);
+    }, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+    // resolvedMembers/fetchMember are recreated every render — membersKey is the stable,
+    // content-based dependency that actually decides when to restart polling.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membersKey]);
+
+  const allSettled = resolvedMembers.every((m) => statesByKey[memberKey(m)] !== undefined);
+  const anyOccupied = resolvedMembers.some((m) => statesByKey[memberKey(m)]?.occupied);
+
+  useEffect(() => {
+    if (allSettled && !anyOccupied) onClose();
+  }, [allSettled, anyOccupied, onClose]);
+
+  // While every member's very first fetch is still in flight, render nothing at all rather than
+  // a popup shell that might immediately vanish again. A non-solid public match 404s — usually
+  // within well under a second — and a title bar + "Loading…" that flashes open then closes reads
+  // as the popup being broken, not as "nothing to show" (reported against PX 0218/0214,
+  // 2026-09-14). Once every member has settled, later poll ticks never make this go back to
+  // false, so this only ever hides the opening frame, not a refresh.
+  if (!allSettled || !anyOccupied) return null;
+
+  return (
+    <div role="status" className="map-inspector map-inspector--run">
+      <div className="map-inspector__title">
+        <span>
+          {displayName || elementId}
+          {resolvedMembers.length === 1 ? (
+            <span className="map-inspector__subtitle">
+              {" "}
+              · {resolvedMembers[0]!.tdArea} {resolvedMembers[0]!.berth}
+            </span>
+          ) : null}
+        </span>
+        <button type="button" className="map-inspector__close" aria-label="Close" onClick={onClose}>
+          ×
+        </button>
+      </div>
+      <div className="map-inspector__body">
+        {resolvedMembers.map((member) => {
+          const state = statesByKey[memberKey(member)];
+          if (!state) return null;
+          return (
+            <RunPopupMemberSection
+              key={memberKey(member)}
+              tdArea={member.tdArea}
+              berth={member.berth}
+              showHeading={resolvedMembers.length > 1}
+              state={state}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

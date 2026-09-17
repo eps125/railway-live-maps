@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import { TD_PROJECTION_VERSION, joinCombinedBerthState } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { liveDataStatus, tdAreasFromBundle } from "./mapVersion.js";
 import { feedGapWarnings } from "./feedGaps.js";
@@ -63,17 +63,40 @@ export async function computeLiveState(
     currentStateResult.rows.map((row) => [`${row.td_area}|${row.berth_code}`, row]),
   );
 
+  // Grouped by elementId (not assigned 1:1 from berthBindingIndex) because a combined berth
+  // (docs/MAP_EDITOR_SPEC.md's berth section) has more than one `tdArea|berth` key mapping to the
+  // same elementId — assigning `berths[elementId]` per key here previously let the last key
+  // processed silently clobber every earlier member's state for that element.
   let sourceSequence = 0;
-  const berths: Record<string, BerthState> = {};
+  const membersByElement = new Map<
+    string,
+    Array<{
+      tdArea: string;
+      berth: string;
+      order: number;
+      description: string | null;
+      enteredAt: string | null;
+    }>
+  >();
   for (const [key, elementId] of Object.entries(bundle.berthBindingIndex)) {
     const state = stateByKey.get(key);
-    berths[elementId] = {
+    const [tdArea, berth] = key.split("|");
+    const list = membersByElement.get(elementId) ?? [];
+    list.push({
+      tdArea: tdArea ?? "",
+      berth: berth ?? "",
+      order: bundle.berthBindingOrder?.[key] ?? 1,
       description: state?.description ?? null,
       enteredAt: state?.occupancy_entered_at ? state.occupancy_entered_at.toISOString() : null,
-    };
+    });
+    membersByElement.set(elementId, list);
     if (state) {
       sourceSequence = Math.max(sourceSequence, Number(state.source_ingestion_sequence));
     }
+  }
+  const berths: Record<string, BerthState> = {};
+  for (const [elementId, members] of membersByElement) {
+    berths[elementId] = joinCombinedBerthState(members);
   }
 
   // Lancaster (and every current-scope map) has no S-Class binding — signals are always

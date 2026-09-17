@@ -19,6 +19,11 @@ export type EditorCommand =
   | { type: "setProperty"; elementId: string; property: string; value: unknown }
   | { type: "renameElement"; elementId: string; newId: string }
   | { type: "setBinding"; elementId: string; binding: MapBinding | null }
+  /** Owner request 2026-09-17: a combined berth — up to 4 `tdBerth` bindings sharing one
+   * elementId (docs/MAP_EDITOR_SPEC.md's berth section). Replaces the *entire* set of bindings
+   * currently on `elementId` in one commit (same "whole-group" granularity as `setBinding`,
+   * generalized past exactly one), so undo restores the prior group in a single step too. */
+  | { type: "setCombinedBindings"; elementId: string; bindings: MapBinding[] }
   | { type: "connectTopology"; edge: TopologyEdge }
   | { type: "disconnectTopology"; edgeId: string }
   | { type: "reorderLayer"; layerId: string; newOrder: number }
@@ -209,6 +214,27 @@ function applySetBinding(
   };
 }
 
+function applySetCombinedBindings(
+  doc: MapDocument,
+  elementId: string,
+  bindings: MapBinding[],
+): ApplyCommandResult {
+  const previousBindings = doc.bindings.filter((b) => b.elementId === elementId);
+
+  const rest = doc.bindings.filter((b) => b.elementId !== elementId);
+
+  const elements = doc.elements.map((element) =>
+    element.id === elementId && "bindingId" in element
+      ? { ...element, bindingId: bindings[0]?.id }
+      : element,
+  );
+
+  return {
+    doc: { ...doc, elements, bindings: [...rest, ...bindings] },
+    inverse: { type: "setCombinedBindings", elementId, bindings: previousBindings },
+  };
+}
+
 function applyConnectTopology(doc: MapDocument, edge: TopologyEdge): ApplyCommandResult {
   return {
     doc: { ...doc, topology: { ...doc.topology, edges: [...doc.topology.edges, edge] } },
@@ -291,6 +317,8 @@ export function applyCommand(doc: MapDocument, command: EditorCommand): ApplyCom
       return applyRenameElement(doc, command.elementId, command.newId);
     case "setBinding":
       return applySetBinding(doc, command.elementId, command.binding);
+    case "setCombinedBindings":
+      return applySetCombinedBindings(doc, command.elementId, command.bindings);
     case "connectTopology":
       return applyConnectTopology(doc, command.edge);
     case "disconnectTopology":

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Z_INDEX_LAYER_BAND, type MapBinding, type MapDocument } from "@railway/map-schema";
+import { Z_INDEX_LAYER_BAND, type MapDocument, type TdBerthBinding } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
 import { useObservedAreas, useObservedBerths } from "./useBindingAutocomplete.js";
+
+const MAX_COMBINED_BERTH_MEMBERS = 4;
 
 interface TextFieldProps {
   label: string;
@@ -113,17 +115,79 @@ function IdField({
   );
 }
 
+/** One additional combined-berth member row (docs/MAP_EDITOR_SPEC.md's berth section, owner
+ * request 2026-09-17) — same controlled-input-plus-onBlur-commit shape as the primary TD
+ * area/berth fields above, just scoped to one member so each row keeps its own uncommitted
+ * edit independently. */
+function CombinedMemberRow({
+  member,
+  onCommit,
+  onRemove,
+}: {
+  member: TdBerthBinding;
+  onCommit: (tdArea: string, berth: string) => void;
+  onRemove: () => void;
+}): JSX.Element {
+  const [area, setArea] = useState(member.tdArea);
+  const [berth, setBerth] = useState(member.berth);
+  useEffect(() => {
+    setArea(member.tdArea);
+    setBerth(member.berth);
+  }, [member.id, member.tdArea, member.berth]);
+  const berths = useObservedBerths(area || null);
+
+  function commit(): void {
+    if (!area || !berth) return;
+    if (area === member.tdArea && berth === member.berth) return;
+    onCommit(area, berth);
+  }
+
+  return (
+    <div className="field-row">
+      <input
+        aria-label={`Combined member ${member.combinedOrder ?? ""} TD area`}
+        list="observed-td-areas"
+        value={area}
+        onChange={(e) => setArea(e.target.value)}
+        onBlur={commit}
+      />
+      <input
+        aria-label={`Combined member ${member.combinedOrder ?? ""} berth`}
+        list={`observed-berths-${member.id}`}
+        value={berth}
+        onChange={(e) => setBerth(e.target.value)}
+        onBlur={commit}
+      />
+      <datalist id={`observed-berths-${member.id}`}>
+        {berths.map((b) => (
+          <option key={b} value={b} />
+        ))}
+      </datalist>
+      <button type="button" className="btn" onClick={onRemove}>
+        Remove
+      </button>
+    </div>
+  );
+}
+
+/** `bindings` is every `tdBerth` binding sharing `elementId`, sorted by `combinedOrder ?? 1` —
+ * exactly one for a plain berth, up to 4 for a combined berth (owner request 2026-09-17,
+ * docs/MAP_EDITOR_SPEC.md's berth section: a physical split-berth group with no room to draw
+ * each member separately, displayed joined in this order — e.g. "A001 B001"). The whole group
+ * commits together (`setBinding` for exactly one, `setCombinedBindings` for more), so undo
+ * restores the prior group in a single step. */
 function BindingFields({
   elementId,
-  binding,
+  bindings,
 }: {
   elementId: string;
-  binding: MapBinding | undefined;
+  bindings: TdBerthBinding[];
 }): JSX.Element {
   const dispatch = useEditorDispatch();
   const areas = useObservedAreas();
-  const initialArea = binding?.type === "tdBerth" ? binding.tdArea : "";
-  const initialBerth = binding?.type === "tdBerth" ? binding.berth : "";
+  const primary = bindings[0];
+  const initialArea = primary?.tdArea ?? "";
+  const initialBerth = primary?.berth ?? "";
 
   // Both fields are controlled and share this local state — `defaultValue`-based uncontrolled
   // inputs here previously (a) never reset when switching to a different element, so the
@@ -142,21 +206,64 @@ function BindingFields({
 
   const berths = useObservedBerths(localArea || null);
 
+  /** Renumbers `combinedOrder` 1..N by array position, or clears it entirely for a lone
+   * survivor — validate.ts requires every member of a >1 group to have a distinct order, and a
+   * lone binding to have none at all. */
+  function normalizeOrders(group: TdBerthBinding[]): TdBerthBinding[] {
+    return group.map((b, i) => ({
+      ...b,
+      combinedOrder: group.length > 1 ? i + 1 : undefined,
+    }));
+  }
+
+  function commitGroup(next: TdBerthBinding[]): void {
+    const normalized = normalizeOrders(next);
+    if (normalized.length <= 1) {
+      dispatch({
+        type: "dispatchCommand",
+        command: { type: "setBinding", elementId, binding: normalized[0] ?? null },
+      });
+    } else {
+      dispatch({
+        type: "dispatchCommand",
+        command: { type: "setCombinedBindings", elementId, bindings: normalized },
+      });
+    }
+  }
+
   function commitBinding(tdArea: string, berth: string): void {
     if (!tdArea || !berth) return;
     if (tdArea === initialArea && berth === initialBerth) return;
-    const newBinding: MapBinding = {
-      id: binding?.id ?? `bind-${elementId}`,
+    const newPrimary: TdBerthBinding = {
+      id: primary?.id ?? `bind-${elementId}`,
       elementId,
       type: "tdBerth",
       tdArea,
       berth,
-      allowDuplicate: binding?.type === "tdBerth" ? binding.allowDuplicate : false,
+      allowDuplicate: primary?.allowDuplicate ?? false,
     };
-    dispatch({
-      type: "dispatchCommand",
-      command: { type: "setBinding", elementId, binding: newBinding },
-    });
+    commitGroup([newPrimary, ...bindings.slice(1)]);
+  }
+
+  function addMember(): void {
+    if (!primary || bindings.length >= MAX_COMBINED_BERTH_MEMBERS) return;
+    const newMember: TdBerthBinding = {
+      id: `bind-${elementId}-${bindings.length + 1}-${Date.now()}`,
+      elementId,
+      type: "tdBerth",
+      tdArea: primary.tdArea,
+      berth: "",
+      allowDuplicate: false,
+    };
+    commitGroup([...bindings, newMember]);
+  }
+
+  function updateMember(index: number, tdArea: string, berth: string): void {
+    commitGroup(bindings.map((b, i) => (i === index ? { ...b, tdArea, berth } : b)));
+  }
+
+  function removeMember(index: number): void {
+    commitGroup(bindings.filter((_, i) => i !== index));
   }
 
   return (
@@ -190,18 +297,32 @@ function BindingFields({
           ))}
         </datalist>
       </label>
-      {binding ? (
-        <button
-          type="button"
-          className="btn"
-          onClick={() =>
-            dispatch({
-              type: "dispatchCommand",
-              command: { type: "setBinding", elementId, binding: null },
-            })
-          }
-        >
+      {primary ? (
+        <button type="button" className="btn" onClick={() => commitGroup([])}>
           Clear binding
+        </button>
+      ) : null}
+
+      {bindings.length > 1 ? (
+        <>
+          <p className="field-hint">
+            Combined berth: up to {MAX_COMBINED_BERTH_MEMBERS} physical berths sharing this one box
+            (a split-berth group used for permissive working, with no room to draw each member
+            separately). Occupied members display joined in this order, e.g. &quot;A001 B001&quot;.
+          </p>
+          {bindings.slice(1).map((member, i) => (
+            <CombinedMemberRow
+              key={member.id}
+              member={member}
+              onCommit={(tdArea, berth) => updateMember(i + 1, tdArea, berth)}
+              onRemove={() => removeMember(i + 1)}
+            />
+          ))}
+        </>
+      ) : null}
+      {primary && bindings.length < MAX_COMBINED_BERTH_MEMBERS ? (
+        <button type="button" className="btn" onClick={addMember}>
+          + Combine with another berth
         </button>
       ) : null}
     </fieldset>
@@ -329,7 +450,9 @@ export function PropertyPanel(): JSX.Element {
   if (!element) {
     return <aside aria-label="Properties" className="panel-card" />;
   }
-  const binding = doc.bindings.find((b) => b.elementId === elementId);
+  const bindings = doc.bindings
+    .filter((b): b is TdBerthBinding => b.type === "tdBerth" && b.elementId === elementId)
+    .sort((a, b) => (a.combinedOrder ?? 1) - (b.combinedOrder ?? 1));
 
   function setProp(property: string, value: unknown): void {
     dispatch({
@@ -463,7 +586,7 @@ export function PropertyPanel(): JSX.Element {
             as this one, this berth renders blank on the live map — cosmetic only, both berths keep
             their real recorded state.
           </p>
-          <BindingFields elementId={elementId} binding={binding} />
+          <BindingFields elementId={elementId} bindings={bindings} />
         </>
       )}
 

@@ -12,6 +12,7 @@ import {
   buildDeltaMessages,
   type MapBinding,
 } from "../mapProjector/deltaBuilder.js";
+import { computeCombinedOverrides } from "../mapProjector/combinedBerthOverrides.js";
 import type { DeltaPublisher } from "./deltaPublisher.js";
 
 export type { DeltaPublisher } from "./deltaPublisher.js";
@@ -122,9 +123,14 @@ export function foldLiveBerthState(rows: RawCClassRow[]): BerthStateWrite[] {
   );
 }
 
+/** A `td_berth` map binding plus its `mapVersionId` — needed (not just `mapSlug`/`elementId`) so
+ * `computeCombinedOverrides` can look up an element's other combined-berth members within the
+ * same, exact map version. */
+export type CachedMapBinding = MapBinding & { mapVersionId: string };
+
 /** In-process cache of `td_berth` map bindings (they change only on map publish). */
 export class BindingsCache {
-  private byKey = new Map<string, MapBinding[]>();
+  private byKey = new Map<string, CachedMapBinding[]>();
   private loadedAt = 0;
 
   constructor(
@@ -132,7 +138,7 @@ export class BindingsCache {
     private readonly ttlMs = BINDINGS_TTL_MS,
   ) {}
 
-  async get(tdArea: string, berth: string): Promise<MapBinding[]> {
+  async get(tdArea: string, berth: string): Promise<CachedMapBinding[]> {
     if (Date.now() - this.loadedAt > this.ttlMs) {
       await this.reload();
     }
@@ -145,18 +151,20 @@ export class BindingsCache {
       berth: string;
       mapSlug: string;
       elementId: string;
+      mapVersionId: string;
     }>(
-      `select mbi.td_area, mbi.berth, m.slug as "mapSlug", mbi.element_id as "elementId"
+      `select mbi.td_area, mbi.berth, m.slug as "mapSlug", mbi.element_id as "elementId",
+              mv.id as "mapVersionId"
        from map_binding_index mbi
        join map_version mv on mv.id = mbi.map_version_id
        join map m on m.id = mv.map_id
        where mbi.binding_type = 'td_berth' and mv.effective_to is null`,
     );
-    const next = new Map<string, MapBinding[]>();
+    const next = new Map<string, CachedMapBinding[]>();
     for (const row of rows) {
       const key = `${row.td_area} ${row.berth}`;
       const list = next.get(key) ?? [];
-      list.push({ mapSlug: row.mapSlug, elementId: row.elementId });
+      list.push({ mapSlug: row.mapSlug, elementId: row.elementId, mapVersionId: row.mapVersionId });
       next.set(key, list);
     }
     this.byKey = next;
@@ -230,6 +238,7 @@ export async function bulkUpsertCurrentState(pool: Pool, writes: BerthStateWrite
  * (`projector-td-live` daemon + `ingest-td` inline path, ADR 0003 Tier 3) never double-send the
  * same berth step. Returns how many were actually published (a suppressed duplicate counts 0). */
 export async function publishBerthDeltas(
+  pool: Pool,
   redis: DeltaPublisher,
   bindings: BindingsCache,
   writes: BerthStateWrite[],
@@ -240,6 +249,9 @@ export async function publishBerthDeltas(
     if (bound.length === 0) continue;
     const sequence = Number(write.sourceSeq);
     const berthKey = `${write.tdArea} ${write.berth}`;
+    // `berth_current_state` for `write` was already upserted by the caller before this runs, so
+    // a combined berth's other members can be read fresh here alongside it.
+    const combinedOverrides = await computeCombinedOverrides(pool, bound);
     const messages = buildDeltaMessages(
       {
         tdArea: write.tdArea,
@@ -249,6 +261,7 @@ export async function publishBerthDeltas(
       },
       bound,
       sequence,
+      combinedOverrides,
     );
     for (const { mapSlug, message } of messages) {
       published += await redis.publishDeltaIfNewer(
@@ -290,7 +303,7 @@ export async function applyLiveFromEvents(
   // within one frame — child_index and ingestion_sequence are both monotonic here).
   const writes = foldLiveBerthState(cClass);
   await bulkUpsertCurrentState(pool, writes);
-  const deltasPublished = redis ? await publishBerthDeltas(redis, bindings, writes) : 0;
+  const deltasPublished = redis ? await publishBerthDeltas(pool, redis, bindings, writes) : 0;
   return { berthsUpdated: writes.length, deltasPublished };
 }
 
@@ -378,7 +391,7 @@ export async function runProjectTdLive(
     summary.berthsUpdated += writes.length;
 
     if (redis) {
-      summary.deltasPublished += await publishBerthDeltas(redis, bindings, writes);
+      summary.deltasPublished += await publishBerthDeltas(pool, redis, bindings, writes);
     }
 
     await advanceCheckpoint(pool, defId, maxSeq.toString());

@@ -36,6 +36,7 @@ function bundle(overrides: Partial<CompiledMapBundle> = {}): CompiledMapBundle {
     ],
     elementsById: {},
     berthBindingIndex: {},
+    berthBindingOrder: {},
     sBitBindingIndex: {},
     placeBindingIndex: [],
     boundingBox: { minX: 0, minY: 0, maxX: 100, maxY: 100 },
@@ -171,6 +172,84 @@ describe("MapRenderer", () => {
     expect(
       await screen.findByText("No garner schedule matches headcode 2A16 today."),
     ).toBeInTheDocument();
+  });
+
+  it("opens the run popup with every combined-berth member's detail (Milestone 50)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/A001/")) {
+          return Promise.resolve(
+            jsonResponse({
+              tdArea: "PX",
+              berth: "A001",
+              description: "1A11",
+              headcode: "1A11",
+              occupancyEnteredAt: null,
+              matchStatus: "unmatched",
+              matchBasis: null,
+              positionScoped: false,
+              note: "No candidate schedule found for this headcode today, mirrored from openrail-eps (garner).",
+              effective: null,
+              candidateSchedules: [],
+              unitAllocation: [],
+            }),
+          );
+        }
+        if (url.includes("/B001/")) {
+          return Promise.resolve(
+            jsonResponse({
+              tdArea: "PX",
+              berth: "B001",
+              description: "1B22",
+              headcode: "1B22",
+              occupancyEnteredAt: null,
+              matchStatus: "unmatched",
+              matchBasis: null,
+              positionScoped: false,
+              note: "No candidate schedule found for this headcode today, mirrored from openrail-eps (garner).",
+              effective: null,
+              candidateSchedules: [],
+              unitAllocation: [],
+            }),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const doc = bundle({
+      elementsById: {
+        "berth-combined": {
+          id: "berth-combined",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Combined",
+        },
+      },
+      berthBindingIndex: { "PX|A001": "berth-combined", "PX|B001": "berth-combined" },
+      berthBindingOrder: { "PX|A001": 1, "PX|B001": 2 },
+    });
+
+    render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-combined": { description: "1A11 1B22", enteredAt: null } }}
+        signals={{}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("1A11 1B22"));
+
+    expect(await screen.findByText("PX A001")).toBeInTheDocument();
+    expect(await screen.findByText("PX B001")).toBeInTheDocument();
   });
 
   it("closes the popup via its close button", async () => {

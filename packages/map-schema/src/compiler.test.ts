@@ -71,6 +71,40 @@ describe("compileMapDocument", () => {
     expect(bundle.berthBindingIndex["PX|1008"]).toBe("berth-1");
   });
 
+  it("exposes combinedOrder per key for a combined berth's bindings, and omits it for a plain one", () => {
+    const combinedDoc = MapDocumentSchema.parse({
+      ...doc,
+      bindings: [
+        // A plain, non-combined binding (no combinedOrder) alongside a 2-member combined group,
+        // to prove the plain one is genuinely absent from berthBindingOrder — not just "never
+        // looked up".
+        { id: "bind-1", elementId: "berth-1", type: "tdBerth", tdArea: "PX", berth: "1008" },
+        {
+          id: "bind-a",
+          elementId: "berth-2",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "A001",
+          combinedOrder: 1,
+        },
+        {
+          id: "bind-b",
+          elementId: "berth-2",
+          type: "tdBerth",
+          tdArea: "PX",
+          berth: "B001",
+          combinedOrder: 2,
+        },
+      ],
+    });
+    const bundle = compileMapDocument(combinedDoc);
+    expect(bundle.berthBindingIndex["PX|A001"]).toBe("berth-2");
+    expect(bundle.berthBindingIndex["PX|B001"]).toBe("berth-2");
+    expect(bundle.berthBindingOrder?.["PX|A001"]).toBe(1);
+    expect(bundle.berthBindingOrder?.["PX|B001"]).toBe(2);
+    expect("PX|1008" in (bundle.berthBindingOrder ?? {})).toBe(false);
+  });
+
   it("computes a bounding box covering every element", () => {
     const bundle = compileMapDocument(doc);
     expect(bundle.boundingBox).toEqual({ minX: 0, minY: 0, maxX: 50, maxY: 30 });

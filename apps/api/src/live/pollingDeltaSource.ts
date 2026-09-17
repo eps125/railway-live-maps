@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import { TD_PROJECTION_VERSION, joinCombinedBerthState } from "@railway/domain";
 import type { LiveDeltaMessage } from "@railway/protocol";
 import type { LiveDeltaSource } from "./deltaSource.js";
 
@@ -7,6 +7,7 @@ interface BoundBerthStateRow {
   element_id: string;
   td_area: string;
   berth: string;
+  combined_order: number | null;
   description: string | null;
   occupancy_entered_at: Date | null;
   source_ingestion_sequence: string | null;
@@ -15,6 +16,41 @@ interface BoundBerthStateRow {
 interface ElementState {
   description: string | null;
   enteredAt: string | null;
+}
+
+/** Groups raw per-binding rows by element (more than one row per element only for a combined
+ * berth — docs/MAP_EDITOR_SPEC.md's berth section, owner request 2026-09-17) and joins each
+ * group's currently-occupied members into that element's single displayed state. Also returns,
+ * per element, a representative row (its lowest `combined_order`, i.e. member 1) to source the
+ * `tdArea`/`berth` informational fields on an outgoing delta message from — those fields are
+ * cosmetic/debug metadata for a combined berth (never rendered — MapRenderer/EditorCanvas only
+ * read `description`/`enteredAt`), since a delta message names exactly one physical berth. */
+function groupByElement(
+  rows: BoundBerthStateRow[],
+): Map<string, { state: ElementState; representative: BoundBerthStateRow }> {
+  const byElement = new Map<string, BoundBerthStateRow[]>();
+  for (const row of rows) {
+    const list = byElement.get(row.element_id) ?? [];
+    list.push(row);
+    byElement.set(row.element_id, list);
+  }
+  const result = new Map<string, { state: ElementState; representative: BoundBerthStateRow }>();
+  for (const [elementId, members] of byElement) {
+    const state = joinCombinedBerthState(
+      members.map((m) => ({
+        tdArea: m.td_area,
+        berth: m.berth,
+        order: m.combined_order ?? 1,
+        description: m.description,
+        enteredAt: m.occupancy_entered_at ? m.occupancy_entered_at.toISOString() : null,
+      })),
+    );
+    const representative = [...members].sort(
+      (a, b) => (a.combined_order ?? 1) - (b.combined_order ?? 1),
+    )[0]!;
+    result.set(elementId, { state, representative });
+  }
+  return result;
 }
 
 interface PollEntry {
@@ -26,7 +62,7 @@ interface PollEntry {
 
 async function fetchBoundState(pool: Pool, mapVersionId: string): Promise<BoundBerthStateRow[]> {
   const result = await pool.query<BoundBerthStateRow>(
-    `select mbi.element_id, mbi.td_area, mbi.berth,
+    `select mbi.element_id, mbi.td_area, mbi.berth, mbi.combined_order,
             bcs.description, bcs.occupancy_entered_at, bcs.source_ingestion_sequence
      from map_binding_index mbi
      left join berth_current_state bcs
@@ -59,42 +95,40 @@ export function createPollingDeltaSource(pool: Pool, intervalMs: number): LiveDe
   const entries = new Map<string, PollEntry>();
 
   function diffAndEmit(entry: PollEntry, rows: BoundBerthStateRow[]): void {
-    for (const row of rows) {
-      const previous = entry.lastByElement.get(row.element_id);
-      const enteredAt = row.occupancy_entered_at ? row.occupancy_entered_at.toISOString() : null;
-      const next: ElementState = { description: row.description, enteredAt };
+    for (const [elementId, { state: next, representative }] of groupByElement(rows)) {
+      const previous = entry.lastByElement.get(elementId);
 
       const changed =
         !previous ||
         previous.description !== next.description ||
         previous.enteredAt !== next.enteredAt;
-      entry.lastByElement.set(row.element_id, next);
+      entry.lastByElement.set(elementId, next);
       if (!changed) continue;
 
-      const observedSequence = row.source_ingestion_sequence
-        ? Number(row.source_ingestion_sequence)
+      const observedSequence = representative.source_ingestion_sequence
+        ? Number(representative.source_ingestion_sequence)
         : entry.lastSequence + 1;
       entry.lastSequence = Math.max(entry.lastSequence + 1, observedSequence);
 
       const eventAt = new Date().toISOString();
       const message: LiveDeltaMessage =
-        row.description === null
+        next.description === null
           ? {
               type: "berth.cleared",
               sequence: entry.lastSequence,
               eventAt,
-              elementId: row.element_id,
-              tdArea: row.td_area,
-              berth: row.berth,
+              elementId,
+              tdArea: representative.td_area,
+              berth: representative.berth,
             }
           : {
               type: "berth.updated",
               sequence: entry.lastSequence,
               eventAt,
-              elementId: row.element_id,
-              tdArea: row.td_area,
-              berth: row.berth,
-              description: row.description,
+              elementId,
+              tdArea: representative.td_area,
+              berth: representative.berth,
+              description: next.description,
               // `enteredAt` should always be set whenever `description` is (the projector sets
               // both together), but the column is nullable in the schema — fall back to "now"
               // rather than emit a message the protocol schema would reject.
@@ -133,15 +167,12 @@ export function createPollingDeltaSource(pool: Pool, intervalMs: number): LiveDe
           .then((rows) => {
             const stillWanted = entries.get(mapVersionId);
             if (!stillWanted) return; // every subscriber unsubscribed before seeding finished
-            for (const row of rows) {
-              stillWanted.lastByElement.set(row.element_id, {
-                description: row.description,
-                enteredAt: row.occupancy_entered_at ? row.occupancy_entered_at.toISOString() : null,
-              });
-              if (row.source_ingestion_sequence) {
+            for (const [elementId, { state, representative }] of groupByElement(rows)) {
+              stillWanted.lastByElement.set(elementId, state);
+              if (representative.source_ingestion_sequence) {
                 stillWanted.lastSequence = Math.max(
                   stillWanted.lastSequence,
-                  Number(row.source_ingestion_sequence),
+                  Number(representative.source_ingestion_sequence),
                 );
               }
             }

@@ -26,6 +26,7 @@ export async function reconstructStateAt(
   const [{ sourceSequence, berths, signals }, { gaps, coversAt }] = await Promise.all([
     reconstructMapStateAt(pool, {
       berthBindingIndex: bundle.berthBindingIndex,
+      berthBindingOrder: bundle.berthBindingOrder ?? {},
       signalElementIds,
       projectionVersion: TD_PROJECTION_VERSION,
       at,

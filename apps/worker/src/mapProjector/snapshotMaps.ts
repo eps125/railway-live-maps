@@ -65,6 +65,7 @@ export async function runSnapshotMaps(
 
     const { sourceSequence, berths, signals } = await reconstructMapStateAt(pool, {
       berthBindingIndex: bundle.berthBindingIndex ?? {},
+      berthBindingOrder: bundle.berthBindingOrder ?? {},
       signalElementIds,
       projectionVersion: TD_PROJECTION_VERSION,
       at: now,

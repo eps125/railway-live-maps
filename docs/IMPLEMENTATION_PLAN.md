@@ -2623,6 +2623,138 @@ boundary event of the older kind arriving chronologically _after_ a changelocati
 still lose to it on openrail's pages. Deliberately accepted to keep the uncompiled C surface small;
 revisit only if a real case shows it mattering.
 
+## Milestone 50 — combined berths for split-berth permissive-working groups (2026-09-17)
+
+Owner request: some berths are a physical split trio/quad used for permissive working (e.g.
+`EG0002 → EGC001 → EGB001 → EGA001`, almost immediately, with a second train then stacking behind
+at B while A is occupied). There's often no room on the diagram to draw 3-4 separate berth boxes
+for a group that's usually only one train deep — the ask is a single berth box that displays every
+currently-occupied member joined together (e.g. "A001 B001"), settable in a few clicks in the
+editor, kept a rare, explicit exception rather than the default berth shape. Max 4 members.
+
+Design: a "combined berth" is 2-4 `tdBerth` bindings sharing one `elementId`, each carrying a new
+optional `combinedOrder` (1-4) — the join order, not arrival order. Every member of a >1 group must
+set a distinct `combinedOrder` (validate.ts's explicit-opt-in requirement, same precedent as
+`allowDuplicate`/`inhibitedBy`); a lone binding must not set it at all. All the actual combining
+logic (`joinCombinedBerthState`, `packages/domain/src/mapDelta/combinedBerth.ts`) lives in one
+place: join every currently-occupied member's description in `combinedOrder`, space-separated;
+report the most-recently-entered occupied member's `enteredAt` (a judgment call — several
+reasonable choices exist since simultaneous occupants make "the" entered time ambiguous).
+
+Kept the wire protocol and every renderer/client untouched: the join happens server-side, before a
+`berth.updated`/`berth.cleared` delta is ever emitted, so playback (which replays the identical
+wire shape), the SVG renderer, and the editor's Test-mode preview all just render
+`berths[elementId].description` exactly as before — no protocol version bump.
+
+Files changed:
+
+- `packages/map-schema/src/document.ts` — `TdBerthBindingSchema.combinedOrder` (1-4, optional).
+- `packages/map-schema/src/validate.ts` — combined-berth grouping rules (max 4, every member sets
+  a distinct order, a lone binding must not).
+- `packages/map-schema/src/compiler.ts` — `CompiledMapBundle.berthBindingOrder` (`tdArea|berth` →
+  `combinedOrder`), optional at the type level since a map version published before this field
+  existed has no such key in its immutable `compiled_runtime_bundle` (rule 11) — every reader
+  treats a missing bundle-level `berthBindingOrder` the same as an empty one.
+- `packages/domain/src/mapDelta/combinedBerth.ts` (new) — `joinCombinedBerthState`, the one shared
+  join implementation.
+- `apps/api/src/lib/liveState.ts`, `packages/database/src/mapStateReconstruction.ts` — both had the
+  same latent bug: looping `Object.entries(berthBindingIndex)` and assigning `berths[elementId]`
+  per key silently let the last key processed clobber every earlier member sharing that element.
+  Both now group by `elementId` first and join. (`mapStateReconstruction.ts` duplicates the tiny
+  join function locally rather than importing `@railway/domain`, keeping `@railway/database` a
+  leaf package per its own existing header comment.)
+- `apps/api/src/lib/reconstructState.ts`, `apps/worker/src/mapProjector/snapshotMaps.ts` — thread
+  `berthBindingOrder` through to the reconstruction call.
+- `packages/database/migrations/0034_map_binding_index_combined_order.sql` — `combined_order`
+  smallint column (1-4 check) + `(map_version_id, element_id)` index for the live-delta lookup
+  below.
+- `packages/map-publish/src/mapBindingIndex.ts` — writes `combined_order` from the compiled bundle.
+- `apps/worker/src/mapProjector/combinedBerthOverrides.ts` (new) — for a just-changed berth bound
+  to a combined-berth element, looks up every sibling member's current `berth_current_state` and
+  returns the joined `{description, enteredAt}` to override in the outgoing delta.
+- `apps/worker/src/mapProjector/deltaBuilder.ts` — `buildDeltaMessages` takes an optional
+  `combinedOverrides` map; falls back to the raw change untouched when absent (every ordinary,
+  non-combined binding).
+- `apps/worker/src/mapProjector/projector.ts` (`runProjectMapDeltas`, the slower/authoritative
+  delta publisher) and `apps/worker/src/td/liveProjector.ts` (`publishBerthDeltas`, the ADR 0003
+  hot path) both call `computeCombinedOverrides` before building messages — both publish the same
+  underlying events, so both needed the fix or the hot path's correct combined text would get
+  overwritten moments later by the slower path's stale single-member one.
+- `apps/api/src/live/pollingDeltaSource.ts` — the dev/simple polling adapter had the identical
+  per-key overwrite bug; `groupByElement` fixes it for both the diff/emit loop and the initial
+  per-subscriber seed.
+- `apps/web/src/map/MapRenderer.tsx` — the click-a-berth-for-run-popup reverse lookup
+  (`elementIdToBinding`) had the same "last key wins" pattern; now deterministically picks the
+  lowest `combinedOrder` (member 1) so clicking a combined berth always asks about the same
+  physical berth rather than whichever key happened to iterate last.
+- `apps/web/src/editor/commands.ts` — new `setCombinedBindings` command (replaces the whole binding
+  group sharing an `elementId` in one commit, so undo restores the prior group in one step).
+- `apps/web/src/editor/PropertyPanel.tsx` — `BindingFields` now takes every binding sharing the
+  selected element (not just one); a "+ Combine with another berth" button adds up to 3 more
+  member rows (TD area/berth, each independently committed on blur), with per-row Remove.
+- `apps/web/src/editor/TestModePanel.tsx` — Simulated-mode preview (`keyToPreview`) had the same
+  per-binding overwrite bug; now groups by element and calls `joinCombinedBerthState`. Live-mode
+  preview needed no change (it polls the already-fixed `/state` endpoint).
+- Tests: `packages/domain/src/mapDelta/combinedBerth.test.ts` (new),
+  `packages/map-schema/src/validate.test.ts`/`compiler.test.ts` (new cases),
+  `apps/worker/src/mapProjector/deltaBuilder.test.ts`/`combinedBerthOverrides.test.ts` (new file),
+  `apps/api/src/routes/maps.test.ts` (new combined-berth `/state` case),
+  `apps/web/src/editor/commands.test.ts`/`PropertyPanel.test.tsx` (new cases).
+
+Acceptance criteria: an author can add 2-4 TD bindings to one berth element from the Properties
+panel alone; when 2+ of those physical berths are occupied at once, the live map (and playback, and
+the editor's Test-mode preview) show all of their descriptions joined in one box, in the
+author-declared order; an ordinary, non-combined berth is completely unaffected (same behavior,
+same one query per delta as before).
+
+Tests run: `pnpm run typecheck` (all 10 packages/apps clean), `pnpm run test` (562/562, including
+the new cases above), `pnpm exec prettier --check` (touched files clean — 7 pre-existing warnings
+elsewhere untouched by this change).
+
+Migrations: `0034_map_binding_index_combined_order.sql` (additive: nullable column + check
+constraint + index — no backfill needed, no lock risk on the small `map_binding_index` table).
+
+Known limitations / follow-up: no visual indicator in the editor canvas itself that a berth is
+combined (only the Properties panel shows it) — low priority since this is meant to stay a rare
+exception. `enteredAt`'s "most-recently-entered" tie-break is a judgment call, not confirmed against
+a real multi-train scenario yet. The click-a-berth run popup only ever asks about the lowest-order
+member; showing per-member run info for a combined berth is deferred.
+
+### Addendum (2026-09-17): dashed editor outline, every member shown in the run popup, sticky close button
+
+Follow-up owner feedback closed the two deferred items above and fixed an unrelated popup nuisance:
+
+1. **Editor-only dashed outline.** A combined berth's `Rect` in `EditorCanvas.tsx` gets a dashed
+   stroke (`dash={[4, 3]}`, only when 2+ `tdBerth` bindings share the element) so the author can
+   spot a split-berth group at a glance without opening the Properties panel. Public
+   `MapRenderer.tsx` is deliberately untouched — scoped to "in the editor" per the request.
+2. **Every occupied member in the run popup**, not just the lowest-order one. Owner was offered a
+   picker (show one member, let the visitor switch) or all members shown successively with a
+   divider; went with the latter — no extra click, nothing hidden. `RunPopup.tsx` restructured:
+   the fetch/poll loop for every member now lives in `RunPopup` itself (one effect, keyed on a
+   stable `membersKey` string so remounts aren't required to react to a different berth), and a
+   new pure `RunPopupMemberSection` renders one member's detail with a heading (`tdArea berth`)
+   only shown when there's more than one. A CSS adjacent-sibling rule
+   (`.map-inspector__member + .map-inspector__member`) draws the divider only between two
+   _actually-rendered_ member sections — a vacant member renders nothing at all (not a hidden
+   placeholder), so the divider count self-corrects as members come and go while the popup is
+   open. The whole popup still closes once every member has gone vacant, matching the original
+   single-berth "close quietly" behaviour; a single vacant member among several just drops its own
+   section. `MapRenderer.tsx`'s `elementIdToMembers` now collects every member per element
+   (previously `elementIdToBinding` kept only the lowest-order one).
+3. **Sticky popup close button.** `.map-inspector--run`'s title bar is `position: sticky; top: 0`
+   inside the popup's own scrolling box (previously the whole box, title included, scrolled
+   together, so a long combined-berth popup could scroll the close button out of view).
+
+Files: `apps/web/src/editor/EditorCanvas.tsx`, `apps/web/src/map/RunPopup.tsx`,
+`apps/web/src/map/MapRenderer.tsx`, `apps/web/src/styles.css`. `RunPopupProps.tdArea`/`berth`
+still work unchanged for every existing single-berth caller — `members` is additive.
+
+Tests: `RunPopup.test.tsx` (+3: successive multi-member display, a vacant member quietly omitted
+without closing, closes once every member is vacant), `MapRenderer.test.tsx` (+1: combined-berth
+click opens a popup with both members). `pnpm run typecheck` clean, `pnpm run test` 566/566,
+`pnpm exec prettier --check` clean on every touched file.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

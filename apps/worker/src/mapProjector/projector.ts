@@ -8,6 +8,7 @@ import {
 } from "@railway/database";
 import { MAP_DELTA_PROJECTION_NAME, MAP_DELTA_PROJECTION_VERSION } from "@railway/domain";
 import { berthChangesForEvent, buildDeltaMessages, type MapBinding } from "./deltaBuilder.js";
+import { computeCombinedOverrides } from "./combinedBerthOverrides.js";
 
 export { MAP_DELTA_PROJECTION_NAME, MAP_DELTA_PROJECTION_VERSION };
 
@@ -104,8 +105,8 @@ export async function runProjectMapDeltas(
       });
 
       for (const change of changes) {
-        const bindingsResult = await pool.query<MapBinding>(
-          `select m.slug as "mapSlug", mbi.element_id as "elementId"
+        const bindingsResult = await pool.query<MapBinding & { mapVersionId: string }>(
+          `select m.slug as "mapSlug", mbi.element_id as "elementId", mv.id as "mapVersionId"
            from map_binding_index mbi
            join map_version mv on mv.id = mbi.map_version_id
            join map m on m.id = mv.map_id
@@ -115,10 +116,12 @@ export async function runProjectMapDeltas(
         );
         if (bindingsResult.rows.length === 0) continue;
 
+        const combinedOverrides = await computeCombinedOverrides(pool, bindingsResult.rows);
         const messages = buildDeltaMessages(
           change,
           bindingsResult.rows,
           Number(row.ingestion_sequence),
+          combinedOverrides,
         );
         for (const { mapSlug, message } of messages) {
           await redis.publish(`railway:live:${mapSlug}`, JSON.stringify(message));

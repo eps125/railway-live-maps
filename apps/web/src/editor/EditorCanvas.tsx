@@ -739,6 +739,18 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
   // consumes — see docs there for the layer-order/zIndex band math.
   const layersById = new Map(doc.layers.map((layer) => [layer.id, layer]));
   const elementsMap = new Map(doc.elements.map((element) => [element.id, element]));
+  // Combined berths (owner request 2026-09-17, docs/MAP_EDITOR_SPEC.md's berth section): more
+  // than one tdBerth binding sharing an elementId. Editor-only visual cue (a dashed outline
+  // instead of solid) so the author can tell at a glance which boxes are a split-berth group —
+  // the public map keeps the plain solid outline.
+  const combinedBerthElementIds = (() => {
+    const counts = new Map<string, number>();
+    for (const binding of doc.bindings) {
+      if (binding.type !== "tdBerth") continue;
+      counts.set(binding.elementId, (counts.get(binding.elementId) ?? 0) + 1);
+    }
+    return new Set([...counts].filter(([, count]) => count > 1).map(([elementId]) => elementId));
+  })();
   const paintOrderedElements = sortElementsForPaint(
     doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
     doc.layers,
@@ -945,6 +957,7 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     stroke={selected ? "#58a6ff" : "#2d3644"}
                     strokeWidth={selected ? 2 : 1}
                     cornerRadius={2}
+                    {...(combinedBerthElementIds.has(element.id) ? { dash: [4, 3] } : {})}
                   />
                   <Text
                     y={yOffset}

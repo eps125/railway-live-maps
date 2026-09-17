@@ -127,6 +127,59 @@ describe("map routes", () => {
     expect(body.sourceSequence).toBe(42);
   });
 
+  it("joins a combined berth's occupied members into one element's state (owner request 2026-09-17)", async () => {
+    // Two tdBerth bindings ("PX|A001", "PX|B001") sharing one map element ("berth-combined") —
+    // a split-berth group for permissive working. Both currently occupied; the join must show
+    // both, in combinedOrder, not silently drop one (the exact regression this milestone fixed).
+    const combinedBundle = {
+      ...compiledBundle,
+      elementsById: { "berth-combined": { id: "berth-combined", type: "berth" } },
+      berthBindingIndex: { "PX|A001": "berth-combined", "PX|B001": "berth-combined" },
+      berthBindingOrder: { "PX|A001": 1, "PX|B001": 2 },
+    };
+    const pool = fakePool((text) => {
+      if (text.includes("from map_version mv")) {
+        return { rows: [mapVersionRow({ compiled_runtime_bundle: combinedBundle })] };
+      }
+      if (text.includes("from berth_current_state")) {
+        return {
+          rows: [
+            {
+              td_area: "PX",
+              berth_code: "A001",
+              description: "1A23",
+              occupancy_id: null,
+              occupancy_entered_at: new Date("2026-08-04T12:00:00Z"),
+              source_ingestion_sequence: "10",
+            },
+            {
+              td_area: "PX",
+              berth_code: "B001",
+              description: "1B99",
+              occupancy_id: null,
+              occupancy_entered_at: new Date("2026-08-04T12:05:00Z"),
+              source_ingestion_sequence: "11",
+            },
+          ],
+        };
+      }
+      if (text.includes("from td_heartbeat")) return { rows: [{ last_heartbeat_at: new Date() }] };
+      if (text.includes("from feed_gap")) return { rows: [] };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const app = Fastify();
+    await registerMapRoutes(app, { pool });
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/state" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.berths["berth-combined"]).toEqual({
+      description: "1A23 1B99",
+      enteredAt: "2026-08-04T12:05:00.000Z",
+    });
+  });
+
   it("GET /api/v1/maps/:slug/state?at= reconstructs historical state from berth_occupancy", async () => {
     const pool = fakePool((text) => {
       if (text.includes("from map_version mv")) return { rows: [mapVersionRow()] };

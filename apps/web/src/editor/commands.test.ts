@@ -183,6 +183,87 @@ describe("applyCommand", () => {
     expect(berth).toMatchObject({ bindingId: undefined });
   });
 
+  it("setCombinedBindings replaces the whole group sharing an elementId, inverse restores the prior group", () => {
+    const doc = baseDoc();
+    const combinedBindings = [
+      {
+        id: "bind-1",
+        elementId: "berth-1",
+        type: "tdBerth" as const,
+        tdArea: "ZZ",
+        berth: "A001",
+        allowDuplicate: false,
+        combinedOrder: 1,
+      },
+      {
+        id: "bind-2",
+        elementId: "berth-1",
+        type: "tdBerth" as const,
+        tdArea: "ZZ",
+        berth: "B001",
+        allowDuplicate: false,
+        combinedOrder: 2,
+      },
+      {
+        id: "bind-3",
+        elementId: "berth-1",
+        type: "tdBerth" as const,
+        tdArea: "ZZ",
+        berth: "C001",
+        allowDuplicate: false,
+        combinedOrder: 3,
+      },
+    ];
+    const applied = expectRoundTrip(doc, {
+      type: "setCombinedBindings",
+      elementId: "berth-1",
+      bindings: combinedBindings,
+    });
+    expect(applied.bindings).toEqual(combinedBindings);
+    const berth = applied.elements.find((e) => e.id === "berth-1")!;
+    // bindingId is a redundant, non-authoritative back-reference (see validate.ts) — it just
+    // points at one member of the group, here the first.
+    expect(berth).toMatchObject({ bindingId: "bind-1" });
+  });
+
+  it("setCombinedBindings shrinking back to one binding leaves only that one on the element", () => {
+    const doc = baseDoc();
+    doc.bindings = [
+      {
+        id: "bind-1",
+        elementId: "berth-1",
+        type: "tdBerth",
+        tdArea: "ZZ",
+        berth: "A001",
+        allowDuplicate: false,
+        combinedOrder: 1,
+      },
+      {
+        id: "bind-2",
+        elementId: "berth-1",
+        type: "tdBerth",
+        tdArea: "ZZ",
+        berth: "B001",
+        allowDuplicate: false,
+        combinedOrder: 2,
+      },
+    ];
+    const solo = {
+      id: "bind-1",
+      elementId: "berth-1",
+      type: "tdBerth" as const,
+      tdArea: "ZZ",
+      berth: "A001",
+      allowDuplicate: false,
+    };
+    const { doc: applied } = applyCommand(doc, {
+      type: "setCombinedBindings",
+      elementId: "berth-1",
+      bindings: [solo],
+    });
+    expect(applied.bindings).toEqual([solo]);
+  });
+
   it("renameElement changes the id and cascades to the binding and any trackElementId references, inverse renames back", () => {
     const doc = baseDoc();
     doc.elements = doc.elements.map((element) =>

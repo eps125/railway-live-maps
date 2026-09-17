@@ -121,6 +121,71 @@ describe("buildDeltaMessages", () => {
     ]);
   });
 
+  it("uses the combinedOverrides joined state, not the raw change, for a combined-berth element", () => {
+    // Member B001 clearing while A001 stays occupied: the raw `change` alone says "cleared", but
+    // the caller-supplied override reflects the combined berth's real, still-occupied state.
+    const overrides = new Map([
+      ["lancaster|berth-1", { description: "A001", enteredAt: "2026-08-05T11:00:00.000Z" }],
+    ]);
+    const messages = buildDeltaMessages(
+      { tdArea: "PX", berth: "B001", description: null, eventAt: "2026-08-05T12:00:00.000Z" },
+      [{ mapSlug: "lancaster", elementId: "berth-1" }],
+      500,
+      overrides,
+    );
+    expect(messages).toEqual([
+      {
+        mapSlug: "lancaster",
+        message: {
+          type: "berth.updated",
+          sequence: 500,
+          eventAt: "2026-08-05T12:00:00.000Z",
+          elementId: "berth-1",
+          tdArea: "PX",
+          berth: "B001",
+          description: "A001",
+          enteredAt: "2026-08-05T11:00:00.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("emits berth.cleared when combinedOverrides says every member is now vacant", () => {
+    const overrides = new Map([["lancaster|berth-1", { description: null, enteredAt: null }]]);
+    const messages = buildDeltaMessages(
+      { tdArea: "PX", berth: "A001", description: null, eventAt: "2026-08-05T12:00:00.000Z" },
+      [{ mapSlug: "lancaster", elementId: "berth-1" }],
+      500,
+      overrides,
+    );
+    expect(messages).toEqual([
+      {
+        mapSlug: "lancaster",
+        message: {
+          type: "berth.cleared",
+          sequence: 500,
+          eventAt: "2026-08-05T12:00:00.000Z",
+          elementId: "berth-1",
+          tdArea: "PX",
+          berth: "A001",
+        },
+      },
+    ]);
+  });
+
+  it("falls back to the raw change for a binding absent from combinedOverrides (ordinary case)", () => {
+    const overrides = new Map([
+      ["lancaster|berth-99", { description: "X", enteredAt: "2026-08-05T11:00:00.000Z" }],
+    ]);
+    const messages = buildDeltaMessages(
+      { tdArea: "ZZ", berth: "0002", description: "1A23", eventAt: "2026-08-05T12:00:00.000Z" },
+      [{ mapSlug: "lancaster", elementId: "berth-1" }],
+      500,
+      overrides,
+    );
+    expect(messages[0]?.message).toMatchObject({ description: "1A23" });
+  });
+
   it("returns an empty array when no map binds the changed berth", () => {
     const messages = buildDeltaMessages(
       { tdArea: "ZZ", berth: "0001", description: "1A23", eventAt: "2026-08-05T12:00:00.000Z" },

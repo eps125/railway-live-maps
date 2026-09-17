@@ -340,10 +340,29 @@ export function MapRenderer({
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const elementIdToBinding = useMemo(() => {
-    const map = new Map<string, string>();
+  // For a combined berth (docs/MAP_EDITOR_SPEC.md's berth section) more than one key maps to the
+  // same elementId — the click-a-berth run popup shows every member's detail (Milestone 50), so
+  // this collects all of them per element, sorted into combinedOrder.
+  const elementIdToMembers = useMemo(() => {
+    const byElement = new Map<string, Array<{ tdArea: string; berth: string; order: number }>>();
     for (const [key, elementId] of Object.entries(bundle.berthBindingIndex)) {
-      map.set(elementId, key);
+      const [tdArea, berth] = key.split("|");
+      const list = byElement.get(elementId) ?? [];
+      list.push({
+        tdArea: tdArea ?? "",
+        berth: berth ?? "",
+        order: bundle.berthBindingOrder?.[key] ?? 1,
+      });
+      byElement.set(elementId, list);
+    }
+    const map = new Map<string, Array<{ tdArea: string; berth: string }>>();
+    for (const [elementId, members] of byElement) {
+      map.set(
+        elementId,
+        [...members]
+          .sort((a, b) => a.order - b.order)
+          .map(({ tdArea, berth }) => ({ tdArea, berth })),
+      );
     }
     return map;
   }, [bundle]);
@@ -481,7 +500,7 @@ export function MapRenderer({
     }
   }
 
-  const selectedBinding = selectedElementId ? elementIdToBinding.get(selectedElementId) : undefined;
+  const selectedMembers = selectedElementId ? elementIdToMembers.get(selectedElementId) : undefined;
   const selectedElement = selectedElementId ? bundle.elementsById[selectedElementId] : undefined;
 
   return (
@@ -681,7 +700,7 @@ export function MapRenderer({
         Reset view
       </button>
 
-      {selectedElementId && selectedBinding ? (
+      {selectedElementId && selectedMembers && selectedMembers.length > 0 ? (
         // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup".
         <RunPopup
           key={selectedElementId}
@@ -689,8 +708,9 @@ export function MapRenderer({
           displayName={
             selectedElement?.type === "berth" ? selectedElement.displayName : selectedElementId
           }
-          tdArea={selectedBinding.split("|")[0] ?? ""}
-          berth={selectedBinding.split("|")[1] ?? ""}
+          tdArea={selectedMembers[0]!.tdArea}
+          berth={selectedMembers[0]!.berth}
+          members={selectedMembers}
           onClose={() => setSelectedElementId(null)}
         />
       ) : null}

@@ -234,6 +234,14 @@ const TdBerthBindingSchema = z.object({
   /** MAP_EDITOR_SPEC §9: duplicate berth bindings are blocking "unless explicitly allowed and
    * justified" — this is that explicit opt-in. */
   allowDuplicate: z.boolean().default(false),
+  /** Owner request 2026-09-17: a "combined berth" — up to 4 `tdBerth` bindings sharing one
+   * `elementId` for a physical split-berth group used for permissive working (e.g. a 3- or
+   * 4-way platform split with no room to draw each member separately). Author-declared only,
+   * same "explicit opt-in" precedent as `allowDuplicate`/`inhibitedBy`: every binding sharing an
+   * `elementId` must carry a distinct `combinedOrder` (1-4) for the group to be valid
+   * (validate.ts), and a lone binding must NOT set it. The renderer joins the currently-occupied
+   * members' descriptions in this order (docs/MAP_EDITOR_SPEC.md's berth section). */
+  combinedOrder: z.number().int().min(1).max(4).optional(),
 });
 
 const TdSBitBindingSchema = z.object({

@@ -472,6 +472,13 @@ all-columns unique. Populated automatically by the `publish-map` worker command;
 published before this migration existed were backfilled once via the idempotent
 `backfill-map-bindings` command.
 
+**Combined berths (Milestone 50):** migration `0034_map_binding_index_combined_order.sql` adds a
+nullable `combined_order` (1-4, checked) — more than one `td_berth` row can share an `element_id`
+(the two unique indexes above are on `(td_area, berth)`/`(td_area, address, bit)`, not
+`element_id`, so this was always structurally possible; it just went unused before Milestone 50).
+Null for every ordinary, non-combined binding. A `(map_version_id, element_id)` index supports the
+live-delta fan-out's "what are this element's other combined-berth members?" lookup.
+
 ### `map_place_index`
 
 **Implemented (Milestone 31):** migration `0030_map_place_index.sql`. Generated at publication,

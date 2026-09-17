@@ -37,11 +37,34 @@ export interface ReconstructedMapState {
 export interface ReconstructMapStateOptions {
   /** `"<tdArea>|<berth>"` → elementId, i.e. a `CompiledMapBundle.berthBindingIndex`. */
   berthBindingIndex: Record<string, string>;
+  /** `"<tdArea>|<berth>"` → that binding's combined-berth join order, i.e. a
+   * `CompiledMapBundle.berthBindingOrder`. Absent (or missing a key) is treated as order 1 —
+   * harmless, since a key only matters once more than one binding shares an elementId. */
+  berthBindingOrder?: Record<string, number>;
   /** Element ids of every `signal` element on the map. */
   signalElementIds: string[];
   /** `berth_occupancy.projection_version` to read (the TD projection version). */
   projectionVersion: number;
   at: Date;
+}
+
+/** Local, dependency-free equivalent of `@railway/domain`'s `joinCombinedBerthState` — this
+ * package stays a leaf (see file header), so it can't import `@railway/domain`. Combined berths
+ * (docs/MAP_EDITOR_SPEC.md's berth section, owner request 2026-09-17): join every
+ * currently-occupied member's description in order; `enteredAt` is the most-recently-entered
+ * occupied member's. A single-member group reduces to that member's own state unchanged. */
+function joinCombinedBerthState(
+  members: Array<{ order: number; description: string | null; enteredAt: string | null }>,
+): ReconstructedBerthState {
+  const occupied = members.filter((m) => m.description !== null).sort((a, b) => a.order - b.order);
+  if (occupied.length === 0) return { description: null, enteredAt: null };
+  let enteredAt: string | null = null;
+  for (const member of occupied) {
+    if (member.enteredAt !== null && (enteredAt === null || member.enteredAt > enteredAt)) {
+      enteredAt = member.enteredAt;
+    }
+  }
+  return { description: occupied.map((m) => m.description).join(" "), enteredAt };
 }
 
 export async function reconstructMapStateAt(
@@ -82,13 +105,27 @@ export async function reconstructMapStateAt(
     occupancy.rows.map((row) => [`${row.td_area}|${row.berth_code}`, row]),
   );
 
-  const berths: Record<string, ReconstructedBerthState> = {};
+  // Grouped by elementId (not assigned 1:1 from berthBindingIndex) because a combined berth has
+  // more than one `tdArea|berth` key mapping to the same elementId — assigning per key here
+  // previously let the last key processed silently clobber every earlier member's state.
+  const membersByElement = new Map<
+    string,
+    Array<{ order: number; description: string | null; enteredAt: string | null }>
+  >();
   for (const [key, elementId] of Object.entries(options.berthBindingIndex)) {
     const row = latestByKey.get(key);
     const occupied = row && (row.left_at == null || row.left_at.getTime() > options.at.getTime());
-    berths[elementId] = occupied
-      ? { description: row.description, enteredAt: row.entered_at.toISOString() }
-      : { description: null, enteredAt: null };
+    const list = membersByElement.get(elementId) ?? [];
+    list.push({
+      order: options.berthBindingOrder?.[key] ?? 1,
+      description: occupied ? row.description : null,
+      enteredAt: occupied ? row.entered_at.toISOString() : null,
+    });
+    membersByElement.set(elementId, list);
+  }
+  const berths: Record<string, ReconstructedBerthState> = {};
+  for (const [elementId, members] of membersByElement) {
+    berths[elementId] = joinCombinedBerthState(members);
   }
 
   const signals: Record<string, { state: "blank" }> = {};

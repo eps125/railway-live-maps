@@ -116,6 +116,55 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  // Combined berths (owner request 2026-09-17): a berth element may have more than one tdBerth
+  // binding sharing its elementId — up to 4, for a physical split-berth group displayed as one
+  // box. That grouping must be explicit (every member carries a distinct combinedOrder), never
+  // an accident of two unrelated bindings ending up on the same elementId.
+  const tdBindingsByElementId = new Map<
+    string,
+    Array<{ id: string; combinedOrder: number | undefined }>
+  >();
+  for (const binding of doc.bindings) {
+    if (binding.type !== "tdBerth") continue;
+    const list = tdBindingsByElementId.get(binding.elementId) ?? [];
+    list.push({ id: binding.id, combinedOrder: binding.combinedOrder });
+    tdBindingsByElementId.set(binding.elementId, list);
+  }
+  for (const [elementId, group] of tdBindingsByElementId) {
+    if (group.length <= 1) {
+      if (group[0]?.combinedOrder !== undefined) {
+        errors.push({
+          code: "combined_order_without_group",
+          message: `Berth element "${elementId}" sets combinedOrder but has no sibling binding to combine with`,
+          elementId,
+          bindingId: group[0].id,
+        });
+      }
+      continue;
+    }
+    if (group.length > 4) {
+      errors.push({
+        code: "combined_berth_too_many_members",
+        message: `Berth element "${elementId}" combines ${group.length} bindings; the maximum is 4`,
+        elementId,
+      });
+    }
+    const orders = group.map((b) => b.combinedOrder);
+    if (orders.some((order) => order === undefined)) {
+      errors.push({
+        code: "combined_berth_missing_order",
+        message: `Berth element "${elementId}" has ${group.length} bindings sharing it but not every one sets combinedOrder`,
+        elementId,
+      });
+    } else if (new Set(orders).size !== orders.length) {
+      errors.push({
+        code: "combined_berth_duplicate_order",
+        message: `Berth element "${elementId}"'s combined bindings must have distinct combinedOrder values`,
+        elementId,
+      });
+    }
+  }
+
   const tdBerthBindingIdsByKey = new Map<string, string[]>();
   for (const binding of doc.bindings) {
     if (binding.type !== "tdBerth") continue;

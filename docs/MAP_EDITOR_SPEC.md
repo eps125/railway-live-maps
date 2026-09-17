@@ -62,6 +62,21 @@ A schematic polyline with stable element ID, layer, points, line/direction metad
   code — CLAUDE.md rule 13 covers shared domain model/state semantics, not this). Cosmetic
   only: `berth_current_state`, `berth_occupancy`, history and playback all keep both berths'
   real, individual data untouched.
+- **Combined berths** (Milestone 50, owner request 2026-09-17): a physical split-berth group used
+  for permissive working — e.g. a 3- or 4-way platform split with no room to draw each member
+  separately — can share one berth element instead. Author-declared, kept a rare exception: in the
+  Properties panel, a bound berth's "+ Combine with another berth" button adds up to 3 more
+  TD area/berth member rows (max 4 total). When 2+ members are simultaneously occupied, the shared
+  box shows every occupied member's description joined with a space, in the author-set order —
+  e.g. `A001 B001` — rather than just whichever one changed last. Purely a display join: each
+  member keeps its own real `berth_current_state`/`berth_occupancy`/history untouched, same
+  "cosmetic only" precedent as `inhibitedBy` above. The canonical representation is exactly what
+  it looks like — more than one `tdBerth` binding (§4 below) sharing one `elementId`, each carrying
+  a `combinedOrder` (1-4) for the join order; a lone binding never sets it. In the editor canvas
+  only (not the public map), a combined berth's box is drawn with a dashed outline instead of
+  solid, so the author can spot one at a glance. The click-a-berth run popup shows every currently
+  occupied member's detail successively, each under its own `tdArea berth` heading, separated by a
+  divider — not just one member — and closes only once every member has gone vacant.
 
 The renderer does not trust the authored top-left `y`: when a berth is bound to a track
 (`trackElementId`, or the nearest horizontal `trackPath` in range) its box is drawn vertically
@@ -193,6 +208,30 @@ For a berth:
   "tdArea": "${CONFIRMED_PRESTON_AREA_ID}",
   "berth": "1008"
 }
+```
+
+For a combined berth (Milestone 50) — up to 4 of these sharing one `elementId`, each with its own
+`combinedOrder` (the join order, 1-4):
+
+```json
+[
+  {
+    "id": "bind-a",
+    "elementId": "berth-1",
+    "type": "tdBerth",
+    "tdArea": "PX",
+    "berth": "A001",
+    "combinedOrder": 1
+  },
+  {
+    "id": "bind-b",
+    "elementId": "berth-1",
+    "type": "tdBerth",
+    "tdArea": "PX",
+    "berth": "B001",
+    "combinedOrder": 2
+  }
+]
 ```
 
 For a future signal:

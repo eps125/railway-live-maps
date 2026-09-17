@@ -604,3 +604,112 @@ describe("RunPopup", () => {
     expect(document.querySelector(".map-inspector__note")).not.toBeInTheDocument();
   });
 });
+
+describe("RunPopup combined berths (Milestone 50)", () => {
+  it("shows every occupied member successively, each under its own tdArea/berth heading", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/A001/")) {
+          return Promise.resolve(jsonResponse(baseBody({ berth: "A001", headcode: "1A11" })));
+        }
+        if (url.includes("/B001/")) {
+          return Promise.resolve(jsonResponse(baseBody({ berth: "B001", headcode: "1B22" })));
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    render(
+      <RunPopup
+        elementId="berth-combined"
+        displayName="Combined berth"
+        tdArea="PX"
+        berth="A001"
+        members={[
+          { tdArea: "PX", berth: "A001" },
+          { tdArea: "PX", berth: "B001" },
+        ]}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("1A11")).toBeInTheDocument();
+    expect(await screen.findByText("1B22")).toBeInTheDocument();
+    expect(screen.getByText("PX A001")).toBeInTheDocument();
+    expect(screen.getByText("PX B001")).toBeInTheDocument();
+    // A single-member popup shows "· PX A001" in the title bar instead — a combined one can't
+    // name more than one area/berth there, so each member's own heading carries it instead.
+    expect(screen.queryByText(/· PX/)).not.toBeInTheDocument();
+  });
+
+  it("omits a vacant member's section without closing the popup while another member stays occupied", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/A001/")) {
+          return Promise.resolve(jsonResponse(baseBody({ berth: "A001", headcode: "1A11" })));
+        }
+        if (url.includes("/B001/")) {
+          return Promise.resolve(
+            jsonResponse({ error: { code: "BERTH_NOT_OCCUPIED", message: "not occupied" } }, 404),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const onClose = vi.fn();
+    render(
+      <RunPopup
+        elementId="berth-combined"
+        displayName="Combined berth"
+        tdArea="PX"
+        berth="A001"
+        members={[
+          { tdArea: "PX", berth: "A001" },
+          { tdArea: "PX", berth: "B001" },
+        ]}
+        onClose={onClose}
+      />,
+    );
+
+    expect(await screen.findByText("1A11")).toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("PX B001")).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes the whole popup once every member has gone vacant", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({ error: { code: "BERTH_NOT_OCCUPIED", message: "not occupied" } }, 404),
+        ),
+      ),
+    );
+
+    const onClose = vi.fn();
+    render(
+      <RunPopup
+        elementId="berth-combined"
+        displayName="Combined berth"
+        tdArea="PX"
+        berth="A001"
+        members={[
+          { tdArea: "PX", berth: "A001" },
+          { tdArea: "PX", berth: "B001" },
+        ]}
+        onClose={onClose}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+});

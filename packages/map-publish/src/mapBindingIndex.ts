@@ -28,11 +28,12 @@ export async function insertMapBindingIndexRows(
   // abort whatever loop (e.g. backfill-map-bindings) is iterating over many map_versions.
   for (const [key, elementId] of Object.entries(bundle.berthBindingIndex ?? {})) {
     const [tdArea, berth] = key.split("|");
+    const combinedOrder = bundle.berthBindingOrder?.[key] ?? null;
     await client.query(
-      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, berth)
-       values ($1, $2, 'td_berth', $3, $4)
+      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, berth, combined_order)
+       values ($1, $2, 'td_berth', $3, $4, $5)
        on conflict do nothing`,
-      [mapVersionId, elementId, tdArea, berth],
+      [mapVersionId, elementId, tdArea, berth, combinedOrder],
     );
   }
 

@@ -95,7 +95,7 @@ export function App(): JSX.Element {
     <div className="app-shell">
       <header className="app-header">
         <div className="app-header__brand">
-          <h1>Matts TD Map</h1>
+          <h1>Matts TD Mapping Project</h1>
         </div>
         <nav className="app-nav" aria-label="Primary">
           <a

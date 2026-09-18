@@ -24,7 +24,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Matts TD Map" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Matts TD Mapping Project" })).toBeInTheDocument();
     expect(screen.getByText(/not suitable for safety-critical/i)).toBeInTheDocument();
     // Milestone 30: the "Editor" nav link is gone entirely (editing now requires a map slug —
     // reached via a per-map "Edit" link on the landing page), so it's never present at all.

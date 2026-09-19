@@ -297,6 +297,53 @@ report. Empty when garner has nothing allocated for the matched train today.
 }
 ```
 
+### `GET /api/v1/virtual-berths/{stanox}/current-run` (Milestone 52, docs/adr/0012)
+
+The same click-a-berth popup, for a virtual (GPS-fed) berth. `404 BERTH_NOT_OCCUPIED` when the
+STANOX has no current occupant. Unlike the TD route above, there is no candidate set to
+tie-break — the occupancy already carries the exact `trust_id` the GPS report itself named, so
+this is a direct lookup, never inferred: `matchBasis` is always `"virtual_direct"` and
+`matchStatus` is `"matched"` or `"unmatched"`, never `"ambiguous"` (CLAUDE.md rule 7 — exactly
+one `trust_id`, by construction). Deliberately no docs/adr/0009 Change of Origin/Identity/
+Location tracking (that layer reconciles a _TD_ headcode against a schedule whose identity might
+have since changed; a virtual berth's own report already names the exact `trust_id` in effect) —
+`effective.originChange`/`destinationChange`/`identityChange` are always `null`.
+
+Same role-gated shape split as the TD route: a logged-in session gets the full response below; an
+anonymous request gets `404 NO_PUBLIC_DETAIL` unless `matchStatus` is `"matched"` (no weaker
+sub-tier to gate on the way `headcode_only` is for TD), then the same reduced
+`{ stanox, headcode, occupancyEnteredAt, matchStatus: "matched", effective: {...} | null,
+unitAllocation }` shape, no `note`. `unitAllocation` behaves identically to the TD route.
+
+```json
+{
+  "stanox": "52701",
+  "headcode": "1A00",
+  "occupancyEnteredAt": "2026-09-19T10:14:58.000Z",
+  "matchStatus": "matched",
+  "matchBasis": "virtual_direct",
+  "note": "Matched directly from this GPS report's own TRUST id — not inferred from headcode/position, so there is no ambiguity tier here. Not a confirmed RLM identification.",
+  "effective": {
+    "scheduleId": "4210099",
+    "trainUid": "U99999",
+    "stpIndicator": "P",
+    "source": "GARNER",
+    "operatorCode": "NT",
+    "originTiploc": "SETTLE",
+    "originName": "Settle",
+    "originChange": null,
+    "destinationTiploc": "CRLILE",
+    "destinationName": "Carlisle",
+    "destinationChange": null,
+    "identityChange": null,
+    "activation": { "trustId": "729S93MT99", "deduced": false, "...": "..." },
+    "latestMovement": { "trustId": "729S93MT99", "locStanox": "52701", "...": "..." },
+    "locations": [{ "seqNo": 1, "locationType": "origin", "tiploc": "SETTLE", "...": "..." }]
+  },
+  "unitAllocation": []
+}
+```
+
 ### `GET /api/v1/td/areas/{area}/s-class/events?from=&to=&after=&limit=`
 
 Protected/diagnostic endpoint for retained S-Class source events. Lancaster may return data absence while other areas remain available. Apply strict range limits.
@@ -447,6 +494,14 @@ currently-occupied member, not just whichever one changed; `tdArea`/`berth` stil
 physical berth whose change triggered this message. The message shape itself is unchanged — the
 join happens server-side before publish, so no client or playback-replay code needs to know a
 combined berth exists.
+
+**Virtual (GPS-fed) berths (Milestone 52, docs/adr/0012):** `tdArea`/`berth` are optional and a
+`stanox` field is added — a virtual berth's delta carries `stanox` instead of `tdArea`/`berth`.
+The client doesn't need an explicit "is this virtual" field on the wire: it already holds the
+compiled map bundle's `bindings[]` from the map load, and derives styling (the yellow border)
+locally from the element's binding type the same way it already derives every other static
+per-element rendering fact. `elementId` remains the actual lookup key for applying any delta,
+unchanged.
 
 Other messages:
 

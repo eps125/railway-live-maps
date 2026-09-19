@@ -84,6 +84,17 @@ centred on that line at the berth's horizontal midpoint (`berthRenderRect`, shar
 renderer and the editor canvas — ADR 0004 D1). A per-viewer "show empty berths" toggle can
 hide vacant boxes entirely (ADR 0004 D5).
 
+- **Virtual (GPS-fed) berths** (ADR 0012, Milestone 52): for track with no TD coverage at all,
+  a berth's binding can be a `virtualBerth` (a set of STANOXes, powered by TRUST movement reports
+  sourced from GPS) instead of a `tdBerth`. In the Properties panel, a "Virtual (GPS-fed, no TD
+  coverage)" checkbox swaps the TD area/berth fields for a STANOX field (autocomplete against
+  `GET /api/v1/places/search`); there is no translation between the two binding types — toggling
+  clears whatever binding was there and starts fresh. A virtual berth draws a yellow border
+  (`MAP_STYLE.berth.virtualBorderColor`) in both the editor canvas and the public renderer,
+  layered over the normal occupied/vacant fill, which is otherwise unchanged. No owner-curated
+  ordering is needed to make a run of several virtual berths step in sequence — see
+  `docs/adr/0012` for why the report's own TRUST id makes that unnecessary.
+
 ### `signal`
 
 - position and orientation
@@ -234,6 +245,18 @@ For a combined berth (Milestone 50) — up to 4 of these sharing one `elementId`
 ]
 ```
 
+For a virtual (GPS-fed) berth (ADR 0012, Milestone 52) — STANOX(es) instead of a TD area/berth;
+never combines (no `combinedOrder`, and validation blocks two virtual bindings sharing a STANOX):
+
+```json
+{
+  "id": "bind-berth-vb1",
+  "elementId": "berth-vb1",
+  "type": "virtualBerth",
+  "stanoxes": ["52701"]
+}
+```
+
 For a future signal:
 
 ```json
@@ -366,6 +389,9 @@ Each committed command/batch records affected IDs, before/after data, author and
 - Missing referenced layer/element/node.
 - Invalid or empty required berth binding.
 - Duplicate berth binding unless explicitly allowed and justified.
+- A STANOX bound by more than one `virtualBerth` binding (ADR 0012) — always blocking, no opt-in
+  escape hatch (unlike a duplicate TD berth binding, there's no legitimate "combined" reading for
+  two map elements both claiming the same physical GPS-reporting location).
 - Topology edge with missing node.
 - Adjacent-map link to unknown map where required.
 - Unsupported binding type.

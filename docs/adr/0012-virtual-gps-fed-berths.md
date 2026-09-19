@@ -2,16 +2,16 @@
 
 ## Status
 
-Proposed — 2026-09-19. Ingestion path confirmed and unblocked the same day (see "Ingestion —
-resolved" below): garner's own source (`trustdb.c`, `eps125/openrail-eps`) was read directly and
-found to never capture `original_data_source` at all; patched (commit `b9f3538`, pushed to that
-repo's `main`) to pack it into spare bits of the existing `flags` column instead of adding a new
-one, so no RLM migration or bridge change is needed for ingestion — only a decoder update, already
-landed in `packages/domain/src/trust/garnerMovement.ts`. **Still pending**: the openrail-eps
-`trustdb` daemon needs rebuilding and redeploying against that commit before any real GPS-sourced
-bit ever appears in RLM's mirrored `flags` column. The rest of this ADR (map-schema binding, new
-tables, `project-virtual-berths` daemon, editor authoring, live rendering, `current-run`
-integration) is designed but not yet built.
+**Accepted and implemented — 2026-09-19.** Ingestion path confirmed and unblocked the same day
+(see "Ingestion — resolved" below): garner's own source (`trustdb.c`, `eps125/openrail-eps`) was
+read directly and found to never capture `original_data_source` at all; patched (commit
+`b9f3538`, pushed to that repo's `main`) to pack it into spare bits of the existing `flags` column
+instead of adding a new one, so no RLM migration or bridge change was needed for ingestion — only
+a decoder update, landed in `packages/domain/src/trust/garnerMovement.ts`. The owner rebuilt and
+redeployed the `trustdb` daemon against that commit the same day. Everything else in this ADR
+(map-schema binding, migration 0035, `project-virtual-berths` daemon, editor authoring, live
+rendering, `current-run` integration) was then implemented in full — see the Consequences section
+for exactly what landed, what deviated from the original plan below, and what's still deferred.
 
 ## Context
 
@@ -290,24 +290,62 @@ endpoint), `docs/ARCHITECTURE.md` (new daemon), `docs/PROJECT_SPEC.md` (product-
 
 ## Consequences
 
-- One migration (0035): a nullable `trust_movement` mirror column (exact name pending
-  confirmation), `map_binding_index` widened to a third binding kind, two new partitioned/keyed
-  tables (`virtual_berth_occupancy`, `virtual_berth_current_state`).
-- New daemon `project-virtual-berths`, independently checkpointed, wired into worker command
-  dispatch and `deploy/docker-compose.portainer.yml`.
-- `packages/map-schema`: new `virtualBerth` binding type (additive, `schemaVersion` unchanged).
-- Live protocol: `tdArea`/`berth` become optional on `berth.updated`/`berth.cleared`, `stanox`
-  added — shipped together with the matching client change, no version bump.
-- `current-run` gains a `virtual_direct` matchBasis, bypassing the tiered resolver entirely for
-  virtual berths since the identity is direct TRUST evidence, not inferred.
-- New editor authoring path (binding-mode toggle, STANOX picker, validation warning) and yellow
-  border styling shared by both renderers (rule 13).
-- Explicitly **not** attempted in this pass: automatic TD-reentry handoff (closes only via next
-  GPS step / `train_terminated` / manual clear), playback/history for virtual berths, any
-  owner-curated chain ordering (not needed — stepping is fully `trust_id`-derived).
-- Ingestion is resolved and landed (`garnerMovement.ts`'s `originalDataSource` decode, unit-tested;
-  see "Ingestion — resolved" above) but **inert until the openrail-eps `trustdb` daemon is rebuilt
-  and redeployed** against commit `b9f3538` — RLM will decode every report as `"unknown"` source
-  until then. The remaining work (migration 0035, `project-virtual-berths`, editor authoring, live
-  rendering, `current-run` integration) can be built independently of that redeploy timing, but
-  won't have real data to prove itself against until it happens.
+**Landed, as designed:**
+
+- Migration 0035: no new `trust_movement` column after all (see "Ingestion — resolved" —
+  `original_data_source` rides the existing `flags` column instead), `map_binding_index` widened
+  to a third binding kind (nullable `td_area`, new `stanox` column, widened check constraints,
+  partial unique/lookup indexes), two new tables (`virtual_berth_occupancy`, partitioned by
+  `entered_at` like `berth_occupancy`; `virtual_berth_current_state`).
+- `packages/map-schema`: new `virtualBerth` binding type (`stanoxes: string[]`), additive,
+  `schemaVersion` unchanged; `compileMapDocument` gains `virtualBerthBindingIndex`
+  (`stanox -> elementId`); `validateMapDocument` blocks two virtual bindings sharing a STANOX.
+- `packages/domain/src/virtualBerths/stepping.ts`: the pure `decideVirtualBerthStep` decision
+  function, fixture-tested (5 cases) — no owner-curated chain ordering, exactly as designed.
+- New daemon `project-virtual-berths-daemon` (`apps/worker/src/virtualBerths/projector.ts`),
+  checkpointed on `trust_movement.id` independently of every other projector, wired into worker
+  command dispatch and `deploy/docker-compose.portainer.yml`. **Also** a one-shot
+  `project-virtual-berths [--rebuild]` command (not in the original plan text, added to meet the
+  same rebuildability bar `project-td` sets) — integration-tested (6 cases: bound/unbound STANOX,
+  stepping, `train_terminated`, idempotent redelivery, `--rebuild`), not executed in this sandbox
+  (no local Postgres — same limitation nearly every integration test in this codebase notes).
+- Live protocol: `tdArea`/`berth` optional on `berth.updated`/`berth.cleared`, `stanox` added, no
+  version bump — `pollingDeltaSource.ts` and `computeLiveState` (the WS snapshot) both extended to
+  union virtual state in alongside TD. The Redis-backed `redisDeltaSource.ts`/`mapProjector`
+  path was **not** extended to carry virtual berths — it already only proves itself via fakes in
+  this codebase (no real Redis available), and the default polling path is what production
+  actually runs; a real gap if `LIVE_WS_REDIS_PUBSUB_ENABLED` is ever turned on.
+- `GET /api/v1/virtual-berths/{stanox}/current-run` (new route, same file as the TD one):
+  `matchBasis: "virtual_direct"`, never `ambiguous`. Deliberately **smaller** than the TD route's
+  `effective` — no docs/adr/0009 Change of Origin/Identity/Location tracking (see the route's own
+  doc comment for why that layer is TD-specific). Integration-tested (5 cases), not executed here.
+- Editor: a binding-mode toggle + STANOX field (autocomplete reusing the existing
+  `GET /api/v1/places/search`, **not a new dedicated endpoint** — that search already covers
+  STANOX nationwide, so a separate endpoint would have been pure duplication) on the berth
+  property panel; yellow border (`MAP_STYLE.berth.virtualBorderColor`) shared by `MapRenderer.tsx`
+  and `EditorCanvas.tsx` (rule 13). Unit-tested (MapRenderer, PropertyPanel).
+- `pnpm run typecheck`, `pnpm run lint`, `prettier --check .` and the full non-integration test
+  suite (84 files / 586 tests) all green.
+
+**Deviated from the original plan text:**
+
+- No owner-curated chain ordering was ever needed (confirmed as designed, not a deviation) — but
+  the STANOX autocomplete reused an existing endpoint instead of a new one, and the rebuild
+  command wasn't in the original decision section at all.
+
+**Explicitly still out of scope, same as originally planned:**
+
+- Automatic hand-off back to TD coverage on re-entry (closes only via the next GPS step, TRUST's
+  own `train_terminated`, or — see below — a manual clear that isn't actually wired up yet).
+- Playback/history for virtual berths (retained, append-only, but not read by
+  `reconstructMapStateAt`/`/events`).
+
+**New gap found only while implementing, not yet closed:** `virtual_berth_occupancy.exit_reason`
+already has a `'manual_clear'` value in its check constraint, but **no route or editor UI actually
+triggers it** — unlike a TD berth, which has a real manual-clear capability (Milestone 47). A
+virtual berth stuck showing occupied (its owning train's GPS reporting having gone permanently
+quiet mid-journey, say) currently has no operator escape hatch at all until the next GPS report
+for that `trust_id` arrives somewhere. Worth a fast-follow once real virtual-berth traffic shows
+whether this is a real problem. No `ValidationPanel` "never observed" warning for an unrecognised
+STANOX either (the TD equivalent — Milestone 12 — needs a DB-backed nationwide-observation check
+this pass didn't build for STANOX; only the schema-level duplicate-STANOX block exists).

@@ -115,6 +115,13 @@ up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR 0
   `currentRun.ts` on a click) forward along `td_berth_event` `CA` step chains and owner-curated
   `td_area_boundary` crossings, so a later click on a berth the train physically stepped through
   can skip headcode/position re-resolution entirely. Never establishes a run itself.
+- **`virtual-berths`** (`project-virtual-berths-daemon`, Milestone 52, docs/adr/0012, 1s tick) —
+  background enrichment, same shape/dependencies as `run-lineage`: steps virtual (GPS-fed) berth
+  occupancy from `trust_movement` rows sourced from GPS, for track with no TD coverage. Reads
+  `trust_movement` directly (checkpointed on its own `id`, independent of every other checkpoint),
+  writes `virtual_berth_occupancy`/`virtual_berth_current_state`. Inert until the openrail-eps
+  `trustdb` daemon is rebuilt/redeployed against the commit that captures `original_data_source`
+  (every row decodes `"unknown"` source until then, by design).
 
 `berth_current_state` therefore has two monotonic-guarded writers — `ingest-td` inline (wins at
 the feed head) and `projector-td-live` (no-op in steady state). `projector-td` no longer writes

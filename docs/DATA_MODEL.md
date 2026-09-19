@@ -409,6 +409,51 @@ correlates when corroborated by the run's own schedule timing or continued TRUST
 reports, never by headcode alone; more than one plausible candidate on the far side is left
 unlinked (ambiguous), exactly as any other tier. See docs/adr/0007 for the full design.
 
+## 8a. Virtual (GPS-fed) berths
+
+> **ADR 0012 (2026-09-19, Milestone 52):** some track carries no TD coverage at all — no berths,
+> no `CA`/`CB`/`CC` events. A "virtual" berth represents such a section on a published map,
+> stepped by TRUST movement reports sourced from GPS instead of TD events. Reading
+> `eps125/openrail-eps`'s own source (`trustdb.c`) directly found that garner never captured the
+> STOMP frame header's `original_data_source` field (`"GPS"`/`"SDR"`/`"SMART"`/`"TOPS"`/
+> `"TRUST DA"`) at all — patched (commit `b9f3538`) to pack it into unused bits 8-10 of the
+> existing `trust_movement.flags` column instead of adding one, so **no garner schema change and
+> no RLM migration/bridge-sync change was needed for ingestion** — `trust_movement.flags` is
+> already mirrored verbatim; only the decoder
+> (`packages/domain/src/trust/garnerMovement.ts`'s `decodeTrustMovementFlags`) needed extending
+> with an `originalDataSource` field.
+
+- A `berth` element is "virtual" purely by its `bindingId` resolving to a `virtualBerth` binding
+  (a set of STANOXes) instead of a `tdBerth` one — no separate element kind, no boolean flag
+  (CLAUDE.md rule 13). `map_binding_index` (migration 0010) was widened (migration 0035) to a
+  third `binding_type`, keyed by `stanox` instead of `(td_area, berth)`.
+- **`virtual_berth_occupancy`** — one row per occupancy interval, partitioned by `entered_at`
+  like `berth_occupancy`: `stanox`, `trust_id` (the direct, not inferred, identity — the GPS
+  report's own TRUST id), `headcode` (display only, decoded from `trust_id`, never a join key
+  back), `entry_trust_movement_id`/`exit_trust_movement_id` (lineage into `trust_movement`),
+  `exit_reason` (`stepped_to_virtual` | `terminated` | `manual_clear` | `superseded`).
+- **`virtual_berth_current_state`** — nationwide-independent-of-any-map current state, keyed by
+  `(projection_version, stanox)`, mirroring `berth_current_state`'s shape/role. Unlike TD,
+  scoped in practice to STANOXes at least one published map currently binds as a virtual berth —
+  there is no "nationwide virtual berth" concept independent of an authored binding the way TD's
+  wire data itself enumerates real physical berths regardless of any map; the map binding _is_
+  the definition here, so this isn't a rule-17 violation.
+- **Stepping is fully evidence-derived, no owner-curated chain order** (unlike ADR 0007's TD-area
+  boundaries): a GPS report's own `trust_id` is direct identity evidence, so a new report at a
+  bound STANOX for trust_id T closes whatever other virtual berth T currently holds (anywhere,
+  found by a plain `trust_id` lookup) and opens this one
+  (`packages/domain/src/virtualBerths/stepping.ts`'s `decideVirtualBerthStep`, pure and
+  fixture-tested). `train_terminated` on a report clears the berth immediately rather than
+  leaving it occupied indefinitely. Projected by `project-virtual-berths-daemon`
+  (`apps/worker/src/virtualBerths/projector.ts`), checkpointed on `trust_movement.id`
+  independently of every other projector.
+- `GET /api/v1/virtual-berths/{stanox}/current-run`: since the occupancy already carries the
+  exact `trust_id`, there is no candidate set to tie-break — `matchBasis` is always
+  `virtual_direct`, `matchStatus` is `matched`/`unmatched`, never `ambiguous` (CLAUDE.md rule 7:
+  exactly one `trust_id`, by construction). See `docs/adr/0012` for the full design, including
+  what's explicitly out of scope for this first pass (automatic hand-off back to TD coverage on
+  re-entry, playback/history for virtual berths).
+
 ## 9. Map tables
 
 ### `map`

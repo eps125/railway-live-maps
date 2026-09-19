@@ -2819,7 +2819,7 @@ Known limitations / follow-up: no CSV/export option; no saved/recent searches; t
 is a plain multi-select rather than a searchable/checkbox list (fine at the current ~dozens of
 observed areas, may want revisiting if that grows much further).
 
-## Milestone 52 — virtual (GPS-fed) berths for track with no TD coverage `[in progress — ingestion landed, rest planned; see docs/adr/0012]`
+## Milestone 52 — virtual (GPS-fed) berths for track with no TD coverage `[done — 2026-09-19]`
 
 Owner request, 2026-09-19: represent sections of track with no TD coverage at all on published
 maps, as "virtual" berths whose occupancy is driven by TRUST movement reports sourced from GPS
@@ -2827,67 +2827,87 @@ rather than by TD `CA`/`CB`/`CC` events — headcode steps along a run of these 
 it would through real TD berths, yellow-bordered in both the editor and the live map to distinguish
 them from real TD-backed ones. Full design in `docs/adr/0012-virtual-gps-fed-berths.md`.
 
-**Ingestion resolved and landed same day.** Reading garner's own source (`trustdb.c`,
-`eps125/openrail-eps`) directly showed it never captured the STOMP header's
-`original_data_source` field (`"GPS"`/`"SDR"`/`"SMART"`/`"TOPS"`/`"TRUST DA"`) at all — not a
-mirror gap, an upstream one. Patched (`eps125/openrail-eps` commit `b9f3538`, pushed to `main` per
-owner instruction) to pack it into unused bits 8-10 of the existing `trust_movement.flags` column
-instead of adding a new one — no garner schema change, and since RLM already mirrors `flags`
-verbatim, **no RLM migration or bridge-sync change either**. `packages/domain/src/trust/
-garnerMovement.ts`'s `decodeTrustMovementFlags` now decodes `originalDataSource` (unit-tested,
-`garnerMovement.test.ts`, 11 cases passing). **Still needed before this carries real data**: the
-openrail-eps `trustdb` daemon rebuilt and redeployed against that commit — every row decodes as
-`"unknown"` source until then, by design (never guessed).
+**Ingestion.** Reading garner's own source (`trustdb.c`, `eps125/openrail-eps`) directly showed it
+never captured the STOMP header's `original_data_source` field
+(`"GPS"`/`"SDR"`/`"SMART"`/`"TOPS"`/`"TRUST DA"`) at all — not a mirror gap, an upstream one.
+Patched (`eps125/openrail-eps` commit `b9f3538`, pushed to `main` per owner instruction) to pack it
+into unused bits 8-10 of the existing `trust_movement.flags` column instead of adding a new one —
+no garner schema change, and since RLM already mirrors `flags` verbatim, **no RLM migration or
+bridge-sync change either**. `packages/domain/src/trust/garnerMovement.ts`'s
+`decodeTrustMovementFlags` decodes `originalDataSource` (unit-tested, `garnerMovement.test.ts`, 11
+cases). The owner rebuilt and redeployed the `trustdb` daemon against that commit the same day.
 
-Everything else in the ADR (map-schema binding, `virtual_berth_*` tables, `project-virtual-berths`
-daemon, editor authoring, live rendering, `current-run` integration) is designed but not yet
-built.
-
-Design summary (full detail in the ADR):
+**Status: implemented.**
 
 - `packages/map-schema`: new `virtualBerth` binding type in `bindings[]` (a berth element's
   `bindingId` pointing at it is what makes it "virtual" — no new element kind, no boolean flag),
-  bound to a set of STANOXes rather than a TD area/berth code. Additive, `schemaVersion` stays 1.
-- Stepping is fully evidence-derived from the GPS report's own `trust_id` — direct identity, not
-  inferred — so unlike ADR 0007's TD-area boundary crossings, **no owner-curated chain ordering is
-  needed**: a new GPS report at a bound STANOX for `trust_id` T closes any other currently-open
-  virtual occupancy for T (wherever it is) and opens one here.
-- New tables (`virtual_berth_occupancy`, `virtual_berth_current_state`) rather than overloading
-  `berth_occupancy`/`berth_current_state`, which are keyed throughout by `(td_area, berth_code)`.
-  `map_binding_index` widens to a third binding kind, keyed by `stanox` instead of `td_area`/
-  `berth`.
-- New independently-checkpointed daemon `project-virtual-berths`, same `daemonLoop`/rebuild pattern
-  as every other live-path projector.
-- Live WS: `tdArea`/`berth` become optional on `berth.updated`/`berth.cleared`, `stanox` added; no
-  new wire field for "is this virtual" — the client already holds the compiled bundle's binding
-  types and derives styling locally, same as every other static per-element rendering fact.
-- `current-run`: new `virtual_direct` matchBasis, bypassing the whole tiered ADR 0006/0007 resolver
-  for a virtual berth click, since the occupancy already carries the report's own `trust_id`
-  directly — never `ambiguous` (exactly one `trust_id`, by construction).
-- Editor: a binding-mode toggle on the berth property panel (TD area/berth fields vs. a STANOX
-  picker), a non-blocking validation warning for an unrecognised STANOX, and a shared yellow-border
-  style token applied identically in `MapRenderer.tsx` and `EditorCanvas.tsx` (rule 13).
-- Explicitly out of scope for this pass: automatic handoff back to TD coverage on re-entry (closes
-  only via the next GPS step, TRUST's own `train_terminated` flag, or a manual admin clear),
-  playback/history for virtual berths.
+  bound to a set of STANOXes rather than a TD area/berth code. `compileMapDocument` gains
+  `virtualBerthBindingIndex` (`stanox -> elementId`); `validateMapDocument` blocks two virtual
+  bindings sharing a STANOX. Additive, `schemaVersion` stays 1.
+- `packages/domain/src/virtualBerths/stepping.ts`: the pure `decideVirtualBerthStep` — stepping is
+  fully evidence-derived from the GPS report's own `trust_id` (direct identity, not inferred), so
+  unlike ADR 0007's TD-area boundary crossings, **no owner-curated chain ordering was needed**: a
+  new GPS report at a bound STANOX for `trust_id` T closes any other currently-open virtual
+  occupancy for T (wherever it is) and opens one here. Fixture-tested, 5 cases.
+- Migration 0035: `map_binding_index` widened to a third binding kind (nullable `td_area`, new
+  `stanox` column); two new tables, `virtual_berth_occupancy` (partitioned by `entered_at` like
+  `berth_occupancy`) and `virtual_berth_current_state` — new tables rather than overloading the TD
+  ones, which are keyed throughout by `(td_area, berth_code)`.
+- `apps/worker/src/virtualBerths/projector.ts`: `project-virtual-berths-daemon` (long-running,
+  1s tick, wired into `deploy/docker-compose.portainer.yml`) plus a one-shot
+  `project-virtual-berths [--rebuild]` command — checkpointed on `trust_movement.id`,
+  independently of every other projector. `apps/worker/src/commands/ensurePartitions.ts` gained
+  `virtual_berth_occupancy`.
+- Live WS: `packages/protocol`'s `berth.updated`/`berth.cleared` gained optional `stanox`
+  (`tdArea`/`berth` now optional too) — no new wire field for "is this virtual" beyond that; the
+  client already holds the compiled bundle's binding types and derives yellow-border styling
+  locally, same as every other static per-element rendering fact. `pollingDeltaSource.ts` and
+  `computeLiveState` (the snapshot) both union virtual state in alongside TD. The Redis-backed
+  path (`redisDeltaSource.ts`/`mapProjector`) was **not** extended — known gap, see below.
+- `GET /api/v1/virtual-berths/{stanox}/current-run` (new route, `apps/api/src/routes/
+currentRun.ts`): `matchBasis: "virtual_direct"`, bypassing the whole tiered ADR 0006/0007 resolver
+  since the occupancy already carries the report's own `trust_id` directly — never `ambiguous`
+  (exactly one `trust_id`, by construction). Deliberately smaller than the TD route's `effective`
+  detail (no docs/adr/0009 Change of Origin/Identity/Location tracking — that layer is specific to
+  reconciling a _TD_ headcode against a schedule whose identity might have since changed).
+- Editor: a binding-mode toggle on the berth property panel (`PropertyPanel.tsx`) swapping TD
+  area/berth fields for a STANOX field (autocomplete reusing the existing
+  `GET /api/v1/places/search`, not a new endpoint), and a shared yellow-border style token
+  (`MAP_STYLE.berth.virtualBorderColor`) applied identically in `MapRenderer.tsx` and
+  `EditorCanvas.tsx` (rule 13).
+- Docs: `docs/DATA_MODEL.md` §8a, `docs/MAP_EDITOR_SPEC.md` (berth authoring + binding + blocking
+  validation), `docs/API_CONTRACT.md` (new route + WS field changes), `docs/ARCHITECTURE.md` (new
+  daemon), `docs/PROJECT_SPEC.md` (editor capability), this checklist, `docs/adr/0012`.
 
-Acceptance criteria (once unblocked):
+Tests: `garnerMovement.test.ts` (+2 cases), `stepping.test.ts` (new, 5 cases), map-schema
+`document.test.ts`/`validate.test.ts`/`compiler.test.ts` (+6 cases), `MapRenderer.test.tsx`
+(+1), `PropertyPanel.test.tsx` (+2), plus new integration test files
+(`virtualBerths/projector.integration.test.ts`, 6 cases; `virtualBerthCurrentRun.integration.
+test.ts`, 5 cases) — written and typechecked but **not executed** in this sandbox, same "no local
+Postgres available" limitation nearly every integration test in this codebase already notes; run
+`pnpm run test:integration` against a real database before treating them as proven.
+`pnpm run typecheck`, `pnpm run lint`, `pnpm exec prettier --check .` and the full non-integration
+suite (84 files / 586 tests) all green.
 
-1. A map author can bind a `berth` element to one or more STANOXes instead of a TD area/berth code,
-   and it renders with a yellow border in both the editor canvas and the published live map,
-   unoccupied styling otherwise unchanged.
-2. A sequence of GPS-sourced TRUST movement reports for one `trust_id` across several bound
-   STANOXes steps the headcode along those virtual berths in order, each previous one clearing as
-   the next opens, with no authored ordering/chain configuration required.
-3. `train_terminated` on a GPS report clears that virtual berth immediately rather than leaving it
-   occupied indefinitely.
-4. Clicking an occupied virtual berth's popup shows `matchBasis: "virtual_direct"` and the correct
-   schedule detail when garner has a `trust_activation` link for that `trust_id`, or an honest
-   `unmatched` when it doesn't — never `ambiguous`.
-5. `project-virtual-berths --rebuild` reproduces the same `virtual_berth_current_state` from an
-   empty projection, matching the rebuildability bar every other projector meets.
-6. Nationwide TD capture, existing maps, and the existing TD-backed resolver are completely
-   unaffected (purely additive).
+Migrations/configuration: run migration 0035; add the `virtual-berths` service to the Compose
+stack (already in `deploy/docker-compose.portainer.yml`, no new env var — always-on, same as
+`run-lineage`). No config flag gates any of this.
+
+Known limitations / follow-up (full detail in `docs/adr/0012`'s Consequences section):
+
+- **No manual clear for a stuck virtual berth.** `exit_reason` has a `'manual_clear'` value in its
+  check constraint, but no route or editor UI actually triggers it yet — found only while
+  implementing, not in the original design. A virtual berth whose train's GPS reporting goes
+  permanently quiet mid-journey has no operator escape hatch until the next report for that
+  `trust_id` arrives somewhere.
+- No automatic hand-off back to TD coverage on re-entry (closes only via the next GPS step,
+  `train_terminated`, or the not-yet-built manual clear above) — by design, per the ADR.
+- No playback/history for virtual berths (data retained, not read by playback yet).
+- No `ValidationPanel` "never observed" warning for an unrecognised STANOX (only the schema-level
+  duplicate-STANOX block exists — the TD equivalent needs a DB-backed check this pass didn't add).
+- The Redis live-delta path doesn't carry virtual berths — matches that path's existing
+  not-yet-proven-against-a-real-Redis status from Milestone 6, but is a real gap if
+  `LIVE_WS_REDIS_PUBSUB_ENABLED` is ever turned on.
 
 ## Later / unscheduled
 

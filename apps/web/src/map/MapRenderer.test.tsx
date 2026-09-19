@@ -796,6 +796,60 @@ describe("MapRenderer", () => {
 
     expect(window.location.pathname).toBe("/map/preston");
   });
+
+  it("docs/adr/0012: a virtual berth draws the yellow border token and its popup queries /api/v1/virtual-berths", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        expect(url).toBe("/api/v1/virtual-berths/52701/current-run");
+        return Promise.resolve(
+          jsonResponse({
+            stanox: "52701",
+            headcode: "1A00",
+            occupancyEnteredAt: null,
+            matchStatus: "matched",
+            matchBasis: "virtual_direct",
+            note: "Matched directly from this GPS report's own TRUST id.",
+            effective: null,
+            unitAllocation: [],
+          }),
+        );
+      }),
+    );
+
+    const doc = bundle({
+      elementsById: {
+        "vb-1": {
+          id: "vb-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 20,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "Virtual",
+        },
+      },
+      virtualBerthBindingIndex: { "52701": "vb-1" },
+    });
+
+    const { container } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "vb-1": { description: "1A00", enteredAt: null } }}
+        signals={{}}
+      />,
+    );
+
+    const rect = container.querySelector("rect[stroke='#e8c547']");
+    expect(rect).not.toBeNull();
+
+    fireEvent.click(screen.getByText("1A00"));
+    expect(await screen.findByText("1A00", { selector: "dd" })).toBeInTheDocument();
+  });
 });
 
 describe("viewBoxAfterPinch", () => {

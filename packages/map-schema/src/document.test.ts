@@ -250,6 +250,35 @@ describe("MapDocumentSchema", () => {
     expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
   });
 
+  it("accepts a berth bound to a virtualBerth binding with one or more STANOXes (docs/adr/0012)", () => {
+    const doc = minimalDoc({
+      elements: [
+        {
+          id: "b1",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 20,
+          height: 10,
+          displayName: "0000",
+          bindingId: "vb-1",
+        },
+      ],
+      bindings: [
+        { id: "vb-1", elementId: "b1", type: "virtualBerth", stanoxes: ["52701", "52702"] },
+      ],
+    });
+    expect(MapDocumentSchema.safeParse(doc).success).toBe(true);
+  });
+
+  it("rejects a virtualBerth binding with zero STANOXes", () => {
+    const doc = minimalDoc({
+      bindings: [{ id: "vb-1", elementId: "b1", type: "virtualBerth", stanoxes: [] }],
+    });
+    expect(MapDocumentSchema.safeParse(doc).success).toBe(false);
+  });
+
   it("still accepts a pre-ADR-0005 map with an inline platform.number", () => {
     const doc = minimalDoc({
       elements: [

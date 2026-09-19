@@ -24,9 +24,11 @@ export type CombinedBerthOverrides = Map<
 >;
 
 /** Pure: turns one berth change into the delta message for every map that binds it — a berth
- * can legitimately appear on more than one published map. `sequence` is the source
- * td_berth_event's real `ingestion_sequence`, so these deltas tie back to true nationwide
- * event order (unlike the polling adapter's best-effort local counter). */
+ * can legitimately appear on more than one published map. `sequence` is drawn by the caller from
+ * the shared `live_delta_sequence` Postgres sequence (docs/adr/0012 gap closure) — not this row's
+ * own `ingestion_sequence` directly, since `project-virtual-berths-daemon` publishes to the same
+ * channels as an independent process and both need one common monotonic clock (unlike the polling
+ * adapter, which uses its own in-process best-effort local counter instead). */
 export function buildDeltaMessages(
   change: BerthChange,
   bindings: MapBinding[],

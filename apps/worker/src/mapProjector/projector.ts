@@ -117,10 +117,20 @@ export async function runProjectMapDeltas(
         if (bindingsResult.rows.length === 0) continue;
 
         const combinedOverrides = await computeCombinedOverrides(pool, bindingsResult.rows);
+        // docs/adr/0012 gap closure: a shared Postgres sequence, not this row's own
+        // ingestion_sequence — project-virtual-berths-daemon also publishes to these same
+        // `railway:live:{slug}` channels, as an independent process with no shared in-memory
+        // counter, so both need one common monotonic clock for the `sequence` field or a virtual
+        // delta interleaved with a TD one could read as a regression to a connected client
+        // (`useLiveMapSocket.ts` treats a lower sequence as corruption and forces a reconnect).
+        const sequenceResult = await pool.query<{ seq: string }>(
+          `select nextval('live_delta_sequence')::text as seq`,
+        );
+        const sequence = Number(sequenceResult.rows[0]!.seq);
         const messages = buildDeltaMessages(
           change,
           bindingsResult.rows,
-          Number(row.ingestion_sequence),
+          sequence,
           combinedOverrides,
         );
         for (const { mapSlug, message } of messages) {

@@ -2819,6 +2819,120 @@ Known limitations / follow-up: no CSV/export option; no saved/recent searches; t
 is a plain multi-select rather than a searchable/checkbox list (fine at the current ~dozens of
 observed areas, may want revisiting if that grows much further).
 
+## Milestone 52 — virtual (GPS-fed) berths for track with no TD coverage `[done — 2026-09-19]`
+
+Owner request, 2026-09-19: represent sections of track with no TD coverage at all on published
+maps, as "virtual" berths whose occupancy is driven by TRUST movement reports sourced from GPS
+rather than by TD `CA`/`CB`/`CC` events — headcode steps along a run of these berths the same way
+it would through real TD berths, yellow-bordered in both the editor and the live map to distinguish
+them from real TD-backed ones. Full design in `docs/adr/0012-virtual-gps-fed-berths.md`.
+
+**Ingestion.** Reading garner's own source (`trustdb.c`, `eps125/openrail-eps`) directly showed it
+never captured the STOMP header's `original_data_source` field
+(`"GPS"`/`"SDR"`/`"SMART"`/`"TOPS"`/`"TRUST DA"`) at all — not a mirror gap, an upstream one.
+Patched (`eps125/openrail-eps` commit `b9f3538`, pushed to `main` per owner instruction) to pack it
+into unused bits 8-10 of the existing `trust_movement.flags` column instead of adding a new one —
+no garner schema change, and since RLM already mirrors `flags` verbatim, **no RLM migration or
+bridge-sync change either**. `packages/domain/src/trust/garnerMovement.ts`'s
+`decodeTrustMovementFlags` decodes `originalDataSource` (unit-tested, `garnerMovement.test.ts`, 11
+cases). The owner rebuilt and redeployed the `trustdb` daemon against that commit the same day.
+
+**Status: implemented.**
+
+- `packages/map-schema`: new `virtualBerth` binding type in `bindings[]` (a berth element's
+  `bindingId` pointing at it is what makes it "virtual" — no new element kind, no boolean flag),
+  bound to a set of STANOXes rather than a TD area/berth code. `compileMapDocument` gains
+  `virtualBerthBindingIndex` (`stanox -> elementId`); `validateMapDocument` blocks two virtual
+  bindings sharing a STANOX. Additive, `schemaVersion` stays 1.
+- `packages/domain/src/virtualBerths/stepping.ts`: the pure `decideVirtualBerthStep` — stepping is
+  fully evidence-derived from the GPS report's own `trust_id` (direct identity, not inferred), so
+  unlike ADR 0007's TD-area boundary crossings, **no owner-curated chain ordering was needed**: a
+  new GPS report at a bound STANOX for `trust_id` T closes any other currently-open virtual
+  occupancy for T (wherever it is) and opens one here. Fixture-tested, 5 cases.
+- Migration 0035: `map_binding_index` widened to a third binding kind (nullable `td_area`, new
+  `stanox` column); two new tables, `virtual_berth_occupancy` (partitioned by `entered_at` like
+  `berth_occupancy`) and `virtual_berth_current_state` — new tables rather than overloading the TD
+  ones, which are keyed throughout by `(td_area, berth_code)`.
+- `apps/worker/src/virtualBerths/projector.ts`: `project-virtual-berths-daemon` (long-running,
+  1s tick, wired into `deploy/docker-compose.portainer.yml`) plus a one-shot
+  `project-virtual-berths [--rebuild]` command — checkpointed on `trust_movement.id`,
+  independently of every other projector. `apps/worker/src/commands/ensurePartitions.ts` gained
+  `virtual_berth_occupancy`.
+- Live WS: `packages/protocol`'s `berth.updated`/`berth.cleared` gained optional `stanox`
+  (`tdArea`/`berth` now optional too) — no new wire field for "is this virtual" beyond that; the
+  client already holds the compiled bundle's binding types and derives yellow-border styling
+  locally, same as every other static per-element rendering fact. `pollingDeltaSource.ts` and
+  `computeLiveState` (the snapshot) both union virtual state in alongside TD. The Redis-backed
+  path (`redisDeltaSource.ts`/`mapProjector`) was **not** extended — known gap, see below.
+- `GET /api/v1/virtual-berths/{stanox}/current-run` (new route, `apps/api/src/routes/
+currentRun.ts`): `matchBasis: "virtual_direct"`, bypassing the whole tiered ADR 0006/0007 resolver
+  since the occupancy already carries the report's own `trust_id` directly — never `ambiguous`
+  (exactly one `trust_id`, by construction). Deliberately smaller than the TD route's `effective`
+  detail (no docs/adr/0009 Change of Origin/Identity/Location tracking — that layer is specific to
+  reconciling a _TD_ headcode against a schedule whose identity might have since changed).
+- Editor: a binding-mode toggle on the berth property panel (`PropertyPanel.tsx`) swapping TD
+  area/berth fields for a STANOX field (autocomplete reusing the existing
+  `GET /api/v1/places/search`, not a new endpoint), and a shared yellow-border style token
+  (`MAP_STYLE.berth.virtualBorderColor`) applied identically in `MapRenderer.tsx` and
+  `EditorCanvas.tsx` (rule 13).
+- Docs: `docs/DATA_MODEL.md` §8a, `docs/MAP_EDITOR_SPEC.md` (berth authoring + binding + blocking
+  validation), `docs/API_CONTRACT.md` (new route + WS field changes), `docs/ARCHITECTURE.md` (new
+  daemon), `docs/PROJECT_SPEC.md` (editor capability), this checklist, `docs/adr/0012`.
+
+Tests: `garnerMovement.test.ts` (+2 cases), `stepping.test.ts` (new, 5 cases), map-schema
+`document.test.ts`/`validate.test.ts`/`compiler.test.ts` (+6 cases), `MapRenderer.test.tsx`
+(+1), `PropertyPanel.test.tsx` (+2), plus new integration test files
+(`virtualBerths/projector.integration.test.ts`, 6 cases; `virtualBerthCurrentRun.integration.
+test.ts`, 5 cases) — written and typechecked but **not executed** in this sandbox, same "no local
+Postgres available" limitation nearly every integration test in this codebase already notes; run
+`pnpm run test:integration` against a real database before treating them as proven.
+`pnpm run typecheck`, `pnpm run lint`, `pnpm exec prettier --check .` and the full non-integration
+suite (84 files / 586 tests) all green.
+
+Migrations/configuration: run migration 0035, then 0036 (gap-closure follow-up: widens
+`operator_berth_action` for virtual manual-clear, adds the `'stepped_to_td'` exit reason, adds
+`live_delta_sequence`); add the `virtual-berths` service to the Compose stack (already in
+`deploy/docker-compose.portainer.yml`, no new env var — always-on, same as `run-lineage`). No
+config flag gates any of this.
+
+**Gap-closure follow-up (owner request "sort all the gaps immediately", same day, 2026-09-19).**
+Every limitation originally listed here is now closed except one disclosed hot-path caveat — full
+detail in `docs/adr/0012`'s Consequences section:
+
+- **Manual clear**: migration 0036 widens `operator_berth_action` (the existing TD manual-clear
+  audit trail) to also target a virtual berth by `stanox`; new route
+  `POST /api/v1/editor/virtual-berths/:stanox/clear` and a matching Test Mode panel section.
+- **Automatic TD-reentry hand-off**: `decideTdReentryHandoff` (`stepping.ts`) applies ADR 0007's
+  same corroboration principle — hands off only when exactly one open virtual occupancy matches
+  the reappearing TD event's headcode, never guesses when ambiguous. Runs every tick as
+  `runVirtualBerthTdReentryHandoff` alongside the stepping pass.
+- **Redis live-delta path**: `project-map-deltas` and both virtual-berth passes now share a new
+  `live_delta_sequence` Postgres sequence for their client-facing `sequence`, so interleaved
+  TD/virtual deltas never look like a regression. **Not** extended to the genuinely hot
+  `apps/worker/src/td/liveProjector.ts` path — decoupling its `sequence` from the Redis dedup
+  watermark it also drives needs its own careful pass, not one bundled into this fix. This is now
+  the ADR's one remaining known limitation: with `LIVE_WS_REDIS_PUBSUB_ENABLED=true` (not the
+  default), a map mixing TD and virtual berths can see an occasional spurious (self-healing)
+  reconnect.
+- **Playback/history**: `reconstructMapStateAt` (shared by `/state?at=` and `snapshot-maps`) now
+  merges a half-open-interval `virtual_berth_occupancy` reconstruction in alongside TD's, keyed by
+  `stanox`. `GET /api/v1/maps/{slug}/events` merges virtual entry/exit events sorted by `eventAt`,
+  paginated with its own independent `nextVirtualCursor` (`virtualOccupancyId * 2 (+1 exit)` —
+  individually resumable per event, since one occupancy row's entry and exit can straddle more
+  than one page). `usePlayback.ts` tracks and forwards it alongside the existing cursor.
+- Still open, unchanged from first landing: no `ValidationPanel` STANOX warning was originally
+  planned as a gap-closure item, but was added anyway during this pass
+  (`virtual_berth_stanox_unrecognised`, a plain `location_reference` existence check).
+
+Tests added this pass: `stepping.test.ts` (+2 cases, `decideTdReentryHandoff`),
+`validateWithContext.test.ts` (+4, STANOX check), `usePlayback.test.tsx` (+1, `afterVirtual`
+cursor plumbing), plus new/extended integration test coverage
+(`virtualBerths/projector.integration.test.ts` extended with TD-reentry + Redis-publish cases,
+`playback.integration.test.ts` extended with a dedicated virtual-berth-events describe block) —
+same "not executed, no local Postgres in this sandbox" caveat as every integration test in this
+codebase. `pnpm run typecheck`, `pnpm run lint`, `pnpm exec prettier --check .` and the full
+non-integration suite (84 files / 593 tests) all green after this follow-up.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

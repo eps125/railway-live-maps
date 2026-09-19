@@ -8,6 +8,8 @@ const PARTITIONED_TABLES = [
   "td_s_event",
   "berth_occupancy",
   "td_s_bit_transition",
+  // docs/adr/0012 (migration 0035): partitioned by entered_at like berth_occupancy, same reason.
+  "virtual_berth_occupancy",
   // `train_run_event` was dropped with RLM's bespoke run model (ADR 0002, migration 0025). The
   // garner `trust_*` mirror tables are unpartitioned for now; partitioning `trust_movement` on
   // `created` is a deferred follow-up (docs/IMPLEMENTATION_PLAN.md Milestone 15 step 4).

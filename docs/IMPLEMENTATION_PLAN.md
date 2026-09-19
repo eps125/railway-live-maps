@@ -11,15 +11,15 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
 → 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
-→ 32 → 34 → 35.
+→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51; 33 (owner,
+done 2026-09-19). Milestone 52 (virtual GPS-fed berths) was reverted on `main` 2026-09-19 and
+lives on the `gps-berths` branch.
 
-**Planned next, in current priority order (updated 2026-09-13 — owner-requested admin/multi-map
-work first, then the resolver-first backlog):**
-36 → 37 → 38 → 13 → _Later/unscheduled_. (33 sits outside this sequence — see below.)
+**Planned next, in current priority order (updated 2026-09-19):**
+36 (36a → 36b → 36c → 36d) → 37 → 38 → 13 → _Later/unscheduled_.
 
-**Milestone 33 is the owner's own task, not Claude's, done at their leisure** — they'll author the
-Blackpool Line map themselves in the editor and report back when done; do not pick it up as
-implementation work, and do not treat it as a blocker for 34 onward.
+**Milestone 33 was the owner's own task** (Blackpool Line map, authored in the editor) — done,
+confirmed 2026-09-19; it was the prerequisite for Milestone 36. 36d is likewise the owner's task.
 
 Milestone 13 (operational hardening) was drafted early (right after M12) and never started; it
 now sits last in the priority order above rather than where its number would suggest — the
@@ -1299,7 +1299,7 @@ stale.
 
 Files: `apps/api/src/routes/liveMap.ts`, `apps/api/src/routes/liveMap.test.ts` (+1 test).
 
-## Milestone 28 — temporarily disable the berth-click run popup `[in progress — 2026-09-12]`
+## Milestone 28 — temporarily disable the berth-click run popup `[done — owner confirmed 2026-09-19]`
 
 Owner request: turn off the public map's "click a populated berth to open its run popup"
 behaviour (docs/PROJECT_SPEC.md §5) while it's being reimplemented. Deliberately not removed —
@@ -1717,7 +1717,10 @@ since `server.integration.test.ts` exercises real sessions) rather than producti
 flow + cancel). `pnpm -r typecheck`, `pnpm run lint`, `pnpm run format:check` and the full unit
 suite green.
 
-## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[owner's own task — at their leisure, confirmed 2026-09-13]`
+## Milestone 33 — author the Blackpool Line map (S-Class pilot) `[done — owner confirmed 2026-09-19]`
+
+Completed by the owner: `mroc-blackpool` (M9, with 3 PX berths), 70 signal elements awaiting
+Milestone 36's bindings. Original planning note kept below for history.
 
 **The owner will build this map themselves in the editor, at their own pace, and report back when
 it's done — not a Claude task.** Confirmed 2026-09-13: this stays parked until the owner picks it
@@ -1941,12 +1944,106 @@ test.ts` run against a disposable Postgres (SSH-tunnelled to a throwaway contain
 `@railway/api` and `@railway/web`.
 `pnpm -r typecheck` green for `@railway/api` and `@railway/web`.
 
-## Milestone 36 — S-Class bit decoding `[planned]`
+## Milestone 36 — S-Class bit decoding and signal on/off display `[planned — design agreed 2026-09-19]`
 
 Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.
-Needed for any map (Blackpool, Milestone 33, included) to show real signal aspects rather than
-permanently blank ones — CLAUDE.md rules 9/10 (blank/on/off only, never inferred) still apply once
-this lands.
+Needed for any map (Blackpool, Milestone 33, included) to show real signal on/off state rather
+than permanently blank symbols — CLAUDE.md rules 9/10 (blank/on/off only, never inferred) still
+apply once this lands. Unblocked by Milestone 33 (Blackpool map authored — 70 signal elements,
+all currently unlabelled and unbound, M9 + 3 PX berth bindings).
+
+### Verified facts (production data, 2026-09-19 — M8, M9, R1-R4)
+
+- **Wire format.** `SF_MSG` = 1 byte (2 hex chars) at hex `address`. `SG_MSG` = 4 bytes (8 hex
+  chars) starting at `address`, first byte first — confirmed: M9 `SG 04 = FEFFBFCF` → bytes
+  04=`FE`, 05=`FF`, 06=`BF`, 07=`CF`, each a value SF independently reports for that address.
+  `SH_MSG` = the **final 4-byte chunk of a refresh and carries real data** (M9 `SH 14` covers
+  0x14-0x17; SF has been seen at 0x15 and 0x17) — not just a terminator.
+- **Bit numbering**: bit 0 = LSB, bit 7 = MSB (SOP convention, Open Rail Data wiki).
+- **Refresh cadence**: roughly every ~2h per area (M9: 13 refreshes/24h).
+- **Volume**: ~5.1M S-Class messages/24h nationwide across 176 areas (M9 alone ~12.5k; R1 ~128k).
+- **Signal-bit polarity**: the wiki defines a signal bit as "displaying its most restrictive
+  aspect or not" — i.e. set = off, unset = on. M8's published signal bytes are ~always `00` across
+  refreshes, consistent with that, but M8 byte 25 (0x19, S3037-S3048) sits at `66` most of the
+  time — so polarity is **verified per binding** (existing `tdSBit.activeMeans`), never assumed
+  globally.
+- **Published definition tables disagree on byte radix**: the R3 wiki table uses hex addresses
+  (`0A:0`); the M8 table uses **decimal** byte numbers (0-37 — its "25" is address 0x19).
+  Community tables also contain errors (R3 lists `S3533` at both 1A:3 and 26:3). There is **no
+  published M9 table** — its mapping must be derived by observation.
+- **Existing bug to fix in 36a**: `td_s_current_state` is keyed on the message's `address`, so an
+  SG's 4-byte word at address `04` overwrites the 1-byte SF value for byte `04` — current state is
+  wrong in every area today.
+- Nothing downstream consumes S-Class yet: `liveState.ts`/`reconstructState.ts`/snapshots
+  hardcode signals to `blank`; the fast live projector skips S-Class; the editor has no `tdSBit`
+  binding UI. The schema (`TdSBitBindingSchema`), compiler (`sBitBindingIndex`) and
+  `map_binding_index` (`td_s_bit`) already support the binding.
+
+### Owner decisions (2026-09-19)
+
+1. **Feed gaps**: trust last-known byte state across a TD feed gap of **up to 5 minutes**; beyond
+   that, every byte in the affected area(s) becomes `unknown` (blank) until re-confirmed by an SF
+   covering it or the next refresh. Threshold configurable, default 300s.
+2. **History**: populate `td_s_bit_transition` **nationwide** (rule 17 — never scoped by maps).
+3. **Identification aid**: the S-Class explorer may **suggest** candidate bits by correlating bit
+   changes with nearby C-Class berth steps, for the owner to confirm manually. Authoring-time only
+   — displayed state is always the raw bit. Recorded as a rule-10 clarification in
+   `docs/adr/0013-s-class-decoding-and-signal-identification.md`.
+4. **Scope**: only signal on/off is bound and rendered in M36. Routes, points, track sections,
+   TRTS and level crossings are stored as bits and may be _defined_ (kind recorded), but map
+   rendering of them (level crossings and routes are planned) is a later milestone with its own
+   ADR — PROJECT_SPEC §10's MVP exclusions stand until then.
+
+### 36a — decode and store (nationwide, map-independent)
+
+- Pure `decodeSClass` in `packages/feed-parsers`: SF/SG/SH → `[{address, byteValue}]` per byte,
+  fixture-driven from real archived M9 frames. Non-hex address, wrong data length, or an SG/SH
+  chunk overflowing 0xFF → `malformed` with a parse error code, retained (rule 18), never dropped.
+- `td_s_current_state` keyed **per byte**; `decoded_bitset` populated; `decode_status = 'decoded'`.
+- `td_s_bit_transition`: one row per bit that actually changes. A refresh disagreeing with current
+  state records its transitions flagged `source = 'refresh'` (evidence of a missed SF) and is
+  counted per area for observability.
+- Projection version bump + rebuild from `td_s_event`; add range partitions for
+  `td_s_bit_transition` (ensure/prune-partition commands) and measure storage before enabling.
+- **Acceptance**: replaying real M9 fixtures yields byte state equal to the next SG/SH refresh;
+  rebuild is idempotent; every transition keeps lineage to its source event; unit tests for each
+  malformed case; `td_s_current_state` no longer mixes word/byte values.
+
+### 36b — live, playback and freshness
+
+- S-Class current state in the fast live path (`projector-td-live`), publishing a new
+  `signal.updated` WS delta (protocol version bump if required) for every published map binding
+  the changed bit.
+- `liveState`, `reconstructState`, snapshots and playback `/events` resolve each `tdSBit` binding
+  → `unmapped` | `unknown` | `on` | `off` → blank/blank/red/green (PROJECT_SPEC §6).
+- Freshness: each byte carries a `valid_since`; a feed gap > 5 min (from `feed_connection_session`
+  / CT heartbeat continuity) invalidates the area's bytes. This is the minimal slice of
+  Milestone 37 M36 needs; M37 still owns the general `feed_gap` row writing.
+- **Acceptance**: a live bit change reaches the browser within berth-update latency; playback at
+  T matches bits at T; after a >5 min gap signals blank until re-confirmed, after a <5 min gap they
+  keep their last state; no signal ever rendered from anything but its bound bit (rule 10).
+
+### 36c — definitions and authoring
+
+- Per-area, versioned **S-Class definitions** reference table: `(td_area, address, bit)` →
+  kind (`signal` / `route` / `points` / `track` / `trts` / `level_crossing` / `unknown`), label
+  (e.g. `S3003`), destination (routes), source (wiki / SOP / ECS / observed), notes.
+- Paste-import of wiki-format tables with an **explicit hex/decimal radix choice** (no guessing),
+  reporting duplicates and conflicts rather than silently resolving them.
+- Editor: bind a signal element by picking a defined label (e.g. "M9 S1234") or raw
+  address:bit, plus `activeMeans`. Validation warns if the bit has never been seen changing in
+  nationwide data (same approach as Milestone 22).
+- Admin **S-Class explorer** (role-gated, Milestone 29 auth): live bit grid per area, last-change
+  time per bit, per-bit history, and ranked candidate suggestions from C-Class timing correlation
+  (decision 3) — suggestions are never auto-applied.
+- **Acceptance**: R3 table imports cleanly as hex and flags its S3533 duplicate; the M8 table
+  imported as decimal lands S3037 on 0x19:1; an editor-bound signal renders live on/off in the
+  preview and the public renderer identically (rule 13).
+
+### 36d — Blackpool bindings `[owner's task]`
+
+Owner identifies M9 signal bits via the explorer and binds the 70 Blackpool signals, then
+publishes a new map version.
 
 ## Milestone 37 — `feed_gap` auto-detection on reconnect `[planned]`
 

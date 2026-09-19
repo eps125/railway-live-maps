@@ -28,7 +28,7 @@ Do not repeatedly load every document when one or two are sufficient.
 7. Resolver results must be `matched`, `ambiguous` or `unmatched`; never hide ambiguity. **(Reinstated — ADR 0006, 2026-09-13, Milestone 34: `resolveRunMatch`'s typed result is always exactly one of the three; `GET .../current-run`'s `matchStatus` surfaces it verbatim.)**
 8. Lancaster/Preston has no usable S-Class data. Lancaster signal symbols remain blank, while S-Class events from other areas are still captured and retained.
 9. Future signals use only `blank`, `on` and `off`. Red means on; green means off. Never calculate or claim yellow, double-yellow or green physical aspects.
-10. Never infer signal state from train movements, routes, occupation, timetable data or adjacent signals.
+10. Never infer signal state from train movements, routes, occupation, timetable data or adjacent signals. **(Clarified — ADR 0013, 2026-09-19, Milestone 36: an authoring-time tool may _suggest_ which S-Class bit belongs to a signal by correlating bit changes with berth steps, for the owner to confirm and bind; displayed signal state is always and only the bound bit's value.)**
 11. Published map versions are immutable and have effective date ranges.
 12. The editor produces canonical map JSON, never React/SVG source as authoritative output.
 13. The public renderer and editor preview consume the same domain model and state semantics.

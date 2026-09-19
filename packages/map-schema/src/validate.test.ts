@@ -390,4 +390,62 @@ describe("validateMapDocument", () => {
     const result = validateMapDocument(doc);
     expect(result.valid).toBe(true);
   });
+
+  it("accepts a berth bound to a virtualBerth binding (docs/adr/0012)", () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "vb1",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "0000",
+          bindingId: "bind-vb1",
+        },
+      ],
+      bindings: [{ id: "bind-vb1", elementId: "vb1", type: "virtualBerth", stanoxes: ["52701"] }],
+    });
+    expect(validateMapDocument(doc).valid).toBe(true);
+  });
+
+  it("blocks two different virtualBerth bindings claiming the same STANOX", () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "vb1",
+          layerId: "l1",
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "0000",
+          bindingId: "bind-vb1",
+        },
+        {
+          id: "vb2",
+          layerId: "l1",
+          type: "berth",
+          x: 20,
+          y: 0,
+          width: 10,
+          height: 10,
+          displayName: "0001",
+          bindingId: "bind-vb2",
+        },
+      ],
+      bindings: [
+        { id: "bind-vb1", elementId: "vb1", type: "virtualBerth", stanoxes: ["52701"] },
+        { id: "bind-vb2", elementId: "vb2", type: "virtualBerth", stanoxes: ["52701"] },
+      ],
+    });
+    const result = validateMapDocument(doc);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ code: "duplicate_virtual_berth_binding" }),
+    );
+  });
 });

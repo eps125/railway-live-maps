@@ -46,14 +46,20 @@ export const SnapshotMessageSchema = z.object({
 export type SnapshotMessage = z.infer<typeof SnapshotMessageSchema>;
 
 /** Only ever emitted for an occupied berth — an empty berth is `berth.cleared` instead, so
- * `description`/`enteredAt` are required here, unlike the snapshot's per-berth shape. */
+ * `description`/`enteredAt` are required here, unlike the snapshot's per-berth shape.
+ * `tdArea`/`berth` are optional and `stanox` added (docs/adr/0012): a virtual (GPS-fed) berth has
+ * no TD area/berth code at all, so its deltas carry `stanox` instead. The client doesn't need a
+ * separate "is this virtual" field here — `elementId` is already the real lookup key, and the
+ * compiled map bundle it already holds (delivered once per map load) says which binding type each
+ * element has, the same way every other static per-element rendering fact is already sourced. */
 export const BerthUpdatedMessageSchema = z.object({
   type: z.literal("berth.updated"),
   sequence: z.number().int().nonnegative(),
   eventAt: z.string(),
   elementId: z.string(),
-  tdArea: z.string(),
-  berth: z.string(),
+  tdArea: z.string().optional(),
+  berth: z.string().optional(),
+  stanox: z.string().optional(),
   description: z.string(),
   enteredAt: z.string(),
 });
@@ -64,8 +70,9 @@ export const BerthClearedMessageSchema = z.object({
   sequence: z.number().int().nonnegative(),
   eventAt: z.string(),
   elementId: z.string(),
-  tdArea: z.string(),
-  berth: z.string(),
+  tdArea: z.string().optional(),
+  berth: z.string().optional(),
+  stanox: z.string().optional(),
 });
 export type BerthClearedMessage = z.infer<typeof BerthClearedMessageSchema>;
 

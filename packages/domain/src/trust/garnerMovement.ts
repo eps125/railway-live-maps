@@ -3,12 +3,16 @@
  * (garner `trustdb.c` `process_trust_0003`). RLM mirrors `trust_movement` near-verbatim (ADR
  * 0002, migration 0025), so this is the one place that knows garner's bit layout:
  *
- *   bits 0-1  event kind:  1 = departure, 2 = arrival, 3 = arrival at destination
- *   bit  2    event source was Manual (TOPS operator), not the automatic feed
- *   bits 3-4  variation status: 0 = EARLY, 1 = ON TIME, 2 = LATE, 3 = OFF ROUTE
- *   bit  5    off-route indicator set on the movement
- *   bit  6    train terminated at this location
- *   bit  7    correction (this report corrects a previous one)
+ *   bits 0-1   event kind:  1 = departure, 2 = arrival, 3 = arrival at destination
+ *   bit  2     event source was Manual (TOPS operator), not the automatic feed
+ *   bits 3-4   variation status: 0 = EARLY, 1 = ON TIME, 2 = LATE, 3 = OFF ROUTE
+ *   bit  5     off-route indicator set on the movement
+ *   bit  6     train terminated at this location
+ *   bit  7     correction (this report corrects a previous one)
+ *   bits 8-10  original data source (added docs/adr/0012, openrail-eps commit b9f3538):
+ *              0 = unknown/unset, 1 = SDR, 2 = SMART, 3 = TOPS, 4 = TRUST DA, 5 = GPS. `flags`
+ *              is a 16-bit column and bits 0-7 were already fully used, so this rides on the
+ *              existing mirrored column instead of needing a new one on either side.
  *
  * `timetable_variation` in the mirror is the unsigned magnitude in minutes garner stores; the
  * direction comes from the variation status here (EARLY => the train is that many minutes early).
@@ -16,6 +20,7 @@
 
 export type TrustMovementEventKind = "departure" | "arrival" | "arrival_destination" | "unknown";
 export type TrustMovementVariation = "early" | "on_time" | "late" | "off_route";
+export type TrustMovementSource = "unknown" | "sdr" | "smart" | "tops" | "trust_da" | "gps";
 
 export interface DecodedTrustMovementFlags {
   eventKind: TrustMovementEventKind;
@@ -24,6 +29,7 @@ export interface DecodedTrustMovementFlags {
   offRoute: boolean;
   terminated: boolean;
   correction: boolean;
+  originalDataSource: TrustMovementSource;
 }
 
 const EVENT_KIND: Record<number, TrustMovementEventKind> = {
@@ -33,6 +39,15 @@ const EVENT_KIND: Record<number, TrustMovementEventKind> = {
 };
 
 const VARIATION: TrustMovementVariation[] = ["early", "on_time", "late", "off_route"];
+
+const ORIGINAL_DATA_SOURCE: Record<number, TrustMovementSource> = {
+  0: "unknown",
+  1: "sdr",
+  2: "smart",
+  3: "tops",
+  4: "trust_da",
+  5: "gps",
+};
 
 export function decodeTrustMovementFlags(
   flags: number | null | undefined,
@@ -45,6 +60,7 @@ export function decodeTrustMovementFlags(
     offRoute: (f & 0x20) !== 0,
     terminated: (f & 0x40) !== 0,
     correction: (f & 0x80) !== 0,
+    originalDataSource: ORIGINAL_DATA_SOURCE[(f >> 8) & 0x7] ?? "unknown",
   };
 }
 

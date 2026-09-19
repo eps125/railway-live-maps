@@ -6,7 +6,7 @@ import {
   joinCombinedBerthState,
   type OpenOccupancySnapshot,
 } from "@railway/domain";
-import type { TdBerthBinding } from "@railway/map-schema";
+import type { TdBerthBinding, VirtualBerthBinding } from "@railway/map-schema";
 import { useEditorState } from "./EditorState.js";
 
 export type TestMode = "off" | "simulated" | "live" | "historical";
@@ -50,6 +50,12 @@ export function useTestModePanel(slug: string): TestModePanelResult {
   const [clearing, setClearing] = useState(false);
 
   const tdBerthBindings = doc.bindings.filter((b): b is TdBerthBinding => b.type === "tdBerth");
+  // docs/adr/0012 gap closure (owner request, 2026-09-19): virtual (GPS-fed) berths get the same
+  // "stuck occupied" manual-clear escape hatch as TD berths, in the same Test mode "live" list —
+  // one binding, one STANOX, never combined (validate.ts blocks two virtual bindings sharing one).
+  const virtualBerthBindings = doc.bindings.filter(
+    (b): b is VirtualBerthBinding => b.type === "virtualBerth",
+  );
 
   async function pollLiveState(): Promise<void> {
     try {
@@ -108,6 +114,43 @@ export function useTestModePanel(slug: string): TestModePanelResult {
       await pollLiveState();
     } catch (error) {
       setClearError(error instanceof Error ? error.message : "Failed to clear berth");
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  /** Same live-only override as `submitClear`, for a virtual berth stuck showing occupied
+   * (docs/adr/0012 gap closure) — `POST /api/v1/editor/virtual-berths/{stanox}/clear`. Uses its
+   * own `stanoxes[0]` as the target: a virtual binding never combines, so there is exactly one. */
+  async function submitVirtualClear(stanox: string): Promise<void> {
+    if (!clearReason.trim()) {
+      setClearError("A reason is required");
+      return;
+    }
+    setClearing(true);
+    setClearError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/editor/virtual-berths/${encodeURIComponent(stanox)}/clear`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: clearReason.trim() }),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        throw new Error(
+          body?.error?.message ?? `Failed to clear virtual berth (${response.status})`,
+        );
+      }
+      setClearingKey(null);
+      setClearReason("");
+      await pollLiveState();
+    } catch (error) {
+      setClearError(error instanceof Error ? error.message : "Failed to clear virtual berth");
     } finally {
       setClearing(false);
     }
@@ -299,6 +342,74 @@ export function useTestModePanel(slug: string): TestModePanelResult {
               {clearError}
             </p>
           ) : null}
+        </fieldset>
+      ) : null}
+
+      {mode === "live" ? (
+        <fieldset>
+          <legend>Occupied virtual (GPS-fed) berths</legend>
+          {virtualBerthBindings.length === 0 ? (
+            <p>No virtual berth bindings on this map.</p>
+          ) : (
+            <ul className="berth-clear-list">
+              {virtualBerthBindings.map((binding) => {
+                const stanox = binding.stanoxes[0]!;
+                const key = `virtual:${stanox}`;
+                const entry = liveState?.[binding.elementId];
+                if (!entry?.description) return null;
+                const isClearing = clearingKey === key;
+                return (
+                  <li key={key}>
+                    <span>
+                      {stanox}: <strong>{entry.description}</strong>
+                    </span>
+                    {isClearing ? (
+                      <span className="btn-group">
+                        <input
+                          value={clearReason}
+                          placeholder="Reason (required)"
+                          onChange={(e) => setClearReason(e.target.value)}
+                          disabled={clearing}
+                        />
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={clearing}
+                          onClick={() => void submitVirtualClear(stanox)}
+                        >
+                          Confirm clear
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={clearing}
+                          onClick={() => {
+                            setClearingKey(null);
+                            setClearReason("");
+                            setClearError(null);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          setClearingKey(key);
+                          setClearReason("");
+                          setClearError(null);
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </fieldset>
       ) : null}
 

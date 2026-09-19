@@ -24,15 +24,18 @@ export interface MapStateResponse {
 }
 
 /** One compact playback event from `GET /api/v1/maps/{slug}/events` — the same wire shape as a
- * live WS `berth.updated` / `berth.cleared` delta, so `applyPlaybackDelta` handles both. */
+ * live WS `berth.updated` / `berth.cleared` delta, so `applyPlaybackDelta` handles both.
+ * `tdArea`/`berth` are optional and `stanox` added (docs/adr/0012 gap closure, 2026-09-19): a
+ * virtual (GPS-fed) berth event carries `stanox` instead of a TD area/berth code. */
 export type PlaybackDelta =
   | {
       type: "berth.updated";
       sequence: number;
       eventAt: string;
       elementId: string;
-      tdArea: string;
-      berth: string;
+      tdArea?: string;
+      berth?: string;
+      stanox?: string;
       description: string;
       enteredAt: string;
     }
@@ -41,8 +44,9 @@ export type PlaybackDelta =
       sequence: number;
       eventAt: string;
       elementId: string;
-      tdArea: string;
-      berth: string;
+      tdArea?: string;
+      berth?: string;
+      stanox?: string;
     };
 
 export interface MapEventsResponse {
@@ -50,6 +54,10 @@ export interface MapEventsResponse {
   mapVersion: number;
   events: PlaybackDelta[];
   nextCursor: string | null;
+  /** docs/adr/0012 gap closure (2026-09-19): independent cursor for virtual-berth events —
+   * paged separately from `nextCursor` since the two sources have unrelated id spaces. Absent
+   * on a response from a server build that predates virtual-berth playback; treat as `null`. */
+  nextVirtualCursor?: string | null;
 }
 
 export interface MapDefinitionResponse {

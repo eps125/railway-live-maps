@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import { berthChangesForEvent } from "@railway/domain";
+import { berthChangesForEvent, VIRTUAL_BERTH_PROJECTION_VERSION } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import type { LiveDeltaMessage } from "@railway/protocol";
 import { apiError, parseLimit, parseTimeRange } from "../lib/queryRange.js";
@@ -35,6 +35,14 @@ interface TdBerthEventRow {
   from_berth: string | null;
   to_berth: string | null;
   description: string | null;
+}
+
+interface VirtualOccupancyRow {
+  id: string;
+  stanox: string;
+  headcode: string | null;
+  entered_at: Date;
+  left_at: Date | null;
 }
 
 /** Canonical map schema + basic Lancaster renderer endpoints (docs/IMPLEMENTATION_PLAN.md
@@ -152,7 +160,13 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
   // range (max 7 days, per `parseTimeRange`).
   app.get<{
     Params: { slug: string };
-    Querystring: { from?: string; to?: string; after?: string; limit?: string };
+    Querystring: {
+      from?: string;
+      to?: string;
+      after?: string;
+      afterVirtual?: string;
+      limit?: string;
+    };
   }>("/api/v1/maps/:slug/events", async (request, reply) => {
     const rangeResult = parseTimeRange(request.query);
     if (!rangeResult.ok) {
@@ -161,6 +175,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
     }
     const limit = parseLimit(request.query.limit);
     const after = request.query.after ?? "0";
+    const afterVirtual = request.query.afterVirtual ?? "0";
 
     // Definition (bindings) as they were at the start of the requested window.
     const version = await currentVersionForSlug(pool, request.params.slug, rangeResult.range.from);
@@ -256,11 +271,116 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
     }
 
     const last = result.rows.at(-1);
+
+    // docs/adr/0012 gap closure (owner request, 2026-09-19): virtual (GPS-fed) berth playback
+    // events, merged into the same response. `virtual_berth_occupancy` intervals span two
+    // far-apart instants (entered_at, left_at) instead of TD's single `event_at`, so a plain
+    // row-id cursor can't page it the way `ingestion_sequence` pages TD: a row whose entry
+    // already fell inside an earlier page's window can still be *open* (no `left_at` yet), and
+    // its eventual exit event must remain reachable on a later page once `to` grows far enough.
+    // Cursor is therefore `virtualOccupancyId * 2 (+1 for the exit)` — a distinct, individually
+    // resumable position per event rather than per row: once a row's entry has been sent its
+    // cursor sits exactly on `entryCursor`, so a repeat request with that same cursor correctly
+    // excludes the entry (`> afterVirtual` fails on equality) while still admitting the exit
+    // (`exitCursor = entryCursor + 1n` still passes) the moment `left_at` lands in `[from, to)` —
+    // no re-send, no data loss, no need to advance past a row before it's fully resolved.
+    // `nextVirtualCursor` still deliberately stops advancing *past* the first still-open row it
+    // meets (in id order): later rows' events are still returned this page, but the cursor can't
+    // skip over the open row without risking its eventual exit being unreachable on a future page
+    // once `to` grows far enough to cover it.
+    const virtualBerthBindingIndex = bundle.virtualBerthBindingIndex ?? {};
+    const stanoxes = Object.keys(virtualBerthBindingIndex);
+    let nextVirtualCursor: string | null = null;
+    if (stanoxes.length > 0) {
+      const afterVirtualBig = BigInt(afterVirtual);
+      const minId = afterVirtualBig / 2n; // floor division; inclusive re-check below
+      const virtualResult = await pool.query<VirtualOccupancyRow>(
+        `select vbo.id::text, vbo.stanox, vbo.headcode, vbo.entered_at, vbo.left_at
+           from virtual_berth_occupancy vbo
+          where vbo.projection_version = $1
+            and vbo.stanox = any($2::text[])
+            and vbo.id >= $3::bigint
+            and vbo.entered_at < $4
+            and (vbo.left_at is null or vbo.left_at >= $5)
+          order by vbo.id asc
+          limit $6`,
+        [
+          VIRTUAL_BERTH_PROJECTION_VERSION,
+          stanoxes,
+          minId.toString(),
+          rangeResult.range.to,
+          rangeResult.range.from,
+          limit,
+        ],
+      );
+
+      let runningCursor = afterVirtualBig;
+      let blocked = false;
+      for (const row of virtualResult.rows) {
+        if (blocked) break;
+        const elementId = virtualBerthBindingIndex[row.stanox];
+        if (!elementId) continue;
+        const rowId = BigInt(row.id);
+        const entryCursor = rowId * 2n;
+        const exitCursor = rowId * 2n + 1n;
+        const enteredAtMs = row.entered_at.getTime();
+        const leftAtMs = row.left_at ? row.left_at.getTime() : null;
+
+        const includeEntry =
+          entryCursor > afterVirtualBig &&
+          enteredAtMs >= rangeResult.range.from.getTime() &&
+          enteredAtMs < rangeResult.range.to.getTime();
+        if (includeEntry) {
+          events.push({
+            type: "berth.updated",
+            sequence: Number(entryCursor),
+            eventAt: row.entered_at.toISOString(),
+            elementId,
+            stanox: row.stanox,
+            description: row.headcode ?? "",
+            enteredAt: row.entered_at.toISOString(),
+          });
+        }
+
+        const includeExit =
+          row.left_at !== null &&
+          leftAtMs !== null &&
+          exitCursor > afterVirtualBig &&
+          leftAtMs >= rangeResult.range.from.getTime() &&
+          leftAtMs < rangeResult.range.to.getTime();
+        if (includeExit && row.left_at) {
+          events.push({
+            type: "berth.cleared",
+            sequence: Number(exitCursor),
+            eventAt: row.left_at.toISOString(),
+            elementId,
+            stanox: row.stanox,
+          });
+        }
+
+        if (row.left_at === null) {
+          // Still open — never advance the watermark past this row's entry; its exit must
+          // remain reachable on a future page once it closes.
+          if (entryCursor > runningCursor) runningCursor = entryCursor;
+          blocked = true;
+        } else {
+          runningCursor = exitCursor;
+        }
+      }
+      nextVirtualCursor = runningCursor > afterVirtualBig ? runningCursor.toString() : null;
+    }
+
+    // Merge, sorted by `eventAt` so a client that applies buffered events strictly in array
+    // order (apps/web/src/map/usePlayback.ts) sees TD and virtual transitions interleaved in
+    // the order they actually happened, not grouped by source.
+    events.sort((a, b) => Date.parse(a.eventAt) - Date.parse(b.eventAt));
+
     return {
       mapSlug: version.slug,
       mapVersion: version.version_number,
       events,
       nextCursor: result.rows.length === limit && last ? last.ingestion_sequence : null,
+      nextVirtualCursor,
     };
   });
 }

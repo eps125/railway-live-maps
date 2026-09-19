@@ -17,6 +17,7 @@ export {
   type MapBinding,
   type TdBerthBinding,
   type TdSBitBinding,
+  type VirtualBerthBinding,
   type TopologyNode,
   type TopologyEdge,
 } from "./document.js";

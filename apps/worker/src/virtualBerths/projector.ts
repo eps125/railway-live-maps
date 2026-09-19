@@ -364,11 +364,15 @@ export async function runProjectVirtualBerths(
     const checkpoint = await getCheckpoint(pool, definitionId);
     const lastId = checkpoint?.lastIngestionSequence ?? "0";
 
+    // `order by trust_movement.id`, never bare `order by id`: an ORDER BY name binds to the output
+    // alias first, so it would sort by the `id::text` alias — lexicographic order ("10000000" <
+    // "9999999") that jumps the checkpoint past unprocessed rows, and a seq-scan + sort of the
+    // whole table instead of a primary-key range scan (timed out every tick in production).
     const batch = await pool.query<TrustMovementRow>(
       `select id::text as id, trust_id, loc_stanox, actual_timestamp, created, flags
        from trust_movement
        where id > $1
-       order by id
+       order by trust_movement.id
        limit $2`,
       [lastId, batchSize],
     );

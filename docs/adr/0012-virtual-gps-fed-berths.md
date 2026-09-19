@@ -398,3 +398,22 @@ non-integration suite (84 files / 593 tests as of this follow-up) is green. Ever
 test (this follow-up's and the ones from first landing) remains written-but-unexecuted for the
 same reason noted throughout this codebase: no local Postgres in the sandbox this work was done
 in.
+
+## Production fix (2026-09-19): catch-up cursor sorted by a text alias
+
+On first production deploy `project-virtual-berths-daemon` failed every tick with `Query read
+timeout` and never advanced. Its catch-up query selected `id::text as id ... order by id`; an
+`ORDER BY` name binds to the output alias before the table column, so it sorted by the _text_
+alias. That forced a parallel seq-scan + sort of all ~13.5M `trust_movement` rows (7–13s, over the
+15s daemon statement timeout under load) instead of a `trust_movement_pkey` range scan, and — had a
+tick ever completed — lexicographic order (`"10000000"` < `"9999999"`) would have jumped the
+checkpoint past unprocessed rows. Fixed by ordering on `trust_movement.id` explicitly (1.6ms on
+production, `EXPLAIN ANALYZE`), with a regression integration test that straddles a digit-count
+id boundary.
+
+Starting from checkpoint `0` against the full `trust_movement` history was kept deliberately: rows
+not GPS-sourced (everything before openrail-eps began recording `originalDataSource`, first GPS
+row 2026-09-19 09:44Z) are skipped in memory with no per-row query, and no map binds a
+`virtual_berth` yet, so the catch-up is ~27k cheap primary-key batches that write nothing but the
+checkpoint. Known limitation this surfaced: `processRow` only projects GPS rows at STANOXes bound
+_at processing time_, so binding a STANOX later does not backfill earlier GPS reports there.

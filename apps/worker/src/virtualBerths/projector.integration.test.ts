@@ -204,6 +204,33 @@ describe("runProjectVirtualBerths (integration)", () => {
     expect(occupancy.rows[0]?.exit_reason).toBe("terminated");
   });
 
+  it("batches in numeric id order across a digit-count boundary (never text order)", async () => {
+    // Regression: `select id::text as id ... order by id` sorted by the text alias, so "10…0"
+    // came before "9…9", the checkpoint jumped to the larger id and the smaller row was skipped.
+    // Move the sequence (forward only) so the next two ids straddle a power of ten.
+    const { rows } = await pool.query<{ last_value: string }>(
+      `select last_value::text as last_value from trust_movement_id_seq`,
+    );
+    const boundary = 10n ** BigInt(rows[0]!.last_value.length + 1);
+    await pool.query(`select setval('trust_movement_id_seq', $1)`, [(boundary - 2n).toString()]);
+
+    const trustA = `T${randomUUID().replace(/-/g, "").slice(0, 9).toUpperCase()}`;
+    const trustB = `T${randomUUID().replace(/-/g, "").slice(0, 9).toUpperCase()}`;
+    const stanoxA = `F${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    const stanoxB = `G${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    await bindVirtualBerth(stanoxA);
+    await bindVirtualBerth(stanoxB);
+
+    const idA = await insertMovement(trustA, stanoxA, new Date());
+    const idB = await insertMovement(trustB, stanoxB, new Date());
+    expect(idA.length).toBeLessThan(idB.length);
+
+    await runProjectVirtualBerths(pool, { batchSize: 1 });
+
+    expect((await currentState(stanoxA))?.trust_id).toBe(trustA);
+    expect((await currentState(stanoxB))?.trust_id).toBe(trustB);
+  });
+
   it("is idempotent — reprocessing the same rows (checkpoint held back) does not duplicate occupancy rows", async () => {
     const trustId = `T${randomUUID().replace(/-/g, "").slice(0, 9).toUpperCase()}`;
     const stanox = `E${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;

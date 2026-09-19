@@ -2819,7 +2819,7 @@ Known limitations / follow-up: no CSV/export option; no saved/recent searches; t
 is a plain multi-select rather than a searchable/checkbox list (fine at the current ~dozens of
 observed areas, may want revisiting if that grows much further).
 
-## Milestone 52 — virtual (GPS-fed) berths for track with no TD coverage `[planned — blocked, see docs/adr/0012]`
+## Milestone 52 — virtual (GPS-fed) berths for track with no TD coverage `[in progress — ingestion landed, rest planned; see docs/adr/0012]`
 
 Owner request, 2026-09-19: represent sections of track with no TD coverage at all on published
 maps, as "virtual" berths whose occupancy is driven by TRUST movement reports sourced from GPS
@@ -2827,15 +2827,21 @@ rather than by TD `CA`/`CB`/`CC` events — headcode steps along a run of these 
 it would through real TD berths, yellow-bordered in both the editor and the live map to distinguish
 them from real TD-backed ones. Full design in `docs/adr/0012-virtual-gps-fed-berths.md`.
 
-**Blocked on one real-data confirmation before any migration/bridge code lands**: whether garner's
-real `trust_movement` table (openrail-eps MariaDB) retains the STOMP frame's
-`header.original_data_source` field (`"GPS"` / `"SDR"` / `"SMART"` / `"TOPS"` / `"TRUST DA"`, per
-the real Train Movement message spec) at all, and under what column name — RLM's `trust_movement`
-mirror (migration 0025, populated by `apps/worker/src/garner/bridge.ts`'s `runGarnerTrustSync`)
-currently selects only the movement *body* fields, never the frame header, and this sandboxed
-session has no network path to check garner directly (see the ADR's "Open question" for the exact
-query to run against the real instance). Everything else below is designed and ready to build once
-that's answered.
+**Ingestion resolved and landed same day.** Reading garner's own source (`trustdb.c`,
+`eps125/openrail-eps`) directly showed it never captured the STOMP header's
+`original_data_source` field (`"GPS"`/`"SDR"`/`"SMART"`/`"TOPS"`/`"TRUST DA"`) at all — not a
+mirror gap, an upstream one. Patched (`eps125/openrail-eps` commit `b9f3538`, pushed to `main` per
+owner instruction) to pack it into unused bits 8-10 of the existing `trust_movement.flags` column
+instead of adding a new one — no garner schema change, and since RLM already mirrors `flags`
+verbatim, **no RLM migration or bridge-sync change either**. `packages/domain/src/trust/
+garnerMovement.ts`'s `decodeTrustMovementFlags` now decodes `originalDataSource` (unit-tested,
+`garnerMovement.test.ts`, 11 cases passing). **Still needed before this carries real data**: the
+openrail-eps `trustdb` daemon rebuilt and redeployed against that commit — every row decodes as
+`"unknown"` source until then, by design (never guessed).
+
+Everything else in the ADR (map-schema binding, `virtual_berth_*` tables, `project-virtual-berths`
+daemon, editor authoring, live rendering, `current-run` integration) is designed but not yet
+built.
 
 Design summary (full detail in the ADR):
 

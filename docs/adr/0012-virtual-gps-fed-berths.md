@@ -2,10 +2,16 @@
 
 ## Status
 
-Proposed — 2026-09-19. Design complete and ready to implement, with one real-data confirmation
-still outstanding (see "Open question" below) that the ingestion piece is blocked on. Everything
-else in this ADR (schema, projector logic, editor authoring, live rendering, `current-run`
-integration) is designed and can be built once that one fact is confirmed.
+Proposed — 2026-09-19. Ingestion path confirmed and unblocked the same day (see "Ingestion —
+resolved" below): garner's own source (`trustdb.c`, `eps125/openrail-eps`) was read directly and
+found to never capture `original_data_source` at all; patched (commit `b9f3538`, pushed to that
+repo's `main`) to pack it into spare bits of the existing `flags` column instead of adding a new
+one, so no RLM migration or bridge change is needed for ingestion — only a decoder update, already
+landed in `packages/domain/src/trust/garnerMovement.ts`. **Still pending**: the openrail-eps
+`trustdb` daemon needs rebuilding and redeploying against that commit before any real GPS-sourced
+bit ever appears in RLM's mirrored `flags` column. The rest of this ADR (map-schema binding, new
+tables, `project-virtual-berths` daemon, editor authoring, live rendering, `current-run`
+integration) is designed but not yet built.
 
 ## Context
 
@@ -35,34 +41,41 @@ loc_stanox, actual_timestamp, gbtt_timestamp, planned_timestamp, timetable_varia
 next_report_stanox, next_report_run_time, flags` from garner's `trust_movement` row — no header
 fields, because it reads garner's own already-parsed row, not the raw NR frame.
 
-### Open question — blocks ingestion work only
+### Ingestion — resolved (2026-09-19, `eps125/openrail-eps` commit `b9f3538`)
 
-Whether garner's real `trust_movement` table retains `original_data_source` at all, and if so
-under what column name, is unknown from this sandboxed session — it has no network path to the
-operator's infrastructure (the same policy that blocked the wiki fetch). This needs a real check
-against garner, the same kind of spike ADR 0006 ran (`Spike 1`, querying live openrail-eps
-directly) before writing any resolver code. Please run, against the real instance:
+The real answer turned out to be neither of the two guesses this ADR started with. Reading
+`trustdb.c`'s `process_trust_0003` directly (the function garner uses to parse a TRUST Train
+Movement message and insert it into `trust_movement`) showed it extracts exactly the fields RLM
+already mirrors — `train_id`, `event_type`/`planned_event_type`, `platform`, `loc_stanox`,
+`actual_timestamp`, `gbtt_timestamp`, `planned_timestamp`, `timetable_variation`, `event_source`,
+`offroute_ind`, `train_terminated`, `variation_status`, `next_report_stanox`,
+`next_report_run_time`, `correction_ind` — and nothing else. `original_data_source` (a STOMP frame
+**header** field, not body) was never read, never stored, appears nowhere in the repository.
+Grepping the whole `openrail-eps` tree for it confirmed this. So garner genuinely never captured
+it — not a mirror gap, an upstream one.
 
-```sql
-SHOW CREATE TABLE trust_movement;
-```
+The fix turned out to be smaller than either option this ADR originally offered:
 
-or, to see real values rather than just column names:
+- `jsmn_find_extract_token` (`jsmn.c`) searches the whole message object by field name regardless
+  of nesting, which is _how_ `process_trust_0003` already reaches `msg_type` — itself a header
+  field — despite the code's local variable being named `body`. So `original_data_source` was
+  exactly as reachable as anything else already extracted; it just was never asked for.
+- `trust_movement.flags` (`database.c`'s `CREATE TABLE trust_movement`) is `SMALLINT UNSIGNED` —
+  16 bits — and only bits 0-7 are used by the layout `garnerMovement.ts` already documents. Bits
+  8-10 were free, so `original_data_source` was packed there (0 = unknown/unset, 1 = SDR,
+  2 = SMART, 3 = TOPS, 4 = TRUST DA, 5 = GPS) instead of adding a new column.
 
-```sql
-SELECT * FROM trust_movement
-WHERE loc_stanox = '<a STANOX you know only ever gets GPS-sourced reports>'
-ORDER BY created DESC LIMIT 5;
-```
+Consequence: **no garner schema change, no RLM migration, no RLM bridge-sync change** — RLM
+already mirrors `trust_movement.flags` verbatim (`runGarnerTrustSync`, `apps/worker/src/garner/
+bridge.ts`). The only RLM-side change needed for ingestion was extending the decoder,
+`decodeTrustMovementFlags` in `packages/domain/src/trust/garnerMovement.ts`, with an
+`originalDataSource` field — done in this change, unit-tested (`garnerMovement.test.ts`).
 
-and report back the column name holding the GPS/`original_data_source`-equivalent value (if one
-exists) and its observed values. Everything below is designed to slot in as a small, additive
-change to `runGarnerTrustSync`'s select list plus one new nullable mirror column — not a redesign
-— once that's known.
-
-If garner turns out **not** to retain it at all (dropped before persisting its own row), that is a
-materially different, bigger problem — a new ingestion mechanism, not a bridge-column addition —
-and this ADR's ingestion section would need revisiting with the owner before proceeding.
+Patch pushed directly to `eps125/openrail-eps`'s `main` (owner instruction, 2026-09-19): a 13-line
+addition to `process_trust_0003`, no schema migration. **This still needs the `trustdb` daemon
+rebuilt and redeployed against that commit before any real report ever carries a non-zero value**
+— until then, every mirrored row's `originalDataSource` decodes to `"unknown"`, exactly as it does
+today, so nothing downstream can accidentally treat absence-of-redeploy as absence-of-GPS-coverage.
 
 ## Decision
 
@@ -118,7 +131,7 @@ This is symmetrical and self-contained: five virtual berths in a row on the map 
 GPS reports arrive at each one in turn, no author input beyond binding each berth to its own
 STANOX(es).
 
-### What is explicitly *not* attempted in this first cut
+### What is explicitly _not_ attempted in this first cut
 
 - **No automatic handoff back to TD coverage.** When a train re-enters real TD coverage, nothing
   here watches for it and auto-clears the last virtual berth it held — TD has no `trust_id` to
@@ -292,8 +305,9 @@ endpoint), `docs/ARCHITECTURE.md` (new daemon), `docs/PROJECT_SPEC.md` (product-
 - Explicitly **not** attempted in this pass: automatic TD-reentry handoff (closes only via next
   GPS step / `train_terminated` / manual clear), playback/history for virtual berths, any
   owner-curated chain ordering (not needed — stepping is fully `trust_id`-derived).
-- **Blocked** until the garner `trust_movement` GPS-source column is confirmed against the real
-  operator instance (see "Open question") — no migration or bridge-sync code should land before
-  that, to avoid guessing at a wire/schema detail only the operator's infrastructure can answer,
-  matching this project's established practice (ADR 0006 Spike 1, the Preston `area_id`
-  confirm-before-hardcoding rule).
+- Ingestion is resolved and landed (`garnerMovement.ts`'s `originalDataSource` decode, unit-tested;
+  see "Ingestion — resolved" above) but **inert until the openrail-eps `trustdb` daemon is rebuilt
+  and redeployed** against commit `b9f3538` — RLM will decode every report as `"unknown"` source
+  until then. The remaining work (migration 0035, `project-virtual-berths`, editor authoring, live
+  rendering, `current-run` integration) can be built independently of that redeploy timing, but
+  won't have real data to prove itself against until it happens.

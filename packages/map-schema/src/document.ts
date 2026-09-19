@@ -254,23 +254,9 @@ const TdSBitBindingSchema = z.object({
   activeMeans: z.enum(["on", "off"]),
 });
 
-/** docs/adr/0012: a "virtual" berth — track with no TD coverage at all, powered instead by
- * TRUST movement reports sourced from GPS. Bound by STANOX(es), not a TD area/berth code; a
- * `berth` element is "virtual" purely by its `bindingId` resolving to one of these rather than a
- * `tdBerth` binding (no separate element kind, no boolean flag — CLAUDE.md rule 13). `stanoxes`
- * is a set, not a single value, for the same reason SMART berth->STANOX coverage is (ADR 0006
- * Spike 2: a real TD berth can cover more than one STANOX) — usually one entry in practice. */
-const VirtualBerthBindingSchema = z.object({
-  id: z.string().min(1),
-  elementId: z.string().min(1),
-  type: z.literal("virtualBerth"),
-  stanoxes: z.array(z.string().min(1)).min(1),
-});
-
 export const MapBindingSchema = z.discriminatedUnion("type", [
   TdBerthBindingSchema,
   TdSBitBindingSchema,
-  VirtualBerthBindingSchema,
 ]);
 
 export const MapDocumentSchema = z.object({
@@ -298,6 +284,5 @@ export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;
 export type TdSBitBinding = z.infer<typeof TdSBitBindingSchema>;
-export type VirtualBerthBinding = z.infer<typeof VirtualBerthBindingSchema>;
 export type TopologyNode = z.infer<typeof TopologyNodeSchema>;
 export type TopologyEdge = z.infer<typeof TopologyEdgeSchema>;

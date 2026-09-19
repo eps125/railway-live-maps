@@ -348,24 +348,6 @@ services:
     networks: [backend]
     labels: *watchtower-label
 
-  # docs/adr/0012: steps virtual (GPS-fed) berth occupancy from trust_movement rows sourced from
-  # GPS, for track with no TD coverage. Background enrichment, same shape/dependencies as
-  # run-lineage above — inert (every row decodes originalDataSource "unknown") until the
-  # openrail-eps trustdb daemon is rebuilt/redeployed against the commit that captures it.
-  virtual-berths:
-    image: ${WORKER_IMAGE:-ghcr.io/eps125/railway-live-maps-worker}:${APP_TAG:-latest}
-    restart: unless-stopped
-    environment: *worker-env
-    command: ["node", "dist/index.js", "project-virtual-berths-daemon"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-    stop_grace_period: 15s
-    healthcheck:
-      disable: true
-    networks: [backend]
-    labels: *watchtower-label
-
   # garner bridge (ADR 0002): mirrors CORPUS / SMART / cif_schedules / cif_schedule_locations /
   # trust_* from the operator's openrail-eps MariaDB — RLM no longer subscribes to Network Rail
   # for those feeds. The daemon idles cleanly if GARNER_BRIDGE_ENABLED is not 'true', so this

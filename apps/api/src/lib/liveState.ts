@@ -1,9 +1,5 @@
 import type { Pool } from "pg";
-import {
-  TD_PROJECTION_VERSION,
-  VIRTUAL_BERTH_PROJECTION_VERSION,
-  joinCombinedBerthState,
-} from "@railway/domain";
+import { TD_PROJECTION_VERSION, joinCombinedBerthState } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { liveDataStatus, tdAreasFromBundle } from "./mapVersion.js";
 import { feedGapWarnings } from "./feedGaps.js";
@@ -101,31 +97,6 @@ export async function computeLiveState(
   const berths: Record<string, BerthState> = {};
   for (const [elementId, members] of membersByElement) {
     berths[elementId] = joinCombinedBerthState(members);
-  }
-
-  // docs/adr/0012: virtual (GPS-fed) berths, keyed by stanox rather than (tdArea, berth) — never
-  // combines (validate.ts blocks two virtual bindings sharing a STANOX), so each bound stanox is
-  // already exactly one element's state.
-  const virtualStanoxes = Object.keys(bundle.virtualBerthBindingIndex ?? {});
-  if (virtualStanoxes.length > 0) {
-    const virtualStateResult = await pool.query<{
-      stanox: string;
-      headcode: string | null;
-      occupancy_entered_at: Date | null;
-    }>(
-      `select stanox, headcode, occupancy_entered_at
-       from virtual_berth_current_state
-       where projection_version = $1 and stanox = any($2::text[])`,
-      [VIRTUAL_BERTH_PROJECTION_VERSION, virtualStanoxes],
-    );
-    const virtualStateByStanox = new Map(virtualStateResult.rows.map((row) => [row.stanox, row]));
-    for (const [stanox, elementId] of Object.entries(bundle.virtualBerthBindingIndex ?? {})) {
-      const state = virtualStateByStanox.get(stanox);
-      berths[elementId] = {
-        description: state?.headcode ?? null,
-        enteredAt: state?.occupancy_entered_at ? state.occupancy_entered_at.toISOString() : null,
-      };
-    }
   }
 
   // Lancaster (and every current-scope map) has no S-Class binding — signals are always

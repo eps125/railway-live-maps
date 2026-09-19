@@ -19,7 +19,6 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "snapshot-maps",
   "repair-open-occupancies",
   "manage-users",
-  "project-virtual-berths",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 
@@ -39,9 +38,7 @@ export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
  * `project-resolver` daemon/commands went the same way, with the rest of the berth-run
  * resolver.) "run-lineage-daemon" (Milestone 39, docs/adr/0007) threads an already-resolved run
  * identity forward along TD berth-step chains and TD-area boundary crossings — background
- * enrichment, not on the hot or history path. "project-virtual-berths-daemon" (docs/adr/0012)
- * steps virtual (GPS-fed) berth occupancy from GPS-sourced TRUST movement reports, for track
- * with no TD coverage — same background-enrichment shape as run-lineage-daemon. */
+ * enrichment, not on the hot or history path. */
 export const LONG_RUNNING_ROLE_NAMES = [
   "serve",
   "ingest-td",
@@ -51,7 +48,6 @@ export const LONG_RUNNING_ROLE_NAMES = [
   "ingest-garner",
   "snapshot-maps-daemon",
   "run-lineage-daemon",
-  "project-virtual-berths-daemon",
 ] as const;
 export type LongRunningRoleName = (typeof LONG_RUNNING_ROLE_NAMES)[number];
 

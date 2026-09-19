@@ -101,7 +101,6 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
    * forward with the `after` cursor. */
   const seedFromRef = useRef<string>(new Date(initialAtMs).toISOString());
   const cursorRef = useRef<string | null>(null);
-  const virtualCursorRef = useRef<string | null>(null);
   const seekIdRef = useRef(0);
   const refillingRef = useRef(false);
 
@@ -138,7 +137,6 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
         bufferRef.current = events.events;
         bufferIdxRef.current = 0;
         cursorRef.current = events.nextCursor;
-        virtualCursorRef.current = events.nextVirtualCursor ?? null;
         setClock(atMs);
       } catch (err) {
         if (seekId === seekIdRef.current) {
@@ -168,16 +166,13 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
           // `after` default, matching an initial `seed()` fetch with no cursor at all) — never a
           // reason to stop refilling.
           cursorRef.current ?? "0",
-          // `afterVirtual` mirrors `after`'s same "null means resume from the start" reasoning
-          // (docs/adr/0012 gap closure, 2026-09-19) — the two cursors are otherwise independent.
-        )}&afterVirtual=${encodeURIComponent(virtualCursorRef.current ?? "0")}&limit=${PAGE_LIMIT}`,
+        )}&limit=${PAGE_LIMIT}`,
       );
       if (!res.ok || seekId !== seekIdRef.current) return;
       const page = (await res.json()) as MapEventsResponse;
       if (seekId !== seekIdRef.current) return;
       bufferRef.current = bufferRef.current.concat(page.events);
       cursorRef.current = page.nextCursor;
-      virtualCursorRef.current = page.nextVirtualCursor ?? null;
     } catch {
       // A failed refill just means the clock will stall at the buffer edge; the next tick retries.
     } finally {

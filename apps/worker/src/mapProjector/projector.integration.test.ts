@@ -100,7 +100,7 @@ describe("runProjectMapDeltas (integration)", () => {
     await pool.end();
   });
 
-  it("publishes a delta only to maps that bind the changed berth", async () => {
+  it("publishes a delta only to maps that bind the changed berth, using the real ingestion_sequence", async () => {
     const area = uniqueArea();
     const slug = `test-${randomUUID().replace(/-/g, "").slice(0, 10)}`;
     await publishMapBoundTo(slug, "berth-1", area, "0001");

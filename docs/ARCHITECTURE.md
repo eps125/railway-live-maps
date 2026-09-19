@@ -115,21 +115,6 @@ up to ~25s). After ADR 0002 (resolver + VSTP/TRUST projectors removed) and ADR 0
   `currentRun.ts` on a click) forward along `td_berth_event` `CA` step chains and owner-curated
   `td_area_boundary` crossings, so a later click on a berth the train physically stepped through
   can skip headcode/position re-resolution entirely. Never establishes a run itself.
-- **`virtual-berths`** (`project-virtual-berths-daemon`, Milestone 52, docs/adr/0012, 1s tick) —
-  background enrichment, same shape/dependencies as `run-lineage`: steps virtual (GPS-fed) berth
-  occupancy from `trust_movement` rows sourced from GPS, for track with no TD coverage. Reads
-  `trust_movement` directly (checkpointed on its own `id`, independent of every other checkpoint),
-  writes `virtual_berth_occupancy`/`virtual_berth_current_state`. Inert until the openrail-eps
-  `trustdb` daemon is rebuilt/redeployed against the commit that captures `original_data_source`
-  (every row decodes `"unknown"` source until then, by design). Each tick also runs a second pass,
-  `runVirtualBerthTdReentryHandoff` (gap-closure follow-up, same day): reads `td_berth_event` via
-  its own independent checkpoint and closes an open virtual occupancy
-  (`exit_reason = 'stepped_to_td'`) only when exactly one shares the reappearing event's headcode
-  — ADR 0007's corroboration principle, never a headcode-alone guess. Optionally publishes to
-  Redis (`LIVE_WS_REDIS_PUBSUB_ENABLED`), sharing the `live_delta_sequence` Postgres sequence with
-  `project-map-deltas` so an interleaved TD/virtual delta on the same channel never looks like a
-  sequence regression to a connected client — see `docs/adr/0012`'s Consequences section for the
-  one disclosed exception (`ingest-td`/`project-td-live-daemon` still don't).
 
 `berth_current_state` therefore has two monotonic-guarded writers — `ingest-td` inline (wins at
 the feed head) and `projector-td-live` (no-op in steady state). `projector-td` no longer writes

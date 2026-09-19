@@ -6,7 +6,6 @@ import {
   type BoundaryElement,
   type LabelElement,
   type TdBerthBinding,
-  type VirtualBerthBinding,
 } from "@railway/map-schema";
 
 export interface ValidationTierResult {
@@ -47,15 +46,6 @@ const OBSERVED_LOOKBACK_DAYS = 30;
  * dropped (best-effort) — a slow *advisory* query must never block or fail a publish. */
 const BOUNDARY_CHECK_TIMEOUT_MS = 5_000;
 const OBSERVED_CHECK_TIMEOUT_MS = 8_000;
-/** docs/adr/0012 gap closure (owner request, 2026-09-19): `location_reference` is CORPUS-sourced
- * and bounded (the whole network's location list, not an ever-growing event stream — same
- * reasoning `docs/API_CONTRACT.md`'s `/places/search` already relies on), so this check needs
- * nothing like `OBSERVED_LOOKBACK_DAYS`'s cautious history-scan avoidance — a plain equality
- * lookup is cheap regardless. There is no TD-style "has this actually carried traffic recently"
- * equivalent to check for a virtual berth's STANOX (a virtual berth's own occupancy history is
- * itself derived from this exact binding, so checking against it would be circular) — this warns
- * only on "does this STANOX exist at all," a weaker but still useful typo/mistake catch. */
-const VIRTUAL_STANOX_CHECK_TIMEOUT_MS = 5_000;
 
 /**
  * Runs one read-only query on its own short-lived transaction with a `statement_timeout`, and
@@ -116,19 +106,14 @@ export async function validateDraftInContext(
   const tdBerthBindings = doc.bindings.filter(
     (binding): binding is TdBerthBinding => binding.type === "tdBerth",
   );
-  const virtualBerthBindings = doc.bindings.filter(
-    (binding): binding is VirtualBerthBinding => binding.type === "virtualBerth",
-  );
 
-  // All three DB checks are advisory and best-effort: each runs with its own statement timeout
-  // and, on any failure, is simply dropped with a "check skipped" warning. None can block or 500
-  // a publish — a slow scan of the nationwide tables used to do this.
+  // Both DB checks are advisory and best-effort: each runs with its own statement timeout and,
+  // on any failure, is simply dropped with a "check skipped" warning. Neither can block or 500
+  // a publish — a slow scan of the nationwide tables used to do both.
   let boundaryCheckOk = boundaryElements.length === 0;
   let observedCheckOk = tdBerthBindings.length === 0;
-  let virtualStanoxCheckOk = virtualBerthBindings.length === 0;
   const observedKeys = new Set<string>();
   const existingSlugs = new Set<string>();
-  const existingStanoxes = new Set<string>();
 
   if (boundaryElements.length > 0) {
     const slugs = [...new Set(boundaryElements.map((element) => element.adjacentMapSlug!))];
@@ -171,20 +156,6 @@ export async function validateDraftInContext(
     }
   }
 
-  if (virtualBerthBindings.length > 0) {
-    const stanoxes = [...new Set(virtualBerthBindings.flatMap((binding) => binding.stanoxes))];
-    const rows = await bestEffortQuery<{ stanox: string }>(
-      pool,
-      `select stanox from location_reference where stanox = any($1::text[])`,
-      [stanoxes],
-      VIRTUAL_STANOX_CHECK_TIMEOUT_MS,
-    );
-    if (rows !== null) {
-      virtualStanoxCheckOk = true;
-      for (const row of rows) existingStanoxes.add(row.stanox);
-    }
-  }
-
   // The unknown-adjacent-map *error* is only raised when the check actually ran — a DB that was
   // too slow to answer must never block a publish.
   if (boundaryCheckOk) {
@@ -224,26 +195,6 @@ export async function validateDraftInContext(
       code: "observed_binding_check_skipped",
       message:
         "The nationwide 'berth seen recently' check was skipped (query too slow) — binding coverage not verified.",
-    });
-  }
-
-  if (virtualStanoxCheckOk) {
-    for (const binding of virtualBerthBindings) {
-      for (const stanox of binding.stanoxes) {
-        if (!existingStanoxes.has(stanox)) {
-          warnings.push({
-            code: "virtual_berth_stanox_unrecognised",
-            message: `Virtual berth STANOX ${stanox} was not found in the CORPUS-sourced location reference table — check for a typo`,
-            bindingId: binding.id,
-          });
-        }
-      }
-    }
-  } else {
-    warnings.push({
-      code: "virtual_berth_stanox_check_skipped",
-      message:
-        "The virtual-berth STANOX existence check was skipped (database slow or unavailable) — STANOX(es) not verified.",
     });
   }
 

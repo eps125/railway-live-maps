@@ -26,8 +26,6 @@ import { runSnapshotMapsCommand, runSnapshotMapsDaemon } from "./commands/snapsh
 import { runRepairOpenOccupancies } from "./commands/repairOpenOccupancies.js";
 import { runManageUsers } from "./commands/manageUsers.js";
 import { runRunLineageDaemon } from "./commands/runLineageDaemon.js";
-import { runVirtualBerthDaemon } from "./commands/virtualBerthDaemon.js";
-import { runProjectVirtualBerthsCommand } from "./commands/projectVirtualBerths.js";
 import { runServe } from "./serve.js";
 
 async function main(): Promise<void> {
@@ -77,8 +75,6 @@ async function main(): Promise<void> {
       return runRepairOpenOccupancies(config, argvRest);
     case "manage-users":
       return runManageUsers(config, argvRest);
-    case "project-virtual-berths":
-      return runProjectVirtualBerthsCommand(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
       return;
@@ -99,9 +95,6 @@ async function main(): Promise<void> {
       return;
     case "run-lineage-daemon":
       await runRunLineageDaemon(config);
-      return;
-    case "project-virtual-berths-daemon":
-      await runVirtualBerthDaemon(config);
       return;
     case "serve":
       await runServe(config);

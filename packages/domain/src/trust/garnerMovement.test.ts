@@ -10,7 +10,6 @@ describe("decodeTrustMovementFlags", () => {
       offRoute: false,
       terminated: false,
       correction: false,
-      originalDataSource: "unknown",
     });
   });
 
@@ -22,7 +21,6 @@ describe("decodeTrustMovementFlags", () => {
       offRoute: false,
       terminated: true,
       correction: false,
-      originalDataSource: "unknown",
     });
   });
 
@@ -49,26 +47,8 @@ describe("decodeTrustMovementFlags", () => {
         offRoute: false,
         terminated: false,
         correction: false,
-        originalDataSource: "unknown",
       });
     }
-  });
-
-  it("decodes originalDataSource from bits 8-10, independent of the lower bits (docs/adr/0012)", () => {
-    const base = 0x01 | 0x08; // automatic on-time departure
-    expect(decodeTrustMovementFlags(base | (1 << 8)).originalDataSource).toBe("sdr");
-    expect(decodeTrustMovementFlags(base | (2 << 8)).originalDataSource).toBe("smart");
-    expect(decodeTrustMovementFlags(base | (3 << 8)).originalDataSource).toBe("tops");
-    expect(decodeTrustMovementFlags(base | (4 << 8)).originalDataSource).toBe("trust_da");
-    expect(decodeTrustMovementFlags(base | (5 << 8)).originalDataSource).toBe("gps");
-    expect(decodeTrustMovementFlags(base).originalDataSource).toBe("unknown");
-  });
-
-  it("decodes an off-route GPS report the same way as any other flag combination", () => {
-    const decoded = decodeTrustMovementFlags(0x18 | 0x20 | (5 << 8));
-    expect(decoded.variation).toBe("off_route");
-    expect(decoded.offRoute).toBe(true);
-    expect(decoded.originalDataSource).toBe("gps");
   });
 });
 

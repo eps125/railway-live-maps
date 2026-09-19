@@ -46,15 +46,4 @@ export async function insertMapBindingIndexRows(
       [mapVersionId, elementId, tdArea, address, bit],
     );
   }
-
-  // docs/adr/0012: virtualBerth bindings, keyed by stanox instead of (tdArea, berth) — migration
-  // 0035 widened map_binding_index for this third kind (td_area/berth left null, stanox set).
-  for (const [stanox, elementId] of Object.entries(bundle.virtualBerthBindingIndex ?? {})) {
-    await client.query(
-      `insert into map_binding_index (map_version_id, element_id, binding_type, stanox)
-       values ($1, $2, 'virtual_berth', $3)
-       on conflict do nothing`,
-      [mapVersionId, elementId, stanox],
-    );
-  }
 }

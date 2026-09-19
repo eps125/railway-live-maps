@@ -86,10 +86,10 @@ export function validateMapDocument(json: unknown): ValidationResult {
       });
       continue;
     }
-    if (binding.type !== "tdBerth" && binding.type !== "virtualBerth") {
+    if (binding.type !== "tdBerth") {
       errors.push({
         code: "invalid_berth_binding",
-        message: `Berth element "${element.id}" references a non-tdBerth/virtualBerth binding`,
+        message: `Berth element "${element.id}" references a non-tdBerth binding`,
         elementId: element.id,
         bindingId: binding.id,
       });
@@ -185,27 +185,6 @@ export function validateMapDocument(json: unknown): ValidationResult {
         message: `Berth binding ${key} is used ${ids.length} times without allowDuplicate`,
       });
     }
-  }
-
-  // docs/adr/0012: a STANOX used by more than one virtualBerth binding is always an authoring
-  // mistake (unlike a duplicate TD berth binding, there's no legitimate "combined" reading for
-  // two different map elements both claiming to be powered by the same physical location) — no
-  // allowDuplicate escape hatch, always blocking.
-  const virtualBindingIdsByStanox = new Map<string, string[]>();
-  for (const binding of doc.bindings) {
-    if (binding.type !== "virtualBerth") continue;
-    for (const stanox of binding.stanoxes) {
-      const ids = virtualBindingIdsByStanox.get(stanox) ?? [];
-      ids.push(binding.id);
-      virtualBindingIdsByStanox.set(stanox, ids);
-    }
-  }
-  for (const [stanox, ids] of virtualBindingIdsByStanox) {
-    if (ids.length <= 1) continue;
-    errors.push({
-      code: "duplicate_virtual_berth_binding",
-      message: `STANOX ${stanox} is bound by ${ids.length} different virtual berths`,
-    });
   }
 
   return { valid: errors.length === 0, errors };

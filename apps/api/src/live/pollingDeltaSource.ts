@@ -1,9 +1,5 @@
 import type { Pool } from "pg";
-import {
-  TD_PROJECTION_VERSION,
-  VIRTUAL_BERTH_PROJECTION_VERSION,
-  joinCombinedBerthState,
-} from "@railway/domain";
+import { TD_PROJECTION_VERSION, joinCombinedBerthState } from "@railway/domain";
 import type { LiveDeltaMessage } from "@railway/protocol";
 import type { LiveDeltaSource } from "./deltaSource.js";
 
@@ -78,32 +74,6 @@ async function fetchBoundState(pool: Pool, mapVersionId: string): Promise<BoundB
   return result.rows;
 }
 
-/** docs/adr/0012: a virtual berth's live state, joined through the same map_binding_index but
- * keyed by stanox instead of (td_area, berth). Never combines (no `combinedOrder` concept for a
- * virtual berth — validate.ts blocks two virtual bindings sharing a STANOX outright), so each row
- * is already exactly one element's state. */
-interface VirtualBoundStateRow {
-  element_id: string;
-  stanox: string;
-  description: string | null; // headcode, aliased to match ElementState's shape
-  occupancy_entered_at: Date | null;
-}
-
-async function fetchVirtualBoundState(
-  pool: Pool,
-  mapVersionId: string,
-): Promise<VirtualBoundStateRow[]> {
-  const result = await pool.query<VirtualBoundStateRow>(
-    `select mbi.element_id, mbi.stanox, vbcs.headcode as description, vbcs.occupancy_entered_at
-     from map_binding_index mbi
-     left join virtual_berth_current_state vbcs
-       on vbcs.stanox = mbi.stanox and vbcs.projection_version = $2
-     where mbi.map_version_id = $1 and mbi.binding_type = 'virtual_berth'`,
-    [mapVersionId, VIRTUAL_BERTH_PROJECTION_VERSION],
-  );
-  return result.rows;
-}
-
 function logPollError(mapVersionId: string, error: unknown): void {
   console.error(`pollingDeltaSource: poll failed for map_version ${mapVersionId}`, error);
 }
@@ -168,56 +138,10 @@ export function createPollingDeltaSource(pool: Pool, intervalMs: number): LiveDe
     }
   }
 
-  /** docs/adr/0012: same diff-and-emit shape as `diffAndEmit`, but for virtual berths — no
-   * combining (each row is already one element), and the outgoing message carries `stanox`
-   * instead of `tdArea`/`berth`. Shares `entry`'s `lastByElement`/`lastSequence`/`listeners` with
-   * the TD path, since an elementId is never both (validate.ts: exactly one binding per berth
-   * element), so there is no key collision risk between the two loops. */
-  function diffAndEmitVirtual(entry: PollEntry, rows: VirtualBoundStateRow[]): void {
-    for (const row of rows) {
-      const next: ElementState = {
-        description: row.description,
-        enteredAt: row.occupancy_entered_at ? row.occupancy_entered_at.toISOString() : null,
-      };
-      const previous = entry.lastByElement.get(row.element_id);
-      const changed =
-        !previous ||
-        previous.description !== next.description ||
-        previous.enteredAt !== next.enteredAt;
-      entry.lastByElement.set(row.element_id, next);
-      if (!changed) continue;
-
-      entry.lastSequence += 1;
-      const eventAt = new Date().toISOString();
-      const message: LiveDeltaMessage =
-        next.description === null
-          ? {
-              type: "berth.cleared",
-              sequence: entry.lastSequence,
-              eventAt,
-              elementId: row.element_id,
-              stanox: row.stanox,
-            }
-          : {
-              type: "berth.updated",
-              sequence: entry.lastSequence,
-              eventAt,
-              elementId: row.element_id,
-              stanox: row.stanox,
-              description: next.description,
-              enteredAt: next.enteredAt ?? eventAt,
-            };
-      entry.listeners.forEach((listener) => listener(message));
-    }
-  }
-
   function startPolling(mapVersionId: string, entry: PollEntry): void {
     entry.timer = setInterval(() => {
       fetchBoundState(pool, mapVersionId)
         .then((rows) => diffAndEmit(entry, rows))
-        .catch((error: unknown) => logPollError(mapVersionId, error));
-      fetchVirtualBoundState(pool, mapVersionId)
-        .then((rows) => diffAndEmitVirtual(entry, rows))
         .catch((error: unknown) => logPollError(mapVersionId, error));
     }, intervalMs);
   }
@@ -238,13 +162,9 @@ export function createPollingDeltaSource(pool: Pool, intervalMs: number): LiveDe
 
         // Seed lastByElement (and lastSequence) from current state *before* polling starts, so
         // state that already existed prior to the first subscriber never gets reported as a
-        // spurious delta — the snapshot the WS route sends already carries it. Both TD and
-        // virtual (docs/adr/0012) bound state are seeded before polling starts either way.
-        Promise.all([
-          fetchBoundState(pool, mapVersionId),
-          fetchVirtualBoundState(pool, mapVersionId),
-        ])
-          .then(([rows, virtualRows]) => {
+        // spurious delta — the snapshot the WS route sends already carries it.
+        fetchBoundState(pool, mapVersionId)
+          .then((rows) => {
             const stillWanted = entries.get(mapVersionId);
             if (!stillWanted) return; // every subscriber unsubscribed before seeding finished
             for (const [elementId, { state, representative }] of groupByElement(rows)) {
@@ -255,12 +175,6 @@ export function createPollingDeltaSource(pool: Pool, intervalMs: number): LiveDe
                   Number(representative.source_ingestion_sequence),
                 );
               }
-            }
-            for (const row of virtualRows) {
-              stillWanted.lastByElement.set(row.element_id, {
-                description: row.description,
-                enteredAt: row.occupancy_entered_at ? row.occupancy_entered_at.toISOString() : null,
-              });
             }
             startPolling(mapVersionId, stillWanted);
           })

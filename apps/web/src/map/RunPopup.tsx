@@ -139,25 +139,18 @@ interface UnitAllocationEntry {
  * this berth at all, so `matchBasis` (when matched/ambiguous) is always the weakest
  * `headcode_only` tier regardless of which internal rule actually picked among the unscoped set. */
 interface FullCurrentRunResponse {
-  tdArea?: string;
-  berth?: string;
-  /** docs/adr/0012: present instead of `tdArea`/`berth` on the virtual-berth route's response. */
-  stanox?: string;
+  tdArea: string;
+  berth: string;
   description: string | null;
   headcode: string;
   occupancyEnteredAt: string | null;
   matchStatus: "matched" | "ambiguous" | "unmatched";
   matchBasis:
-    | "trust_activation"
-    | "stp_precedence"
-    | "station_berth_timetable"
-    | "headcode_only"
-    | "virtual_direct"
-    | null;
-  positionScoped?: boolean;
+    "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only" | null;
+  positionScoped: boolean;
   note: string;
   effective: EffectiveSchedule | null;
-  candidateSchedules?: CandidateSchedule[];
+  candidateSchedules: CandidateSchedule[];
   unitAllocation: UnitAllocationEntry[];
 }
 
@@ -169,9 +162,8 @@ interface FullCurrentRunResponse {
  * precedence/verify this" language has no `matchBasis` to interpret it against out here, so it
  * stays backend-only, on the full response. */
 interface PublicCurrentRunResponse {
-  tdArea?: string;
-  berth?: string;
-  stanox?: string;
+  tdArea: string;
+  berth: string;
   headcode: string;
   occupancyEnteredAt: string | null;
   matchStatus: "matched";
@@ -181,36 +173,28 @@ interface PublicCurrentRunResponse {
 
 type CurrentRunResponse = FullCurrentRunResponse | PublicCurrentRunResponse;
 
-/** The two response shapes are distinguished by a field only the full one ever carries —
- * `matchBasis` rather than `candidateSchedules` (docs/adr/0012: the virtual-berth route's full
- * response has no candidate set to tie-break, so it never sends that field at all, but it always
- * sends `matchBasis: "virtual_direct"`; `PublicCurrentRunResponse` never carries `matchBasis`
- * under any route). */
+/** The two response shapes are distinguished by a field only the full one ever carries. */
 function isFullResponse(data: CurrentRunResponse): data is FullCurrentRunResponse {
-  return "matchBasis" in data;
+  return "candidateSchedules" in data;
 }
 
 export interface RunPopupMember {
-  tdArea?: string | undefined;
-  berth?: string | undefined;
-  /** docs/adr/0012: a virtual (GPS-fed) berth member is identified by STANOX instead. */
-  stanox?: string | undefined;
+  tdArea: string;
+  berth: string;
 }
 
 export interface RunPopupProps {
   elementId: string;
   displayName: string;
-  tdArea?: string | undefined;
-  berth?: string | undefined;
-  /** docs/adr/0012: set instead of `tdArea`/`berth` for a virtual berth click. */
-  stanox?: string | undefined;
+  tdArea: string;
+  berth: string;
   /** Combined berth (Milestone 50, owner request 2026-09-17, docs/MAP_EDITOR_SPEC.md's berth
    * section): every physical berth sharing this map element, in `combinedOrder`. Omitted (or a
    * single-entry array) for a plain berth — every existing caller passing only `tdArea`/`berth`
    * is unaffected. When there's more than one, each occupied member's detail is shown in its own
    * section, successively, separated by a divider — rather than a picker that only shows one
    * member at a time (owner offered both, 2026-09-17; this shows everything with no extra click). */
-  members?: RunPopupMember[] | undefined;
+  members?: RunPopupMember[];
   onClose: () => void;
 }
 
@@ -233,7 +217,6 @@ const MATCH_BASIS_LABELS: Record<NonNullable<FullCurrentRunResponse["matchBasis"
   stp_precedence: "STP precedence",
   station_berth_timetable: "closest scheduled call at this station to now",
   headcode_only: "headcode match only — no position data, unscoped, verify",
-  virtual_direct: "this GPS report's own TRUST id — direct, not inferred",
 };
 
 /** How often the popup re-fetches while open — garner's mirror advances every ~20s, and a berth
@@ -449,18 +432,7 @@ function PublicEffectiveDetail({ data }: { data: PublicCurrentRunResponse }): JS
 }
 
 function memberKey(member: RunPopupMember): string {
-  return member.stanox ?? `${member.tdArea}|${member.berth}`;
-}
-
-/** `stanox` (virtual) or `tdArea berth` (TD), for headings/subtitles. */
-function memberLabel(member: RunPopupMember): string {
-  return member.stanox ?? `${member.tdArea} ${member.berth}`;
-}
-
-function currentRunUrl(member: RunPopupMember): string {
-  return member.stanox
-    ? `/api/v1/virtual-berths/${encodeURIComponent(member.stanox)}/current-run`
-    : `/api/v1/td/areas/${encodeURIComponent(member.tdArea ?? "")}/berths/${encodeURIComponent(member.berth ?? "")}/current-run`;
+  return `${member.tdArea}|${member.berth}`;
 }
 
 interface MemberState {
@@ -475,11 +447,13 @@ interface MemberState {
  * berth's members never double-fetch and the "don't show the shell until everything has settled"
  * gate can live in one place. */
 function RunPopupMemberSection({
-  member,
+  tdArea,
+  berth,
   showHeading,
   state,
 }: {
-  member: RunPopupMember;
+  tdArea: string;
+  berth: string;
   showHeading: boolean;
   state: MemberState;
 }): JSX.Element | null {
@@ -487,7 +461,11 @@ function RunPopupMemberSection({
   const { data, error } = state;
   return (
     <div className="map-inspector__member">
-      {showHeading ? <p className="map-inspector__member-heading">{memberLabel(member)}</p> : null}
+      {showHeading ? (
+        <p className="map-inspector__member-heading">
+          {tdArea} {berth}
+        </p>
+      ) : null}
       {error ? <p className="app-error">{error}</p> : null}
       {!error && data ? (
         <>
@@ -509,7 +487,7 @@ function RunPopupMemberSection({
 
           <UnitAllocationSection unitAllocation={data.unitAllocation} />
 
-          {isFullResponse(data) && data.candidateSchedules ? (
+          {isFullResponse(data) ? (
             data.candidateSchedules.length > 0 ? (
               <>
                 <p className="map-inspector__note">
@@ -549,12 +527,10 @@ export function RunPopup({
   displayName,
   tdArea,
   berth,
-  stanox,
   members,
   onClose,
 }: RunPopupProps): JSX.Element | null {
-  const resolvedMembers =
-    members && members.length > 0 ? members : [stanox ? { stanox } : { tdArea, berth }];
+  const resolvedMembers = members && members.length > 0 ? members : [{ tdArea, berth }];
   const membersKey = resolvedMembers.map(memberKey).join(",");
   const [statesByKey, setStatesByKey] = useState<Record<string, MemberState>>({});
 
@@ -564,7 +540,9 @@ export function RunPopup({
 
     function fetchMember(member: RunPopupMember): void {
       const key = memberKey(member);
-      fetch(currentRunUrl(member))
+      fetch(
+        `/api/v1/td/areas/${encodeURIComponent(member.tdArea)}/berths/${encodeURIComponent(member.berth)}/current-run`,
+      )
         .then(async (response) => {
           if (response.status === 404) {
             // Owner request (2026-09-13): a 404 here always means "nothing to show for this
@@ -638,7 +616,10 @@ export function RunPopup({
         <span>
           {displayName || elementId}
           {resolvedMembers.length === 1 ? (
-            <span className="map-inspector__subtitle"> · {memberLabel(resolvedMembers[0]!)}</span>
+            <span className="map-inspector__subtitle">
+              {" "}
+              · {resolvedMembers[0]!.tdArea} {resolvedMembers[0]!.berth}
+            </span>
           ) : null}
         </span>
         <button type="button" className="map-inspector__close" aria-label="Close" onClick={onClose}>
@@ -652,7 +633,8 @@ export function RunPopup({
           return (
             <RunPopupMemberSection
               key={memberKey(member)}
-              member={member}
+              tdArea={member.tdArea}
+              berth={member.berth}
               showHeading={resolvedMembers.length > 1}
               state={state}
             />

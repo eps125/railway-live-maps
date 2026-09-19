@@ -3,10 +3,8 @@ import type { Pool } from "pg";
 import type { Redis } from "ioredis";
 import {
   TD_PROJECTION_VERSION,
-  VIRTUAL_BERTH_PROJECTION_VERSION,
   decodeTrustMovementFlags,
   signedVariationMinutes,
-  headcodeFromTrustId,
 } from "@railway/domain";
 import {
   findOpenOccupancy,
@@ -142,10 +140,8 @@ interface EffectiveIdentityChange {
 }
 
 /** The full, authenticated-only shape of the resolved schedule's detail. `toPublicEffective`
- * below reduces this to the anonymous view. Exported: the virtual-berth route below
- * (docs/adr/0012) builds this same shape so `RunPopup.tsx`'s existing `FullEffectiveDetail`/
- * `PublicEffectiveDetail` components render it with no changes beyond a new matchBasis label. */
-export interface EffectiveScheduleFull {
+ * below reduces this to the anonymous view. */
+interface EffectiveScheduleFull {
   scheduleId: string;
   trainUid: string;
   stpIndicator: "C" | "N" | "O" | "P";
@@ -199,7 +195,7 @@ export interface EffectiveScheduleFull {
  * departure-board-style (headcode is returned separately at the top level; origin/destination/
  * calling points/operator here), never TRUST IDs, CIF schedule IDs, the `deduced` flag, or raw
  * movement/variation detail, which read as operational/diagnostic rather than public-facing. */
-export function toPublicEffective(effective: EffectiveScheduleFull): {
+function toPublicEffective(effective: EffectiveScheduleFull): {
   originTiploc: string | null;
   originName: string | null;
   destinationTiploc: string | null;
@@ -222,7 +218,7 @@ export function toPublicEffective(effective: EffectiveScheduleFull): {
  * position. Shown to every visitor regardless of login. Only called for the resolved `effective`
  * schedule (a single, known `cif_train_uid` + traffic day) — ambiguous/unmatched cases have no
  * single train_uid to key by. */
-export async function queryUnitAllocation(
+async function queryUnitAllocation(
   pool: Pool,
   cifTrainUid: string,
   serviceDate: string,
@@ -660,243 +656,6 @@ export async function registerCurrentRunRoutes(
         note: matchNote(matchStatus, matchBasis, positionScoped),
         effective,
         candidateSchedules,
-        unitAllocation,
-      };
-    },
-  );
-
-  registerVirtualBerthCurrentRunRoute(app, deps);
-}
-
-interface VirtualCurrentStateRow {
-  trust_id: string | null;
-  headcode: string | null;
-  occupancy_entered_at: Date | null;
-}
-
-/**
- * `GET /api/v1/virtual-berths/{stanox}/current-run` (docs/adr/0012) — the same click-a-berth
- * popup, for a virtual (GPS-fed) berth. Unlike the TD route above, there is no candidate set to
- * tie-break: `virtual_berth_current_state` already carries the exact `trust_id` the GPS report
- * itself named, so this is a direct lookup, never inferred — `matchBasis` is always
- * `virtual_direct` and `matchStatus` is never `ambiguous` (CLAUDE.md rule 7 still holds: exactly
- * one of `matched`/`unmatched`, since there is exactly one `trust_id` by construction).
- *
- * Deliberately a smaller `effective` than the TD route's: no docs/adr/0009 Change of Origin/
- * Identity/Location tracking (that layer exists to reconcile a *TD* headcode against a schedule
- * that might have since changed identity — a virtual berth's own report already names the exact
- * `trust_id` currently in effect, so there's nothing to reconcile). `originChange`/
- * `destinationChange`/`identityChange` are always `null` here; a future pass can extend this if
- * real virtual-berth traffic shows the gap matters in practice.
- */
-function registerVirtualBerthCurrentRunRoute(
-  app: FastifyInstance,
-  deps: CurrentRunRoutesDeps,
-): void {
-  const { pool, redis, sessionTtlSeconds } = deps;
-
-  app.get<{ Params: { stanox: string } }>(
-    "/api/v1/virtual-berths/:stanox/current-run",
-    async (request, reply) => {
-      const { stanox } = request.params;
-
-      const isAuthenticated =
-        (await getSession(redis, request.cookies[SESSION_COOKIE_NAME], sessionTtlSeconds)) !== null;
-
-      const stateResult = await pool.query<VirtualCurrentStateRow>(
-        `select trust_id, headcode, occupancy_entered_at
-         from virtual_berth_current_state
-         where projection_version = $1 and stanox = $2`,
-        [VIRTUAL_BERTH_PROJECTION_VERSION, stanox],
-      );
-      const state = stateResult.rows[0];
-      if (!state || !state.trust_id) {
-        reply.code(404);
-        return apiError("BERTH_NOT_OCCUPIED", `Virtual berth ${stanox} has no current occupancy`);
-      }
-
-      const trustId = state.trust_id;
-      const headcode = state.headcode ?? headcodeFromTrustId(trustId) ?? "----";
-      const occupancyEnteredAt = state.occupancy_entered_at
-        ? state.occupancy_entered_at.toISOString()
-        : null;
-
-      // Direct, not inferred — exactly this trust_id's own activation, if garner has one.
-      const activation =
-        (
-          await pool.query<ActivationRow>(
-            `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
-             from trust_activation
-             where trust_id = $1 and cif_schedule_id is not null
-             order by created desc limit 1`,
-            [trustId],
-          )
-        ).rows[0] ?? null;
-
-      const effectiveRow = activation
-        ? await fetchScheduleRowById(pool, activation.cif_schedule_id)
-        : null;
-      const matchStatus: "matched" | "unmatched" = effectiveRow ? "matched" : "unmatched";
-
-      let effective: EffectiveScheduleFull | null = null;
-      let unitAllocation: UnitAllocationEntry[] = [];
-      if (effectiveRow) {
-        const locations = (
-          await pool.query<CifLocationRowLike>(
-            `select seq_no, record_identity, location_type, tiploc_code, arrival, departure, "pass",
-                    public_arrival, public_departure, platform, path, line, next_day
-             from cif_schedule_locations where cif_schedule_id = $1 order by seq_no`,
-            [effectiveRow.id],
-          )
-        ).rows;
-
-        const activationExtra = (
-          await pool.query<ActivationExtraRow>(
-            `select trust_id, train_uid, toc_id, schedule_wtt_id, schedule_type, origin_dep_timestamp
-             from trust_activation_extra where trust_id = $1 order by created desc limit 1`,
-            [trustId],
-          )
-        ).rows[0];
-        const latestMovement = (
-          await pool.query<MovementRow>(
-            `select trust_id, loc_stanox, platform, actual_timestamp, planned_timestamp,
-                    gbtt_timestamp, timetable_variation, flags, next_report_stanox
-             from trust_movement
-             where trust_id = $1
-             order by actual_timestamp desc nulls last, created desc
-             limit 1`,
-            [trustId],
-          )
-        ).rows[0];
-
-        const tiplocsNeeded = new Set<string>(locations.map((l) => l.tiploc_code));
-        if (effectiveRow.origin_tiploc) tiplocsNeeded.add(effectiveRow.origin_tiploc);
-        if (effectiveRow.destination_tiploc) tiplocsNeeded.add(effectiveRow.destination_tiploc);
-        const nameByTiploc = new Map<string, string>();
-        if (tiplocsNeeded.size > 0) {
-          const nameResult = await pool.query<{ tiploc: string; name: string | null }>(
-            `select tiploc, name from location_reference where tiploc = any($1::text[])`,
-            [[...tiplocsNeeded]],
-          );
-          for (const row of nameResult.rows) if (row.name) nameByTiploc.set(row.tiploc, row.name);
-        }
-        let movementLocationName: string | null = null;
-        if (latestMovement?.loc_stanox) {
-          const byStanox = await pool.query<{ name: string | null }>(
-            `select name from location_reference where stanox = $1 limit 1`,
-            [latestMovement.loc_stanox],
-          );
-          movementLocationName = byStanox.rows[0]?.name ?? null;
-        }
-        const flags = latestMovement ? decodeTrustMovementFlags(latestMovement.flags) : null;
-
-        effective = {
-          scheduleId: effectiveRow.id,
-          trainUid: effectiveRow.cif_train_uid,
-          stpIndicator: normalizeStp(effectiveRow.cif_stp_indicator),
-          source: "GARNER" as const,
-          operatorCode: effectiveRow.atoc_code,
-          trainStatus: effectiveRow.train_status,
-          serviceCode: effectiveRow.cif_train_service_code,
-          category: effectiveRow.cif_train_category,
-          originTiploc: effectiveRow.origin_tiploc,
-          originName: effectiveRow.origin_tiploc
-            ? (nameByTiploc.get(effectiveRow.origin_tiploc) ?? null)
-            : null,
-          originChange: null,
-          destinationTiploc: effectiveRow.destination_tiploc,
-          destinationName: effectiveRow.destination_tiploc
-            ? (nameByTiploc.get(effectiveRow.destination_tiploc) ?? null)
-            : null,
-          destinationChange: null,
-          identityChange: null,
-          activation: {
-            trustId: activation!.trust_id,
-            deduced: activation!.deduced !== 0,
-            activatedAt: activation!.created.toISOString(),
-            trainUid: activationExtra?.train_uid ?? null,
-            tocId: activationExtra?.toc_id ?? null,
-            scheduleWttId: activationExtra?.schedule_wtt_id ?? null,
-            scheduleType: activationExtra?.schedule_type ?? null,
-            originDepartureAt: activationExtra?.origin_dep_timestamp
-              ? activationExtra.origin_dep_timestamp.toISOString()
-              : null,
-          },
-          latestMovement:
-            latestMovement && flags
-              ? {
-                  trustId: latestMovement.trust_id,
-                  locStanox: latestMovement.loc_stanox,
-                  locName: movementLocationName,
-                  platform: latestMovement.platform,
-                  actualTimestamp: latestMovement.actual_timestamp
-                    ? latestMovement.actual_timestamp.toISOString()
-                    : null,
-                  plannedTimestamp: latestMovement.planned_timestamp
-                    ? latestMovement.planned_timestamp.toISOString()
-                    : null,
-                  gbttTimestamp: latestMovement.gbtt_timestamp
-                    ? latestMovement.gbtt_timestamp.toISOString()
-                    : null,
-                  eventKind: flags.eventKind,
-                  variationStatus: flags.variation,
-                  variationMinutes: signedVariationMinutes(
-                    latestMovement.timetable_variation,
-                    flags.variation,
-                  ),
-                  terminated: flags.terminated,
-                  offRoute: flags.offRoute,
-                  manual: flags.manual,
-                  correction: flags.correction,
-                  nextReportStanox: latestMovement.next_report_stanox,
-                }
-              : null,
-          locations: locations.map((row) => ({
-            ...locationToJson(row),
-            locationName: nameByTiploc.get(row.tiploc_code) ?? null,
-          })),
-        };
-
-        unitAllocation = await queryUnitAllocation(
-          pool,
-          effectiveRow.cif_train_uid,
-          effectiveRow.schedule_start_date,
-        );
-      }
-
-      // A direct trust_id match is never the weakest tier the way headcode_only is — nothing to
-      // hedge on publicly (owner request 2026-09-13's "solid match" gate, applied here as
-      // "matched at all", since virtual_direct has no weaker sub-tier to distinguish).
-      if (!isAuthenticated && matchStatus !== "matched") {
-        reply.code(404);
-        return apiError(
-          "NO_PUBLIC_DETAIL",
-          "No confirmed match to show without logging in for this virtual berth",
-        );
-      }
-
-      if (!isAuthenticated) {
-        return {
-          stanox,
-          headcode,
-          occupancyEnteredAt,
-          matchStatus: "matched" as const,
-          effective: effective ? toPublicEffective(effective) : null,
-          unitAllocation,
-        };
-      }
-
-      return {
-        stanox,
-        headcode,
-        occupancyEnteredAt,
-        matchStatus,
-        matchBasis: "virtual_direct" as const,
-        note:
-          matchStatus === "matched"
-            ? "Matched directly from this GPS report's own TRUST id — not inferred from headcode/position, so there is no ambiguity tier here. Not a confirmed RLM identification."
-            : "No garner TRUST activation with a linked schedule for this report's TRUST id yet.",
-        effective,
         unitAllocation,
       };
     },

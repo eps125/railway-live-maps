@@ -31,13 +31,6 @@ export interface CompiledMapBundle {
   berthBindingOrder?: Record<string, number>;
   /** `${tdArea}|${address}|${bit}` -> elementId */
   sBitBindingIndex: Record<string, string>;
-  /** docs/adr/0012: `stanox -> elementId` for every `virtualBerth` binding's STANOX(es). A
-   * binding with more than one STANOX appears under each of them, all pointing at the same
-   * element — mirrors `berthBindingIndex`'s one-key-per-lookup shape. Optional at the type level
-   * for the same reason `berthBindingOrder` is: a map version published before this field
-   * existed has an immutable `compiled_runtime_bundle` (CLAUDE.md rule 11) with no such key —
-   * every reader must treat a missing one the same as an empty one. */
-  virtualBerthBindingIndex?: Record<string, string>;
   /** Milestone 31: every `station`/`label` element carrying at least one place identifier
    * (`crs`/`tiploc`/`stanox`) — the source `map_place_index` is populated from at publish time,
    * for `GET /api/v1/places/search` to join against. An element with none of the three is not
@@ -254,18 +247,13 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   const berthBindingIndex: Record<string, string> = {};
   const berthBindingOrder: Record<string, number> = {};
   const sBitBindingIndex: Record<string, string> = {};
-  const virtualBerthBindingIndex: Record<string, string> = {};
   for (const binding of doc.bindings) {
     if (binding.type === "tdBerth") {
       const key = `${binding.tdArea}|${binding.berth}`;
       berthBindingIndex[key] = binding.elementId;
       if (binding.combinedOrder !== undefined) berthBindingOrder[key] = binding.combinedOrder;
-    } else if (binding.type === "tdSBit") {
-      sBitBindingIndex[`${binding.tdArea}|${binding.address}|${binding.bit}`] = binding.elementId;
     } else {
-      for (const stanox of binding.stanoxes) {
-        virtualBerthBindingIndex[stanox] = binding.elementId;
-      }
+      sBitBindingIndex[`${binding.tdArea}|${binding.address}|${binding.bit}`] = binding.elementId;
     }
   }
 
@@ -323,7 +311,6 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     berthBindingIndex,
     berthBindingOrder,
     sBitBindingIndex,
-    virtualBerthBindingIndex,
     placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),
     topologyAdjacency,

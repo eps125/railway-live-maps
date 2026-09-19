@@ -30,11 +30,6 @@ export const MAP_STYLE = {
      * width — so every 4-character berth is identical. */
     charWidth: 8,
     padding: 6,
-    /** docs/adr/0012: a berth bound via a `virtualBerth` binding (GPS-fed, no TD coverage) draws
-     * this border colour in both the editor canvas and the public renderer, layered over the
-     * normal occupied/vacant fill so that distinction stays untouched (rule 13). */
-    virtualBorderColor: "#e8c547",
-    virtualBorderWidth: 2,
   },
   signal: {
     /** Standard perpendicular gap from the bound track to the signal head. */

@@ -106,9 +106,6 @@ An authorized owner can:
 - Draw schematic track paths on a grid.
 - Add berths, blank signal symbols, platforms, labels, boundaries and continuation links.
 - Bind berths to any observed TD area and berth code in the nationwide database.
-- Bind a berth as "virtual" (ADR 0012, Milestone 52) to a STANOX instead, for track with no TD
-  coverage — its headcode steps along from TRUST movement reports sourced from GPS rather than TD
-  events, rendered with a yellow border distinguishing it from a real TD-backed berth.
 - Use snap, alignment, duplication, grouping, layers, undo and redo.
 - Test with simulated, current live or historical states.
 - Validate a draft.

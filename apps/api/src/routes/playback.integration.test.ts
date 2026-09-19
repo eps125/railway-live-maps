@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
-import { TD_PROJECTION_VERSION, VIRTUAL_BERTH_PROJECTION_VERSION } from "@railway/domain";
+import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { registerMapRoutes } from "./maps.js";
 
 function requireEnv(name: string): string {
@@ -14,9 +14,7 @@ function requireEnv(name: string): string {
 const pool = createPool({ connectionString: requireEnv("DATABASE_URL") });
 const AREA = `Z${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
 const SLUG = `pb-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-const STANOX = `9${Math.floor(1000 + Math.random() * 8999)}`;
 const rawEventIds: string[] = [];
-const trustMovementIds: string[] = [];
 let mapId: string;
 
 function bundle(name: string) {
@@ -30,11 +28,9 @@ function bundle(name: string) {
     elementsById: {
       "berth-a": { id: "berth-a", type: "berth" },
       "berth-b": { id: "berth-b", type: "berth" },
-      "berth-v": { id: "berth-v", type: "berth" },
       "sig-1": { id: "sig-1", type: "signal" },
     },
     berthBindingIndex: { [`${AREA}|0001`]: "berth-a", [`${AREA}|0002`]: "berth-b" },
-    virtualBerthBindingIndex: { [STANOX]: "berth-v" },
     sBitBindingIndex: {},
     placeBindingIndex: [],
     boundingBox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
@@ -119,47 +115,6 @@ async function seedOccupancy(
   );
 }
 
-async function seedTrustMovement(actualTimestamp: Date): Promise<string> {
-  const row = await pool.query<{ id: string }>(
-    `insert into trust_movement (trust_id, created, loc_stanox, actual_timestamp)
-     values ($1, $2, $3, $2) returning id`,
-    [`V${randomUUID().replace(/-/g, "").slice(0, 9).toUpperCase()}`, actualTimestamp, STANOX],
-  );
-  const id = row.rows[0]!.id;
-  trustMovementIds.push(id);
-  return id;
-}
-
-async function seedVirtualOccupancy(
-  headcode: string,
-  enteredAt: Date,
-  leftAt: Date | null,
-  exitReason: "stepped_to_virtual" | "terminated" | "manual_clear" | "stepped_to_td" | null = leftAt
-    ? "stepped_to_virtual"
-    : null,
-): Promise<string> {
-  const entryMovementId = await seedTrustMovement(enteredAt);
-  const exitMovementId = leftAt ? await seedTrustMovement(leftAt) : null;
-  const row = await pool.query<{ id: string }>(
-    `insert into virtual_berth_occupancy (
-       projection_version, stanox, trust_id, headcode, entered_at, left_at,
-       entry_trust_movement_id, exit_trust_movement_id, exit_reason
-     ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
-    [
-      VIRTUAL_BERTH_PROJECTION_VERSION,
-      STANOX,
-      `V${randomUUID().replace(/-/g, "").slice(0, 9).toUpperCase()}`,
-      headcode,
-      enteredAt,
-      leftAt,
-      entryMovementId,
-      exitMovementId,
-      exitReason,
-    ],
-  );
-  return row.rows[0]!.id;
-}
-
 const T = (iso: string): Date => new Date(iso);
 
 beforeAll(async () => {
@@ -199,10 +154,6 @@ afterAll(async () => {
   await pool.query("delete from td_berth_event where td_area = $1", [AREA]);
   if (rawEventIds.length > 0) {
     await pool.query("delete from raw_feed_event where id = any($1::bigint[])", [rawEventIds]);
-  }
-  await pool.query("delete from virtual_berth_occupancy where stanox = $1", [STANOX]);
-  if (trustMovementIds.length > 0) {
-    await pool.query("delete from trust_movement where id = any($1::bigint[])", [trustMovementIds]);
   }
   await pool.query("delete from map_version where map_id = $1", [mapId]);
   await pool.query("delete from map where id = $1", [mapId]);
@@ -328,143 +279,6 @@ describe("GET /api/v1/maps/:slug/events (integration)", () => {
         })
       ).json();
       expect(p2.events[0].sequence).toBeGreaterThan(p1.events[0].sequence);
-    } finally {
-      await app.close();
-    }
-  });
-});
-
-describe("GET /api/v1/maps/:slug/events virtual berth playback (docs/adr/0012 gap closure, integration)", () => {
-  // A separate day, well outside the TD fixtures' 2026-05-01 09:00-11:00 window above, so these
-  // rows can never leak into that describe block's exact-array-equality assertions even though
-  // every fetch against this map now also queries `virtual_berth_occupancy` (the map's
-  // `virtualBerthBindingIndex` always includes STANOX — see `bundle()`).
-  const seededOccupancyIds: string[] = [];
-
-  afterAll(async () => {
-    if (seededOccupancyIds.length > 0) {
-      await pool.query("delete from virtual_berth_occupancy where id = any($1::bigint[])", [
-        seededOccupancyIds,
-      ]);
-    }
-  });
-
-  it("merges a closed virtual occupancy's entry+exit with TD events, sorted by eventAt", async () => {
-    // Virtual entry at 08:00:30 falls between TD's 08:00 and 08:01 events, so a correct merge
-    // must interleave it there rather than grouping all TD events before all virtual ones.
-    const e1 = await seedTdEvent(T("2026-05-02T08:00:00Z"), "CC", null, "0001", "1A11");
-    await seedOccupancy("0001", "1A11", T("2026-05-02T08:00:00Z"), null, e1);
-    const occId = await seedVirtualOccupancy(
-      "5X01",
-      T("2026-05-02T08:00:30Z"),
-      T("2026-05-02T08:05:00Z"),
-    );
-    seededOccupancyIds.push(occId);
-    const e2 = await seedTdEvent(T("2026-05-02T08:01:00Z"), "CC", null, "0002", "2B22");
-    await seedOccupancy("0002", "2B22", T("2026-05-02T08:01:00Z"), null, e2);
-
-    const app = await buildApp();
-    try {
-      const res = await app.inject({
-        method: "GET",
-        url: `/api/v1/maps/${SLUG}/events?from=2026-05-02T07:00:00Z&to=2026-05-02T09:00:00Z`,
-      });
-      const body = res.json();
-      expect(
-        body.events.map((e: { type: string; elementId: string; stanox?: string }) => [
-          e.type,
-          e.elementId,
-          e.stanox ?? null,
-        ]),
-      ).toEqual([
-        ["berth.updated", "berth-a", null],
-        ["berth.updated", "berth-v", STANOX],
-        ["berth.updated", "berth-b", null],
-        ["berth.cleared", "berth-v", STANOX],
-      ]);
-      const virtualUpdate = body.events[1];
-      expect(virtualUpdate.description).toBe("5X01");
-      expect(virtualUpdate.enteredAt).toBe("2026-05-02T08:00:30.000Z");
-      // A real (non-null) resume position, even though the row is already fully closed and a
-      // repeat poll from here reports nothing new for it — `nextVirtualCursor` only collapses to
-      // null when no progress was made at all (see the dedicated cursor-behaviour test below).
-      expect(body.nextVirtualCursor).not.toBeNull();
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("blocks nextVirtualCursor at a still-open row so its later exit is never lost", async () => {
-    const occId = await seedVirtualOccupancy("5X02", T("2026-05-02T14:00:00Z"), null);
-    seededOccupancyIds.push(occId);
-
-    const app = await buildApp();
-    try {
-      const first = (
-        await app.inject({
-          method: "GET",
-          url: `/api/v1/maps/${SLUG}/events?from=2026-05-02T13:00:00Z&to=2026-05-02T15:00:00Z`,
-        })
-      ).json();
-      const entryEvents = first.events.filter((e: { stanox?: string }) => e.stanox === STANOX);
-      expect(entryEvents).toHaveLength(1);
-      expect(entryEvents[0].type).toBe("berth.updated");
-      expect(first.nextVirtualCursor).not.toBeNull(); // blocked — row still open
-
-      // Re-fetching with the same cursor while still open correctly excludes the already-sent
-      // entry (its cursor sits exactly on `afterVirtual`, failing the `>` check) without needing
-      // to skip past the row — its still-unresolved exit remains reachable the moment it closes.
-      const stillOpen = (
-        await app.inject({
-          method: "GET",
-          url: `/api/v1/maps/${SLUG}/events?from=2026-05-02T13:00:00Z&to=2026-05-02T15:00:00Z&afterVirtual=${first.nextVirtualCursor}`,
-        })
-      ).json();
-      expect(stillOpen.events.some((e: { stanox?: string }) => e.stanox === STANOX)).toBe(false);
-      expect(stillOpen.nextVirtualCursor).toBeNull(); // nothing new to report while still open
-
-      // Once the row closes, a wider `to` window finally surfaces the exit (and only the exit —
-      // the entry stays correctly excluded) and the cursor advances past it for good.
-      await pool.query(
-        `update virtual_berth_occupancy set left_at = $1, exit_reason = 'terminated' where id = $2`,
-        [T("2026-05-02T14:30:00Z"), occId],
-      );
-      const closed = (
-        await app.inject({
-          method: "GET",
-          url: `/api/v1/maps/${SLUG}/events?from=2026-05-02T13:00:00Z&to=2026-05-02T16:00:00Z&afterVirtual=${first.nextVirtualCursor}`,
-        })
-      ).json();
-      const closedVirtual = closed.events.filter((e: { stanox?: string }) => e.stanox === STANOX);
-      expect(closedVirtual.map((e: { type: string }) => e.type)).toEqual(["berth.cleared"]);
-      // Unlike `nextCursor` (TD), `nextVirtualCursor` doesn't collapse to null once caught up —
-      // it stays pinned to the exact resume position, so a further poll from here (nothing left
-      // to report) makes no progress and returns no new virtual events, without ever discarding
-      // the watermark and risking a replay.
-      expect(closed.nextVirtualCursor).not.toBeNull();
-      const polledAgain = (
-        await app.inject({
-          method: "GET",
-          url: `/api/v1/maps/${SLUG}/events?from=2026-05-02T13:00:00Z&to=2026-05-02T16:00:00Z&afterVirtual=${closed.nextVirtualCursor}`,
-        })
-      ).json();
-      expect(polledAgain.events.some((e: { stanox?: string }) => e.stanox === STANOX)).toBe(false);
-      expect(polledAgain.nextVirtualCursor).toBeNull();
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("returns no virtual events and a null cursor when the map has no virtual occupancy rows", async () => {
-    const app = await buildApp();
-    try {
-      const res = await app.inject({
-        method: "GET",
-        url: `/api/v1/maps/${SLUG}/events?from=2026-05-03T00:00:00Z&to=2026-05-03T01:00:00Z`,
-      });
-      const body = res.json();
-      expect(body.events).toEqual([]);
-      expect(body.nextVirtualCursor).toBeNull();
     } finally {
       await app.close();
     }

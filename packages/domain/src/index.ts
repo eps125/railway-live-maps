@@ -121,25 +121,12 @@ export {
   type DecodedTrustMovementFlags,
   type TrustMovementEventKind,
   type TrustMovementVariation,
-  type TrustMovementSource,
 } from "./trust/garnerMovement.js";
 export {
   TRUST_NORMALIZATION_VERSION,
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,
 } from "./trust/trustNormalizationVersion.js";
-export {
-  VIRTUAL_BERTH_PROJECTION_NAME,
-  VIRTUAL_BERTH_PROJECTION_VERSION,
-  VIRTUAL_BERTH_TD_REENTRY_PROJECTION_NAME,
-  VIRTUAL_BERTH_TD_REENTRY_PROJECTION_VERSION,
-} from "./virtualBerths/projectionVersion.js";
-export {
-  decideVirtualBerthStep,
-  decideTdReentryHandoff,
-  type VirtualBerthStepInput,
-  type VirtualBerthStepDecision,
-} from "./virtualBerths/stepping.js";
 // The original berth-run resolver (`./resolver/`) was removed by ADR 0002 (2026-09-01) —
 // run↔schedule correlation was deferred to a later phase built on garner's data. See
 // docs/adr/0002 and docs/IMPLEMENTATION_PLAN.md Milestone 15. Rebuilt (Milestone 34) as

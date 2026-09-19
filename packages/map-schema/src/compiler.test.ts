@@ -71,32 +71,6 @@ describe("compileMapDocument", () => {
     expect(bundle.berthBindingIndex["PX|1008"]).toBe("berth-1");
   });
 
-  it("builds the virtual berth binding index keyed by stanox, one entry per STANOX (docs/adr/0012)", () => {
-    const virtualDoc = MapDocumentSchema.parse({
-      ...doc,
-      elements: [
-        ...doc.elements.filter((el) => el.id !== "berth-1"),
-        {
-          id: "vb-1",
-          layerId: "l1",
-          type: "berth",
-          x: 10,
-          y: 10,
-          width: 20,
-          height: 10,
-          displayName: "0000",
-          bindingId: "bind-vb",
-        },
-      ],
-      bindings: [
-        { id: "bind-vb", elementId: "vb-1", type: "virtualBerth", stanoxes: ["52701", "52702"] },
-      ],
-    });
-    const bundle = compileMapDocument(virtualDoc);
-    expect(bundle.virtualBerthBindingIndex).toEqual({ "52701": "vb-1", "52702": "vb-1" });
-    expect(bundle.berthBindingIndex).toEqual({});
-  });
-
   it("exposes combinedOrder per key for a combined berth's bindings, and omits it for a plain one", () => {
     const combinedDoc = MapDocumentSchema.parse({
       ...doc,

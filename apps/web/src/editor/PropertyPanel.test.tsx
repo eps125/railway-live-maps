@@ -223,61 +223,6 @@ describe("PropertyPanel BindingFields", () => {
     expect(berthInput).toHaveValue("0186");
   });
 
-  it("docs/adr/0012: toggling Virtual swaps the TD fields for a STANOX field and saves a virtualBerth binding", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        if (url.includes("/places/search")) return Promise.resolve(jsonResponse({ results: [] }));
-        if (url.includes("/td/areas/")) return Promise.resolve(jsonResponse({ berths: [] }));
-        if (url.includes("/td/areas")) return Promise.resolve(jsonResponse({ areas: [] }));
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    renderPanel(baseDoc(), "berth-b");
-
-    expect(await screen.findByLabelText("TD area")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Virtual (GPS-fed, no TD coverage)"));
-
-    expect(screen.queryByLabelText("TD area")).not.toBeInTheDocument();
-    const stanoxInput = await screen.findByLabelText("STANOX(es)");
-    fireEvent.change(stanoxInput, { target: { value: "52701, 52702" } });
-    fireEvent.blur(stanoxInput);
-
-    expect(await screen.findByText("Clear binding")).toBeInTheDocument();
-    expect(stanoxInput).toHaveValue("52701, 52702");
-  });
-
-  it("toggling Virtual back off on a virtual-bound berth swaps back to the TD fields, cleared", async () => {
-    const doc = baseDoc();
-    doc.elements[1] = {
-      ...doc.elements[1]!,
-      bindingId: "bind-vb",
-    } as (typeof doc.elements)[number];
-    doc.bindings.push({
-      id: "bind-vb",
-      elementId: "berth-b",
-      type: "virtualBerth",
-      stanoxes: ["52701"],
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        if (url.includes("/td/areas/")) return Promise.resolve(jsonResponse({ berths: [] }));
-        if (url.includes("/td/areas")) return Promise.resolve(jsonResponse({ areas: [] }));
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    renderPanel(doc, "berth-b");
-
-    expect(await screen.findByLabelText("STANOX(es)")).toHaveValue("52701");
-    fireEvent.click(screen.getByText("Virtual (GPS-fed, no TD coverage)"));
-
-    expect(await screen.findByLabelText("TD area")).toHaveValue("");
-    expect(screen.queryByLabelText("STANOX(es)")).not.toBeInTheDocument();
-  });
-
   it("combines an already-bound berth with another via '+ Combine with another berth' (owner request 2026-09-17)", async () => {
     vi.stubGlobal(
       "fetch",

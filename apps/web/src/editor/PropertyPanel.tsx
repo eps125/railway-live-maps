@@ -1,16 +1,7 @@
 import { useEffect, useState } from "react";
-import {
-  Z_INDEX_LAYER_BAND,
-  type MapDocument,
-  type TdBerthBinding,
-  type VirtualBerthBinding,
-} from "@railway/map-schema";
+import { Z_INDEX_LAYER_BAND, type MapDocument, type TdBerthBinding } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
-import {
-  useObservedAreas,
-  useObservedBerths,
-  useStanoxSuggestions,
-} from "./useBindingAutocomplete.js";
+import { useObservedAreas, useObservedBerths } from "./useBindingAutocomplete.js";
 
 const MAX_COMBINED_BERTH_MEMBERS = 4;
 
@@ -350,154 +341,6 @@ function BindingFields({
   );
 }
 
-/** docs/adr/0012: STANOX binding fields for a virtual (GPS-fed) berth — no TD area/berth, just a
- * set of STANOXes powering it. `binding` is `undefined` for a not-yet-bound virtual berth. */
-function VirtualBindingFields({
-  elementId,
-  binding,
-}: {
-  elementId: string;
-  binding: VirtualBerthBinding | undefined;
-}): JSX.Element {
-  const dispatch = useEditorDispatch();
-  const initial = binding?.stanoxes.join(", ") ?? "";
-  const [local, setLocal] = useState(initial);
-  useEffect(() => setLocal(initial), [elementId, initial]);
-  const suggestions = useStanoxSuggestions(local);
-
-  function commit(): void {
-    const stanoxes = [
-      ...new Set(
-        local
-          .split(/[,\s]+/)
-          .map((s) => s.trim())
-          .filter(Boolean),
-      ),
-    ];
-    if (stanoxes.length === 0) {
-      if (binding) {
-        dispatch({
-          type: "dispatchCommand",
-          command: { type: "setBinding", elementId, binding: null },
-        });
-      }
-      return;
-    }
-    dispatch({
-      type: "dispatchCommand",
-      command: {
-        type: "setBinding",
-        elementId,
-        binding: {
-          id: binding?.id ?? `bind-${elementId}`,
-          elementId,
-          type: "virtualBerth",
-          stanoxes,
-        },
-      },
-    });
-  }
-
-  return (
-    <fieldset>
-      <legend>Virtual (STANOX) binding</legend>
-      <label className="field">
-        STANOX(es)
-        <input
-          list={`stanox-suggestions-${elementId}`}
-          value={local}
-          onChange={(e) => setLocal(e.target.value)}
-          onBlur={commit}
-          placeholder="e.g. 52701 or 52701, 52702"
-        />
-        <datalist id={`stanox-suggestions-${elementId}`}>
-          {suggestions.map((stanox) => (
-            <option key={stanox} value={stanox} />
-          ))}
-        </datalist>
-      </label>
-      <p className="field-hint">
-        Powered by TRUST GPS-sourced movement reports at these STANOX(es), not TD — for track with
-        no train-describer coverage. Renders with a yellow border.
-      </p>
-      {binding ? (
-        <button
-          type="button"
-          className="btn"
-          onClick={() =>
-            dispatch({
-              type: "dispatchCommand",
-              command: { type: "setBinding", elementId, binding: null },
-            })
-          }
-        >
-          Clear binding
-        </button>
-      ) : null}
-    </fieldset>
-  );
-}
-
-/** docs/adr/0012: wraps the existing TD `BindingFields` with a mode toggle — a berth's binding is
- * either a `tdBerth` (possibly combined) group or a single `virtualBerth`, never both.
- * "Virtual" purely means the current binding (if any) is that type; toggling just clears the old
- * binding so the author starts the new mode fresh, rather than trying to translate one into the
- * other (there's no meaningful translation between a TD area/berth and a STANOX set). */
-function BerthBindingSection({
-  elementId,
-  doc,
-}: {
-  elementId: string;
-  doc: MapDocument;
-}): JSX.Element {
-  const dispatch = useEditorDispatch();
-  const currentBinding = doc.bindings.find((b) => b.elementId === elementId);
-  const savedIsVirtual = currentBinding?.type === "virtualBerth";
-  // Which mode the toggle shows — normally just whatever the saved binding's type is, but an
-  // unbound berth has no binding to derive a type from at all, so a plain click on "Virtual"
-  // needs its own local override to actually switch the fields shown (there's nothing to clear
-  // in that case, so no dispatch would otherwise ever flip `savedIsVirtual`).
-  const [modeOverride, setModeOverride] = useState<boolean | null>(null);
-  useEffect(() => setModeOverride(null), [elementId]);
-  const isVirtual = modeOverride ?? savedIsVirtual;
-  const tdBindings = doc.bindings
-    .filter((b): b is TdBerthBinding => b.type === "tdBerth" && b.elementId === elementId)
-    .sort((a, b) => (a.combinedOrder ?? 1) - (b.combinedOrder ?? 1));
-
-  function toggleVirtual(next: boolean): void {
-    setModeOverride(next);
-    const clearingStaleBinding =
-      currentBinding && (currentBinding.type === "virtualBerth") !== next;
-    if (clearingStaleBinding) {
-      dispatch({
-        type: "dispatchCommand",
-        command: { type: "setBinding", elementId, binding: null },
-      });
-    }
-  }
-
-  return (
-    <>
-      <label className="field field--checkbox">
-        <input
-          type="checkbox"
-          checked={isVirtual}
-          onChange={(e) => toggleVirtual(e.target.checked)}
-        />
-        Virtual (GPS-fed, no TD coverage)
-      </label>
-      {isVirtual ? (
-        <VirtualBindingFields
-          elementId={elementId}
-          binding={currentBinding as VirtualBerthBinding | undefined}
-        />
-      ) : (
-        <BindingFields elementId={elementId} bindings={tdBindings} />
-      )}
-    </>
-  );
-}
-
 /** A layer dropdown reused by both the single-element and multi-selection views — sorted by
  * `order` so it reads top-to-bottom in actual paint order, not document/creation order. */
 function LayerSelect({
@@ -619,6 +462,9 @@ export function PropertyPanel(): JSX.Element {
   if (!element) {
     return <aside aria-label="Properties" className="panel-card" />;
   }
+  const bindings = doc.bindings
+    .filter((b): b is TdBerthBinding => b.type === "tdBerth" && b.elementId === elementId)
+    .sort((a, b) => (a.combinedOrder ?? 1) - (b.combinedOrder ?? 1));
 
   function setProp(property: string, value: unknown): void {
     dispatch({
@@ -752,7 +598,7 @@ export function PropertyPanel(): JSX.Element {
             as this one, this berth renders blank on the live map — cosmetic only, both berths keep
             their real recorded state.
           </p>
-          <BerthBindingSection elementId={elementId} doc={doc} />
+          <BindingFields elementId={elementId} bindings={bindings} />
         </>
       )}
 

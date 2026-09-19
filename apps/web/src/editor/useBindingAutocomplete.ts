@@ -34,49 +34,6 @@ export function useObservedAreas(): string[] {
   return areas;
 }
 
-interface PlaceSearchResponse {
-  results: Array<{ stanox: string | null; name: string }>;
-}
-
-/** docs/adr/0012: STANOX autocomplete for a virtual berth's binding, reusing the existing public
- * `GET /api/v1/places/search` (Milestone 31) rather than a new endpoint — it already searches
- * `location_reference` by name/TIPLOC/CRS/STANOX nationwide. Debounced since (unlike the TD
- * area/berth lists) this is a live text search, not a small fixed list fetched once. */
-export function useStanoxSuggestions(query: string): string[] {
-  const [stanoxes, setStanoxes] = useState<string[]>([]);
-
-  useEffect(() => {
-    const trimmed = query.trim();
-    if (trimmed.length < 2) {
-      setStanoxes([]);
-      return;
-    }
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      fetch(`/api/v1/places/search?q=${encodeURIComponent(trimmed)}&limit=20`)
-        .then((response) =>
-          response.ok ? (response.json() as Promise<PlaceSearchResponse>) : null,
-        )
-        .then((body) => {
-          if (cancelled || !body) return;
-          const unique = [
-            ...new Set(body.results.map((r) => r.stanox).filter((s): s is string => !!s)),
-          ];
-          setStanoxes(unique);
-        })
-        .catch(() => {
-          // Autocomplete is a convenience, not a correctness requirement — silently empty on failure.
-        });
-    }, 200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [query]);
-
-  return stanoxes;
-}
-
 export function useObservedBerths(tdArea: string | null): string[] {
   const [berths, setBerths] = useState<string[]>([]);
 

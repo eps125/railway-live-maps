@@ -751,12 +751,6 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
     }
     return new Set([...counts].filter(([, count]) => count > 1).map(([elementId]) => elementId));
   })();
-  // docs/adr/0012: a berth bound via a virtualBerth binding draws MAP_STYLE.berth's yellow
-  // border in both this canvas and the public renderer (MapRenderer.tsx) — the same shared
-  // domain-model fact, rendered independently in each (rule 13).
-  const virtualBerthElementIds = new Set(
-    doc.bindings.filter((b) => b.type === "virtualBerth").map((b) => b.elementId),
-  );
   const paintOrderedElements = sortElementsForPaint(
     doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
     doc.layers,
@@ -960,20 +954,8 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                     width={element.width}
                     height={element.height}
                     fill={occupied ? "#d29922" : selected ? "#233044" : "#161d27"}
-                    stroke={
-                      selected
-                        ? "#58a6ff"
-                        : virtualBerthElementIds.has(element.id)
-                          ? MAP_STYLE.berth.virtualBorderColor
-                          : "#2d3644"
-                    }
-                    strokeWidth={
-                      selected
-                        ? 2
-                        : virtualBerthElementIds.has(element.id)
-                          ? MAP_STYLE.berth.virtualBorderWidth
-                          : 1
-                    }
+                    stroke={selected ? "#58a6ff" : "#2d3644"}
+                    strokeWidth={selected ? 2 : 1}
                     cornerRadius={2}
                     {...(combinedBerthElementIds.has(element.id) ? { dash: [4, 3] } : {})}
                   />

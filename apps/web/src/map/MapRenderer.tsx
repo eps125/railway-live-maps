@@ -66,27 +66,10 @@ function boundaryClickHandler(
 
 /** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
  * removed with the berth-run resolver (ADR 0002) and there's no matched/ambiguous distinction
- * worth showing until run↔schedule correlation is rebuilt.
- *
- * docs/adr/0012: a virtual (GPS-fed) berth's border is always the yellow token, occupied or not
- * — layered on top of the normal occupied/vacant fill, which stays untouched either way. */
-function berthColors(
-  berthState: BerthState | undefined,
-  isVirtual: boolean,
-): { fill: string; stroke: string; strokeWidth: number } {
-  const fill = berthState?.description ? "#3d7fc4" : "#161d27";
-  if (isVirtual) {
-    return {
-      fill,
-      stroke: MAP_STYLE.berth.virtualBorderColor,
-      strokeWidth: MAP_STYLE.berth.virtualBorderWidth,
-    };
-  }
-  return {
-    fill,
-    stroke: berthState?.description ? "#6aa4de" : "#2d3644",
-    strokeWidth: 1,
-  };
+ * worth showing until run↔schedule correlation is rebuilt. */
+function berthColors(berthState: BerthState | undefined): { fill: string; stroke: string } {
+  if (!berthState?.description) return { fill: "#161d27", stroke: "#2d3644" };
+  return { fill: "#3d7fc4", stroke: "#6aa4de" };
 }
 
 /** The white bordered platform-number box (Traksy pattern), centred on `(cx, cy)`. Shared by
@@ -384,17 +367,6 @@ export function MapRenderer({
     return map;
   }, [bundle]);
 
-  // docs/adr/0012: the reverse of bundle.virtualBerthBindingIndex (stanox -> elementId) — a
-  // virtual berth never combines (validate.ts blocks two virtualBerth bindings sharing a
-  // STANOX), so each element has at most one STANOX, unlike elementIdToMembers above.
-  const elementIdToStanox = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const [stanox, elementId] of Object.entries(bundle.virtualBerthBindingIndex ?? {})) {
-      map.set(elementId, stanox);
-    }
-    return map;
-  }, [bundle]);
-
   // Paint order and layer visibility must match the editor canvas exactly (CLAUDE.md rule 13:
   // public renderer and editor preview share the same domain model/state semantics) —
   // `elementsById` is a Record, and relying on its own key-insertion order to already reflect
@@ -529,7 +501,6 @@ export function MapRenderer({
   }
 
   const selectedMembers = selectedElementId ? elementIdToMembers.get(selectedElementId) : undefined;
-  const selectedStanox = selectedElementId ? elementIdToStanox.get(selectedElementId) : undefined;
   const selectedElement = selectedElementId ? bundle.elementsById[selectedElementId] : undefined;
 
   return (
@@ -610,8 +581,7 @@ export function MapRenderer({
               Boolean(rawBerthState?.description) &&
               rawBerthState?.description === inhibitingState?.description;
             const berthState = isInhibited ? undefined : rawBerthState;
-            const isVirtual = elementIdToStanox.has(element.id);
-            const colors = berthColors(berthState, isVirtual);
+            const colors = berthColors(berthState);
             // An empty berth has nothing to show a popup for — only occupied berths respond to
             // clicks (docs/PROJECT_SPEC.md §5: "click a populated berth").
             const isOccupied = Boolean(berthState?.description);
@@ -639,7 +609,7 @@ export function MapRenderer({
                   height={rect.height}
                   fill={colors.fill}
                   stroke={colors.stroke}
-                  strokeWidth={colors.strokeWidth}
+                  strokeWidth={1}
                   rx={2}
                 />
                 <text
@@ -730,7 +700,7 @@ export function MapRenderer({
         Reset view
       </button>
 
-      {selectedElementId && ((selectedMembers && selectedMembers.length > 0) || selectedStanox) ? (
+      {selectedElementId && selectedMembers && selectedMembers.length > 0 ? (
         // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup".
         <RunPopup
           key={selectedElementId}
@@ -738,9 +708,8 @@ export function MapRenderer({
           displayName={
             selectedElement?.type === "berth" ? selectedElement.displayName : selectedElementId
           }
-          tdArea={selectedMembers?.[0]?.tdArea}
-          berth={selectedMembers?.[0]?.berth}
-          stanox={selectedStanox}
+          tdArea={selectedMembers[0]!.tdArea}
+          berth={selectedMembers[0]!.berth}
           members={selectedMembers}
           onClose={() => setSelectedElementId(null)}
         />

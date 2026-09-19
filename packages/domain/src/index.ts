@@ -50,6 +50,26 @@ export {
   type SClassMessageType,
   type SClassSourceKind,
 } from "./td/sClass.js";
+export {
+  SIGNAL_GAP_TOLERANCE_MS,
+  SIGNAL_STATE_LOOKBACK_MS,
+  TD_RECEIVE_SILENCE_REASON,
+  computeSignalStates,
+  detectReceiveSilences,
+  resolveSignalStates,
+  sByteTrustedAt,
+  signalBindingsFromIndex,
+  signalStateForBit,
+  type RawSClassOverlayRow,
+  type ReceiveSilence,
+  type ReceivedRow,
+  type ResolveSignalStatesInput,
+  type SByteFact,
+  type SignalBinding,
+  type SignalDisplayState,
+  type SignalFactsPort,
+  type SilenceStart,
+} from "./td/signalState.js";
 export { TD_NORMALIZATION_VERSION } from "./td/normalizationVersion.js";
 export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION } from "./td/projectionVersion.js";
 export {

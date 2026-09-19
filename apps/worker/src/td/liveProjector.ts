@@ -6,7 +6,15 @@ import {
   getCheckpoint,
   advanceCheckpoint,
 } from "@railway/database";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import {
+  TD_PROJECTION_VERSION,
+  decodeSClassPayload,
+  detectReceiveSilences,
+  signalStateForBit,
+  type ReceivedRow,
+  type SignalDisplayState,
+} from "@railway/domain";
+import type { ResyncRequiredMessage, SignalUpdatedMessage } from "@railway/protocol";
 import {
   berthChangesForEvent,
   buildDeltaMessages,
@@ -128,9 +136,21 @@ export function foldLiveBerthState(rows: RawCClassRow[]): BerthStateWrite[] {
  * same, exact map version. */
 export type CachedMapBinding = MapBinding & { mapVersionId: string };
 
-/** In-process cache of `td_berth` map bindings (they change only on map publish). */
+/** A `td_s_bit` map binding (Milestone 36b), keyed in the cache by `"<tdArea> <address>"`. */
+export interface CachedSignalBinding {
+  mapSlug: string;
+  elementId: string;
+  bit: number;
+  /** Null for a binding published before `active_means` was recorded — renders blank. */
+  activeMeans: "on" | "off" | null;
+}
+
+/** In-process cache of `td_berth` and `td_s_bit` map bindings (they change only on map
+ * publish). */
 export class BindingsCache {
   private byKey = new Map<string, CachedMapBinding[]>();
+  private signalsByKey = new Map<string, CachedSignalBinding[]>();
+  private signalSlugs: string[] = [];
   private loadedAt = 0;
 
   constructor(
@@ -143,6 +163,22 @@ export class BindingsCache {
       await this.reload();
     }
     return this.byKey.get(`${tdArea} ${berth}`) ?? [];
+  }
+
+  /** Signal bindings on the S-Class byte `(tdArea, address)` across every open map version. */
+  async getSignals(tdArea: string, address: string): Promise<CachedSignalBinding[]> {
+    if (Date.now() - this.loadedAt > this.ttlMs) {
+      await this.reload();
+    }
+    return this.signalsByKey.get(`${tdArea} ${address}`) ?? [];
+  }
+
+  /** Slugs of every open map version with at least one signal binding. */
+  async signalMapSlugs(): Promise<string[]> {
+    if (Date.now() - this.loadedAt > this.ttlMs) {
+      await this.reload();
+    }
+    return this.signalSlugs;
   }
 
   private async reload(): Promise<void> {
@@ -168,8 +204,102 @@ export class BindingsCache {
       next.set(key, list);
     }
     this.byKey = next;
+
+    const signalRows = await this.pool.query<{
+      td_area: string;
+      address: string;
+      bit: number;
+      active_means: "on" | "off" | null;
+      mapSlug: string;
+      elementId: string;
+    }>(
+      `select mbi.td_area, mbi.address, mbi.bit, mbi.active_means, m.slug as "mapSlug",
+              mbi.element_id as "elementId"
+       from map_binding_index mbi
+       join map_version mv on mv.id = mbi.map_version_id
+       join map m on m.id = mv.map_id
+       where mbi.binding_type = 'td_s_bit' and mv.effective_to is null`,
+    );
+    const nextSignals = new Map<string, CachedSignalBinding[]>();
+    const slugs = new Set<string>();
+    for (const row of signalRows.rows) {
+      const key = `${row.td_area} ${row.address}`;
+      const list = nextSignals.get(key) ?? [];
+      list.push({
+        mapSlug: row.mapSlug,
+        elementId: row.elementId,
+        bit: row.bit,
+        activeMeans: row.active_means,
+      });
+      nextSignals.set(key, list);
+      slugs.add(row.mapSlug);
+    }
+    this.signalsByKey = nextSignals;
+    this.signalSlugs = [...slugs];
     this.loadedAt = Date.now();
   }
+}
+
+/** One S-Class `raw_feed_event` row the live publishers consume (Milestone 36b). */
+export interface RawSClassRow {
+  id: string;
+  normalized_event_at_utc: Date;
+  ingestion_sequence: string;
+  event_type: string;
+  td_area: string;
+  raw_event_json: Record<string, unknown>;
+}
+
+/** Last signal state this process published (or saw published) per `"<slug>|<elementId>"` — so
+ * a byte restated without its bound bit changing (every refresh, and any SF for a neighbouring
+ * bit) doesn't re-send it. Per process; a restart just re-sends each signal's state once, which
+ * is harmless (deltas carry absolute state). */
+const lastSignalState = new Map<string, SignalDisplayState>();
+
+/**
+ * Milestone 36b (docs/adr/0013): `signal.updated` for every bound signal whose state an S-Class
+ * row changes. The state is only ever the bound bit read through the binding's `activeMeans`
+ * (CLAUDE.md rules 9/10). Keyed per bit for `publishDeltaIfNewer`, so the two live publishers
+ * never double-send.
+ */
+export async function buildSignalDeltas(
+  bindings: BindingsCache,
+  rows: RawSClassRow[],
+): Promise<PendingDelta[]> {
+  const pending: PendingDelta[] = [];
+  for (const row of rows) {
+    const wrapped = row.raw_event_json[row.event_type];
+    const payload =
+      typeof wrapped === "object" && wrapped !== null ? (wrapped as Record<string, unknown>) : {};
+    const decoded = decodeSClassPayload(row.event_type, payload.address, payload.data);
+    if (!decoded.ok) continue;
+    const sequence = Number(row.ingestion_sequence);
+    for (const byte of decoded.bytes) {
+      for (const binding of await bindings.getSignals(row.td_area, byte.address)) {
+        const state = signalStateForBit(byte.value, binding.bit, binding.activeMeans ?? undefined);
+        const memoryKey = `${binding.mapSlug}|${binding.elementId}`;
+        if (lastSignalState.get(memoryKey) === state) continue;
+        lastSignalState.set(memoryKey, state);
+        const message: SignalUpdatedMessage = {
+          type: "signal.updated",
+          sequence,
+          eventAt: row.normalized_event_at_utc.toISOString(),
+          elementId: binding.elementId,
+          state,
+          tdArea: row.td_area,
+          address: byte.address,
+          bit: binding.bit,
+        };
+        pending.push({
+          mapSlug: binding.mapSlug,
+          key: `S ${row.td_area} ${byte.address} ${binding.bit}`,
+          sequence,
+          message: JSON.stringify(message),
+        });
+      }
+    }
+  }
+  return pending;
 }
 
 let sharedBindings: BindingsCache | null = null;
@@ -233,17 +363,23 @@ export async function bulkUpsertCurrentState(pool: Pool, writes: BerthStateWrite
   );
 }
 
-/** Publish the deltas for a folded batch — one `railway:live:<slug>` message per (berth change ×
- * map that binds it), each through `publishDeltaIfNewer` so the two live publishers
- * (`projector-td-live` daemon + `ingest-td` inline path, ADR 0003 Tier 3) never double-send the
- * same berth step. Returns how many were actually published (a suppressed duplicate counts 0). */
-export async function publishBerthDeltas(
+/** One Redis publish waiting to go out — collected per batch so berth and signal deltas can be
+ * sent strictly in `sequence` order. */
+export interface PendingDelta {
+  mapSlug: string;
+  /** `publishDeltaIfNewer`'s per-key watermark. */
+  key: string;
+  sequence: number;
+  message: string;
+}
+
+/** The berth deltas for a folded batch — one per (berth change × map that binds it). */
+export async function buildBerthDeltas(
   pool: Pool,
-  redis: DeltaPublisher,
   bindings: BindingsCache,
   writes: BerthStateWrite[],
-): Promise<number> {
-  let published = 0;
+): Promise<PendingDelta[]> {
+  const pending: PendingDelta[] = [];
   for (const write of writes) {
     const bound = await bindings.get(write.tdArea, write.berth);
     if (bound.length === 0) continue;
@@ -264,15 +400,47 @@ export async function publishBerthDeltas(
       combinedOverrides,
     );
     for (const { mapSlug, message } of messages) {
-      published += await redis.publishDeltaIfNewer(
-        mapSlug,
-        berthKey,
-        sequence,
-        JSON.stringify(message),
-      );
+      pending.push({ mapSlug, key: berthKey, sequence, message: JSON.stringify(message) });
     }
   }
+  return pending;
+}
+
+/**
+ * Publishes a batch's deltas in `sequence` order, each through `publishDeltaIfNewer` so the two
+ * live publishers (`projector-td-live` daemon + `ingest-td` inline path, ADR 0003 Tier 3) never
+ * double-send. Sequence order matters: a client drops its socket on any sequence regression, and
+ * `foldLiveBerthState` orders writes by `(td_area, berth)` for lock ordering, not by sequence —
+ * publishing in that order used to regress whenever one frame changed several bound berths
+ * (Milestone 36b fix). Returns how many were actually published.
+ */
+export async function publishInSequenceOrder(
+  redis: DeltaPublisher,
+  pending: PendingDelta[],
+): Promise<number> {
+  let published = 0;
+  const ordered = pending
+    .map((delta, index) => ({ delta, index }))
+    .sort((a, b) => a.delta.sequence - b.delta.sequence || a.index - b.index);
+  for (const { delta } of ordered) {
+    published += await redis.publishDeltaIfNewer(
+      delta.mapSlug,
+      delta.key,
+      delta.sequence,
+      delta.message,
+    );
+  }
   return published;
+}
+
+/** Publish the berth deltas for a folded batch (see `publishInSequenceOrder`). */
+export async function publishBerthDeltas(
+  pool: Pool,
+  redis: DeltaPublisher,
+  bindings: BindingsCache,
+  writes: BerthStateWrite[],
+): Promise<number> {
+  return publishInSequenceOrder(redis, await buildBerthDeltas(pool, bindings, writes));
 }
 
 /**
@@ -293,18 +461,54 @@ export async function applyLiveFromEvents(
   redis: DeltaPublisher | null,
   bindings: BindingsCache,
   rows: RawCClassRow[],
+  sClassRows: RawSClassRow[] = [],
 ): Promise<{ berthsUpdated: number; deltasPublished: number }> {
   const cClass = rows.filter(
     (r) => r.event_type === "CA" || r.event_type === "CB" || r.event_type === "CC",
   );
-  if (cClass.length === 0) return { berthsUpdated: 0, deltasPublished: 0 };
+  if (cClass.length === 0 && sClassRows.length === 0) {
+    return { berthsUpdated: 0, deltasPublished: 0 };
+  }
 
   // rows arrive in child order; foldLiveBerthState treats them as ingestion order (same thing
   // within one frame — child_index and ingestion_sequence are both monotonic here).
   const writes = foldLiveBerthState(cClass);
   await bulkUpsertCurrentState(pool, writes);
-  const deltasPublished = redis ? await publishBerthDeltas(pool, redis, bindings, writes) : 0;
+  if (!redis) return { berthsUpdated: writes.length, deltasPublished: 0 };
+  const pending = [
+    ...(await buildBerthDeltas(pool, bindings, writes)),
+    ...(await buildSignalDeltas(bindings, sClassRows)),
+  ];
+  const deltasPublished = await publishInSequenceOrder(redis, pending);
   return { berthsUpdated: writes.length, deltasPublished };
+}
+
+/** `projector-td-live`'s last row (receive time) — to spot a silence spanning two ticks. Null
+ * until the first tick, which looks the checkpoint row up instead. */
+let lastLiveReceived: ReceivedRow | null = null;
+
+/**
+ * Milestone 36b: a TD receive silence past the signal-trust tolerance means signals clients are
+ * still showing may be stale. Tell every map with signal bindings to resync (the snapshot blanks
+ * each byte until it is re-confirmed). Through `publishDeltaIfNewer` keyed on the silence, so a
+ * repeat detection (another tick, a restart) doesn't resend it.
+ */
+async function publishFeedGapResyncs(
+  redis: DeltaPublisher,
+  bindings: BindingsCache,
+  endSequence: string,
+): Promise<number> {
+  const message: ResyncRequiredMessage = { type: "resync.required", reason: "feed_gap" };
+  let published = 0;
+  for (const slug of await bindings.signalMapSlugs()) {
+    published += await redis.publishDeltaIfNewer(
+      slug,
+      "resync feed_gap",
+      Number(endSequence),
+      JSON.stringify(message),
+    );
+  }
+  return published;
 }
 
 export async function runProjectTdLive(
@@ -368,11 +572,15 @@ export async function runProjectTdLive(
     const cp = await getCheckpoint(pool, defId);
     const since = cp?.lastIngestionSequence ?? "0";
 
-    const { rows } = await pool.query<RawCClassRow>(
-      `select id, normalized_event_at_utc, ingestion_sequence, event_type, td_area, raw_event_json
+    // CA/CB/CC for berths, plus S-Class for signals (Milestone 36b).
+    const { rows } = await pool.query<
+      (RawCClassRow | RawSClassRow) & { message_class: "C" | "S"; received_at_utc: Date }
+    >(
+      `select id, normalized_event_at_utc, ingestion_sequence, event_type, td_area, raw_event_json,
+              message_class, received_at_utc
        from raw_feed_event
-       where feed_name = 'TD' and message_class = 'C' and parse_status = 'parsed'
-         and event_type in ('CA', 'CB', 'CC') and ingestion_sequence > $1
+       where feed_name = 'TD' and parse_status = 'parsed' and ingestion_sequence > $1
+         and ((message_class = 'C' and event_type in ('CA', 'CB', 'CC')) or message_class = 'S')
        order by ingestion_sequence
        limit $2`,
       [since, batchSize],
@@ -381,7 +589,9 @@ export async function runProjectTdLive(
     summary.batches += 1;
     summary.processedEvents += rows.length;
 
-    const writes = foldLiveBerthState(rows);
+    const cRows = rows.filter((row): row is RawCClassRow & typeof row => row.message_class === "C");
+    const sRows = rows.filter((row) => row.message_class === "S");
+    const writes = foldLiveBerthState(cRows);
     const maxSeq = rows.reduce(
       (max, row) => (BigInt(row.ingestion_sequence) > max ? BigInt(row.ingestion_sequence) : max),
       BigInt(since),
@@ -391,7 +601,43 @@ export async function runProjectTdLive(
     summary.berthsUpdated += writes.length;
 
     if (redis) {
-      summary.deltasPublished += await publishBerthDeltas(pool, redis, bindings, writes);
+      if (!lastLiveReceived && since !== "0") {
+        const prev = await pool.query<{ received_at_utc: Date }>(
+          `select received_at_utc from raw_feed_event
+           where feed_name = 'TD' and ingestion_sequence = $1 limit 1`,
+          [since],
+        );
+        const row = prev.rows[0];
+        lastLiveReceived = row
+          ? { receivedAt: row.received_at_utc, ingestionSequence: since }
+          : null;
+      }
+      const silences = detectReceiveSilences(
+        lastLiveReceived,
+        rows.map((row) => ({
+          receivedAt: row.received_at_utc,
+          ingestionSequence: row.ingestion_sequence,
+        })),
+      );
+      const pending = [
+        ...(await buildBerthDeltas(pool, bindings, writes)),
+        ...(await buildSignalDeltas(bindings, sRows)),
+      ];
+      summary.deltasPublished += await publishInSequenceOrder(redis, pending);
+      for (const silence of silences) {
+        summary.deltasPublished += await publishFeedGapResyncs(
+          redis,
+          bindings,
+          silence.endSequence,
+        );
+      }
+    }
+    const lastRow = rows.at(-1);
+    if (lastRow) {
+      lastLiveReceived = {
+        receivedAt: lastRow.received_at_utc,
+        ingestionSequence: lastRow.ingestion_sequence,
+      };
     }
 
     await advanceCheckpoint(pool, defId, maxSeq.toString());

@@ -29,8 +29,13 @@ export interface CompiledMapBundle {
    * `compiled_runtime_bundle` (CLAUDE.md rule 11: immutable) with no such key at all — every
    * reader must treat a missing bundle-level `berthBindingOrder` the same as an empty one. */
   berthBindingOrder?: Record<string, number>;
-  /** `${tdArea}|${address}|${bit}` -> elementId */
+  /** `${tdArea}|${address}|${bit}` -> elementId. `address` is canonical two-digit uppercase hex
+   * (`canonicalSAddress`), matching how S-Class state is stored. */
   sBitBindingIndex: Record<string, string>;
+  /** Same keys as `sBitBindingIndex` -> that binding's `activeMeans` (what a set bit means).
+   * Milestone 36b. Optional at the type level because bundles compiled before it existed
+   * (immutable, CLAUDE.md rule 11) lack it — a missing entry renders the signal blank. */
+  sBitBindingActiveMeans?: Record<string, "on" | "off">;
   /** Milestone 31: every `station`/`label` element carrying at least one place identifier
    * (`crs`/`tiploc`/`stanox`) — the source `map_place_index` is populated from at publish time,
    * for `GET /api/v1/places/search` to join against. An element with none of the three is not
@@ -226,6 +231,13 @@ export function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["b
   return { minX, minY, maxX, maxY };
 }
 
+/** An S-Class byte address as S-Class state stores it: two-digit uppercase hex (`"a"` → `"0A"`).
+ * Anything that isn't one or two hex digits is returned unchanged — it can never match a decoded
+ * byte, so the signal stays blank rather than being silently re-pointed (validation reports it). */
+export function canonicalSAddress(address: string): string {
+  return /^[0-9A-Fa-f]{1,2}$/.test(address) ? address.toUpperCase().padStart(2, "0") : address;
+}
+
 /**
  * Publication compilation (docs/MAP_EDITOR_SPEC.md §11): element-by-id lookup, berth/S-bit
  * binding indexes, bounding box, topology adjacency, map continuation links — and
@@ -247,13 +259,16 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   const berthBindingIndex: Record<string, string> = {};
   const berthBindingOrder: Record<string, number> = {};
   const sBitBindingIndex: Record<string, string> = {};
+  const sBitBindingActiveMeans: Record<string, "on" | "off"> = {};
   for (const binding of doc.bindings) {
     if (binding.type === "tdBerth") {
       const key = `${binding.tdArea}|${binding.berth}`;
       berthBindingIndex[key] = binding.elementId;
       if (binding.combinedOrder !== undefined) berthBindingOrder[key] = binding.combinedOrder;
     } else {
-      sBitBindingIndex[`${binding.tdArea}|${binding.address}|${binding.bit}`] = binding.elementId;
+      const key = `${binding.tdArea}|${canonicalSAddress(binding.address)}|${binding.bit}`;
+      sBitBindingIndex[key] = binding.elementId;
+      sBitBindingActiveMeans[key] = binding.activeMeans;
     }
   }
 
@@ -311,6 +326,7 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     berthBindingIndex,
     berthBindingOrder,
     sBitBindingIndex,
+    sBitBindingActiveMeans,
     placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),
     topologyAdjacency,

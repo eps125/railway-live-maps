@@ -43,13 +43,18 @@ export async function runProjectTdDaemon(config: Config): Promise<void> {
       const summary = await runProjectTd(pool, { maxBatches: PROJECT_TD_MAX_BATCHES_PER_TICK });
       // S-Class decode observability (Milestone 36a): a refresh disagreeing with the decoded
       // state means an SF was missed; a decode failure means an unexpected wire format.
-      if (summary.sRefreshMismatches > 0 || summary.sDecodeFailures > 0) {
+      if (
+        summary.sRefreshMismatches > 0 ||
+        summary.sDecodeFailures > 0 ||
+        summary.feedSilences > 0
+      ) {
         console.log(
           JSON.stringify({
             event: "project-td.s-class",
             refreshMismatches: summary.sRefreshMismatches,
             decodeFailures: summary.sDecodeFailures,
             bitTransitions: summary.sBitTransitions,
+            feedSilencesRecorded: summary.feedSilences,
           }),
         );
       }

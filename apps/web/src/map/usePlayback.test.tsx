@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPlaybackDelta, usePlayback } from "./usePlayback.js";
+import { applyPlaybackDelta, applyPlaybackSignalDelta, usePlayback } from "./usePlayback.js";
 import type { PlaybackDelta } from "./types.js";
 
 afterEach(() => {
@@ -62,6 +62,43 @@ function HookProbe({ slug, fromMs }: { slug: string; fromMs: number }): JSX.Elem
     </div>
   );
 }
+
+describe("applyPlaybackSignalDelta (Milestone 36b)", () => {
+  const signalDelta = {
+    type: "signal.updated" as const,
+    sequence: 5,
+    eventAt: "2026-05-02T10:00:00.000Z",
+    elementId: "sig-1",
+    state: "on" as const,
+    tdArea: "M9",
+    address: "03",
+    bit: 2,
+  };
+
+  it("sets the element's absolute state and leaves others untouched", () => {
+    const next = applyPlaybackSignalDelta(
+      { "sig-1": { state: "blank" }, "sig-2": { state: "off" } },
+      signalDelta,
+    );
+    expect(next).toEqual({ "sig-1": { state: "on" }, "sig-2": { state: "off" } });
+  });
+
+  it("signal events don't touch berths, and berth events don't touch signals", () => {
+    const berths = { "berth-1": { description: "1A23", enteredAt: "x" } };
+    expect(applyPlaybackDelta(berths, signalDelta)).toBe(berths);
+    const signals = { "sig-1": { state: "off" as const } };
+    expect(
+      applyPlaybackSignalDelta(signals, {
+        type: "berth.cleared",
+        sequence: 6,
+        eventAt: "2026-05-02T10:00:00.000Z",
+        elementId: "berth-1",
+        tdArea: "M9",
+        berth: "0001",
+      }),
+    ).toBe(signals);
+  });
+});
 
 describe("usePlayback", () => {
   it("seeds berth + quality state from /state?at= and /events on mount", async () => {

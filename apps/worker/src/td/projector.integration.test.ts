@@ -493,6 +493,58 @@ describe("runProjectTd (integration)", () => {
     expect(state.rows[0]?.n).toBe(0);
   });
 
+  it("records a TD receive silence over 5 minutes as a feed_gap, once (Milestone 36b)", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([ct(area, t)], new Date(t));
+    await runProjectTd(pool);
+    // Next TD row received 6 minutes later: a silence past the signal-trust tolerance.
+    await record([ct(area, t + 6 * 60_000)], new Date(t + 6 * 60_000));
+    const summary = await runProjectTd(pool);
+    expect(summary.feedSilences).toBe(1);
+
+    const gaps = await pool.query<{
+      detected_start: Date;
+      detected_end: Date;
+      td_area: string | null;
+      recoverability: string;
+    }>(
+      `select detected_start, detected_end, td_area, recoverability from feed_gap
+       where detection_reason = 'td_receive_silence' and detected_start = $1`,
+      [new Date(t)],
+    );
+    expect(gaps.rows).toEqual([
+      {
+        detected_start: new Date(t),
+        detected_end: new Date(t + 6 * 60_000),
+        td_area: null,
+        recoverability: "unknown",
+      },
+    ]);
+
+    // Re-projecting the same rows records nothing new (unique on the silence's start row).
+    const definition = await pool.query<{ id: string }>(
+      "select id from projection_definition where name = $1 and code_version = $2",
+      [TD_PROJECTION_NAME, TD_PROJECTION_VERSION],
+    );
+    await pool.query(
+      "update projection_checkpoint set last_ingestion_sequence = 0 where projection_definition_id = $1",
+      [definition.rows[0]?.id],
+    );
+    expect((await runProjectTd(pool)).feedSilences).toBe(0);
+
+    // Remove this test's rows as well as the gap: the later rebuild tests replay every row, and
+    // would otherwise re-record this silence near "now" — where it would show up in other
+    // suites' live `quality.gaps` (feed gaps with no td_area apply to every map).
+    await pool.query(
+      "delete from feed_gap where detection_reason = 'td_receive_silence' and detected_start = $1",
+      [new Date(t)],
+    );
+    await pool.query("delete from td_heartbeat where td_area = $1", [area]);
+    await pool.query("delete from td_area_summary where td_area = $1", [area]);
+    await pool.query("delete from raw_feed_event where feed_name = 'TD' and td_area = $1", [area]);
+  });
+
   it("rebuild: clears this version's projection state and reprocesses from zero", async () => {
     const area = uniqueArea();
     const t = Date.now();

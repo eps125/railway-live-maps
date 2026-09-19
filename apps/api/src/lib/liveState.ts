@@ -1,5 +1,12 @@
 import type { Pool } from "pg";
-import { TD_PROJECTION_VERSION, joinCombinedBerthState } from "@railway/domain";
+import {
+  TD_PROJECTION_VERSION,
+  computeSignalStates,
+  joinCombinedBerthState,
+  signalBindingsFromIndex,
+  type SignalDisplayState,
+} from "@railway/domain";
+import { createSignalFactsPort } from "@railway/database";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { liveDataStatus, tdAreasFromBundle } from "./mapVersion.js";
 import { feedGapWarnings } from "./feedGaps.js";
@@ -14,7 +21,7 @@ export interface BerthState {
 }
 
 export interface SignalState {
-  state: "blank";
+  state: SignalDisplayState;
 }
 
 export interface QualityState {
@@ -99,14 +106,7 @@ export async function computeLiveState(
     berths[elementId] = joinCombinedBerthState(members);
   }
 
-  // Lancaster (and every current-scope map) has no S-Class binding — signals are always
-  // blank, never computed from movements/routes/timetables (docs/PROJECT_SPEC.md §6).
-  const signals: Record<string, SignalState> = {};
-  for (const element of Object.values(bundle.elementsById)) {
-    if (element.type === "signal") {
-      signals[element.id] = { state: "blank" };
-    }
-  }
+  const signals = await signalStatesForBundle(pool, bundle, now, true);
 
   const areas = tdAreasFromBundle(bundle);
   const [status, { gaps }] = await Promise.all([
@@ -116,4 +116,24 @@ export async function computeLiveState(
   const quality: QualityState = { status, gaps };
 
   return { sourceSequence, berths, signals, quality };
+}
+
+/** Every signal element's state for a compiled bundle at `at` (Milestone 36b). Only an explicit
+ * `tdSBit` binding ever gives a signal a non-blank state — never train movements, routes or
+ * timetables (CLAUDE.md rules 9/10). Shared by live state (`live = true`: brings the stored facts
+ * up to "now") and `/state?at=` (`reconstructState.ts`). */
+export async function signalStatesForBundle(
+  pool: Pool,
+  bundle: CompiledMapBundle,
+  at: Date,
+  live: boolean,
+): Promise<Record<string, SignalState>> {
+  return computeSignalStates(createSignalFactsPort(pool), {
+    signalElementIds: Object.values(bundle.elementsById)
+      .filter((element) => element.type === "signal")
+      .map((element) => element.id),
+    bindings: signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans),
+    at,
+    live,
+  });
 }

@@ -67,6 +67,16 @@ export async function registerLiveMapRoutes(
       };
 
       const unsubscribe = deltaSource.subscribe(version.id, version.slug, (message) => {
+        // Milestone 36b: a TD feed silence past the signal-trust tolerance — signals this client
+        // shows may no longer be valid. Tell it to reconnect for a fresh snapshot (which blanks
+        // every byte not yet re-confirmed), whether or not the first snapshot has been sent yet.
+        if (message.type === "resync.required") {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify(message));
+            socket.close(1000, "feed gap");
+          }
+          return;
+        }
         if (buffering) {
           buffered.push(message);
           return;

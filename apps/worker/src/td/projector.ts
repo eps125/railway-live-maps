@@ -20,7 +20,10 @@ import {
   TD_PROJECTION_VERSION,
   TD_S_DECODE_VERSION,
   TD_S_STATE_PROJECTION_VERSION,
+  TD_RECEIVE_SILENCE_REASON,
+  detectReceiveSilences,
   type OpenOccupancySnapshot,
+  type ReceivedRow,
   type BerthEffect,
   type SByteState,
   type SClassDecodeResult,
@@ -56,6 +59,8 @@ export interface ProjectTdSummary {
   sBitTransitions: number;
   /** SG/SH refreshes that disagreed with the known byte value — evidence of a missed SF. */
   sRefreshMismatches: number;
+  /** TD receive silences longer than the signal-trust tolerance, recorded as `feed_gap` rows. */
+  feedSilences: number;
   anomalies: number;
   /** True when this invocation did nothing because another runProjectTd was already in
    * progress (see the advisory lock note on runProjectTd below) — not an error, just "try
@@ -72,6 +77,7 @@ const EMPTY_SUMMARY: ProjectTdSummary = {
   sDecodeFailures: 0,
   sBitTransitions: 0,
   sRefreshMismatches: 0,
+  feedSilences: 0,
   anomalies: 0,
   skippedLockContention: false,
 };
@@ -85,6 +91,7 @@ interface RawTdRow {
   td_area: string;
   raw_event_json: Record<string, unknown>;
   parse_status: string;
+  received_at_utc: Date;
 }
 
 /** A CA/CB/CC row with its `*_MSG` payload already unwrapped — built once per row while
@@ -405,6 +412,57 @@ async function upsertSByteStateBulk(client: PoolClient, fold: SClassFoldResult):
       rows.map((r) => r.lastRefreshAt),
     ],
   );
+}
+
+/**
+ * Milestone 36b (docs/adr/0013): records every TD receive silence longer than the signal-trust
+ * tolerance within this batch as a `feed_gap` row (`td_receive_silence`) — the recorded gaps the
+ * signal trust rule, `/state?at=` and playback read, and which the existing feed-gap banner
+ * surfaces. Compared against the previous batch's last row too (looked up by checkpoint sequence
+ * when this run hasn't seen one yet), so a silence spanning a batch boundary is still caught.
+ * Idempotent: `feed_gap_td_receive_silence_uk` makes a re-projected silence a no-op.
+ */
+async function recordReceiveSilences(
+  client: PoolClient,
+  lastSequence: string,
+  rows: RawTdRow[],
+  previousInRun: ReceivedRow | null,
+): Promise<number> {
+  let previous = previousInRun;
+  if (!previous && lastSequence !== "0") {
+    const result = await client.query<{ received_at_utc: Date }>(
+      `select received_at_utc from raw_feed_event
+       where feed_name = 'TD' and ingestion_sequence = $1
+       limit 1`,
+      [lastSequence],
+    );
+    const row = result.rows[0];
+    previous = row ? { receivedAt: row.received_at_utc, ingestionSequence: lastSequence } : null;
+  }
+  const silences = detectReceiveSilences(
+    previous,
+    rows.map((r) => ({ receivedAt: r.received_at_utc, ingestionSequence: r.ingestion_sequence })),
+  );
+  let recorded = 0;
+  for (const silence of silences) {
+    const result = await client.query(
+      `insert into feed_gap (
+         feed_name, td_area, detected_start, detected_end, detection_reason, recoverability,
+         affected_sequence_start, affected_sequence_end, affected_time_start, affected_time_end
+       ) values ('TD', null, $1, $2, $3, 'unknown', $4, $5, $1, $2)
+       on conflict (feed_name, affected_sequence_start)
+         where detection_reason = 'td_receive_silence' do nothing`,
+      [
+        silence.startAt,
+        silence.endAt,
+        TD_RECEIVE_SILENCE_REASON,
+        silence.startSequence,
+        silence.endSequence,
+      ],
+    );
+    recorded += result.rowCount ?? 0;
+  }
+  return recorded;
 }
 
 /** Bulk-reads the currently-open `berth_occupancy` row (if any) for every distinct (td_area,
@@ -772,6 +830,9 @@ export async function runProjectTd(
     }
 
     const summary: ProjectTdSummary = { ...EMPTY_SUMMARY };
+    // Last row of the previous batch in this run (receive time) — saves a lookup per batch; the
+    // first batch of a run looks it up by checkpoint sequence instead.
+    let previousReceived: ReceivedRow | null = null;
 
     for (;;) {
       const checkpoint = await getCheckpoint(pool, definitionId);
@@ -779,7 +840,7 @@ export async function runProjectTd(
 
       const batch = await pool.query<RawTdRow>(
         `select id, normalized_event_at_utc, ingestion_sequence, event_type, message_class, td_area,
-                raw_event_json, parse_status
+                raw_event_json, parse_status, received_at_utc
          from raw_feed_event
          where feed_name = 'TD' and ingestion_sequence > $1
          order by ingestion_sequence
@@ -903,9 +964,20 @@ export async function runProjectTd(
         summary.sRefreshMismatches += sFold.refreshMismatches;
         await upsertSByteStateBulk(client, sFold);
 
+        summary.feedSilences += await recordReceiveSilences(
+          client,
+          lastSequence,
+          batch.rows,
+          previousReceived,
+        );
+
         await upsertAreaSummary(client, areaSummary);
         await advanceCheckpoint(client, definitionId, maxSequence.toString());
         await client.query("commit");
+        const lastRow = batch.rows.at(-1);
+        previousReceived = lastRow
+          ? { receivedAt: lastRow.received_at_utc, ingestionSequence: lastRow.ingestion_sequence }
+          : previousReceived;
       } catch (error) {
         await client.query("rollback");
         throw error;

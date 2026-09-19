@@ -7,6 +7,11 @@ import { apiError, parseLimit, parseTimeRange } from "../lib/queryRange.js";
 import { currentVersionForSlug, tdAreasFromBundle, liveDataStatus } from "../lib/mapVersion.js";
 import { computeLiveState } from "../lib/liveState.js";
 import { reconstructStateAt } from "../lib/reconstructState.js";
+import {
+  fetchSignalPlaybackEvents,
+  type EventSource,
+  type SequencedEvent,
+} from "../lib/signalEvents.js";
 
 export interface MapRoutesDeps {
   pool: Pool;
@@ -217,7 +222,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
       ],
     );
 
-    const events: LiveDeltaMessage[] = [];
+    const berthEvents: SequencedEvent[] = [];
     for (const row of result.rows) {
       const sequence = Number(row.ingestion_sequence);
       const changes = berthChangesForEvent({
@@ -228,10 +233,11 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         description: row.description ?? "",
         eventAt: row.event_at.toISOString(),
       });
+      const messages: LiveDeltaMessage[] = [];
       for (const change of changes) {
         const elementId = bundle.berthBindingIndex[`${change.tdArea}|${change.berth}`];
         if (!elementId) continue; // the other half of a CA whose berth this map doesn't bind
-        events.push(
+        messages.push(
           change.description === null
             ? {
                 type: "berth.cleared",
@@ -253,14 +259,62 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
               },
         );
       }
+      // An empty entry still takes part in paging (it is a fetched row the cursor must pass).
+      berthEvents.push({ sequence: BigInt(row.ingestion_sequence), order: 0, messages });
     }
 
-    const last = result.rows.at(-1);
+    // Milestone 36b: signal events (and silence blanks) merged into the same sequence-ordered
+    // stream, so playback applies berths and signals in true source order.
+    const signalSources = await fetchSignalPlaybackEvents(
+      pool,
+      bundle,
+      rangeResult.range,
+      after,
+      limit,
+    );
+    const page = mergeEventPages(
+      [{ events: berthEvents, full: result.rows.length === limit }, ...signalSources],
+      limit,
+    );
+
     return {
       mapSlug: version.slug,
       mapVersion: version.version_number,
-      events,
-      nextCursor: result.rows.length === limit && last ? last.ingestion_sequence : null,
+      events: page.events.flatMap((event) => event.messages),
+      nextCursor: page.nextCursor,
     };
   });
+}
+
+/**
+ * Merges independently-paged, sequence-cursored sources into one page (Milestone 36b). A source
+ * that filled its page may have more rows past its last sequence that weren't fetched, so the
+ * merged page stops there (the smallest such last sequence) — otherwise the next page's
+ * `after` cursor would skip that source's unfetched rows. It is then capped at `limit` entries,
+ * extended over any entries sharing the last included sequence (a cursor `after = seq` would
+ * otherwise skip the rest of them). `nextCursor` is null only when every source was exhausted.
+ */
+export function mergeEventPages(
+  sources: EventSource[],
+  limit: number,
+): { events: SequencedEvent[]; nextCursor: string | null } {
+  let bound: bigint | null = null;
+  for (const source of sources) {
+    const last = source.events.at(-1)?.sequence;
+    if (source.full && last !== undefined && (bound === null || last < bound)) bound = last;
+  }
+  const merged = sources
+    .flatMap((source) => source.events)
+    .filter((event) => bound === null || event.sequence <= bound)
+    .sort((a, b) =>
+      a.sequence === b.sequence ? a.order - b.order : a.sequence < b.sequence ? -1 : 1,
+    );
+  let end = Math.min(limit, merged.length);
+  while (end > 0 && end < merged.length && merged[end]!.sequence === merged[end - 1]!.sequence) {
+    end += 1;
+  }
+  const events = merged.slice(0, end);
+  const more = bound !== null || end < merged.length;
+  const last = events.at(-1);
+  return { events, nextCursor: more && last ? last.sequence.toString() : null };
 }

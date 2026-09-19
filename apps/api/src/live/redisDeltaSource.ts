@@ -1,5 +1,5 @@
 import type { Redis } from "ioredis";
-import type { LiveDeltaMessage } from "@railway/protocol";
+import type { LiveSourceMessage } from "@railway/protocol";
 import type { LiveDeltaSource } from "./deltaSource.js";
 
 /**
@@ -14,14 +14,14 @@ import type { LiveDeltaSource } from "./deltaSource.js";
  * connection used for health checks or anything else.
  */
 export function createRedisDeltaSource(subscriberRedis: Redis): LiveDeltaSource {
-  const listenersByChannel = new Map<string, Set<(message: LiveDeltaMessage) => void>>();
+  const listenersByChannel = new Map<string, Set<(message: LiveSourceMessage) => void>>();
 
   subscriberRedis.on("message", (channel: string, raw: string) => {
     const listeners = listenersByChannel.get(channel);
     if (!listeners || listeners.size === 0) return;
-    let message: LiveDeltaMessage;
+    let message: LiveSourceMessage;
     try {
-      message = JSON.parse(raw) as LiveDeltaMessage;
+      message = JSON.parse(raw) as LiveSourceMessage;
     } catch {
       // A malformed publish shouldn't crash every subscriber on this channel.
       return;

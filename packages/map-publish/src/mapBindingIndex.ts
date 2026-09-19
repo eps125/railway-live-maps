@@ -39,11 +39,14 @@ export async function insertMapBindingIndexRows(
 
   for (const [key, elementId] of Object.entries(bundle.sBitBindingIndex ?? {})) {
     const [tdArea, address, bit] = key.split("|");
+    // Milestone 36b: the live publishers need `activeMeans` to turn a bit into on/off. Null for a
+    // bundle compiled before it was recorded — those signals stay blank rather than guessed.
+    const activeMeans = bundle.sBitBindingActiveMeans?.[key] ?? null;
     await client.query(
-      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, address, bit)
-       values ($1, $2, 'td_s_bit', $3, $4, $5)
+      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, address, bit, active_means)
+       values ($1, $2, 'td_s_bit', $3, $4, $5, $6)
        on conflict do nothing`,
-      [mapVersionId, elementId, tdArea, address, bit],
+      [mapVersionId, elementId, tdArea, address, bit, activeMeans],
     );
   }
 }

@@ -120,9 +120,21 @@ export async function runIngestTd(config: Config): Promise<never> {
           td_area: e.tdArea ?? "",
           raw_event_json: (e.rawEventJson ?? {}) as Record<string, unknown>,
         }));
-      if (cClassRows.length > 0) {
+      // Milestone 36b: S-Class rows too, so signal deltas go out on the same inline path — and in
+      // the same sequence order — as berth deltas.
+      const sClassRows = result.insertedEvents
+        .filter((e) => e.messageClass === "S")
+        .map((e) => ({
+          id: e.id,
+          normalized_event_at_utc: new Date(e.normalizedEventAtUtc),
+          ingestion_sequence: e.ingestionSequence,
+          event_type: e.eventType,
+          td_area: e.tdArea ?? "",
+          raw_event_json: (e.rawEventJson ?? {}) as Record<string, unknown>,
+        }));
+      if (cClassRows.length > 0 || sClassRows.length > 0) {
         try {
-          await applyLiveFromEvents(pool, redis, bindings, cClassRows);
+          await applyLiveFromEvents(pool, redis, bindings, cClassRows, sClassRows);
         } catch (error) {
           console.error(
             "ingest-td: inline live projection failed (non-fatal; projector-td-live will catch up):",

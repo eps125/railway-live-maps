@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import type { Redis } from "ioredis";
-import type { LiveDeltaMessage } from "@railway/protocol";
+import type { LiveDeltaMessage, LiveSourceMessage } from "@railway/protocol";
 import { createRedisDeltaSource } from "./redisDeltaSource.js";
 
 /** A minimal stand-in for ioredis's `Redis` — this sandbox has no real Redis server (mirrors
@@ -30,7 +30,7 @@ describe("createRedisDeltaSource", () => {
     const fakeRedis = new FakeRedis();
     const source = createRedisDeltaSource(fakeRedis as unknown as Redis);
 
-    const received: LiveDeltaMessage[] = [];
+    const received: LiveSourceMessage[] = [];
     source.subscribe("version-1", "lancaster", (message) => received.push(message));
 
     expect(fakeRedis.subscribe).toHaveBeenCalledWith("railway:live:lancaster");
@@ -56,7 +56,7 @@ describe("createRedisDeltaSource", () => {
   it("ignores a malformed message instead of throwing", () => {
     const fakeRedis = new FakeRedis();
     const source = createRedisDeltaSource(fakeRedis as unknown as Redis);
-    const received: LiveDeltaMessage[] = [];
+    const received: LiveSourceMessage[] = [];
     source.subscribe("version-1", "lancaster", (message) => received.push(message));
 
     expect(() => fakeRedis.emit("message", "railway:live:lancaster", "not json")).not.toThrow();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MapDocumentSchema, type Layer, type MapElement } from "./document.js";
 import {
+  canonicalSAddress,
   compileMapDocument,
   sortElementsForPaint,
   weldTrackPaths,
@@ -103,6 +104,34 @@ describe("compileMapDocument", () => {
     expect(bundle.berthBindingOrder?.["PX|A001"]).toBe(1);
     expect(bundle.berthBindingOrder?.["PX|B001"]).toBe(2);
     expect("PX|1008" in (bundle.berthBindingOrder ?? {})).toBe(false);
+  });
+
+  it("indexes tdSBit bindings by canonical hex address and records activeMeans (Milestone 36b)", () => {
+    const signalDoc = MapDocumentSchema.parse({
+      ...doc,
+      bindings: [
+        {
+          id: "bind-s1",
+          elementId: "signal-1",
+          type: "tdSBit",
+          tdArea: "M9",
+          address: "a",
+          bit: 3,
+          activeMeans: "off",
+        },
+      ],
+    });
+    const bundle = compileMapDocument(signalDoc);
+    expect(bundle.sBitBindingIndex).toEqual({ "M9|0A|3": "signal-1" });
+    expect(bundle.sBitBindingActiveMeans).toEqual({ "M9|0A|3": "off" });
+  });
+
+  it("canonicalSAddress pads/uppercases hex and leaves anything else untouched", () => {
+    expect(canonicalSAddress("a")).toBe("0A");
+    expect(canonicalSAddress("1f")).toBe("1F");
+    expect(canonicalSAddress("0A")).toBe("0A");
+    expect(canonicalSAddress("25:0")).toBe("25:0");
+    expect(canonicalSAddress("123")).toBe("123");
   });
 
   it("computes a bounding box covering every element", () => {

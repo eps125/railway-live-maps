@@ -108,6 +108,10 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         }));
         return;
       }
+      if (message.type === "signal.updated") {
+        setSignals((prev) => ({ ...(prev ?? {}), [message.elementId]: { state: message.state } }));
+        return;
+      }
       if (message.type === "quality.updated") {
         setQuality(message.quality);
         return;

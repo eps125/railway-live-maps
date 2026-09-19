@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
-import type { LiveDeltaMessage } from "@railway/protocol";
+import type { LiveSourceMessage } from "@railway/protocol";
 import { createPollingDeltaSource } from "./pollingDeltaSource.js";
 
 function requireEnv(name: string): string {
@@ -111,7 +111,7 @@ describe("createPollingDeltaSource (integration)", () => {
     const mapVersionId = await publishMapBoundTo(slug, "berth-lancaster", lancasterArea, "0001");
 
     const deltaSource = createPollingDeltaSource(pool, 100);
-    const received: LiveDeltaMessage[] = [];
+    const received: LiveSourceMessage[] = [];
     const unsubscribe = deltaSource.subscribe(mapVersionId, slug, (message) =>
       received.push(message),
     );

@@ -8,6 +8,8 @@ export {
   type BerthUpdatedMessage,
   BerthClearedMessageSchema,
   type BerthClearedMessage,
+  SignalUpdatedMessageSchema,
+  type SignalUpdatedMessage,
   QualityUpdatedMessageSchema,
   type QualityUpdatedMessage,
   HeartbeatMessageSchema,
@@ -17,4 +19,5 @@ export {
   LiveWsMessageSchema,
   type LiveWsMessage,
   type LiveDeltaMessage,
+  type LiveSourceMessage,
 } from "./liveWsMessages.js";

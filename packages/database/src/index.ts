@@ -76,3 +76,14 @@ export {
   type TrustChangeSummary,
   type TrustLocationChange,
 } from "./runResolution.js";
+export {
+  fetchSByteFactsAt,
+  fetchReceiveSilences,
+  fetchLiveSOverlay,
+  fetchLastTdReceived,
+  createSignalFactsPort,
+  type SByteFactRow,
+  type SilenceStartRow,
+  type RawSOverlayRow,
+  type LiveSOverlay,
+} from "./signalFacts.js";

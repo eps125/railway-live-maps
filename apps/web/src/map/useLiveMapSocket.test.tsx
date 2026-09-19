@@ -87,6 +87,39 @@ describe("useLiveMapSocket", () => {
     await waitFor(() => expect(result.current.berths?.["berth-1"]?.description).toBe("1B99"));
   });
 
+  it("applies a signal.updated delta (Milestone 36b)", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result } = renderHook(() => useLiveMapSocket("blackpool"));
+    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
+    await waitFor(() => expect(result.current.connectionStatus).toBe("live"));
+
+    act(() =>
+      FakeWebSocket.instances[0]!.sendFromServer({
+        type: "signal.updated",
+        sequence: 11,
+        eventAt: "2026-08-05T12:01:00.000Z",
+        elementId: "sig-1",
+        state: "off",
+        tdArea: "M9",
+        address: "03",
+        bit: 2,
+      }),
+    );
+    await waitFor(() => expect(result.current.signals?.["sig-1"]).toEqual({ state: "off" }));
+  });
+
+  it("a resync.required feed_gap message (Milestone 36b) forces a reconnect for a fresh snapshot", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    renderHook(() => useLiveMapSocket("blackpool"));
+    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
+    act(() =>
+      FakeWebSocket.instances[0]!.sendFromServer({ type: "resync.required", reason: "feed_gap" }),
+    );
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(1), {
+      timeout: 5_000,
+    });
+  });
+
   it("a resync.required message triggers a reconnect (fresh WebSocket) rather than crashing", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const { result } = renderHook(() => useLiveMapSocket("lancaster"));

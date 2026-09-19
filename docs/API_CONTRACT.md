@@ -21,6 +21,14 @@ reconstruction from `berth_occupancy` (Milestone 10) using the map version **eff
 `at` in the future → `400 INVALID_TIME_RANGE`. `quality.gaps` lists `feed_gap` warnings
 overlapping/near `at`; `quality.status` is `"stale"` when a gap actually covers `at`.
 
+`signals` (Milestone 36b, docs/adr/0013): each signal element's `state` is `blank` | `on` | `off`
+— only ever its bound `tdSBit` bit read through the binding's `activeMeans` (red = on, green =
+off; never an aspect, never inferred — CLAUDE.md rules 9/10). `blank` covers unmapped signals,
+bytes with no decoded statement in the last 6 hours (including all history before Milestone
+36a), bindings without `activeMeans`, and bytes not re-confirmed since a TD receive silence that
+has lasted more than 5 minutes. Live mode also reads S-Class rows newer than the history
+projector's checkpoint, so a live snapshot is never behind the deltas that follow it.
+
 Response outline:
 
 ```json
@@ -51,8 +59,13 @@ Response outline:
 ### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
 
 Compact map-relevant events for playback buffering (Milestone 10). Each entry is the **same
-wire shape as a live WS `berth.updated` / `berth.cleared` delta**, so the playback client
-applies them with its live-delta code path. One `td_berth_event` (a CA) can yield two entries
+wire shape as a live WS `berth.updated` / `berth.cleared` / `signal.updated` delta**, so the
+playback client applies them with its live-delta code path. Signal entries (Milestone 36b): each
+decoded S-Class row stating a bound byte yields the absolute state of every signal bound to it,
+and each recorded TD receive silence yields `blank` for every bound signal at the moment it
+passed the 5-minute tolerance (sequenced at the silence's start row, after that row's own
+entries). All sources are merged in one `ingestion_sequence` order and paged together; a page
+never splits entries sharing a sequence. One `td_berth_event` (a CA) can yield two entries
 (`from` clears, `to` updates); entries for the map's bound berths only. Ordered by
 `ingestion_sequence`; `after` is that cursor; `from`/`to` bound the range (max 7 days). Uses the
 map version effective at `from`.
@@ -451,10 +464,17 @@ combined berth exists.
 Other messages:
 
 - `berth.cleared`
+- `signal.updated` (Milestone 36b) — `{ type, sequence, eventAt, elementId, state, tdArea,
+address, bit }`; `state` is the signal's absolute `blank` | `on` | `off`, only sent when it
+  changes. Published by the same two live publishers as berth deltas, in the same
+  `sequence` order (a batch's berth and signal deltas are sorted by sequence before publishing).
 - `quality.updated`
-- future `signal.updated`
 - `heartbeat`
-- `resync.required`
+- `resync.required` — reasons `sequence_gap`, `map_version_changed`, `server_error_recovered`,
+  and (Milestone 36b) `feed_gap`: the TD feed was silent for more than 5 minutes, so signals a
+  client is still showing may be stale; the server closes the socket after sending it and the
+  client reconnects for a snapshot that blanks every byte not yet re-confirmed. Only sent to maps
+  with signal bindings.
 
 The client tracks `sequence`. On a gap it discards uncertain deltas and fetches a fresh state snapshot.
 

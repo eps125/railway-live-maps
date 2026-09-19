@@ -24,8 +24,23 @@ export interface MapStateResponse {
 }
 
 /** One compact playback event from `GET /api/v1/maps/{slug}/events` — the same wire shape as a
- * live WS `berth.updated` / `berth.cleared` delta, so `applyPlaybackDelta` handles both. */
-export type PlaybackDelta =
+ * live WS `berth.updated` / `berth.cleared` / `signal.updated` delta, so playback applies them
+ * with the same semantics as the live socket. */
+export type PlaybackDelta = BerthPlaybackDelta | SignalPlaybackDelta;
+
+/** Milestone 36b: a bound signal's absolute state (only ever from its bound S-Class bit). */
+export interface SignalPlaybackDelta {
+  type: "signal.updated";
+  sequence: number;
+  eventAt: string;
+  elementId: string;
+  state: SignalState["state"];
+  tdArea: string;
+  address: string;
+  bit: number;
+}
+
+export type BerthPlaybackDelta =
   | {
       type: "berth.updated";
       sequence: number;

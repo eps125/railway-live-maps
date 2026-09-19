@@ -170,6 +170,12 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
     });
     await app.ready();
 
+    // TD receive silences (Milestone 36b) are nationwide (`td_area` null) and apply to every map's
+    // `quality.gaps`. Other suites seed TD rows with arbitrary receive times, so running the
+    // history projector records "silences" between them; clear those so this snapshot's quality
+    // reflects only this test's own setup.
+    await pool.query("delete from feed_gap where detection_reason = 'td_receive_silence'");
+
     const ws = await app.injectWS(`/api/v1/maps/${slug}/live`);
     try {
       const snapshot = await nextMessage(ws);

@@ -1944,7 +1944,7 @@ test.ts` run against a disposable Postgres (SSH-tunnelled to a throwaway contain
 `@railway/api` and `@railway/web`.
 `pnpm -r typecheck` green for `@railway/api` and `@railway/web`.
 
-## Milestone 36 — S-Class bit decoding and signal on/off display `[in progress — 36a implemented 2026-09-19]`
+## Milestone 36 — S-Class bit decoding and signal on/off display `[in progress — 36a deployed, 36b implemented 2026-09-19]`
 
 Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.
 Needed for any map (Blackpool, Milestone 33, included) to show real signal on/off state rather
@@ -1994,7 +1994,7 @@ all currently unlabelled and unbound, M9 + 3 PX berth bindings).
    rendering of them (level crossings and routes are planned) is a later milestone with its own
    ADR — PROJECT_SPEC §10's MVP exclusions stand until then.
 
-### 36a — decode and store (nationwide, map-independent) `[implemented 2026-09-19 — not yet deployed]`
+### 36a — decode and store (nationwide, map-independent) `[done — deployed 2026-09-19]`
 
 - Pure `decodeSClassPayload` / `foldSClassEvents` in `packages/domain/src/td/sClass.ts` (domain,
   not `feed-parsers`, so the API can reuse the same decode for playback in 36b — rule 13):
@@ -2035,19 +2035,60 @@ all currently unlabelled and unbound, M9 + 3 PX berth bindings).
   rebuild is idempotent ✅; every transition keeps lineage to its source event ✅; unit tests for
   each malformed case ✅; `td_s_current_state` no longer mixes word/byte values ✅.
 
-### 36b — live, playback and freshness
+### 36b — live, playback and freshness `[implemented 2026-09-19 — not yet deployed]`
 
-- S-Class current state in the fast live path (`projector-td-live`), publishing a new
-  `signal.updated` WS delta (protocol version bump if required) for every published map binding
-  the changed bit.
-- `liveState`, `reconstructState`, snapshots and playback `/events` resolve each `tdSBit` binding
-  → `unmapped` | `unknown` | `on` | `off` → blank/blank/red/green (PROJECT_SPEC §6).
-- Freshness: each byte carries a `valid_since`; a feed gap > 5 min (from `feed_connection_session`
-  / CT heartbeat continuity) invalidates the area's bytes. This is the minimal slice of
-  Milestone 37 M36 needs; M37 still owns the general `feed_gap` row writing.
-- **Acceptance**: a live bit change reaches the browser within berth-update latency; playback at
-  T matches bits at T; after a >5 min gap signals blank until re-confirmed, after a <5 min gap they
-  keep their last state; no signal ever rendered from anything but its bound bit (rule 10).
+As built (deviations from the draft above are marked **changed**):
+
+- **Pure rules in `packages/domain/src/td/signalState.ts`**: `signalStateForBit` (bound bit +
+  `activeMeans` → on/off; no `activeMeans` → blank), `detectReceiveSilences`, `sByteTrustedAt`
+  and `resolveSignalStates`, plus `computeSignalStates` behind a small `SignalFactsPort` whose
+  queries live in `packages/database/src/signalFacts.ts`. Live state, `/state?at=` and
+  `snapshot-maps` all run that one sequence of steps (rule 13).
+- **Freshness — changed**: no `valid_since` column and no session-table gap detection
+  (`feed_connection_session.last_frame_at` is never written; a killed process never records
+  `disconnected_at`). Instead `project-td` records every TD _receive_ silence over 5 minutes as a
+  nationwide `feed_gap` row (`td_receive_silence`, idempotent — migration `0037`). A byte is
+  untrusted once a silence that began at or after its confirming event (compared by ingestion
+  sequence) has lasted more than 5 minutes; the newest received TD row counts as an ongoing
+  silence. These rows also surface in every map's `quality.gaps` (this is the minimal slice of
+  Milestone 37 — M37 still owns general reconnect gap rows).
+- **Byte facts**: the latest decoded `td_s_event` stating the byte at or before T, within a 6 h
+  lookback (areas refresh ~2-hourly) — one index seek per bound byte. Pre-36a history is
+  `unknown` (blank), never guessed.
+- **Live — changed**: signal deltas come from both live publishers (`ingest-td` inline +
+  `projector-td-live`), not just the fast projector, because a client drops its socket on any
+  sequence regression and the inline path is ahead. `signal.updated` is only sent when a signal's
+  state changes (per-process memory + the existing per-key Redis watermark). Live snapshots
+  overlay raw S-Class rows newer than the history checkpoint so they're never behind the deltas
+  that follow; if the history projector is >20k rows behind, every signal is blank.
+- **Feed-gap resync**: `projector-td-live` detects silences too and sends
+  `resync.required { reason: "feed_gap" }` to maps with signal bindings; the WS route forwards it
+  and closes, and the client re-snapshots.
+- **Also fixed — pre-existing bug**: live deltas for one frame were published in `(td_area,
+berth)` order (the fold's lock order), not sequence order, so a frame changing several bound
+  berths could regress the sequence and force a client reconnect. All live deltas (berth +
+  signal) are now built, sorted by sequence, then published (`publishInSequenceOrder`).
+- **Compiled bundle**: `sBitBindingIndex` keys use canonical hex addresses (`canonicalSAddress`);
+  new optional `sBitBindingActiveMeans`; `map_binding_index.active_means` (migration `0037`).
+- **Playback**: `/events` merges berth rows, S-Class rows and silence blanks into one
+  sequence-ordered, jointly-paged stream (`mergeEventPages`: a full source bounds the page; a
+  page never splits a sequence).
+- **Production query checks (2026-09-19, `EXPLAIN ANALYZE`)**: 24-byte facts 9.6 ms; last TD row
+  0.8 ms; live overlay 0.8 ms; playback 30-min window 5.3 ms; `projector-td-live` batch 1.1 ms.
+  Two plans were caught and fixed before deploy: an `ORDER BY` bound to a `::text` output alias
+  (a >5 min parallel scan), and a `td_area` predicate on the raw overlay that folded in the area
+  index (>20 s) — the overlay now uses `project-td`'s own query shape and filters in code.
+- **Tests**: domain (`signalState.test.ts`, 17), compiler (canonical address/activeMeans),
+  `liveProjector.test.ts` (sequence ordering regression, signal deltas), `mergeEventPages.test.ts`,
+  web hooks (live `signal.updated`, `feed_gap` resync, playback signal apply); integration:
+  `signals.integration.test.ts` (on/off/blank/trust window/re-confirmation/paging), live projector
+  (signal delta, resync), history projector (silence recorded once).
+- **Not done / follow-up**: editor preview still draws signals from their static `symbolStyle`
+  (binding authoring is 36c); pre-36a history stays blank unless a decode backfill is run.
+- **Acceptance**: a live bit change reaches the browser via the same publishers as berths ✅;
+  playback at T matches bits at T ✅ (`/state?at=` and `/events` share the rules); after a >5 min
+  silence signals blank until re-confirmed, after a <5 min one they keep their state ✅; no
+  signal is ever rendered from anything but its bound bit ✅.
 
 ### 36c — definitions and authoring
 

@@ -41,8 +41,10 @@ type Berths = Record<string, BerthState>;
 type Signals = Record<string, SignalState>;
 type Quality = { status: "ok" | "stale" | "unknown"; gaps: string[] };
 
-/** Pure: apply one compact event to a berth map (same semantics as the live WS client). */
+/** Pure: apply one compact event to a berth map (same semantics as the live WS client). Signal
+ * events don't touch berths. */
 export function applyPlaybackDelta(berths: Berths, delta: PlaybackDelta): Berths {
+  if (delta.type === "signal.updated") return berths;
   if (delta.type === "berth.cleared") {
     return { ...berths, [delta.elementId]: { description: null, enteredAt: null } };
   }
@@ -50,6 +52,13 @@ export function applyPlaybackDelta(berths: Berths, delta: PlaybackDelta): Berths
     ...berths,
     [delta.elementId]: { description: delta.description, enteredAt: delta.enteredAt },
   };
+}
+
+/** Pure: apply one compact event to the signal map (Milestone 36b). Berth events don't touch
+ * signals. */
+export function applyPlaybackSignalDelta(signals: Signals, delta: PlaybackDelta): Signals {
+  if (delta.type !== "signal.updated") return signals;
+  return { ...signals, [delta.elementId]: { state: delta.state } };
 }
 
 export interface UsePlaybackResult {
@@ -95,6 +104,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   const playingRef = useRef(playing);
   const speedRef = useRef(speed);
   const berthsRef = useRef(berths);
+  const signalsRef = useRef(signals);
   const bufferRef = useRef<PlaybackDelta[]>([]);
   const bufferIdxRef = useRef(0);
   /** ISO `from` of the current seek — every refill page keeps this lower bound and walks
@@ -108,6 +118,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   playingRef.current = playing;
   speedRef.current = speed;
   berthsRef.current = berths;
+  signalsRef.current = signals;
 
   const seed = useCallback(
     async (atMs: number) => {
@@ -206,13 +217,19 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
       // Apply every buffered delta the clock has now passed.
       const buffer = bufferRef.current;
       let applied: Berths | null = null;
+      let appliedSignals: Signals | null = null;
       while (bufferIdxRef.current < buffer.length) {
         const delta = buffer[bufferIdxRef.current];
         if (!delta || Date.parse(delta.eventAt) > next) break;
-        applied = applyPlaybackDelta(applied ?? berthsRef.current, delta);
+        if (delta.type === "signal.updated") {
+          appliedSignals = applyPlaybackSignalDelta(appliedSignals ?? signalsRef.current, delta);
+        } else {
+          applied = applyPlaybackDelta(applied ?? berthsRef.current, delta);
+        }
         bufferIdxRef.current += 1;
       }
       if (applied) setBerths(applied);
+      if (appliedSignals) setSignals(appliedSignals);
       clockRef.current = next;
       setClock(next);
 

@@ -113,6 +113,17 @@ Use idempotency keys based on broker metadata plus child index/hash, while retai
 - affected sequence/time range
 - operator note
 
+**TD receive silences (Milestone 36b, docs/adr/0013):** `project-td` records every gap of more
+than 5 minutes between consecutive TD rows' _receive_ times as a row with
+`detection_reason = 'td_receive_silence'`, `td_area` null (nationwide), `recoverability =
+'unknown'`, `detected_*`/`affected_time_*` = the receive times either side and
+`affected_sequence_start/end` = those rows' ingestion sequences. Unique on `(feed_name,
+affected_sequence_start)` for that reason (migration `0037`), so re-projection is a no-op. These
+drive the signal trust rule (a byte is `unknown` once a silence that began at or after its last
+confirmation has lasted over 5 minutes) and appear in every map's `quality.gaps`. Session rows
+(`feed_connection_session`) are not used for this: `last_frame_at` is never written and a killed
+process never records `disconnected_at`.
+
 ## 4. TD C-Class model
 
 ### `td_berth_event`
@@ -485,6 +496,11 @@ nullable `combined_order` (1-4, checked) — more than one `td_berth` row can sh
 `element_id`, so this was always structurally possible; it just went unused before Milestone 50).
 Null for every ordinary, non-combined binding. A `(map_version_id, element_id)` index supports the
 live-delta fan-out's "what are this element's other combined-berth members?" lookup.
+
+**Signal bindings (Milestone 36b):** migration `0037_signal_bindings_and_silence_gaps.sql` adds a
+nullable `active_means` (`on` | `off`) for `td_s_bit` rows — the binding's statement of what a
+set bit means, so the live publishers can turn a bit into on/off without loading compiled
+bundles. `address` is canonical two-digit uppercase hex (`canonicalSAddress`).
 
 ### `map_place_index`
 

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { foldLiveBerthState, type RawCClassRow } from "./liveProjector.js";
+import {
+  buildSignalDeltas,
+  foldLiveBerthState,
+  publishInSequenceOrder,
+  type BindingsCache,
+  type RawCClassRow,
+  type RawSClassRow,
+} from "./liveProjector.js";
 
 function row(
   seq: number,
@@ -61,5 +68,81 @@ describe("foldLiveBerthState", () => {
       row(1, "CA", "PX", { from: "", to: "0004", descr: "1C77" }),
     ]);
     expect(writes).toEqual([expect.objectContaining({ berth: "0004", description: "1C77" })]);
+  });
+});
+
+describe("publishInSequenceOrder (Milestone 36b)", () => {
+  it("publishes a batch's deltas strictly in sequence order, whatever order they were built in", async () => {
+    // foldLiveBerthState orders writes by (td_area, berth) for lock ordering — so two berths
+    // changed in one frame can come out sequence-descending. A client drops its socket on any
+    // sequence regression, so publishing must re-sort (regression test).
+    const sent: number[] = [];
+    const redis = {
+      publishDeltaIfNewer: async (_slug: string, _key: string, sequence: number) => {
+        sent.push(sequence);
+        return 1;
+      },
+    };
+    const published = await publishInSequenceOrder(redis, [
+      { mapSlug: "m", key: "PX 0002", sequence: 30, message: "{}" },
+      { mapSlug: "m", key: "S PX 03 2", sequence: 20, message: "{}" },
+      { mapSlug: "m", key: "PX 0001", sequence: 10, message: "{}" },
+    ]);
+    expect(sent).toEqual([10, 20, 30]);
+    expect(published).toBe(3);
+  });
+});
+
+describe("buildSignalDeltas (Milestone 36b)", () => {
+  function cacheWith(
+    signals: Record<
+      string,
+      Array<{ mapSlug: string; elementId: string; bit: number; activeMeans: "on" | "off" | null }>
+    >,
+  ): BindingsCache {
+    return {
+      getSignals: async (tdArea: string, address: string) => signals[`${tdArea} ${address}`] ?? [],
+    } as unknown as BindingsCache;
+  }
+  const sRow = (seq: number, type: string, address: string, data: string): RawSClassRow => ({
+    id: String(seq),
+    normalized_event_at_utc: new Date("2026-09-19T12:00:00Z"),
+    ingestion_sequence: String(seq),
+    event_type: type,
+    td_area: "Q1",
+    raw_event_json: { [type]: { area_id: "Q1", address, data } },
+  });
+
+  it("emits the bound bit's state through activeMeans, and only when it changes", async () => {
+    const cache = cacheWith({
+      "Q1 03": [{ mapSlug: "bpool", elementId: "sig-a", bit: 2, activeMeans: "off" }],
+    });
+    const pending = await buildSignalDeltas(cache, [
+      sRow(100, "SF_MSG", "03", "04"), // bit 2 set → off
+      sRow(101, "SF_MSG", "03", "05"), // bit 2 still set → no change, nothing sent
+      sRow(102, "SG_MSG", "00", "00000000"), // refresh: byte 03 = 0 → on
+    ]);
+    expect(pending.map((p) => [p.sequence, p.key, JSON.parse(p.message).state])).toEqual([
+      [100, "S Q1 03 2", "off"],
+      [102, "S Q1 03 2", "on"],
+    ]);
+    expect(JSON.parse(pending[0]!.message)).toMatchObject({
+      type: "signal.updated",
+      elementId: "sig-a",
+      tdArea: "Q1",
+      address: "03",
+      bit: 2,
+    });
+  });
+
+  it("a binding without activeMeans publishes blank, and malformed rows are skipped", async () => {
+    const cache = cacheWith({
+      "Q1 07": [{ mapSlug: "bpool", elementId: "sig-b", bit: 0, activeMeans: null }],
+    });
+    const pending = await buildSignalDeltas(cache, [
+      sRow(200, "SF_MSG", "07", "zz"),
+      sRow(201, "SF_MSG", "07", "01"),
+    ]);
+    expect(pending.map((p) => JSON.parse(p.message).state)).toEqual(["blank"]);
   });
 });

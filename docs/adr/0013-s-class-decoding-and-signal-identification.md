@@ -52,3 +52,12 @@ state. Verified against production data on 2026-09-19 (M8, M9, R1-R4):
 - A minimal feed-gap detector lands in M36 for signal freshness; Milestone 37 still owns general
   `feed_gap` row writing.
 - M9 signal identification is owner work (36d), supported by the explorer.
+
+## Implementation notes (2026-09-19)
+
+- 36a deployed: decoding runs inside `project-td`; per-byte state is `projection_version = 2`.
+- 36b: the gap policy is implemented from TD _receive_ times (nationwide `feed_gap` rows with
+  `detection_reason = 'td_receive_silence'`), not the session table, which production does not
+  populate reliably. Signal deltas go out from both live publishers, sorted by sequence with berth
+  deltas; a `resync.required` (`feed_gap`) tells open maps to re-snapshot after a long silence.
+  See `docs/IMPLEMENTATION_PLAN.md` 36b for the full as-built list.

@@ -22,6 +22,7 @@ export {
 } from "./document.js";
 export { validateMapDocument, type ValidationIssue, type ValidationResult } from "./validate.js";
 export {
+  canonicalSAddress,
   compileMapDocument,
   computeBoundingBox,
   sortElementsForPaint,

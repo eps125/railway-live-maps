@@ -69,6 +69,22 @@ export const BerthClearedMessageSchema = z.object({
 });
 export type BerthClearedMessage = z.infer<typeof BerthClearedMessageSchema>;
 
+/** Milestone 36b (docs/adr/0013): a bound signal's public state changed. Always the absolute
+ * state (never a toggle), so a duplicate or replayed delta is harmless. `state` is the only thing
+ * a client renders; `tdArea`/`address`/`bit` are informational lineage. Signal state comes only
+ * from its bound S-Class bit — never inferred (CLAUDE.md rule 10). */
+export const SignalUpdatedMessageSchema = z.object({
+  type: z.literal("signal.updated"),
+  sequence: z.number().int().nonnegative(),
+  eventAt: z.string(),
+  elementId: z.string(),
+  state: z.enum(["blank", "on", "off"]),
+  tdArea: z.string(),
+  address: z.string(),
+  bit: z.number().int().min(0).max(7),
+});
+export type SignalUpdatedMessage = z.infer<typeof SignalUpdatedMessageSchema>;
+
 export const QualityUpdatedMessageSchema = z.object({
   type: z.literal("quality.updated"),
   sequence: z.number().int().nonnegative(),
@@ -93,7 +109,10 @@ export type HeartbeatMessage = z.infer<typeof HeartbeatMessageSchema>;
  * it tells the client to discard its stream state and reconnect, not to keep counting. */
 export const ResyncRequiredMessageSchema = z.object({
   type: z.literal("resync.required"),
-  reason: z.enum(["sequence_gap", "map_version_changed", "server_error_recovered"]),
+  /** `feed_gap` (Milestone 36b): the TD feed was silent longer than the signal-trust tolerance,
+   * so signals a client is still showing may no longer be trustworthy — reconnect for a snapshot
+   * that blanks every byte not yet re-confirmed. Published by `projector-td-live`, forwarded as-is. */
+  reason: z.enum(["sequence_gap", "map_version_changed", "server_error_recovered", "feed_gap"]),
 });
 export type ResyncRequiredMessage = z.infer<typeof ResyncRequiredMessageSchema>;
 
@@ -101,6 +120,7 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   SnapshotMessageSchema,
   BerthUpdatedMessageSchema,
   BerthClearedMessageSchema,
+  SignalUpdatedMessageSchema,
   QualityUpdatedMessageSchema,
   HeartbeatMessageSchema,
   ResyncRequiredMessageSchema,
@@ -108,7 +128,12 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
 export type LiveWsMessage = z.infer<typeof LiveWsMessageSchema>;
 
 /** The subset of message types a `LiveDeltaSource` implementation actually produces/forwards
- * (each carries a `sequence`) — excludes `snapshot` (sent once, directly by the route),
- * `heartbeat` and `resync.required` (both synthesized directly by the route, not sourced from
- * projected state). */
-export type LiveDeltaMessage = BerthUpdatedMessage | BerthClearedMessage | QualityUpdatedMessage;
+ * (each carries a `sequence`) — excludes `snapshot` (sent once, directly by the route) and
+ * `heartbeat` (synthesized by the route). `resync.required` with reason `feed_gap` is the one
+ * sequence-less message a delta source forwards (Milestone 36b). */
+export type LiveDeltaMessage =
+  BerthUpdatedMessage | BerthClearedMessage | SignalUpdatedMessage | QualityUpdatedMessage;
+
+/** Everything a `LiveDeltaSource` can hand the WS route: sequenced deltas, plus the
+ * sequence-less `resync.required` (`feed_gap`) the route forwards and then closes on. */
+export type LiveSourceMessage = LiveDeltaMessage | ResyncRequiredMessage;

@@ -1,4 +1,4 @@
-import type { LiveDeltaMessage } from "@railway/protocol";
+import type { LiveSourceMessage } from "@railway/protocol";
 
 /**
  * Milestone 6: the source of live map deltas for a given published `map_version`. Two
@@ -16,6 +16,6 @@ export interface LiveDeltaSource {
   subscribe(
     mapVersionId: string,
     mapSlug: string,
-    onDelta: (message: LiveDeltaMessage) => void,
+    onDelta: (message: LiveSourceMessage) => void,
   ): () => void;
 }

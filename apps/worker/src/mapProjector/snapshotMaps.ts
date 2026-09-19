@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
-import { reconstructMapStateAt, type ReconstructedMapState } from "@railway/database";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import {
+  createSignalFactsPort,
+  reconstructMapStateAt,
+  type ReconstructedMapState,
+} from "@railway/database";
+import {
+  TD_PROJECTION_VERSION,
+  computeSignalStates,
+  signalBindingsFromIndex,
+} from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 
 /**
@@ -37,7 +45,10 @@ function stableStringify(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
 
-function checksumOf(state: Pick<ReconstructedMapState, "berths" | "signals">): string {
+function checksumOf(state: {
+  berths: ReconstructedMapState["berths"];
+  signals: Record<string, { state: string }>;
+}): string {
   return createHash("sha256").update(stableStringify(state)).digest("hex");
 }
 
@@ -63,13 +74,27 @@ export async function runSnapshotMaps(
       .filter((element) => element.type === "signal")
       .map((element) => element.id);
 
-    const { sourceSequence, berths, signals } = await reconstructMapStateAt(pool, {
-      berthBindingIndex: bundle.berthBindingIndex ?? {},
-      berthBindingOrder: bundle.berthBindingOrder ?? {},
-      signalElementIds,
-      projectionVersion: TD_PROJECTION_VERSION,
-      at: now,
-    });
+    const [{ sourceSequence, berths }, signals] = await Promise.all([
+      reconstructMapStateAt(pool, {
+        berthBindingIndex: bundle.berthBindingIndex ?? {},
+        berthBindingOrder: bundle.berthBindingOrder ?? {},
+        signalElementIds,
+        projectionVersion: TD_PROJECTION_VERSION,
+        at: now,
+      }),
+      // Milestone 36b: the same `computeSignalStates` the API's `/state?at=` uses (not live — a
+      // snapshot is the stored-history view), so a snapshot stays a cached copy of that exact
+      // computation.
+      computeSignalStates(createSignalFactsPort(pool), {
+        signalElementIds,
+        bindings: signalBindingsFromIndex(
+          bundle.sBitBindingIndex ?? {},
+          bundle.sBitBindingActiveMeans,
+        ),
+        at: now,
+        live: false,
+      }),
+    ]);
     const state = { berths, signals };
 
     const inserted = await pool.query(

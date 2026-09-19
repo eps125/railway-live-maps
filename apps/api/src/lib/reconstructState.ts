@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { reconstructMapStateAt } from "@railway/database";
 import type { CompiledMapBundle } from "@railway/map-schema";
-import type { LiveState } from "./liveState.js";
+import { signalStatesForBundle, type LiveState } from "./liveState.js";
 import { tdAreasFromBundle } from "./mapVersion.js";
 import { feedGapWarnings } from "./feedGaps.js";
 
@@ -23,7 +23,7 @@ export async function reconstructStateAt(
     .filter((element) => element.type === "signal")
     .map((element) => element.id);
 
-  const [{ sourceSequence, berths, signals }, { gaps, coversAt }] = await Promise.all([
+  const [{ sourceSequence, berths }, signals, { gaps, coversAt }] = await Promise.all([
     reconstructMapStateAt(pool, {
       berthBindingIndex: bundle.berthBindingIndex,
       berthBindingOrder: bundle.berthBindingOrder ?? {},
@@ -31,6 +31,7 @@ export async function reconstructStateAt(
       projectionVersion: TD_PROJECTION_VERSION,
       at,
     }),
+    signalStatesForBundle(pool, bundle, at, false),
     feedGapWarnings(pool, tdAreasFromBundle(bundle), at),
   ]);
 

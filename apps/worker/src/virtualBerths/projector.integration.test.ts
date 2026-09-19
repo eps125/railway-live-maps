@@ -135,11 +135,14 @@ async function tdEvent(headcode: string, messageType: "CA" | "CC", at: Date): Pr
   );
 }
 
-describe("runProjectVirtualBerths (integration)", () => {
-  afterAll(async () => {
-    await pool.end();
-  });
+afterAll(async () => {
+  // File-scoped, not nested in either describe block below: both share this module-level `pool`,
+  // and Vitest runs the two top-level describes in declaration order within one file — nesting
+  // this inside the first block would end the pool before the second block's tests ever run.
+  await pool.end();
+});
 
+describe("runProjectVirtualBerths (integration)", () => {
   it("opens an occupancy for a GPS report at a bound STANOX, ignores an unbound one", async () => {
     const trustId = `T${randomUUID().replace(/-/g, "").slice(0, 9).toUpperCase()}`;
     const boundStanox = `B${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
@@ -272,9 +275,11 @@ describe("runVirtualBerthTdReentryHandoff (integration)", () => {
   });
 
   it("never guesses when more than one open occupancy shares the same headcode", async () => {
+    // headcodeFromTrustId reads slice(2, 6) — the seed must sit at indices 2-5, so each prefix
+    // needs to be exactly 2 characters (not 1) for the slice to actually line up with it.
     const headcodeSeed = randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase();
-    const trustIdA = `T${headcodeSeed}${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
-    const trustIdB = `X${headcodeSeed}${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
+    const trustIdA = `T1${headcodeSeed}${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    const trustIdB = `X2${headcodeSeed}${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
     const headcode = trustIdA.slice(2, 6);
     expect(trustIdB.slice(2, 6)).toBe(headcode); // both encode the same 4-char headcode
     const stanoxA = `H${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;

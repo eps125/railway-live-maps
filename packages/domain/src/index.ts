@@ -29,6 +29,27 @@ export {
   type BerthChange,
   type TdBerthEventInput,
 } from "./td/berthChanges.js";
+export {
+  TD_S_DECODE_VERSION,
+  TD_S_STATE_PROJECTION_VERSION,
+  decodeSClassPayload,
+  foldSClassEvents,
+  formatSAddress,
+  sBit,
+  sBits,
+  sByteKey,
+  sClassMessageType,
+  type DecodedSByte,
+  type SBitTransition,
+  type SByteState,
+  type SByteWrite,
+  type SClassDecodeErrorCode,
+  type SClassDecodeResult,
+  type SClassFoldEvent,
+  type SClassFoldResult,
+  type SClassMessageType,
+  type SClassSourceKind,
+} from "./td/sClass.js";
 export { TD_NORMALIZATION_VERSION } from "./td/normalizationVersion.js";
 export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION } from "./td/projectionVersion.js";
 export {

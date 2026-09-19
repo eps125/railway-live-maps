@@ -1944,7 +1944,7 @@ test.ts` run against a disposable Postgres (SSH-tunnelled to a throwaway contain
 `@railway/api` and `@railway/web`.
 `pnpm -r typecheck` green for `@railway/api` and `@railway/web`.
 
-## Milestone 36 — S-Class bit decoding and signal on/off display `[planned — design agreed 2026-09-19]`
+## Milestone 36 — S-Class bit decoding and signal on/off display `[in progress — 36a implemented 2026-09-19]`
 
 Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.
 Needed for any map (Blackpool, Milestone 33, included) to show real signal on/off state rather
@@ -1994,20 +1994,46 @@ all currently unlabelled and unbound, M9 + 3 PX berth bindings).
    rendering of them (level crossings and routes are planned) is a later milestone with its own
    ADR — PROJECT_SPEC §10's MVP exclusions stand until then.
 
-### 36a — decode and store (nationwide, map-independent)
+### 36a — decode and store (nationwide, map-independent) `[implemented 2026-09-19 — not yet deployed]`
 
-- Pure `decodeSClass` in `packages/feed-parsers`: SF/SG/SH → `[{address, byteValue}]` per byte,
-  fixture-driven from real archived M9 frames. Non-hex address, wrong data length, or an SG/SH
-  chunk overflowing 0xFF → `malformed` with a parse error code, retained (rule 18), never dropped.
-- `td_s_current_state` keyed **per byte**; `decoded_bitset` populated; `decode_status = 'decoded'`.
-- `td_s_bit_transition`: one row per bit that actually changes. A refresh disagreeing with current
-  state records its transitions flagged `source = 'refresh'` (evidence of a missed SF) and is
-  counted per area for observability.
-- Projection version bump + rebuild from `td_s_event`; add range partitions for
-  `td_s_bit_transition` (ensure/prune-partition commands) and measure storage before enabling.
-- **Acceptance**: replaying real M9 fixtures yields byte state equal to the next SG/SH refresh;
-  rebuild is idempotent; every transition keeps lineage to its source event; unit tests for each
-  malformed case; `td_s_current_state` no longer mixes word/byte values.
+- Pure `decodeSClassPayload` / `foldSClassEvents` in `packages/domain/src/td/sClass.ts` (domain,
+  not `feed-parsers`, so the API can reuse the same decode for playback in 36b — rule 13):
+  SF/SG/SH → per-byte values; a non-hex/wrong-length address or data, an unknown type, or an SG/SH
+  chunk running past 0xFF is rejected with an error code, never repaired or dropped.
+- Decoding runs inside the existing `project-td` batch (same transaction and checkpoint as
+  `td_s_event`), not as a new projection — so no new daemon, no new nationwide
+  `ingestion_sequence` index on `td_s_event`, and no berth-projection rebuild.
+- `td_s_event` now records each event's outcome: `decode_status` `decoded` (with
+  `decoded_bitset = {"bytes": {"04": 254, ...}}`) or `unsupported` + `decode_error_code`, plus
+  `decode_version`. Rows written before 36a stay `raw_only`.
+- `td_s_current_state` rows written by the decoder use **`projection_version = 2`**
+  (`TD_S_STATE_PROJECTION_VERSION`), keyed per byte, with `byte_value`, `decoded_bitset` (8
+  booleans, index = bit), `source_kind` and `last_refresh_at`, behind a monotonic
+  `source_ingestion_sequence` guard. The buggy version-1 rows are left untouched (nothing reads
+  them; deleting them needs owner approval).
+- `td_s_bit_transition` (version 2): first sight of a byte records all 8 bits with
+  `previous_value = null` (so bit state at T = latest transition at or before T); afterwards only
+  changed bits, tagged `update` (SF) or `refresh` (SG/SH). Unique
+  `(projection_version, source_event_id, address, bit_index, event_at)` makes replay a no-op.
+  Refresh mismatches (missed SFs) and decode failures are counted and logged by
+  `project-td-daemon` as `{"event":"project-td.s-class",...}`.
+- `--rebuild` clears and regenerates the version-2 rows along with everything else.
+- Migration `0036_s_class_decoding.sql` (numbered to avoid `gps-berths`' `0035`): additive only —
+  nullable columns on `td_s_event` (no rewrite), columns on the small `td_s_current_state`, NOT NULL
+  columns + unique index on the (empty) `td_s_bit_transition`. Backward compatible with the
+  pre-36a code, so it must be run **before** this code deploys.
+- **Tests**: 21 domain unit tests incl. a real M9 fixture (58 messages, 2026-09-18 19:21-19:24
+  UTC) proving refresh + 46 SFs fold to exactly the next refresh; 6 new/updated projector
+  integration tests (per-byte SG, transitions + replay, refresh mismatch, malformed retained,
+  rebuild regenerates identically).
+- **Not done / deferred**: history before deployment is not decoded — only a full `--rebuild`
+  reaches it (a targeted S-Class-only backfill of the ~160M existing rows is a follow-up, to be
+  sized first). **Storage**: ~5M transitions/day nationwide ≈ ~1 GB/day (~35 GB/month) estimated;
+  production had 125 GB free (75% used) on 2026-09-19 with the DB already growing ~100 GB/month —
+  owner to confirm before enabling.
+- **Acceptance**: replaying real M9 fixtures yields byte state equal to the next SG/SH refresh ✅;
+  rebuild is idempotent ✅; every transition keeps lineage to its source event ✅; unit tests for
+  each malformed case ✅; `td_s_current_state` no longer mixes word/byte values ✅.
 
 ### 36b — live, playback and freshness
 

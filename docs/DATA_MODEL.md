@@ -245,27 +245,34 @@ Generic normalized record preserving source semantics without pretending every a
 
 ### `td_s_current_state`
 
-Map-independent current state keyed by `(projection_version, td_area, address/source_key)`:
+Map-independent current state keyed by `(projection_version, td_area, address)`. Since Milestone
+36a (ADR 0013) the decoder writes `projection_version = 2` rows, one per **byte** (two-digit
+uppercase hex address): an SG/SH refresh's four bytes become four rows, never one word.
+(Version-1 rows predate decoding, were keyed on the message address, and are unused.)
 
-- current raw word/value
-- decoded bitset nullable
-- last event time
-- source event ID
-- source ingestion sequence
-- freshness state
+- `raw_value` (the byte as two hex chars) and `byte_value` (0-255)
+- `decoded_bitset` — 8 booleans, index = bit number (bit 0 = LSB, SOP convention)
+- `event_at` — last event stating this byte
+- `source_event_id` / `source_ingestion_sequence` — monotonic guard: an older event never
+  overwrites a newer one
+- `source_kind` — `update` (SF) or `refresh` (SG/SH); `last_refresh_at`
+- `data_quality_state`
+
+`td_s_event` additionally records each event's decode outcome: `decode_status` (`decoded` with
+`decoded_bitset = {"bytes": {"<addr>": <value>}}`, or `unsupported` with `decode_error_code`),
+`decode_version`. Pre-36a rows remain `raw_only`.
 
 ### `td_s_bit_transition`
 
-Optional normalized bit transitions when decoding is well-defined:
+Normalized bit transitions (projection version 2), populated nationwide:
 
-- `td_area`
-- address/source key
-- bit index
-- previous value nullable
-- new value
-- event time
-- source event ID
-- projection version
+- `td_area`, `address`, `bit_index`
+- `previous_value` — null on the first observation of a byte (all 8 bits are recorded then, so
+  bit state at time T is the latest transition at or before T)
+- `new_value`
+- `event_at`, `source_event_id`, `source_ingestion_sequence`
+- `source_kind` — `update` or `refresh`; a `refresh` transition means an SF was missed
+- unique `(projection_version, source_event_id, address, bit_index, event_at)` — replay-safe
 
 The system stores bit facts only. Signal meaning comes from an explicit versioned map binding. No aspect, route or signal inference is permitted.
 

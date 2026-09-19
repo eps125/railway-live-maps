@@ -11,11 +11,21 @@ import {
   applyCA,
   applyCB,
   applyCC,
+  decodeSClassPayload,
+  foldSClassEvents,
+  sBits,
+  sByteKey,
   TD_NORMALIZATION_VERSION,
   TD_PROJECTION_NAME,
   TD_PROJECTION_VERSION,
+  TD_S_DECODE_VERSION,
+  TD_S_STATE_PROJECTION_VERSION,
   type OpenOccupancySnapshot,
   type BerthEffect,
+  type SByteState,
+  type SClassDecodeResult,
+  type SClassFoldEvent,
+  type SClassFoldResult,
 } from "@railway/domain";
 import { advisoryLockKey } from "../shared/advisoryLock.js";
 
@@ -41,6 +51,11 @@ export interface ProjectTdSummary {
   projectedBerthEvents: number;
   heartbeats: number;
   sEvents: number;
+  /** S-Class events the decoder rejected (recorded on `td_s_event` as 'unsupported'). */
+  sDecodeFailures: number;
+  sBitTransitions: number;
+  /** SG/SH refreshes that disagreed with the known byte value — evidence of a missed SF. */
+  sRefreshMismatches: number;
   anomalies: number;
   /** True when this invocation did nothing because another runProjectTd was already in
    * progress (see the advisory lock note on runProjectTd below) — not an error, just "try
@@ -54,6 +69,9 @@ const EMPTY_SUMMARY: ProjectTdSummary = {
   projectedBerthEvents: 0,
   heartbeats: 0,
   sEvents: 0,
+  sDecodeFailures: 0,
+  sBitTransitions: 0,
+  sRefreshMismatches: 0,
   anomalies: 0,
   skippedLockContention: false,
 };
@@ -79,14 +97,14 @@ interface ParsedCClassRow {
   toBerth?: string;
 }
 
-/** An S-Class row with its payload unwrapped. `currentStateKey` is `address ?? event_type` — the
- * stable grouping key `td_s_current_state` is keyed on (never null), distinct from the raw,
- * possibly-null `address` that `td_s_event` stores untouched. */
+/** An S-Class row with its payload unwrapped and decoded (Milestone 36a). `address`/`rawValue`
+ * are the source values `td_s_event` stores untouched; `decoded` is the per-byte decode (or the
+ * reason it was rejected). */
 interface ParsedSClassRow {
   row: RawTdRow;
   address: string | null;
   rawValue: string | null;
-  currentStateKey: string;
+  decoded: SClassDecodeResult;
 }
 
 function computeConfigHash(): string {
@@ -125,6 +143,16 @@ async function clearProjectionRows(pool: Pool, projectionVersion: number): Promi
     ]);
     await client.query("delete from td_s_bit_transition where projection_version = $1", [
       projectionVersion,
+    ]);
+    // Decoded S-Class state/transitions (Milestone 36a) carry their own projection_version but
+    // are derived from the same td_s_event stream this rebuild replays from zero — they must be
+    // cleared with it, or the fold's "previous value" would be read from end-of-history state
+    // while replaying the start, producing spurious transitions.
+    await client.query("delete from td_s_current_state where projection_version = $1", [
+      TD_S_STATE_PROJECTION_VERSION,
+    ]);
+    await client.query("delete from td_s_bit_transition where projection_version = $1", [
+      TD_S_STATE_PROJECTION_VERSION,
     ]);
     // These three are plain 1:1 normalized mirrors of raw_feed_event with no projection_version
     // column of their own — they're cheap to regenerate and must be cleared too, otherwise their
@@ -217,13 +245,17 @@ async function insertSEventsBulk(
   const result = await client.query<{ raw_event_id: string }>(
     `insert into td_s_event (
        raw_event_id, raw_event_normalized_at_utc, td_area, message_type, address, raw_value,
-       decoded_bitset, event_at, ingestion_sequence, normalization_version, decode_status
+       decoded_bitset, event_at, ingestion_sequence, normalization_version, decode_status,
+       decode_version, decode_error_code
      )
      select t.raw_event_id, t.normalized_at, t.td_area, t.message_type, t.address, t.raw_value,
-            null, t.normalized_at, t.ingestion_sequence, $8, 'raw_only'
+            t.decoded_bitset, t.normalized_at, t.ingestion_sequence, $11, t.decode_status,
+            $12, t.decode_error_code
      from unnest(
-       $1::bigint[], $2::timestamptz[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bigint[]
-     ) as t(raw_event_id, normalized_at, td_area, message_type, address, raw_value, ingestion_sequence)
+       $1::bigint[], $2::timestamptz[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bigint[],
+       $8::jsonb[], $9::text[], $10::text[]
+     ) as t(raw_event_id, normalized_at, td_area, message_type, address, raw_value, ingestion_sequence,
+            decoded_bitset, decode_status, decode_error_code)
      on conflict (raw_event_id, event_at) do nothing
      returning raw_event_id`,
     [
@@ -234,53 +266,143 @@ async function insertSEventsBulk(
       rows.map((r) => r.address),
       rows.map((r) => r.rawValue),
       rows.map((r) => r.row.ingestion_sequence),
+      rows.map((r) =>
+        r.decoded.ok
+          ? JSON.stringify({
+              bytes: Object.fromEntries(r.decoded.bytes.map((b) => [b.address, b.value])),
+            })
+          : null,
+      ),
+      rows.map((r) => (r.decoded.ok ? "decoded" : "unsupported")),
+      rows.map((r) => (r.decoded.ok ? null : r.decoded.errorCode)),
       TD_NORMALIZATION_VERSION,
+      TD_S_DECODE_VERSION,
     ],
   );
   return new Set(result.rows.map((r) => r.raw_event_id));
 }
 
-/** A single `insert ... on conflict (projection_version, td_area, address) do update` cannot
- * target the same conflict key twice in one statement (Postgres errors: "ON CONFLICT DO UPDATE
- * command cannot affect row a second time") — so when a batch carries multiple S-Class rows for
- * the same (td_area, address), fold to the last one (by ingestion order) before the bulk upsert.
- * Sequential per-row upserts would have landed on the same final value anyway (last write wins),
- * so this changes nothing observable. */
-function foldSCurrentState(rows: ParsedSClassRow[]): ParsedSClassRow[] {
-  const byKey = new Map<string, ParsedSClassRow>();
-  for (const r of rows) {
-    byKey.set(`${r.row.td_area}|${r.currentStateKey}`, r);
+/** The decoder's current known value (`TD_S_STATE_PROJECTION_VERSION`) for every byte a batch's
+ * decoded events touch — one PK-indexed round trip, the "previous value" side of the fold. */
+async function loadSByteState(
+  client: PoolClient,
+  events: SClassFoldEvent[],
+): Promise<Map<string, SByteState>> {
+  const keys = new Map<string, { tdArea: string; address: string }>();
+  for (const event of events) {
+    for (const byte of event.bytes) {
+      keys.set(sByteKey(event.tdArea, byte.address), {
+        tdArea: event.tdArea,
+        address: byte.address,
+      });
+    }
   }
-  return [...byKey.values()];
+  const state = new Map<string, SByteState>();
+  if (keys.size === 0) return state;
+  const wanted = [...keys.values()];
+  const result = await client.query<{
+    td_area: string;
+    address: string;
+    byte_value: number;
+    source_ingestion_sequence: string;
+  }>(
+    `select s.td_area, s.address, s.byte_value, s.source_ingestion_sequence
+     from td_s_current_state s
+     join unnest($2::text[], $3::text[]) as k(td_area, address)
+       on s.td_area = k.td_area and s.address = k.address
+     where s.projection_version = $1 and s.byte_value is not null`,
+    [TD_S_STATE_PROJECTION_VERSION, wanted.map((k) => k.tdArea), wanted.map((k) => k.address)],
+  );
+  for (const row of result.rows) {
+    state.set(sByteKey(row.td_area, row.address), {
+      value: row.byte_value,
+      sourceIngestionSequence: row.source_ingestion_sequence,
+    });
+  }
+  return state;
 }
 
-async function upsertSCurrentStateBulk(client: PoolClient, rows: ParsedSClassRow[]): Promise<void> {
+/** Bulk insert of one batch's bit transitions; `on conflict do nothing` against
+ * `td_s_bit_transition_source_uk` makes a replayed event a no-op. */
+async function insertSBitTransitionsBulk(
+  client: PoolClient,
+  fold: SClassFoldResult,
+): Promise<number> {
+  const rows = fold.transitions;
+  if (rows.length === 0) return 0;
+  const result = await client.query(
+    `insert into td_s_bit_transition (
+       projection_version, td_area, address, bit_index, previous_value, new_value, event_at,
+       source_event_id, source_event_normalized_at_utc, source_kind, source_ingestion_sequence
+     )
+     select $1, t.td_area, t.address, t.bit_index, t.previous_value, t.new_value, t.normalized_at,
+            t.source_event_id, t.normalized_at, t.source_kind, t.ingestion_sequence
+     from unnest(
+       $2::text[], $3::text[], $4::int[], $5::boolean[], $6::boolean[], $7::timestamptz[],
+       $8::bigint[], $9::text[], $10::bigint[]
+     ) as t(td_area, address, bit_index, previous_value, new_value, normalized_at, source_event_id,
+            source_kind, ingestion_sequence)
+     on conflict (projection_version, source_event_id, address, bit_index, event_at) do nothing`,
+    [
+      TD_S_STATE_PROJECTION_VERSION,
+      rows.map((r) => r.tdArea),
+      rows.map((r) => r.address),
+      rows.map((r) => r.bitIndex),
+      rows.map((r) => r.previousValue),
+      rows.map((r) => r.newValue),
+      rows.map((r) => r.eventNormalizedAt),
+      rows.map((r) => r.eventId),
+      rows.map((r) => r.sourceKind),
+      rows.map((r) => r.ingestionSequence),
+    ],
+  );
+  return result.rowCount ?? 0;
+}
+
+/** Per-byte current state upsert — one row per (td_area, address) already guaranteed by the fold,
+ * so a single statement never targets the same conflict key twice. The monotonic
+ * `source_ingestion_sequence` guard (same pattern as `berth_current_state`, ADR 0003) keeps an
+ * older event from ever overwriting a newer one, should a second writer be added (36b). */
+async function upsertSByteStateBulk(client: PoolClient, fold: SClassFoldResult): Promise<void> {
+  const rows = fold.byteWrites;
   if (rows.length === 0) return;
   await client.query(
-    `insert into td_s_current_state (
-       projection_version, td_area, address, raw_value, decoded_bitset, event_at,
+    `insert into td_s_current_state as s (
+       projection_version, td_area, address, raw_value, byte_value, decoded_bitset, event_at,
        source_event_id, source_event_normalized_at_utc, source_ingestion_sequence, decode_status,
-       data_quality_state
+       data_quality_state, source_kind, last_refresh_at
      )
-     select $1, t.td_area, t.address, t.raw_value, null, t.normalized_at, t.raw_event_id, t.normalized_at,
-            t.ingestion_sequence, 'raw_only', 'ok'
+     select $1, t.td_area, t.address, t.raw_value, t.byte_value, t.decoded_bitset, t.normalized_at,
+            t.source_event_id, t.normalized_at, t.ingestion_sequence, 'decoded', 'ok', t.source_kind,
+            t.last_refresh_at
      from unnest(
-       $2::text[], $3::text[], $4::text[], $5::timestamptz[], $6::bigint[], $7::bigint[]
-     ) as t(td_area, address, raw_value, normalized_at, raw_event_id, ingestion_sequence)
+       $2::text[], $3::text[], $4::text[], $5::smallint[], $6::jsonb[], $7::timestamptz[],
+       $8::bigint[], $9::bigint[], $10::text[], $11::timestamptz[]
+     ) as t(td_area, address, raw_value, byte_value, decoded_bitset, normalized_at, source_event_id,
+            ingestion_sequence, source_kind, last_refresh_at)
      on conflict (projection_version, td_area, address) do update
-     set raw_value = excluded.raw_value, event_at = excluded.event_at,
+     set raw_value = excluded.raw_value, byte_value = excluded.byte_value,
+         decoded_bitset = excluded.decoded_bitset, event_at = excluded.event_at,
          source_event_id = excluded.source_event_id,
          source_event_normalized_at_utc = excluded.source_event_normalized_at_utc,
          source_ingestion_sequence = excluded.source_ingestion_sequence,
-         data_quality_state = excluded.data_quality_state, updated_at = now()`,
+         decode_status = excluded.decode_status, data_quality_state = excluded.data_quality_state,
+         source_kind = excluded.source_kind,
+         last_refresh_at = coalesce(excluded.last_refresh_at, s.last_refresh_at),
+         updated_at = now()
+     where excluded.source_ingestion_sequence >= s.source_ingestion_sequence`,
     [
-      TD_PROJECTION_VERSION,
-      rows.map((r) => r.row.td_area),
-      rows.map((r) => r.currentStateKey),
-      rows.map((r) => r.rawValue),
-      rows.map((r) => r.row.normalized_event_at_utc),
-      rows.map((r) => r.row.id),
-      rows.map((r) => r.row.ingestion_sequence),
+      TD_S_STATE_PROJECTION_VERSION,
+      rows.map((r) => r.tdArea),
+      rows.map((r) => r.address),
+      rows.map((r) => r.value.toString(16).toUpperCase().padStart(2, "0")),
+      rows.map((r) => r.value),
+      rows.map((r) => JSON.stringify(sBits(r.value))),
+      rows.map((r) => r.eventNormalizedAt),
+      rows.map((r) => r.eventId),
+      rows.map((r) => r.ingestionSequence),
+      rows.map((r) => r.sourceKind),
+      rows.map((r) => r.lastRefreshAt),
     ],
   );
 }
@@ -722,7 +844,8 @@ export async function runProjectTd(
                 : payload
                   ? JSON.stringify(payload)
                   : null;
-            sClassRows.push({ row, address, rawValue, currentStateKey: address ?? row.event_type });
+            const decoded = decodeSClassPayload(row.event_type, payload?.address, payload?.data);
+            sClassRows.push({ row, address, rawValue, decoded });
           } else {
             continue;
           }
@@ -760,7 +883,25 @@ export async function runProjectTd(
         const newSEventIds = await insertSEventsBulk(client, sClassRows);
         summary.sEvents += newSEventIds.size;
         const newSClassRows = sClassRows.filter((r) => newSEventIds.has(r.row.id));
-        await upsertSCurrentStateBulk(client, foldSCurrentState(newSClassRows));
+        const sFoldEvents: SClassFoldEvent[] = [];
+        for (const r of newSClassRows) {
+          if (!r.decoded.ok) {
+            summary.sDecodeFailures += 1;
+            continue;
+          }
+          sFoldEvents.push({
+            tdArea: r.row.td_area,
+            sourceKind: r.decoded.sourceKind,
+            bytes: r.decoded.bytes,
+            eventId: r.row.id,
+            eventNormalizedAt: r.row.normalized_event_at_utc,
+            ingestionSequence: r.row.ingestion_sequence,
+          });
+        }
+        const sFold = foldSClassEvents(await loadSByteState(client, sFoldEvents), sFoldEvents);
+        summary.sBitTransitions += await insertSBitTransitionsBulk(client, sFold);
+        summary.sRefreshMismatches += sFold.refreshMismatches;
+        await upsertSByteStateBulk(client, sFold);
 
         await upsertAreaSummary(client, areaSummary);
         await advanceCheckpoint(client, definitionId, maxSequence.toString());

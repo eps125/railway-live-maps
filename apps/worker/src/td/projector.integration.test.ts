@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { createPool, ensureMonthlyPartitions } from "@railway/database";
+import { TD_S_STATE_PROJECTION_VERSION } from "@railway/domain";
 import { recordFrame, markFrameAcked, type InboundFrame } from "./recorder.js";
 import {
   runProjectTd,
@@ -63,6 +64,9 @@ const cc = (area: string, to: string, descr: string, t: number) => ({
 const ct = (area: string, t: number) => ({ CT_MSG: { area_id: area, report_time: String(t) } });
 const sf = (area: string, address: string, data: string, t: number) => ({
   SF_MSG: { area_id: area, time: String(t), address, data },
+});
+const sg = (area: string, address: string, data: string, t: number) => ({
+  SG_MSG: { area_id: area, time: String(t), address, data, msg_type: "SG" },
 });
 
 function uniqueArea(): string {
@@ -337,7 +341,7 @@ describe("runProjectTd (integration)", () => {
     expect(history[0]?.left_at).not.toBeNull();
   });
 
-  it("S-Class and heartbeat: SF updates td_s_current_state, CT updates td_heartbeat only", async () => {
+  it("S-Class and heartbeat: SF updates decoded td_s_current_state, CT updates td_heartbeat only", async () => {
     const area = uniqueArea();
     const t = Date.now();
     await record([sf(area, "A1", "3F", t)], new Date(t));
@@ -345,12 +349,12 @@ describe("runProjectTd (integration)", () => {
 
     await runProjectTd(pool);
 
-    const sState = await pool.query<{ raw_value: string | null }>(
-      `select raw_value from td_s_current_state
+    const sState = await pool.query<{ raw_value: string | null; byte_value: number }>(
+      `select raw_value, byte_value from td_s_current_state
        where projection_version = $1 and td_area = $2 and address = 'A1'`,
-      [TD_PROJECTION_VERSION, area],
+      [TD_S_STATE_PROJECTION_VERSION, area],
     );
-    expect(sState.rows[0]?.raw_value).toBe("3F");
+    expect(sState.rows[0]).toEqual({ raw_value: "3F", byte_value: 0x3f });
 
     const heartbeats = await pool.query<{ n: number }>(
       "select count(*)::int as n from td_heartbeat where td_area = $1",
@@ -364,6 +368,129 @@ describe("runProjectTd (integration)", () => {
       [area],
     );
     expect(berthRows.rows[0]?.n).toBe(0);
+  });
+
+  it("S-Class decode: SG refresh is per byte (never overwrites an SF byte with a word)", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    // The pre-36a bug: an SG at "04" stored its 4-byte word under address "04", clobbering the
+    // 1-byte SF value there.
+    await record([sg(area, "04", "FEFFBFCF", t)], new Date(t));
+    await record([sf(area, "05", "7F", t + 1000)], new Date(t + 1000));
+
+    await runProjectTd(pool);
+
+    const bytes = await pool.query<{
+      address: string;
+      byte_value: number;
+      source_kind: string;
+      last_refresh_at: Date | null;
+    }>(
+      `select address, byte_value, source_kind, last_refresh_at from td_s_current_state
+       where projection_version = $1 and td_area = $2 order by address`,
+      [TD_S_STATE_PROJECTION_VERSION, area],
+    );
+    expect(bytes.rows.map((r) => [r.address, r.byte_value, r.source_kind])).toEqual([
+      ["04", 0xfe, "refresh"],
+      ["05", 0x7f, "update"],
+      ["06", 0xbf, "refresh"],
+      ["07", 0xcf, "refresh"],
+    ]);
+    // Byte 05 was last refreshed by the SG even though an SF has since updated it.
+    expect(bytes.rows[1]?.last_refresh_at).not.toBeNull();
+
+    const event = await pool.query<{ decode_status: string; decoded_bitset: unknown }>(
+      `select decode_status, decoded_bitset from td_s_event where td_area = $1 and address = '04'`,
+      [area],
+    );
+    expect(event.rows[0]).toEqual({
+      decode_status: "decoded",
+      decoded_bitset: { bytes: { "04": 0xfe, "05": 0xff, "06": 0xbf, "07": 0xcf } },
+    });
+  });
+
+  it("S-Class transitions: first sight records all bits, then only changed bits; replay-safe", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([sf(area, "03", "01", t)], new Date(t));
+    await record([sf(area, "03", "05", t + 1000)], new Date(t + 1000));
+    await record([sg(area, "00", "00000004", t + 2000)], new Date(t + 2000));
+    await record([sf(area, "03", "05", t + 3000)], new Date(t + 3000));
+
+    const summary = await runProjectTd(pool);
+    // The SG states byte 03 = 04 while the SF stream had it at 05: one refresh mismatch.
+    expect(summary.sRefreshMismatches).toBe(1);
+
+    const transitions = async (): Promise<
+      Array<{
+        bit_index: number;
+        previous_value: boolean | null;
+        new_value: boolean;
+        source_kind: string;
+      }>
+    > =>
+      (
+        await pool.query(
+          `select bit_index, previous_value, new_value, source_kind from td_s_bit_transition
+           where projection_version = $1 and td_area = $2 and address = '03'
+           order by source_ingestion_sequence, bit_index`,
+          [TD_S_STATE_PROJECTION_VERSION, area],
+        )
+      ).rows;
+
+    const rows = await transitions();
+    // SF 01: 8 first-sight rows. SF 05: bit 2 set. SG byte 03 = 04: bit 0 cleared (a refresh
+    // disagreeing — counted separately below). Final SF 05: bit 0 set again.
+    expect(rows.slice(0, 8).every((r) => r.previous_value === null)).toBe(true);
+    expect(rows.slice(8)).toEqual([
+      { bit_index: 2, previous_value: false, new_value: true, source_kind: "update" },
+      { bit_index: 0, previous_value: true, new_value: false, source_kind: "refresh" },
+      { bit_index: 0, previous_value: false, new_value: true, source_kind: "update" },
+    ]);
+
+    // Replaying the projection (checkpoint reset without clearing) inserts nothing new.
+    const definition = await pool.query<{ id: string }>(
+      "select id from projection_definition where name = $1 and code_version = $2",
+      [TD_PROJECTION_NAME, TD_PROJECTION_VERSION],
+    );
+    await pool.query(
+      "update projection_checkpoint set last_ingestion_sequence = 0 where projection_definition_id = $1",
+      [definition.rows[0]?.id],
+    );
+    await runProjectTd(pool);
+    expect(await transitions()).toHaveLength(rows.length);
+  });
+
+  it("S-Class refresh mismatch is counted when an SF was missed", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([sf(area, "00", "01", t)], new Date(t));
+    await runProjectTd(pool);
+    await record([sg(area, "00", "03000000", t + 1000)], new Date(t + 1000));
+    const summary = await runProjectTd(pool);
+    expect(summary.sRefreshMismatches).toBe(1);
+  });
+
+  it("S-Class malformed payload is retained as 'unsupported' with a reason, not decoded", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([sf(area, "00", "0000", t)], new Date(t));
+
+    const summary = await runProjectTd(pool);
+    expect(summary.sDecodeFailures).toBe(1);
+
+    const event = await pool.query<{ decode_status: string; decode_error_code: string }>(
+      "select decode_status, decode_error_code from td_s_event where td_area = $1",
+      [area],
+    );
+    expect(event.rows).toEqual([
+      { decode_status: "unsupported", decode_error_code: "data_length_mismatch" },
+    ]);
+    const state = await pool.query<{ n: number }>(
+      "select count(*)::int as n from td_s_current_state where projection_version = $1 and td_area = $2",
+      [TD_S_STATE_PROJECTION_VERSION, area],
+    );
+    expect(state.rows[0]?.n).toBe(0);
   });
 
   it("rebuild: clears this version's projection state and reprocesses from zero", async () => {
@@ -380,6 +507,36 @@ describe("runProjectTd (integration)", () => {
     expect((await openOccupancy(area, "0900"))?.description).toBe("IIII");
     const history = await occupancyHistory(area, "0900");
     expect(history).toHaveLength(1);
+  });
+
+  it("rebuild: decoded S-Class state and transitions are regenerated identically", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([sf(area, "10", "01", t)], new Date(t));
+    await record([sf(area, "10", "03", t + 1000)], new Date(t + 1000));
+    await runProjectTd(pool);
+
+    const snapshot = async (): Promise<unknown[]> =>
+      (
+        await pool.query(
+          `select address, bit_index, previous_value, new_value from td_s_bit_transition
+           where projection_version = $1 and td_area = $2
+           order by source_ingestion_sequence, bit_index`,
+          [TD_S_STATE_PROJECTION_VERSION, area],
+        )
+      ).rows;
+    const before = await snapshot();
+    expect(before).toHaveLength(9);
+
+    await runProjectTd(pool, { rebuild: true });
+
+    expect(await snapshot()).toEqual(before);
+    const state = await pool.query<{ byte_value: number }>(
+      `select byte_value from td_s_current_state
+       where projection_version = $1 and td_area = $2 and address = '10'`,
+      [TD_S_STATE_PROJECTION_VERSION, area],
+    );
+    expect(state.rows).toEqual([{ byte_value: 3 }]);
   });
 
   it("rebuild still works once an occupancy has been manually cleared, preserving the audit row", async () => {

@@ -41,3 +41,21 @@ export function decideVirtualBerthStep(input: VirtualBerthStepInput): VirtualBer
     terminateNew: input.terminated,
   };
 }
+
+/**
+ * docs/adr/0012 gap closure (owner request, 2026-09-19): automatic hand-off back to TD coverage
+ * on re-entry. TD has no `trust_id` — only a headcode string — so this can never be as direct as
+ * `decideVirtualBerthStep` above; it needs corroboration, same principle as ADR 0007's TD-area
+ * boundary crossings (never headcode alone, and never guess when more than one candidate is
+ * plausible). The corroboration here is: exactly one currently-open virtual berth occupancy
+ * shares this TD event's headcode *and* was entered recently enough to be a plausible match (the
+ * caller bounds "recently enough" in its own query, via `virtual_berth_occupancy_headcode_open_idx`
+ * — this function only ever sees candidates already past that filter). Zero or more than one
+ * candidate is left alone (CLAUDE.md rule 7's spirit: never a guess), falling back to whatever a
+ * later resolver pass would otherwise do.
+ */
+export function decideTdReentryHandoff(matchingOpenVirtualOccupancyCount: number): {
+  handoff: boolean;
+} {
+  return { handoff: matchingOpenVirtualOccupancyCount === 1 };
+}

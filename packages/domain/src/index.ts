@@ -131,9 +131,12 @@ export {
 export {
   VIRTUAL_BERTH_PROJECTION_NAME,
   VIRTUAL_BERTH_PROJECTION_VERSION,
+  VIRTUAL_BERTH_TD_REENTRY_PROJECTION_NAME,
+  VIRTUAL_BERTH_TD_REENTRY_PROJECTION_VERSION,
 } from "./virtualBerths/projectionVersion.js";
 export {
   decideVirtualBerthStep,
+  decideTdReentryHandoff,
   type VirtualBerthStepInput,
   type VirtualBerthStepDecision,
 } from "./virtualBerths/stepping.js";

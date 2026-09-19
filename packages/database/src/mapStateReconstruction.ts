@@ -46,6 +46,13 @@ export interface ReconstructMapStateOptions {
   /** `berth_occupancy.projection_version` to read (the TD projection version). */
   projectionVersion: number;
   at: Date;
+  /** docs/adr/0012 gap closure (owner request, 2026-09-19): `stanox -> elementId`, i.e. a
+   * `CompiledMapBundle.virtualBerthBindingIndex`. Omitted (or empty) skips the virtual-berth
+   * query entirely — most maps have none. */
+  virtualBerthBindingIndex?: Record<string, string>;
+  /** `virtual_berth_occupancy.projection_version` to read. Required whenever
+   * `virtualBerthBindingIndex` is non-empty. */
+  virtualProjectionVersion?: number;
 }
 
 /** Local, dependency-free equivalent of `@railway/domain`'s `joinCombinedBerthState` — this
@@ -126,6 +133,51 @@ export async function reconstructMapStateAt(
   const berths: Record<string, ReconstructedBerthState> = {};
   for (const [elementId, members] of membersByElement) {
     berths[elementId] = joinCombinedBerthState(members);
+  }
+
+  // docs/adr/0012 gap closure (owner request, 2026-09-19): same half-open-interval, "most-recent
+  // entry at or before `at`" reconstruction as the TD query above, but keyed by `stanox` against
+  // `virtual_berth_occupancy` instead of `(td_area, berth_code)` against `berth_occupancy`. A
+  // virtual berth is never a combined-berth member (docs/MAP_EDITOR_SPEC.md — combining is a
+  // TD-binding-only concept), so this assigns directly into `berths` rather than going through
+  // `membersByElement`/`joinCombinedBerthState`; a map with no virtual bindings skips the query
+  // entirely (`stanoxes.length === 0`).
+  const virtualBerthBindingIndex = options.virtualBerthBindingIndex ?? {};
+  const stanoxes = Object.keys(virtualBerthBindingIndex);
+  if (stanoxes.length > 0) {
+    // `left join lateral` (not `cross join`): a stanox with no occupancy row at all (never
+    // occupied, or `at` predates its first entry) must still produce a vacant `berths` entry —
+    // `ReconstructedMapState.berths`'s contract is one entry per binding, vacant included.
+    const virtualOccupancy = await pool.query<{
+      stanox: string;
+      headcode: string | null;
+      entered_at: Date | null;
+      left_at: Date | null;
+    }>(
+      `select w.stanox, vbo.headcode, vbo.entered_at, vbo.left_at
+         from unnest($1::text[]) as w(stanox)
+         left join lateral (
+           select vbo.headcode, vbo.entered_at, vbo.left_at
+             from virtual_berth_occupancy vbo
+            where vbo.projection_version = $2
+              and vbo.stanox = w.stanox
+              and vbo.entered_at <= $3
+            order by vbo.entered_at desc
+            limit 1
+         ) vbo on true`,
+      [stanoxes, options.virtualProjectionVersion, options.at],
+    );
+    for (const row of virtualOccupancy.rows) {
+      const elementId = virtualBerthBindingIndex[row.stanox];
+      if (!elementId) continue;
+      const occupied =
+        row.entered_at !== null &&
+        (row.left_at == null || row.left_at.getTime() > options.at.getTime());
+      berths[elementId] = {
+        description: occupied ? row.headcode : null,
+        enteredAt: occupied && row.entered_at !== null ? row.entered_at.toISOString() : null,
+      };
+    }
   }
 
   const signals: Record<string, { state: "blank" }> = {};

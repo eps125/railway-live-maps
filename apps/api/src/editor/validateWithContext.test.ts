@@ -220,3 +220,93 @@ describe("validateDraftInContext bound/unbound berth counts", () => {
     expect(result.info.unboundBerthCount).toBe(1);
   });
 });
+
+describe("validateDraftInContext virtual berth STANOX check (docs/adr/0012 gap closure)", () => {
+  it("warns when a virtual berth's STANOX is not found in location_reference", async () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "vb-1",
+          layerId: "l1",
+          zIndex: 0,
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "0000",
+        },
+      ],
+      bindings: [{ id: "bind-vb", elementId: "vb-1", type: "virtualBerth", stanoxes: ["52701"] }],
+    });
+
+    const pool = fakePool((text) => {
+      if (text.includes("from location_reference")) return { rows: [] }; // not found
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const result = await validateDraftInContext(pool, doc);
+
+    expect(result.warnings.map((w) => w.code)).toContain("virtual_berth_stanox_unrecognised");
+  });
+
+  it("does not warn when the STANOX is a recognised location_reference row", async () => {
+    const doc = baseDoc({
+      elements: [
+        {
+          id: "vb-1",
+          layerId: "l1",
+          zIndex: 0,
+          type: "berth",
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          textAlign: "center",
+          fontSize: 12,
+          displayName: "0000",
+        },
+      ],
+      bindings: [{ id: "bind-vb", elementId: "vb-1", type: "virtualBerth", stanoxes: ["52701"] }],
+    });
+
+    const pool = fakePool((text) => {
+      if (text.includes("from location_reference")) return { rows: [{ stanox: "52701" }] };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const result = await validateDraftInContext(pool, doc);
+
+    expect(result.warnings.map((w) => w.code)).not.toContain("virtual_berth_stanox_unrecognised");
+  });
+
+  it("is best-effort: a failing STANOX check is skipped, not thrown", async () => {
+    const doc = baseDoc({
+      bindings: [{ id: "bind-vb", elementId: "vb-1", type: "virtualBerth", stanoxes: ["52701"] }],
+    });
+
+    const pool = fakePool(() => {
+      throw new Error("canceling statement due to statement timeout");
+    });
+
+    const result = await validateDraftInContext(pool, doc);
+
+    expect(result.warnings.map((w) => w.code)).toContain("virtual_berth_stanox_check_skipped");
+    expect(result.warnings.map((w) => w.code)).not.toContain("virtual_berth_stanox_unrecognised");
+  });
+
+  it("never queries location_reference at all when the map has no virtual bindings", async () => {
+    const doc = baseDoc();
+    const pool = fakePool((text) => {
+      if (text.includes("from location_reference")) {
+        throw new Error("should not have been queried");
+      }
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const result = await validateDraftInContext(pool, doc);
+    expect(result.warnings.map((w) => w.code)).not.toContain("virtual_berth_stanox_check_skipped");
+  });
+});

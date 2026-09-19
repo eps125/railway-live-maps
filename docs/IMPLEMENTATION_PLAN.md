@@ -2889,25 +2889,49 @@ Postgres available" limitation nearly every integration test in this codebase al
 `pnpm run typecheck`, `pnpm run lint`, `pnpm exec prettier --check .` and the full non-integration
 suite (84 files / 586 tests) all green.
 
-Migrations/configuration: run migration 0035; add the `virtual-berths` service to the Compose
-stack (already in `deploy/docker-compose.portainer.yml`, no new env var — always-on, same as
-`run-lineage`). No config flag gates any of this.
+Migrations/configuration: run migration 0035, then 0036 (gap-closure follow-up: widens
+`operator_berth_action` for virtual manual-clear, adds the `'stepped_to_td'` exit reason, adds
+`live_delta_sequence`); add the `virtual-berths` service to the Compose stack (already in
+`deploy/docker-compose.portainer.yml`, no new env var — always-on, same as `run-lineage`). No
+config flag gates any of this.
 
-Known limitations / follow-up (full detail in `docs/adr/0012`'s Consequences section):
+**Gap-closure follow-up (owner request "sort all the gaps immediately", same day, 2026-09-19).**
+Every limitation originally listed here is now closed except one disclosed hot-path caveat — full
+detail in `docs/adr/0012`'s Consequences section:
 
-- **No manual clear for a stuck virtual berth.** `exit_reason` has a `'manual_clear'` value in its
-  check constraint, but no route or editor UI actually triggers it yet — found only while
-  implementing, not in the original design. A virtual berth whose train's GPS reporting goes
-  permanently quiet mid-journey has no operator escape hatch until the next report for that
-  `trust_id` arrives somewhere.
-- No automatic hand-off back to TD coverage on re-entry (closes only via the next GPS step,
-  `train_terminated`, or the not-yet-built manual clear above) — by design, per the ADR.
-- No playback/history for virtual berths (data retained, not read by playback yet).
-- No `ValidationPanel` "never observed" warning for an unrecognised STANOX (only the schema-level
-  duplicate-STANOX block exists — the TD equivalent needs a DB-backed check this pass didn't add).
-- The Redis live-delta path doesn't carry virtual berths — matches that path's existing
-  not-yet-proven-against-a-real-Redis status from Milestone 6, but is a real gap if
-  `LIVE_WS_REDIS_PUBSUB_ENABLED` is ever turned on.
+- **Manual clear**: migration 0036 widens `operator_berth_action` (the existing TD manual-clear
+  audit trail) to also target a virtual berth by `stanox`; new route
+  `POST /api/v1/editor/virtual-berths/:stanox/clear` and a matching Test Mode panel section.
+- **Automatic TD-reentry hand-off**: `decideTdReentryHandoff` (`stepping.ts`) applies ADR 0007's
+  same corroboration principle — hands off only when exactly one open virtual occupancy matches
+  the reappearing TD event's headcode, never guesses when ambiguous. Runs every tick as
+  `runVirtualBerthTdReentryHandoff` alongside the stepping pass.
+- **Redis live-delta path**: `project-map-deltas` and both virtual-berth passes now share a new
+  `live_delta_sequence` Postgres sequence for their client-facing `sequence`, so interleaved
+  TD/virtual deltas never look like a regression. **Not** extended to the genuinely hot
+  `apps/worker/src/td/liveProjector.ts` path — decoupling its `sequence` from the Redis dedup
+  watermark it also drives needs its own careful pass, not one bundled into this fix. This is now
+  the ADR's one remaining known limitation: with `LIVE_WS_REDIS_PUBSUB_ENABLED=true` (not the
+  default), a map mixing TD and virtual berths can see an occasional spurious (self-healing)
+  reconnect.
+- **Playback/history**: `reconstructMapStateAt` (shared by `/state?at=` and `snapshot-maps`) now
+  merges a half-open-interval `virtual_berth_occupancy` reconstruction in alongside TD's, keyed by
+  `stanox`. `GET /api/v1/maps/{slug}/events` merges virtual entry/exit events sorted by `eventAt`,
+  paginated with its own independent `nextVirtualCursor` (`virtualOccupancyId * 2 (+1 exit)` —
+  individually resumable per event, since one occupancy row's entry and exit can straddle more
+  than one page). `usePlayback.ts` tracks and forwards it alongside the existing cursor.
+- Still open, unchanged from first landing: no `ValidationPanel` STANOX warning was originally
+  planned as a gap-closure item, but was added anyway during this pass
+  (`virtual_berth_stanox_unrecognised`, a plain `location_reference` existence check).
+
+Tests added this pass: `stepping.test.ts` (+2 cases, `decideTdReentryHandoff`),
+`validateWithContext.test.ts` (+4, STANOX check), `usePlayback.test.tsx` (+1, `afterVirtual`
+cursor plumbing), plus new/extended integration test coverage
+(`virtualBerths/projector.integration.test.ts` extended with TD-reentry + Redis-publish cases,
+`playback.integration.test.ts` extended with a dedicated virtual-berth-events describe block) —
+same "not executed, no local Postgres in this sandbox" caveat as every integration test in this
+codebase. `pnpm run typecheck`, `pnpm run lint`, `pnpm exec prettier --check .` and the full
+non-integration suite (84 files / 593 tests) all green after this follow-up.
 
 ## Later / unscheduled
 

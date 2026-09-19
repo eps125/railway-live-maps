@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import { reconstructMapStateAt, type ReconstructedMapState } from "@railway/database";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import { TD_PROJECTION_VERSION, VIRTUAL_BERTH_PROJECTION_VERSION } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 
 /**
@@ -69,6 +69,8 @@ export async function runSnapshotMaps(
       signalElementIds,
       projectionVersion: TD_PROJECTION_VERSION,
       at: now,
+      virtualBerthBindingIndex: bundle.virtualBerthBindingIndex ?? {},
+      virtualProjectionVersion: VIRTUAL_BERTH_PROJECTION_VERSION,
     });
     const state = { berths, signals };
 

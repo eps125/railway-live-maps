@@ -431,7 +431,8 @@ unlinked (ambiguous), exactly as any other tier. See docs/adr/0007 for the full 
   like `berth_occupancy`: `stanox`, `trust_id` (the direct, not inferred, identity — the GPS
   report's own TRUST id), `headcode` (display only, decoded from `trust_id`, never a join key
   back), `entry_trust_movement_id`/`exit_trust_movement_id` (lineage into `trust_movement`),
-  `exit_reason` (`stepped_to_virtual` | `terminated` | `manual_clear` | `superseded`).
+  `exit_reason` (`stepped_to_virtual` | `terminated` | `manual_clear` | `stepped_to_td` |
+  `superseded` — `stepped_to_td` added by migration 0036, gap-closure follow-up below).
 - **`virtual_berth_current_state`** — nationwide-independent-of-any-map current state, keyed by
   `(projection_version, stanox)`, mirroring `berth_current_state`'s shape/role. Unlike TD,
   scoped in practice to STANOXes at least one published map currently binds as a virtual berth —
@@ -450,9 +451,34 @@ unlinked (ambiguous), exactly as any other tier. See docs/adr/0007 for the full 
 - `GET /api/v1/virtual-berths/{stanox}/current-run`: since the occupancy already carries the
   exact `trust_id`, there is no candidate set to tie-break — `matchBasis` is always
   `virtual_direct`, `matchStatus` is `matched`/`unmatched`, never `ambiguous` (CLAUDE.md rule 7:
-  exactly one `trust_id`, by construction). See `docs/adr/0012` for the full design, including
-  what's explicitly out of scope for this first pass (automatic hand-off back to TD coverage on
-  re-entry, playback/history for virtual berths).
+  exactly one `trust_id`, by construction). See `docs/adr/0012` for the full design.
+
+**Gap-closure follow-up (migration 0036, same day):**
+
+- **Manual clear**: `operator_berth_action` (migration 0017, the existing TD manual-clear audit
+  trail) widened rather than duplicated — `td_area`/`berth_code` made nullable, `stanox` and a
+  `virtual_berth_occupancy` FK pair added, a check constraint enforces exactly one kind of target
+  per row. `POST /api/v1/editor/virtual-berths/{stanox}/clear` sets
+  `exit_reason = 'manual_clear'`, same live-only-override semantics as the TD route (never
+  replayed by `project-virtual-berths --rebuild`).
+- **Automatic hand-off back to TD coverage on re-entry**: `decideTdReentryHandoff`
+  (`packages/domain/src/virtualBerths/stepping.ts`) applies ADR 0007's corroboration principle —
+  hands off (`exit_reason = 'stepped_to_td'`) only when exactly one open virtual occupancy shares
+  the reappearing TD event's headcode within a bounded lookback window; otherwise leaves state
+  untouched rather than guessing. Run every tick as `runVirtualBerthTdReentryHandoff`
+  (`apps/worker/src/virtualBerths/projector.ts`), reading `td_berth_event` via its own checkpoint,
+  independent of the stepping pass's `trust_movement.id` one. A partial index,
+  `virtual_berth_occupancy_headcode_open_idx (headcode) where left_at is null`, keeps the
+  corroboration query bounded regardless of how large nationwide history grows.
+- **Playback/history**: `reconstructMapStateAt` (`packages/database`) now also reconstructs
+  virtual berth state from `virtual_berth_occupancy` (same half-open-interval logic as
+  `berth_occupancy`, keyed by `stanox`), and `GET /api/v1/maps/{slug}/events` merges virtual
+  entry/exit events into the same response — see `docs/API_CONTRACT.md`'s `/events` entry for the
+  `afterVirtual`/`nextVirtualCursor` cursor design.
+- **Redis live-delta path**: extended to virtual berths (and TD's `project-map-deltas` catch-up
+  path) via a new shared `live_delta_sequence` Postgres sequence for the client-facing `sequence`
+  field — **not** extended to the hot `apps/worker/src/td/liveProjector.ts` path; see
+  `docs/adr/0012`'s Consequences section for the full reasoning and the disclosed residual risk.
 
 ## 9. Map tables
 

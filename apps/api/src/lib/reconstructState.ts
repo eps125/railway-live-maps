@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { TD_PROJECTION_VERSION } from "@railway/domain";
+import { TD_PROJECTION_VERSION, VIRTUAL_BERTH_PROJECTION_VERSION } from "@railway/domain";
 import { reconstructMapStateAt } from "@railway/database";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import type { LiveState } from "./liveState.js";
@@ -30,6 +30,8 @@ export async function reconstructStateAt(
       signalElementIds,
       projectionVersion: TD_PROJECTION_VERSION,
       at,
+      virtualBerthBindingIndex: bundle.virtualBerthBindingIndex ?? {},
+      virtualProjectionVersion: VIRTUAL_BERTH_PROJECTION_VERSION,
     }),
     feedGapWarnings(pool, tdAreasFromBundle(bundle), at),
   ]);

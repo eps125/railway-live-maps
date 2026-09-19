@@ -48,7 +48,7 @@ Response outline:
 > is deferred to a later phase that will source it from the garner (openrail-eps) `trust_*`
 > mirror rather than a bespoke RLM resolver.
 
-### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
+### `GET /api/v1/maps/{slug}/events?from=&to=&after=&afterVirtual=&limit=`
 
 Compact map-relevant events for playback buffering (Milestone 10). Each entry is the **same
 wire shape as a live WS `berth.updated` / `berth.cleared` delta**, so the playback client
@@ -56,6 +56,20 @@ applies them with its live-delta code path. One `td_berth_event` (a CA) can yiel
 (`from` clears, `to` updates); entries for the map's bound berths only. Ordered by
 `ingestion_sequence`; `after` is that cursor; `from`/`to` bound the range (max 7 days). Uses the
 map version effective at `from`.
+
+**Virtual (GPS-fed) berths** (docs/adr/0012, Milestone 52 gap-closure follow-up): a bound
+`virtualBerth`'s entry/exit events are merged into the same `events` array, sorted by `eventAt`
+alongside TD's, and carry `stanox` instead of `tdArea`/`berth`. They're paginated with their own
+**independent** cursor, `afterVirtual` / response field `nextVirtualCursor` — unrelated to
+`after`/`nextCursor`'s id space, so a client pages both in parallel. The cursor unit is
+`virtualOccupancyId * 2` (`+1` for the exit): a `virtual_berth_occupancy` row spans two far-apart
+instants (`entered_at`, `left_at`), not TD's single `event_at`, so a still-open row's entry can
+land on one page while its eventual exit only becomes reachable once a later page's `to` grows
+past its (not-yet-known) close time — a plain row-id cursor can't represent "resume here, but
+this specific row still owes an event." `nextVirtualCursor` is `null` only when nothing new was
+found; it does **not** collapse to `null` just because a page returned fewer than `limit` items
+the way `nextCursor` does, so a client should always carry it forward from the last response
+rather than treating `null` as "stop and reset to 0" for this cursor specifically.
 
 ```json
 {
@@ -73,7 +87,8 @@ map version effective at `from`.
       "enteredAt": "2026-08-04T12:15:38Z"
     }
   ],
-  "nextCursor": "123457"
+  "nextCursor": "123457",
+  "nextVirtualCursor": null
 }
 ```
 
@@ -624,6 +639,15 @@ gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/
   **not** replayed by `project-td --rebuild` (current state stays a pure derived projection of
   `raw_feed_event` per CLAUDE.md rule 3). Returns `{ tdArea, berth, cleared, previousDescription }`
   — `cleared: false` when the berth was already clear (not an error, idempotent).
+- `POST /api/v1/editor/virtual-berths/{stanox}/clear` with body `{ "reason": string }`
+  (docs/adr/0012, Milestone 52 gap-closure follow-up): the virtual-berth equivalent, for the same
+  reason — a virtual berth has no TD `CB`/`CC` to ever definitively clear it, so a train whose GPS
+  reporting goes permanently quiet mid-journey would otherwise show occupied forever with no
+  operator escape hatch. Live-only override of `virtual_berth_current_state`/
+  `virtual_berth_occupancy`, **not** replayed by `project-virtual-berths --rebuild`; logged in the
+  same `operator_berth_action` audit trail (migration 0036 widened it to identify a target by
+  `stanox` instead of `tdArea`/`berth`). Returns
+  `{ stanox, cleared, previousHeadcode }` — `cleared: false` when already clear (idempotent).
 
 Draft writes include `expectedRevision`; conflicting updates return `409` with current revision.
 

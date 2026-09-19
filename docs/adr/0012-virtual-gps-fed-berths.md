@@ -13,6 +13,11 @@ redeployed the `trustdb` daemon against that commit the same day. Everything els
 rendering, `current-run` integration) was then implemented in full — see the Consequences section
 for exactly what landed, what deviated from the original plan below, and what's still deferred.
 
+**Gap-closure follow-up, same day:** manual clear, automatic TD-reentry hand-off, the Redis
+live-delta path (for everything except the TD hot path, disclosed as a known limitation) and
+playback/history for virtual berths were all closed — see the "Gap-closure follow-up" entries
+under Consequences below for exactly what changed and the one caveat that remains.
+
 ## Context
 
 Some sections of track carry no TD coverage at all — no berths, no `CA`/`CB`/`CC` events ever
@@ -333,19 +338,63 @@ endpoint), `docs/ARCHITECTURE.md` (new daemon), `docs/PROJECT_SPEC.md` (product-
   the STANOX autocomplete reused an existing endpoint instead of a new one, and the rebuild
   command wasn't in the original decision section at all.
 
-**Explicitly still out of scope, same as originally planned:**
+**Gap-closure follow-up (owner request "sort all the gaps immediately", 2026-09-19) — every gap
+listed below at first landing is now closed except the one hot-path caveat called out at the end:**
 
-- Automatic hand-off back to TD coverage on re-entry (closes only via the next GPS step, TRUST's
-  own `train_terminated`, or — see below — a manual clear that isn't actually wired up yet).
-- Playback/history for virtual berths (retained, append-only, but not read by
-  `reconstructMapStateAt`/`/events`).
+- **Manual clear** (previously entirely unwired despite the schema already having a
+  `'manual_clear'` `exit_reason`): migration 0036 widens `operator_berth_action` (migration
+  0017's TD manual-clear audit trail) to also identify a virtual berth by `stanox` instead of
+  `(td_area, berth_code)` — one audit table, one check constraint enforcing exactly one kind of
+  target per row, rather than a parallel table for the same concept. New route
+  `POST /api/v1/editor/virtual-berths/:stanox/clear` (`apps/api/src/routes/editor/berthActions.ts`,
+  mirrors the TD clear route exactly) and a matching "Occupied virtual (GPS-fed) berths" section
+  in the editor's Test Mode panel (`apps/web/src/editor/TestModePanel.tsx`).
+- **Automatic hand-off back to TD coverage on re-entry**: `packages/domain/src/virtualBerths/stepping.ts`
+  gained `decideTdReentryHandoff`, a pure function applying the exact same corroboration principle
+  ADR 0007 established for TD-area boundary crossings — never guess: hand off only when _exactly
+  one_ open virtual occupancy shares the reappearing TD event's headcode within a bounded lookback
+  window, otherwise leave state untouched (CLAUDE.md rule 7's "never hide ambiguity" applied here
+  as "never silently guess it away" instead). Wired into a new pass,
+  `runVirtualBerthTdReentryHandoff` (`apps/worker/src/virtualBerths/projector.ts`), run every tick
+  alongside the stepping pass by both `project-virtual-berths-daemon` and the one-shot
+  `project-virtual-berths` command; closes with `exit_reason = 'stepped_to_td'` (migration 0036
+  adds it to the check constraint) and a `virtual_berth_occupancy_headcode_open_idx` partial index
+  keeps the corroboration query bounded regardless of nationwide history size.
+- **Redis live-delta path**: `project-map-deltas` (`apps/worker/src/mapProjector/projector.ts`)
+  and both virtual-berth passes now draw their client-facing `sequence` from a new shared
+  `live_delta_sequence` Postgres sequence (migration 0036) instead of each process's own raw
+  counter, so an interleaved TD/virtual delta on the same `railway:live:{slug}` channel never
+  looks like a regression to `apps/web/src/map/useLiveMapSocket.ts`. **Deliberately not extended
+  to `apps/worker/src/td/liveProjector.ts`** — the genuinely hot TD live path (`ingest-td`'s
+  inline publish + `project-td-live-daemon`) — because that path still embeds raw
+  `td_berth_event.ingestion_sequence` directly as `sequence`, and decoupling it from the
+  Redis-side per-berth dedup watermark it also drives needs its own careful, separately-tested
+  pass rather than one bundled into this fix; an inline DB round-trip there is a real latency risk
+  on exactly the path ADR 0003 built to keep fast. Until that lands, a map with both TD-bound and
+  virtual-bound berths on a Redis-backed live connection (`LIVE_WS_REDIS_PUBSUB_ENABLED=true`,
+  **not** the default) can see an occasional spurious reconnect where the two interleave —
+  self-healing (a fresh snapshot immediately follows), never a correctness/data-loss issue, and
+  the default polling path most deployments actually run is unaffected either way. This is now
+  the ADR's one remaining known limitation.
+- **Playback/history for virtual berths**: `packages/database/src/mapStateReconstruction.ts`'s
+  `reconstructMapStateAt` (shared by `/state?at=` and the `snapshot-maps` worker role) now also
+  takes an optional `virtualBerthBindingIndex`/`virtualProjectionVersion` and merges a
+  half-open-interval `virtual_berth_occupancy` reconstruction into the same `berths` record,
+  keyed by `stanox` rather than `(td_area, berth_code)`. `GET /api/v1/maps/{slug}/events` merges
+  virtual entry/exit events into the same response, sorted by `eventAt` alongside TD's. Because a
+  `virtual_berth_occupancy` row spans two far-apart instants (`entered_at`, `left_at`) rather than
+  TD's single `event_at`, it can't be paged with a plain row-id cursor the way `ingestion_sequence`
+  pages TD — a row whose entry already appeared on an earlier page can still be open, and its
+  eventual exit must remain reachable once a later page's `to` grows far enough to cover it. The
+  cursor is therefore `virtualOccupancyId * 2` (`+1` for the exit) — an individually-resumable
+  position per event, not per row — returned as a second, independent `nextVirtualCursor` field
+  (`apps/web/src/map/usePlayback.ts` tracks it alongside the existing `after`/`nextCursor`).
+  Verified with a dedicated integration-test suite covering the merge order, the still-open-row
+  cursor block, and its later resolution once the row closes (not executed in this sandbox — no
+  local Postgres).
 
-**New gap found only while implementing, not yet closed:** `virtual_berth_occupancy.exit_reason`
-already has a `'manual_clear'` value in its check constraint, but **no route or editor UI actually
-triggers it** — unlike a TD berth, which has a real manual-clear capability (Milestone 47). A
-virtual berth stuck showing occupied (its owning train's GPS reporting having gone permanently
-quiet mid-journey, say) currently has no operator escape hatch at all until the next GPS report
-for that `trust_id` arrives somewhere. Worth a fast-follow once real virtual-berth traffic shows
-whether this is a real problem. No `ValidationPanel` "never observed" warning for an unrecognised
-STANOX either (the TD equivalent — Milestone 12 — needs a DB-backed nationwide-observation check
-this pass didn't build for STANOX; only the schema-level duplicate-STANOX block exists).
+Every one of the above is typechecked, linted, formatted and covered by tests; the full
+non-integration suite (84 files / 593 tests as of this follow-up) is green. Every new integration
+test (this follow-up's and the ones from first landing) remains written-but-unexecuted for the
+same reason noted throughout this codebase: no local Postgres in the sandbox this work was done
+in.

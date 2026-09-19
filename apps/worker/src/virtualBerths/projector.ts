@@ -215,7 +215,7 @@ async function openOccupancy(
        (projection_version, stanox, trust_id, headcode, entered_at, entry_trust_movement_id,
         left_at, exit_trust_movement_id, exit_reason)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     on conflict (entry_trust_movement_id) do nothing
+     on conflict (entry_trust_movement_id, entered_at) do nothing
      returning id`,
     [
       VIRTUAL_BERTH_PROJECTION_VERSION,

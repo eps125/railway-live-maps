@@ -67,9 +67,13 @@ create index virtual_berth_occupancy_stanox_idx
 create index virtual_berth_occupancy_trust_id_idx
   on virtual_berth_occupancy (trust_id, entered_at desc);
 -- Idempotency guard for the projector's `on conflict do nothing` inserts, same pattern migration
--- 0008 uses for td_berth_event/td_s_event against redelivered raw broker frames.
+-- 0008 uses for td_berth_event/td_s_event against redelivered raw broker frames. Postgres requires
+-- every unique constraint on a partitioned table to include the partition key, so `entered_at`
+-- joins `entry_trust_movement_id` here even though the id alone is already unique in practice
+-- (one GPS report opens at most one occupancy) — this is a size-1-per-key composite, not a
+-- meaningfully looser guarantee.
 create unique index virtual_berth_occupancy_entry_movement_uk
-  on virtual_berth_occupancy (entry_trust_movement_id);
+  on virtual_berth_occupancy (entry_trust_movement_id, entered_at);
 
 -- Map-independent nationwide current state, keyed by (projection_version, stanox) — mirrors
 -- berth_current_state's shape/role exactly.

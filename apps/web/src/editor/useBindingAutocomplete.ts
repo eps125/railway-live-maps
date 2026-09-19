@@ -58,3 +58,59 @@ export function useObservedBerths(tdArea: string | null): string[] {
 
   return berths;
 }
+
+/** Milestone 36c: TD areas with decoded S-Class data (for binding a signal). */
+export function useSClassAreas(): string[] {
+  const [areas, setAreas] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/v1/editor/s-class/areas")
+      .then((response) => (response.ok ? (response.json() as Promise<{ areas: string[] }>) : null))
+      .then((body) => {
+        if (!cancelled && body) setAreas(body.areas);
+      })
+      .catch(() => {
+        // Best-effort autocomplete.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return areas;
+}
+
+export interface SClassDefinitionOption {
+  address: string;
+  bit: number;
+  kind: string;
+  label: string | null;
+  destination: string | null;
+}
+
+/** Milestone 36c: an area's S-Class definitions (so a signal can be bound by label). */
+export function useSClassDefinitions(tdArea: string | null): SClassDefinitionOption[] {
+  const [definitions, setDefinitions] = useState<SClassDefinitionOption[]>([]);
+  useEffect(() => {
+    if (!tdArea || !/^[A-Z0-9]{2}$/.test(tdArea)) {
+      setDefinitions([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/v1/editor/s-class/areas/${encodeURIComponent(tdArea)}/definitions`)
+      .then((response) =>
+        response.ok
+          ? (response.json() as Promise<{ definitions: SClassDefinitionOption[] }>)
+          : null,
+      )
+      .then((body) => {
+        if (!cancelled && body) setDefinitions(body.definitions);
+      })
+      .catch(() => {
+        // Best-effort autocomplete.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tdArea]);
+  return definitions;
+}

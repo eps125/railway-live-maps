@@ -285,6 +285,16 @@ Normalized bit transitions (projection version 2), populated nationwide:
 - `source_kind` — `update` or `refresh`; a `refresh` transition means an SF was missed
 - unique `(projection_version, source_event_id, address, bit_index, event_at)` — replay-safe
 
+### `s_class_definition` (Milestone 36c)
+
+What a bit _is_, per area — reference data authored by the owner (admin S-Class explorer) or
+imported from published tables (migration `0038`): `(td_area, address, bit)` unique, `kind`
+(`signal` | `route` | `points` | `track` | `trts` | `level_crossing` | `unknown`), `label`,
+`destination` (routes), `source` (`wiki` | `sop` | `ecs` | `observed` | `other`), `notes`,
+`updated_by`. Every create/update/delete (and each paste-import row, grouped by `import_batch`)
+is appended to `s_class_definition_revision` with previous/next values, so corrections never
+lose history. Definitions never compute state — they make signals bindable by name.
+
 The system stores bit facts only. Signal meaning comes from an explicit versioned map binding. No aspect, route or signal inference is permitted.
 
 ## 6. Schedule and reference data

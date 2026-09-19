@@ -545,6 +545,36 @@ ingestionSequence }], nextCursor }` ordered by `event_at` ascending (then `id`),
 Reached through the admin-only "Berths" nav item → "Query Berths" page (`/admin/berths/query` in
 the web app) — a hub page (`/admin/berths`) sits above it for tooling added here later.
 
+**S-Class explorer and definitions (Milestone 36c, docs/adr/0013)** — admin-only, any TD area
+with decoded S-Class data; the web page is `/admin/berths/s-class`. Authoring/diagnostics only:
+nothing here ever feeds a map's displayed signal state (still only the bound bit, rule 10).
+Addresses are hex (1-2 digits, returned canonical `"0A"`), bits 0-7; a malformed area (not two
+characters), address or bit is `400`.
+
+- `GET /api/v1/admin/s-class/areas` — `{ areas: [{ tdArea, bytes, lastEventAt, definitions }] }`.
+- `GET /api/v1/admin/s-class/areas/{tdArea}/bits` — the live grid: `{ bytes: [{ address, value,
+confirmedAt, sourceKind, lastRefreshAt, bits: [{ bit, value, lastChangedAt, changes24h,
+definition }] }] }` (changes counted over the last 24 h; first sightings are not changes).
+- `GET .../bits/{address}/{bit}/history?before=&limit=` — transitions newest first.
+- `GET .../bits/{address}/{bit}/correlated-steps?from=&to=` — suggestion: the CA berth steps
+  within ±10 s of this bit's changes, per change direction, with hit counts and median offset
+  (default last 24 h, max 7 days).
+- `GET /api/v1/admin/s-class/areas/{tdArea}/correlated-bits?fromBerth=&toBerth=&from=&to=` —
+  suggestion, the other way round: bits that change within ±10 s of that step.
+- `GET .../definitions`; `PUT .../definitions/{address}/{bit}` (`{ kind, label, destination,
+source, notes }` → `{ outcome: created|updated|unchanged, definition }`); `DELETE` (`204`,
+  `404` if none). Every change is appended to `s_class_definition_revision` with the admin's
+  username.
+- `POST .../definitions/import` — `{ text, radix: "hex"|"decimal", source, dryRun = true,
+overwriteConflicts = false }`. `radix` is required (`400 RADIX_REQUIRED`) — never guessed. The
+  dry run reports each parsed row as `new`/`unchanged`/`conflict` plus parse `errors`/`warnings`
+  (e.g. a duplicate label); committing refuses with `422 IMPORT_HAS_ERRORS` while there are
+  errors, and only overwrites conflicting definitions with `overwriteConflicts`.
+
+Editor-role read-only lookups (for binding signals in the editor):
+`GET /api/v1/editor/s-class/areas` (`{ areas: string[] }`) and
+`GET /api/v1/editor/s-class/areas/{tdArea}/definitions`.
+
 ## 4. Editor API
 
 **Protected (Milestone 29, see §4a):** every route below requires a valid session at the `editor`

@@ -9,6 +9,7 @@ import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
 import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
 import { BerthQueryPage } from "./auth/BerthQueryPage.js";
+import { SClassExplorerPage } from "./auth/SClassExplorerPage.js";
 
 export function App(): JSX.Element {
   const route = useRoute();
@@ -34,7 +35,8 @@ export function App(): JSX.Element {
       (route.name === "adminUsers" ||
         route.name === "adminTdBoundaries" ||
         route.name === "adminBerths" ||
-        route.name === "adminBerthQuery") &&
+        route.name === "adminBerthQuery" ||
+        route.name === "adminSClass") &&
       !isAdmin
     ) {
       navigate(isAuthenticated ? "/" : "/rlm-login");
@@ -70,6 +72,9 @@ export function App(): JSX.Element {
   } else if (route.name === "adminBerthQuery") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthQueryPage />;
+  } else if (route.name === "adminSClass") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <SClassExplorerPage />;
   } else if (route.name === "map") {
     // Milestone 31: a places-search click-through carries `?center=<elementId>` — read directly
     // from the URL rather than teaching useRoute about query strings, since only this one route
@@ -140,7 +145,9 @@ export function App(): JSX.Element {
               className="app-nav__link"
               href="/admin/berths"
               aria-current={
-                route.name === "adminBerths" || route.name === "adminBerthQuery"
+                route.name === "adminBerths" ||
+                route.name === "adminBerthQuery" ||
+                route.name === "adminSClass"
                   ? "page"
                   : undefined
               }

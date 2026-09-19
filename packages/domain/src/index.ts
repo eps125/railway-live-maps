@@ -70,6 +70,16 @@ export {
   type SignalFactsPort,
   type SilenceStart,
 } from "./td/signalState.js";
+export {
+  S_CLASS_DEFINITION_KINDS,
+  inferSClassKind,
+  parseSClassDefinitionTable,
+  type ParsedSClassDefinition,
+  type SClassByteRadix,
+  type SClassDefinitionKind,
+  type SClassImportIssue,
+  type SClassImportParseResult,
+} from "./td/sClassDefinitions.js";
 export { TD_NORMALIZATION_VERSION } from "./td/normalizationVersion.js";
 export { TD_PROJECTION_NAME, TD_PROJECTION_VERSION } from "./td/projectionVersion.js";
 export {

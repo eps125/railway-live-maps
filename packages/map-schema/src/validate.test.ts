@@ -390,4 +390,58 @@ describe("validateMapDocument", () => {
     const result = validateMapDocument(doc);
     expect(result.valid).toBe(true);
   });
+
+  describe("S-Class signal bindings (Milestone 36c)", () => {
+    const signal = (id: string) => ({ id, layerId: "l1", type: "signal", x: 0, y: 0 });
+    const sBit = (id: string, elementId: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      elementId,
+      type: "tdSBit",
+      tdArea: "M9",
+      address: "03",
+      bit: 2,
+      activeMeans: "off",
+      ...extra,
+    });
+
+    it("accepts one S-Class binding on a signal", () => {
+      const result = validateMapDocument(
+        baseDoc({ elements: [signal("s1")], bindings: [sBit("b1", "s1")] }),
+      );
+      expect(result).toEqual({ valid: true, errors: [] });
+    });
+
+    it("flags a signal with more than one S-Class binding", () => {
+      const result = validateMapDocument(
+        baseDoc({
+          elements: [signal("s1")],
+          bindings: [sBit("b1", "s1"), sBit("b2", "s1", { bit: 3 })],
+        }),
+      );
+      expect(result.errors).toEqual([
+        expect.objectContaining({ code: "multiple_signal_bindings", elementId: "s1" }),
+      ]);
+    });
+
+    it("flags an S-Class binding on a non-signal element", () => {
+      const result = validateMapDocument(
+        baseDoc({
+          elements: [{ id: "lbl", layerId: "l1", type: "label", x: 0, y: 0, text: "x" }],
+          bindings: [sBit("b1", "lbl")],
+        }),
+      );
+      expect(result.errors).toEqual([
+        expect.objectContaining({ code: "invalid_signal_binding", elementId: "lbl" }),
+      ]);
+    });
+
+    it("rejects a non-hex address or a bit outside 0-7 at the schema level", () => {
+      for (const extra of [{ address: "25:0" }, { address: "123" }, { bit: 8 }]) {
+        const result = validateMapDocument(
+          baseDoc({ elements: [signal("s1")], bindings: [sBit("b1", "s1", extra)] }),
+        );
+        expect(result.valid).toBe(false);
+      }
+    });
+  });
 });

@@ -10,7 +10,8 @@ export type Route =
   | { name: "adminUsers" }
   | { name: "adminTdBoundaries" }
   | { name: "adminBerths" }
-  | { name: "adminBerthQuery" };
+  | { name: "adminBerthQuery" }
+  | { name: "adminSClass" };
 
 /** Minimal hand-rolled router for the small set of route shapes this app needs (`/` the Milestone
  * 30 map-list landing page, `/map/:slug` the public map, `/editor/:slug` the Milestone 11/12
@@ -32,6 +33,8 @@ export function useRoute(): Route {
   if (pathname.startsWith("/admin/users")) return { name: "adminUsers" };
   if (pathname.startsWith("/admin/td-boundaries")) return { name: "adminTdBoundaries" };
   if (pathname.startsWith("/admin/berths/query")) return { name: "adminBerthQuery" };
+  // Milestone 36c: the S-Class explorer, under the same admin "Berths" hub.
+  if (pathname.startsWith("/admin/berths/s-class")) return { name: "adminSClass" };
   if (pathname.startsWith("/admin/berths")) return { name: "adminBerths" };
 
   const editorMatch = /^\/editor\/([^/]+)\/?$/.exec(pathname);

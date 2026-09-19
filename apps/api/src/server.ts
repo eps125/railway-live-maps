@@ -20,6 +20,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
 import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
 import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
+import { registerSClassAdminRoutes, registerSClassEditorRoutes } from "./routes/admin/sClass.js";
 import { requireRole } from "./auth/requireRole.js";
 import { createPollingDeltaSource } from "./live/pollingDeltaSource.js";
 import { createRedisDeltaSource } from "./live/redisDeltaSource.js";
@@ -97,6 +98,8 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (editorScope) => {
     editorScope.addHook("preHandler", requireRole("editor", { redis, sessionTtlSeconds }));
     await registerEditorRoutes(editorScope, { pool });
+    // Milestone 36c: read-only S-Class areas/definitions for binding signals in the editor.
+    await registerSClassEditorRoutes(editorScope, { pool });
   });
 
   // Admin-only user management (Milestone 29) — same encapsulation trick, one level up.
@@ -117,6 +120,13 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (berthQueryScope) => {
     berthQueryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerBerthQueryRoutes(berthQueryScope, { pool });
+  });
+
+  // Milestone 36c: the admin S-Class explorer + definitions (any area; web page under the admin
+  // "Berths" hub). Authoring/diagnostics only — never feeds displayed signal state.
+  await app.register(async (sClassScope) => {
+    sClassScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
+    await registerSClassAdminRoutes(sClassScope, { pool });
   });
 
   // Milestone 30: creating a map is admin-only, unlike the rest of `/api/v1/editor/*` above

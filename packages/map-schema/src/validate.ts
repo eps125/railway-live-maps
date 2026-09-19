@@ -187,5 +187,33 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  // Milestone 36c: S-Class signal bindings. A signal shows exactly one bit (rule 9: on/off only),
+  // so more than one binding on a signal would make its state ambiguous; and a tdSBit binding
+  // only means something on a signal element.
+  const elementsById = new Map(doc.elements.map((element) => [element.id, element]));
+  const sBitCountByElement = new Map<string, number>();
+  for (const binding of doc.bindings) {
+    if (binding.type !== "tdSBit") continue;
+    const element = elementsById.get(binding.elementId);
+    if (element && element.type !== "signal") {
+      errors.push({
+        code: "invalid_signal_binding",
+        message: `S-Class binding "${binding.id}" is on ${element.type} element "${element.id}" — only signals can have one`,
+        elementId: element.id,
+        bindingId: binding.id,
+      });
+    }
+    sBitCountByElement.set(binding.elementId, (sBitCountByElement.get(binding.elementId) ?? 0) + 1);
+  }
+  for (const [elementId, count] of sBitCountByElement) {
+    if (count > 1) {
+      errors.push({
+        code: "multiple_signal_bindings",
+        message: `Signal "${elementId}" has ${count} S-Class bindings — a signal shows exactly one bit`,
+        elementId,
+      });
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }

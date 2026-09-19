@@ -16,6 +16,14 @@ const TOOLS: BerthTool[] = [
       "Look up every recorded berth-to-berth step for a headcode across one or more train " +
       "describer areas and a date/time range.",
   },
+  {
+    title: "S-Class explorer",
+    path: "/admin/berths/s-class",
+    description:
+      "Watch any train describer area's live S-Class bits, see each bit's history, record what " +
+      "a bit is (signal, route, ...) and import published definition tables. Includes " +
+      "berth-step timing suggestions to help identify signal bits.",
+  },
 ];
 
 /**

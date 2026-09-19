@@ -36,11 +36,7 @@ export interface ViewBox {
   height: number;
 }
 
-const SIGNAL_COLORS: Record<SignalState["state"], string> = {
-  blank: "#5f6b7a",
-  on: "#f85149",
-  off: "#3fb950",
-};
+const SIGNAL_COLORS: Record<SignalState["state"], string> = MAP_STYLE.signal.stateColors;
 
 /** Milestone 32 (folded into `label` 2026-09-13): shared click-through for a boundary link,
  * used by both a `label` carrying `adjacentMapSlug` (the current, preferred way to author one)

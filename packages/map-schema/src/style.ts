@@ -35,6 +35,10 @@ export const MAP_STYLE = {
     /** Standard perpendicular gap from the bound track to the signal head. */
     offset: 12,
     radius: 6,
+    /** The only public signal states (CLAUDE.md rule 9, PROJECT_SPEC §6): red = on, green = off,
+     * grey = blank (unmapped/unknown). Shared by the public renderer and the editor so a bound
+     * signal looks the same in both (rule 13). */
+    stateColors: { blank: "#5f6b7a", on: "#f85149", off: "#3fb950" },
   },
   platform: {
     /** Schematic bar thickness. */

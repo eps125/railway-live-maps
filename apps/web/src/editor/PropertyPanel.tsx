@@ -1,7 +1,18 @@
 import { useEffect, useState } from "react";
-import { Z_INDEX_LAYER_BAND, type MapDocument, type TdBerthBinding } from "@railway/map-schema";
+import {
+  Z_INDEX_LAYER_BAND,
+  canonicalSAddress,
+  type MapDocument,
+  type TdBerthBinding,
+  type TdSBitBinding,
+} from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
-import { useObservedAreas, useObservedBerths } from "./useBindingAutocomplete.js";
+import {
+  useObservedAreas,
+  useObservedBerths,
+  useSClassAreas,
+  useSClassDefinitions,
+} from "./useBindingAutocomplete.js";
 
 const MAX_COMBINED_BERTH_MEMBERS = 4;
 
@@ -371,6 +382,162 @@ function LayerSelect({
   );
 }
 
+/**
+ * Milestone 36c: bind a signal to one S-Class bit (docs/adr/0013). Pick a defined label for the
+ * area (e.g. "S3003") or enter the hex address and bit directly, plus what a set bit means —
+ * `activeMeans`, verified per binding (most signal bits are set when the signal is *off*). The
+ * signal's shown state is then only ever that bit (CLAUDE.md rules 9/10). Applied with one
+ * explicit button so a half-filled form never commits a wrong binding.
+ */
+function SignalBindingFields({
+  elementId,
+  binding,
+  currentLabel,
+  onUseLabel,
+}: {
+  elementId: string;
+  binding: TdSBitBinding | undefined;
+  currentLabel: string | undefined;
+  onUseLabel: (label: string) => void;
+}): JSX.Element {
+  const dispatch = useEditorDispatch();
+  const areas = useSClassAreas();
+  const [area, setArea] = useState(binding?.tdArea ?? "");
+  const [address, setAddress] = useState(binding?.address ?? "");
+  const [bit, setBit] = useState(binding ? String(binding.bit) : "");
+  const [activeMeans, setActiveMeans] = useState<"on" | "off">(binding?.activeMeans ?? "off");
+  useEffect(() => {
+    setArea(binding?.tdArea ?? "");
+    setAddress(binding?.address ?? "");
+    setBit(binding ? String(binding.bit) : "");
+    setActiveMeans(binding?.activeMeans ?? "off");
+  }, [elementId, binding]);
+
+  const areaCode = area.trim().toUpperCase();
+  const definitions = useSClassDefinitions(/^[A-Z0-9]{2}$/.test(areaCode) ? areaCode : null);
+  const signalDefinitions = definitions.filter((d) => d.kind === "signal" && d.label);
+  const canonical = /^[0-9A-Fa-f]{1,2}$/.test(address.trim())
+    ? canonicalSAddress(address.trim())
+    : null;
+  const bitNumber = /^[0-7]$/.test(bit.trim()) ? Number(bit.trim()) : null;
+  const matchedDefinition = definitions.find((d) => d.address === canonical && d.bit === bitNumber);
+  const valid = /^[A-Z0-9]{2}$/.test(areaCode) && canonical !== null && bitNumber !== null;
+
+  function apply(): void {
+    if (!valid || canonical === null || bitNumber === null) return;
+    const next: TdSBitBinding = {
+      id: binding?.id ?? `bind-${elementId}-s-${Date.now()}`,
+      elementId,
+      type: "tdSBit",
+      tdArea: areaCode,
+      address: canonical,
+      bit: bitNumber,
+      activeMeans,
+    };
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setBinding", elementId, binding: next },
+    });
+  }
+
+  return (
+    <fieldset>
+      <legend>S-Class binding</legend>
+      <label className="field">
+        TD area
+        <input
+          list="s-class-areas"
+          value={area}
+          onChange={(e) => setArea(e.target.value.toUpperCase())}
+        />
+        <datalist id="s-class-areas">
+          {areas.map((a) => (
+            <option key={a} value={a} />
+          ))}
+        </datalist>
+      </label>
+      {signalDefinitions.length > 0 ? (
+        <label className="field">
+          Defined signal
+          <select
+            value={matchedDefinition ? `${matchedDefinition.address}:${matchedDefinition.bit}` : ""}
+            onChange={(e) => {
+              const [a, b] = e.target.value.split(":");
+              if (a && b) {
+                setAddress(a);
+                setBit(b);
+              }
+            }}
+          >
+            <option value="">— choose —</option>
+            {signalDefinitions.map((d) => (
+              <option key={`${d.address}:${d.bit}`} value={`${d.address}:${d.bit}`}>
+                {d.label} ({d.address}:{d.bit})
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <label className="field">
+        Address (hex)
+        <input value={address} onChange={(e) => setAddress(e.target.value)} />
+      </label>
+      <label className="field">
+        Bit (0-7)
+        <input value={bit} onChange={(e) => setBit(e.target.value)} />
+      </label>
+      <label className="field">
+        A set bit means
+        <select
+          value={activeMeans}
+          onChange={(e) => setActiveMeans(e.target.value === "on" ? "on" : "off")}
+        >
+          <option value="off">off (green) — usual for signal bits</option>
+          <option value="on">on (red)</option>
+        </select>
+      </label>
+      {matchedDefinition?.label ? (
+        <p className="field-hint">
+          Defined as {matchedDefinition.label}
+          {matchedDefinition.label !== currentLabel ? (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onUseLabel(matchedDefinition.label ?? "")}
+              >
+                Use as label
+              </button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
+        {binding ? "Update binding" : "Bind signal"}
+      </button>
+      {binding ? (
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            dispatch({
+              type: "dispatchCommand",
+              command: { type: "setBinding", elementId, binding: null },
+            })
+          }
+        >
+          Clear binding
+        </button>
+      ) : null}
+      <p className="field-hint">
+        The signal shows only this bit: red = on, green = off, grey = blank (unknown or feed gap). A
+        dashed ring on the canvas means it is showing live state.
+      </p>
+    </fieldset>
+  );
+}
+
 /** docs/MAP_EDITOR_SPEC.md §6: "Right properties/binding/validation panel." Shows editable
  * fields for exactly one selected element. Multi-selection gets one bulk action — reassign every
  * selected element to a single layer — added specifically to recover from the real production
@@ -658,6 +825,14 @@ export function PropertyPanel(): JSX.Element {
             />
             Offset style (stem + head off the track)
           </label>
+          <SignalBindingFields
+            elementId={elementId}
+            binding={doc.bindings.find(
+              (b): b is TdSBitBinding => b.type === "tdSBit" && b.elementId === elementId,
+            )}
+            currentLabel={element.label}
+            onUseLabel={(label) => setProp("label", label)}
+          />
         </>
       )}
 

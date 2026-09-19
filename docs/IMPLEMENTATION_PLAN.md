@@ -1944,7 +1944,7 @@ test.ts` run against a disposable Postgres (SSH-tunnelled to a throwaway contain
 `@railway/api` and `@railway/web`.
 `pnpm -r typecheck` green for `@railway/api` and `@railway/web`.
 
-## Milestone 36 — S-Class bit decoding and signal on/off display `[in progress — 36a deployed, 36b implemented 2026-09-19]`
+## Milestone 36 — S-Class bit decoding and signal on/off display `[in progress — 36a/36b deployed, 36c implemented 2026-09-19]`
 
 Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.
 Needed for any map (Blackpool, Milestone 33, included) to show real signal on/off state rather
@@ -2035,7 +2035,7 @@ all currently unlabelled and unbound, M9 + 3 PX berth bindings).
   rebuild is idempotent ✅; every transition keeps lineage to its source event ✅; unit tests for
   each malformed case ✅; `td_s_current_state` no longer mixes word/byte values ✅.
 
-### 36b — live, playback and freshness `[implemented 2026-09-19 — not yet deployed]`
+### 36b — live, playback and freshness `[done — deployed 2026-09-19]`
 
 As built (deviations from the draft above are marked **changed**):
 
@@ -2090,22 +2090,39 @@ berth)` order (the fold's lock order), not sequence order, so a frame changing s
   silence signals blank until re-confirmed, after a <5 min one they keep their state ✅; no
   signal is ever rendered from anything but its bound bit ✅.
 
-### 36c — definitions and authoring
+### 36c — definitions and authoring `[implemented 2026-09-19 — not yet deployed]`
 
-- Per-area, versioned **S-Class definitions** reference table: `(td_area, address, bit)` →
-  kind (`signal` / `route` / `points` / `track` / `trts` / `level_crossing` / `unknown`), label
-  (e.g. `S3003`), destination (routes), source (wiki / SOP / ECS / observed), notes.
-- Paste-import of wiki-format tables with an **explicit hex/decimal radix choice** (no guessing),
-  reporting duplicates and conflicts rather than silently resolving them.
-- Editor: bind a signal element by picking a defined label (e.g. "M9 S1234") or raw
-  address:bit, plus `activeMeans`. Validation warns if the bit has never been seen changing in
-  nationwide data (same approach as Milestone 22).
-- Admin **S-Class explorer** (role-gated, Milestone 29 auth): live bit grid per area, last-change
-  time per bit, per-bit history, and ranked candidate suggestions from C-Class timing correlation
-  (decision 3) — suggestions are never auto-applied.
-- **Acceptance**: R3 table imports cleanly as hex and flags its S3533 duplicate; the M8 table
-  imported as decimal lands S3037 on 0x19:1; an editor-bound signal renders live on/off in the
-  preview and the public renderer identically (rule 13).
+As built (owner decisions 2026-09-19: the explorer lives under the admin "Berths" hub and works
+for **every** S-Class area, not M9 only; bound signals show live state in the editor):
+
+- **Definitions** (migration `0038`): `s_class_definition` (`(td_area, address, bit)` unique,
+  kind/label/destination/source/notes, DB-checked) + append-only `s_class_definition_revision`
+  (previous/next, who, import batch) — the "versioned" requirement.
+- **Import**: pure `parseSClassDefinitionTable` (`packages/domain/src/td/sClassDefinitions.ts`)
+  handles both real layouts (R3 `ADDR:BIT`, M8 `BYTE BIT`); radix must be chosen; `?`/blank rows
+  skipped and counted; duplicate bits are errors, duplicate labels warnings. Dry run first;
+  commit refuses on errors and only overwrites conflicts on request.
+- **Admin explorer** `/admin/berths/s-class` (`SClassExplorerPage.tsx`, routes in
+  `apps/api/src/routes/admin/sClass.ts`): live bit grid (5 s refresh, recent-change highlight,
+  defined labels), per-bit history, define/edit/remove, import panel, and two authoring-only
+  suggestion tools — bit to nearby CA steps, and step to bits (±10 s, last 24 h, hit counts and
+  median offset).
+- **Editor**: Properties panel "S-Class binding" (area, defined-signal picker, hex address, bit,
+  `activeMeans`, "Use as label", explicit apply); bound signals show live state on the canvas in
+  every view (`useLiveSignalStates`, same colours as the public renderer via
+  `MAP_STYLE.signal.stateColors`); schema tightened (address 1-2 hex, bit 0-7); validation errors
+  for more than one binding per signal or a tdSBit binding on a non-signal, and a
+  `signal_bit_never_changed` warning (7 days).
+- **Production query checks (2026-09-19)**: R1 24 h grid activity 167 ms; bit to steps 578 ms;
+  step to bits 73 ms (the area's changes read once — the transition index can't seek a time
+  range without an address).
+- **Tests**: parser (real R3/M8 excerpts), schema validation, admin routes integration (grid,
+  history, both suggestion directions, definition revisions, import radix/preview/errors/
+  conflicts), contextual validation integration, PropertyPanel binding, live-state hook,
+  explorer page.
+- **Acceptance**: R3 imports as hex and flags its S3533 duplicate ✅ (parser test); the M8 table
+  imported as decimal lands S3037 on 0x19:1 ✅; an editor-bound signal renders live on/off with
+  the same state computation and colours as the public renderer ✅.
 
 ### 36d — Blackpool bindings `[owner's task]`
 

@@ -234,7 +234,9 @@ For a combined berth (Milestone 50) — up to 4 of these sharing one `elementId`
 ]
 ```
 
-For a future signal:
+For a signal (Milestone 36c — bound in the editor's Properties panel, by picking a defined label
+for the area or entering the hex address and bit; `address` must be 1-2 hex digits and `bit`
+0-7; a signal may have at most one, and only signals may have one):
 
 ```json
 {
@@ -289,6 +291,13 @@ Public display:
 - off = green
 
 Green must be labelled `off`, never `green aspect`. There is no calculation from multiple aspects or route logic. A future compound boolean binding may be added only after observed data requires it.
+
+**Editor live state (Milestone 36c, owner request):** a signal with an S-Class binding shows its
+live state on the editor canvas in every view (not only Test mode), polled from
+`GET /api/v1/editor/state/{slug}` for the saved draft — same colours and the same
+`computeLiveState` as the public map (rule 13), with a dashed ring marking it as live. Unbound
+signals keep their static `symbolStyle` preview. Validation warns (`signal_bit_never_changed`)
+when a bound bit hasn't been seen changing in the last 7 days.
 
 ## 6. Editor layout
 

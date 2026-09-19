@@ -6,7 +6,10 @@ import {
   type BoundaryElement,
   type LabelElement,
   type TdBerthBinding,
+  type TdSBitBinding,
+  canonicalSAddress,
 } from "@railway/map-schema";
+import { TD_S_STATE_PROJECTION_VERSION } from "@railway/domain";
 
 export interface ValidationTierResult {
   valid: boolean;
@@ -41,6 +44,12 @@ export interface ValidationTierResult {
  * step log that can include a cancel on a berth that was never really occupied.
  */
 const OBSERVED_LOOKBACK_DAYS = 30;
+
+/** Milestone 36c: a bound S-Class bit should have been seen *changing* recently — a signal bit
+ * flips every time a train passes, so one that hasn't changed in a week is probably the wrong
+ * address/bit (or an area whose S-Class feed has stopped). */
+const SIGNAL_BIT_LOOKBACK_DAYS = 7;
+const SIGNAL_BIT_CHECK_TIMEOUT_MS = 8_000;
 
 /** Per-check statement timeouts. If a check can't complete in this budget its result is simply
  * dropped (best-effort) — a slow *advisory* query must never block or fail a publish. */
@@ -153,6 +162,57 @@ export async function validateDraftInContext(
     if (rows !== null) {
       observedCheckOk = true;
       for (const row of rows) observedKeys.add(`${row.td_area}|${row.berth_code}`);
+    }
+  }
+
+  // Milestone 36c: S-Class signal bindings — has each bound bit been seen changing recently?
+  // One `(td_area, address, event_at desc)` index seek per binding (first-sight rows, with no
+  // previous value, don't count as a change).
+  const sBitBindings = doc.bindings.filter(
+    (binding): binding is TdSBitBinding => binding.type === "tdSBit",
+  );
+  if (sBitBindings.length > 0) {
+    const rows = await bestEffortQuery<{ td_area: string; address: string; bit: number }>(
+      pool,
+      `with wanted(td_area, address, bit) as (
+         select * from unnest($1::text[], $2::text[], $3::int[])
+       )
+       select w.td_area, w.address, w.bit
+       from wanted w
+       where exists (
+         select 1 from td_s_bit_transition t
+         where t.projection_version = $4 and t.td_area = w.td_area and t.address = w.address
+           and t.bit_index = w.bit and t.previous_value is not null
+           and t.event_at >= now() - ($5::int * interval '1 day')
+       )`,
+      [
+        sBitBindings.map((b) => b.tdArea),
+        sBitBindings.map((b) => canonicalSAddress(b.address)),
+        sBitBindings.map((b) => b.bit),
+        TD_S_STATE_PROJECTION_VERSION,
+        SIGNAL_BIT_LOOKBACK_DAYS,
+      ],
+      SIGNAL_BIT_CHECK_TIMEOUT_MS,
+    );
+    if (rows === null) {
+      warnings.push({
+        code: "signal_bit_check_skipped",
+        message:
+          "The 'signal bit seen changing' check was skipped (query too slow) — S-Class bindings not verified.",
+      });
+    } else {
+      const seen = new Set(rows.map((row) => `${row.td_area}|${row.address}|${row.bit}`));
+      for (const binding of sBitBindings) {
+        const address = canonicalSAddress(binding.address);
+        if (!seen.has(`${binding.tdArea}|${address}|${binding.bit}`)) {
+          warnings.push({
+            code: "signal_bit_never_changed",
+            message: `S-Class bit ${binding.tdArea} ${address}:${binding.bit} has not been seen changing in the last ${SIGNAL_BIT_LOOKBACK_DAYS} days — check the address/bit`,
+            bindingId: binding.id,
+            elementId: binding.elementId,
+          });
+        }
+      }
     }
   }
 

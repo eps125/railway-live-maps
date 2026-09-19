@@ -249,8 +249,12 @@ const TdSBitBindingSchema = z.object({
   elementId: z.string().min(1),
   type: z.literal("tdSBit"),
   tdArea: z.string().min(1),
-  address: z.string().min(1),
-  bit: z.number().int().nonnegative(),
+  /** S-Class byte address in hex (one or two digits; compiled to canonical `"0A"` form). Milestone
+   * 36c tightened this (and `bit` to 0-7) — no document had a tdSBit binding before then. */
+  address: z.string().regex(/^[0-9A-Fa-f]{1,2}$/, "address must be 1-2 hex digits"),
+  bit: z.number().int().min(0).max(7),
+  /** What a set bit means: most signal bits are set when the signal is *not* at its most
+   * restrictive aspect, i.e. `"off"` (green). Verified per binding, never assumed (ADR 0013). */
   activeMeans: z.enum(["on", "off"]),
 });
 

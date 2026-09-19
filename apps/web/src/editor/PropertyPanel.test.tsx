@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MapDocument } from "@railway/map-schema";
-import { EditorStateProvider, useEditorDispatch } from "./EditorState.js";
+import { EditorStateProvider, useEditorDispatch, useEditorState } from "./EditorState.js";
 import { PropertyPanel } from "./PropertyPanel.js";
 
 function baseDoc(): MapDocument {
@@ -537,5 +537,116 @@ describe("PropertyPanel layer reassignment", () => {
     );
 
     expect(await screen.findByLabelText("Layer")).toHaveValue("layer-berths");
+  });
+});
+
+describe("PropertyPanel S-Class signal binding (Milestone 36c)", () => {
+  function signalDoc(): MapDocument {
+    const doc = baseDoc();
+    return {
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          id: "sig-1",
+          layerId: "l",
+          zIndex: 0,
+          type: "signal",
+          x: 10,
+          y: 10,
+          orientation: 0,
+          symbolStyle: "signal-blank",
+        },
+      ],
+    };
+  }
+
+  /** Renders the document's S-Class bindings so the test can assert what was committed. */
+  function BindingsProbe(): JSX.Element {
+    const { document: doc } = useEditorState();
+    return (
+      <pre data-testid="bindings">
+        {JSON.stringify(doc.bindings.filter((b) => b.type === "tdSBit"))}
+      </pre>
+    );
+  }
+
+  it("binds a signal to a defined bit, with activeMeans, and can use the definition's label", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/editor/s-class/areas")) {
+          return Promise.resolve(jsonResponse({ areas: ["M9"] }));
+        }
+        if (url.includes("/editor/s-class/areas/M9/definitions")) {
+          return Promise.resolve(
+            jsonResponse({
+              definitions: [
+                { address: "03", bit: 2, kind: "signal", label: "S3003", destination: null },
+                { address: "05", bit: 0, kind: "route", label: "R3003", destination: "IL1" },
+              ],
+            }),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    render(
+      <EditorStateProvider initialDocument={signalDoc()}>
+        <Select id="sig-1" />
+        <PropertyPanel />
+        <BindingsProbe />
+      </EditorStateProvider>,
+    );
+
+    const bindButton = await screen.findByRole("button", { name: "Bind signal" });
+    expect(bindButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("TD area"), { target: { value: "m9" } });
+    // Only signal definitions are offered (the route is not).
+    const defined = await screen.findByLabelText("Defined signal");
+    expect(screen.queryByText(/R3003/)).not.toBeInTheDocument();
+    fireEvent.change(defined, { target: { value: "03:2" } });
+    expect(screen.getByLabelText("Address (hex)")).toHaveValue("03");
+    expect(screen.getByLabelText("Bit (0-7)")).toHaveValue("2");
+
+    fireEvent.click(screen.getByRole("button", { name: "Bind signal" }));
+    const committed = JSON.parse(screen.getByTestId("bindings").textContent ?? "[]");
+    expect(committed).toEqual([
+      expect.objectContaining({
+        elementId: "sig-1",
+        type: "tdSBit",
+        tdArea: "M9",
+        address: "03",
+        bit: 2,
+        activeMeans: "off",
+      }),
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use as label" }));
+    expect(await screen.findByLabelText("Label")).toHaveValue("S3003");
+  });
+
+  it("won't bind until the address is hex and the bit is 0-7", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ areas: [], definitions: [] }))),
+    );
+    render(
+      <EditorStateProvider initialDocument={signalDoc()}>
+        <Select id="sig-1" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+    fireEvent.change(await screen.findByLabelText("TD area"), { target: { value: "M9" } });
+    fireEvent.change(screen.getByLabelText("Address (hex)"), { target: { value: "0G" } });
+    fireEvent.change(screen.getByLabelText("Bit (0-7)"), { target: { value: "2" } });
+    expect(screen.getByRole("button", { name: "Bind signal" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Address (hex)"), { target: { value: "a" } });
+    fireEvent.change(screen.getByLabelText("Bit (0-7)"), { target: { value: "8" } });
+    expect(screen.getByRole("button", { name: "Bind signal" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Bit (0-7)"), { target: { value: "7" } });
+    expect(screen.getByRole("button", { name: "Bind signal" })).toBeEnabled();
   });
 });

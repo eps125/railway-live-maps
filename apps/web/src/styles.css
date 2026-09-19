@@ -1411,3 +1411,75 @@ legend {
   color: var(--color-text-faint);
   font-style: italic;
 }
+
+/* Milestone 36c: admin S-Class explorer — a wide bit grid with a side column for the selected
+ * bit, the berth-step suggestion tool and the definition import. */
+.s-class-page {
+  max-width: 1280px;
+}
+
+.s-class-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.s-class-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .s-class-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.s-class-side {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.s-class-grid td,
+.s-class-grid th {
+  padding: 0.15rem 0.25rem;
+  text-align: center;
+}
+
+.s-class-bit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 3.2rem;
+  padding: 0.15rem 0.2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-inset);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.s-class-bit--set {
+  background: var(--color-accent-muted);
+  color: var(--color-text);
+}
+
+.s-class-bit--recent {
+  border-color: var(--color-warning);
+}
+
+.s-class-bit--selected {
+  outline: 2px solid var(--color-accent-hover);
+}
+
+.s-class-bit__label {
+  font-size: 0.62rem;
+  color: var(--color-text-faint);
+  min-height: 0.8rem;
+}

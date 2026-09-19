@@ -110,9 +110,9 @@ export function boundsIntersect(a: Bounds, b: Bounds): boolean {
 function signalFill(symbolStyle: string): string {
   // Editor-only preview convention for the symbolStyle token itself (an editable document
   // field, not a computed aspect) — matches CLAUDE.md #9's blank/on/off vocabulary exactly.
-  if (symbolStyle === "signal-on") return "#f85149";
-  if (symbolStyle === "signal-off") return "#3fb950";
-  return "#5f6b7a";
+  if (symbolStyle === "signal-on") return MAP_STYLE.signal.stateColors.on;
+  if (symbolStyle === "signal-off") return MAP_STYLE.signal.stateColors.off;
+  return MAP_STYLE.signal.stateColors.blank;
 }
 
 function nextElementId(): string {
@@ -263,9 +263,14 @@ export interface EditorCanvasProps {
    * application." Keyed by element ID, matching the shape `GET /api/v1/editor/state/{slug}`
    * already returns. `undefined`/absent entries render the normal design-time `displayName`. */
   previewState?: Record<string, { description: string | null }> | undefined;
+  /** Milestone 36c: live state of each *bound* signal (`useLiveSignalStates`), shown in every
+   * view so a wrong S-Class address/bit is obvious while authoring. A bound signal draws its live
+   * state with the public renderer's colours (rule 13) and a dashed ring marking it as live;
+   * unbound signals keep their static `symbolStyle` preview. */
+  signalStates?: Record<string, "blank" | "on" | "off"> | undefined;
 }
 
-export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Element {
+export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps = {}): JSX.Element {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
   const transformerRef = useRef<Konva.Transformer>(null);
@@ -995,10 +1000,24 @@ export function EditorCanvas({ previewState }: EditorCanvasProps = {}): JSX.Elem
                   <Circle
                     y={hy}
                     radius={MAP_STYLE.signal.radius}
-                    fill={signalFill(element.symbolStyle)}
+                    fill={
+                      signalStates?.[element.id]
+                        ? MAP_STYLE.signal.stateColors[signalStates[element.id]!]
+                        : signalFill(element.symbolStyle)
+                    }
                     stroke={selected ? "#58a6ff" : "#2d3644"}
                     strokeWidth={selected ? 2 : 1}
                   />
+                  {signalStates?.[element.id] ? (
+                    <Circle
+                      y={hy}
+                      radius={MAP_STYLE.signal.radius + 3}
+                      stroke="#8b949e"
+                      strokeWidth={1}
+                      dash={[2, 2]}
+                      listening={false}
+                    />
+                  ) : null}
                   {element.label ? (
                     offsetMode ? (
                       <Text

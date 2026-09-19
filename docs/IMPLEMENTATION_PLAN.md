@@ -2819,6 +2819,70 @@ Known limitations / follow-up: no CSV/export option; no saved/recent searches; t
 is a plain multi-select rather than a searchable/checkbox list (fine at the current ~dozens of
 observed areas, may want revisiting if that grows much further).
 
+## Milestone 52 — virtual (GPS-fed) berths for track with no TD coverage `[planned — blocked, see docs/adr/0012]`
+
+Owner request, 2026-09-19: represent sections of track with no TD coverage at all on published
+maps, as "virtual" berths whose occupancy is driven by TRUST movement reports sourced from GPS
+rather than by TD `CA`/`CB`/`CC` events — headcode steps along a run of these berths the same way
+it would through real TD berths, yellow-bordered in both the editor and the live map to distinguish
+them from real TD-backed ones. Full design in `docs/adr/0012-virtual-gps-fed-berths.md`.
+
+**Blocked on one real-data confirmation before any migration/bridge code lands**: whether garner's
+real `trust_movement` table (openrail-eps MariaDB) retains the STOMP frame's
+`header.original_data_source` field (`"GPS"` / `"SDR"` / `"SMART"` / `"TOPS"` / `"TRUST DA"`, per
+the real Train Movement message spec) at all, and under what column name — RLM's `trust_movement`
+mirror (migration 0025, populated by `apps/worker/src/garner/bridge.ts`'s `runGarnerTrustSync`)
+currently selects only the movement *body* fields, never the frame header, and this sandboxed
+session has no network path to check garner directly (see the ADR's "Open question" for the exact
+query to run against the real instance). Everything else below is designed and ready to build once
+that's answered.
+
+Design summary (full detail in the ADR):
+
+- `packages/map-schema`: new `virtualBerth` binding type in `bindings[]` (a berth element's
+  `bindingId` pointing at it is what makes it "virtual" — no new element kind, no boolean flag),
+  bound to a set of STANOXes rather than a TD area/berth code. Additive, `schemaVersion` stays 1.
+- Stepping is fully evidence-derived from the GPS report's own `trust_id` — direct identity, not
+  inferred — so unlike ADR 0007's TD-area boundary crossings, **no owner-curated chain ordering is
+  needed**: a new GPS report at a bound STANOX for `trust_id` T closes any other currently-open
+  virtual occupancy for T (wherever it is) and opens one here.
+- New tables (`virtual_berth_occupancy`, `virtual_berth_current_state`) rather than overloading
+  `berth_occupancy`/`berth_current_state`, which are keyed throughout by `(td_area, berth_code)`.
+  `map_binding_index` widens to a third binding kind, keyed by `stanox` instead of `td_area`/
+  `berth`.
+- New independently-checkpointed daemon `project-virtual-berths`, same `daemonLoop`/rebuild pattern
+  as every other live-path projector.
+- Live WS: `tdArea`/`berth` become optional on `berth.updated`/`berth.cleared`, `stanox` added; no
+  new wire field for "is this virtual" — the client already holds the compiled bundle's binding
+  types and derives styling locally, same as every other static per-element rendering fact.
+- `current-run`: new `virtual_direct` matchBasis, bypassing the whole tiered ADR 0006/0007 resolver
+  for a virtual berth click, since the occupancy already carries the report's own `trust_id`
+  directly — never `ambiguous` (exactly one `trust_id`, by construction).
+- Editor: a binding-mode toggle on the berth property panel (TD area/berth fields vs. a STANOX
+  picker), a non-blocking validation warning for an unrecognised STANOX, and a shared yellow-border
+  style token applied identically in `MapRenderer.tsx` and `EditorCanvas.tsx` (rule 13).
+- Explicitly out of scope for this pass: automatic handoff back to TD coverage on re-entry (closes
+  only via the next GPS step, TRUST's own `train_terminated` flag, or a manual admin clear),
+  playback/history for virtual berths.
+
+Acceptance criteria (once unblocked):
+
+1. A map author can bind a `berth` element to one or more STANOXes instead of a TD area/berth code,
+   and it renders with a yellow border in both the editor canvas and the published live map,
+   unoccupied styling otherwise unchanged.
+2. A sequence of GPS-sourced TRUST movement reports for one `trust_id` across several bound
+   STANOXes steps the headcode along those virtual berths in order, each previous one clearing as
+   the next opens, with no authored ordering/chain configuration required.
+3. `train_terminated` on a GPS report clears that virtual berth immediately rather than leaving it
+   occupied indefinitely.
+4. Clicking an occupied virtual berth's popup shows `matchBasis: "virtual_direct"` and the correct
+   schedule detail when garner has a `trust_activation` link for that `trust_id`, or an honest
+   `unmatched` when it doesn't — never `ambiguous`.
+5. `project-virtual-berths --rebuild` reproduces the same `virtual_berth_current_state` from an
+   empty projection, matching the rebuildability bar every other projector meets.
+6. Nationwide TD capture, existing maps, and the existing TD-backed resolver are completely
+   unaffected (purely additive).
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

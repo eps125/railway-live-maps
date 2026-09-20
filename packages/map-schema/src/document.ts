@@ -229,6 +229,13 @@ const NeutralSectionElementSchema = BaseElementSchema.extend({
   /** Optional caption beside the board (e.g. the neutral section's name or mileage). */
   label: z.string().optional(),
   labelPosition: z.enum(["above", "below", "left", "right"]).default("below"),
+  /** Owner request 2026-09-20: detach the label from its `labelPosition` anchor and put it
+   * wherever is convenient on a crowded schematic. An **offset from the board's centre**, not an
+   * absolute point, so a detached label still travels with the sign when the sign is moved and a
+   * copy/paste keeps its layout. While set, `labelPosition` is ignored (the value is kept, so
+   * re-attaching restores the side the author last chose) and the label is centred on the offset
+   * point. Absent = attached, the default. */
+  labelOffset: PointSchema.optional(),
   fontSize: z.number().positive().default(10),
 });
 

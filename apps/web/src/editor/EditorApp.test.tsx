@@ -71,6 +71,8 @@ describe("EditorApp (Konva smoke test)", () => {
         size: 20,
         label: "Carnforth NS",
         labelPosition: "below",
+        // Detached, so the independently-draggable label node mounts too.
+        labelOffset: { x: -35, y: -15 },
         fontSize: 10,
       },
       {

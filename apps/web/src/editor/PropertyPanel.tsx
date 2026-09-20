@@ -3,6 +3,7 @@ import {
   MAP_STYLE,
   Z_INDEX_LAYER_BAND,
   canonicalSAddress,
+  neutralSectionGeometry,
   type MapDocument,
   type TdBerthBinding,
   type TdSBitBinding,
@@ -827,18 +828,62 @@ export function PropertyPanel(): JSX.Element {
             value={element.label ?? ""}
             onCommit={(v) => setProp("label", v || undefined)}
           />
-          <label className="field">
-            Label position
-            <select
-              value={element.labelPosition}
-              onChange={(e) => setProp("labelPosition", e.target.value)}
-            >
-              <option value="above">above</option>
-              <option value="below">below</option>
-              <option value="left">left</option>
-              <option value="right">right</option>
-            </select>
-          </label>
+          {element.labelOffset === undefined ? (
+            <>
+              <label className="field">
+                Label position
+                <select
+                  value={element.labelPosition}
+                  onChange={(e) => setProp("labelPosition", e.target.value)}
+                >
+                  <option value="above">above</option>
+                  <option value="below">below</option>
+                  <option value="left">left</option>
+                  <option value="right">right</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  // Detach where the label already is, so it never jumps on the first click —
+                  // the same geometry the canvas just drew it with, turned into an offset from
+                  // the board's centre.
+                  const geometry = neutralSectionGeometry(element);
+                  setProp("labelOffset", {
+                    x: geometry.label.x - element.x,
+                    y: geometry.label.y - element.y,
+                  });
+                }}
+              >
+                Detach label
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="field-hint">
+                Label detached — drag it on the canvas, or set its offset from the board centre
+                below. It still moves with the sign.
+              </p>
+              <NumberField
+                label="Label offset X"
+                value={element.labelOffset.x}
+                onCommit={(v) => setProp("labelOffset", { ...element.labelOffset, x: v })}
+              />
+              <NumberField
+                label="Label offset Y"
+                value={element.labelOffset.y}
+                onCommit={(v) => setProp("labelOffset", { ...element.labelOffset, y: v })}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setProp("labelOffset", undefined)}
+              >
+                Reattach label
+              </button>
+            </>
+          )}
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <NumberField
@@ -855,8 +900,9 @@ export function PropertyPanel(): JSX.Element {
           <p className="field-hint">
             Sign AJ02, the neutral section indication board. X/Y is the centre of the board and Size
             is its side in map units, so it scales about the point it sits on — the default{" "}
-            {MAP_STYLE.neutralSection.size} is two squares of the default grid. Display only: a
-            neutral section carries no binding and no live state.
+            {MAP_STYLE.neutralSection.size} is two squares of the default grid, and signs place and
+            drag on half-grid steps. Display only: a neutral section carries no binding and no live
+            state.
           </p>
         </>
       )}

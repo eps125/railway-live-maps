@@ -140,7 +140,21 @@ rounded square carrying the black two-bar symbol, reproduced to that drawing's o
 Fields: `x`/`y` (the **centre** of the board, unlike a berth's top-left, so `size` scales it about
 the point it sits on), `size` (the board's side in map units; default 20 = two default grid
 squares, author-editable per sign), optional `label`, `labelPosition` (`above`/`below`/`left`/
-`right`, default `below`) and `fontSize`.
+`right`, default `below`), optional `labelOffset` and `fontSize`.
+
+**Half-grid placement** (owner request 2026-09-20): a sign places and drags on `gridSize / 2`
+rather than the full grid, joining `platform` and `platformNumber` in `snapStep`'s half-grid set
+(`EditorCanvas.tsx`) — a full grid square is a coarse jump for a symbol only two squares across.
+
+**Detached label** (same request): setting `labelOffset` frees the label from its
+`labelPosition` anchor so it can go wherever is convenient on a crowded schematic. It is an
+**offset from the board's centre**, not an absolute point, so the label still travels with the
+sign when the sign is moved and survives copy/paste. While set, `labelPosition` is ignored (but
+retained, so re-attaching restores the side last chosen) and the label is centred on the offset
+point. In the editor, "Detach label" seeds the offset with the label's _current_ drawn position
+so it never jumps, the label then becomes independently draggable on the canvas (Konva gives a
+draggable child priority over its draggable parent, so grabbing the board still moves the whole
+sign), and "Reattach label" clears it.
 
 `neutralSectionGeometry` (in `packages/map-schema`) derives the board rect, the four black symbol
 rects and the label anchor from `MAP_STYLE.neutralSection`, whose fractions are the AJ02 drawing's

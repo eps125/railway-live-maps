@@ -566,6 +566,36 @@ describe("MapRenderer", () => {
     expect(container.querySelector("text")?.textContent).toBe("Carnforth NS");
   });
 
+  it("draws a detached neutral section label at its offset from the board centre", () => {
+    const doc = bundle({
+      elementsById: {
+        "ns-1": {
+          id: "ns-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "neutralSection",
+          x: 100,
+          y: 50,
+          size: 20,
+          label: "Carnforth NS",
+          labelPosition: "below",
+          labelOffset: { x: -35, y: -15 },
+          fontSize: 10,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const text = container.querySelector("text");
+    expect(text?.textContent).toBe("Carnforth NS");
+    expect(text?.getAttribute("x")).toBe("65");
+    expect(text?.getAttribute("y")).toBe("35");
+    // The board itself is untouched by detaching the label.
+    const board = container.querySelectorAll("rect")[0]!;
+    expect(board.getAttribute("x")).toBe("90");
+    expect(board.getAttribute("y")).toBe("40");
+  });
+
   it("renders a neutral section with no label at all when it has none", () => {
     const doc = bundle({
       elementsById: {

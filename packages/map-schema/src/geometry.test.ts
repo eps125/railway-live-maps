@@ -198,6 +198,39 @@ describe("neutralSectionGeometry", () => {
     expect(bigger.board.y + bigger.board.height / 2).toBe(50);
   });
 
+  it("places a detached label at its offset from the board centre, ignoring labelPosition", () => {
+    // Owner request 2026-09-20. The offset is relative to x/y, so the label travels with the
+    // sign rather than being pinned to an absolute point on the canvas.
+    const detached = neutralSectionGeometry({
+      x: 100,
+      y: 50,
+      size: 20,
+      fontSize: 10,
+      labelPosition: "below",
+      labelOffset: { x: -35, y: -15 },
+    });
+    expect(detached.label).toEqual({ x: 65, y: 35, anchor: "middle" });
+
+    // Moving the sign moves the label with it, offset unchanged.
+    const moved = neutralSectionGeometry({
+      x: 140,
+      y: 50,
+      size: 20,
+      fontSize: 10,
+      labelPosition: "below",
+      labelOffset: { x: -35, y: -15 },
+    });
+    expect(moved.label.x - moved.board.x).toBe(detached.label.x - detached.board.x);
+  });
+
+  it("leaves the board and symbol untouched when the label is detached", () => {
+    const base = { x: 100, y: 50, size: 20, fontSize: 10, labelPosition: "below" } as const;
+    const attached = neutralSectionGeometry(base);
+    const detached = neutralSectionGeometry({ ...base, labelOffset: { x: 40, y: 0 } });
+    expect(detached.board).toEqual(attached.board);
+    expect(detached.bars).toEqual(attached.bars);
+  });
+
   it("anchors the label on the chosen side of the board", () => {
     const base = { x: 100, y: 50, size: 20, fontSize: 10 } as const;
     expect(neutralSectionGeometry({ ...base, labelPosition: "below" })).toMatchObject({

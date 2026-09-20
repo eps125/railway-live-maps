@@ -113,8 +113,9 @@ export interface NeutralSectionGeometry {
    * vertical bar, left (outward) arm, right (outward) arm. They are drawn as separate rects
    * rather than one path because both renderers can express a rect natively. */
   bars: Rect[];
-  /** Where the optional label goes, given `labelPosition`. `anchor` is SVG `text-anchor`
-   * vocabulary; `y` is an alphabetic baseline, matching every other text in both renderers. */
+  /** Where the optional label goes: the `labelPosition` anchor, or `labelOffset` from the
+   * board's centre when the author has detached it. `anchor` is SVG `text-anchor` vocabulary;
+   * `y` is an alphabetic baseline, matching every other text in both renderers. */
   label: { x: number; y: number; anchor: "start" | "middle" | "end" };
 }
 
@@ -134,6 +135,7 @@ export function neutralSectionGeometry(element: {
   size: number;
   fontSize: number;
   labelPosition: "above" | "below" | "left" | "right";
+  labelOffset?: { x: number; y: number } | undefined;
 }): NeutralSectionGeometry {
   const s = MAP_STYLE.neutralSection;
   const size = element.size;
@@ -154,8 +156,12 @@ export function neutralSectionGeometry(element: {
   const rightArmEnd = left + size - armInset;
 
   const gap = s.labelGap;
-  const label =
-    element.labelPosition === "above"
+  // A detached label (owner request 2026-09-20) is centred on its own offset from the board's
+  // centre, and `labelPosition` no longer applies — the author placed it by hand.
+  const detached = element.labelOffset;
+  const label = detached
+    ? { x: element.x + detached.x, y: element.y + detached.y, anchor: "middle" as const }
+    : element.labelPosition === "above"
       ? { x: element.x, y: top - gap, anchor: "middle" as const }
       : element.labelPosition === "left"
         ? { x: left - gap, y: element.y + element.fontSize * 0.35, anchor: "end" as const }

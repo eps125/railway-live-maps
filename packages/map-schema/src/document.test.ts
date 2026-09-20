@@ -42,6 +42,38 @@ describe("MapDocumentSchema", () => {
     expect(element).not.toHaveProperty("bindingId");
   });
 
+  it("accepts an optional neutralSection labelOffset and leaves it unset by default", () => {
+    const withOffset = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [
+          {
+            id: "ns1",
+            layerId: "l1",
+            type: "neutralSection",
+            x: 0,
+            y: 0,
+            labelOffset: { x: -35, y: -15 },
+          },
+        ],
+      }),
+    );
+    expect(withOffset.success).toBe(true);
+    if (withOffset.success) {
+      expect(withOffset.data.elements[0]).toMatchObject({ labelOffset: { x: -35, y: -15 } });
+    }
+
+    const withoutOffset = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [{ id: "ns1", layerId: "l1", type: "neutralSection", x: 0, y: 0 }],
+      }),
+    );
+    expect(withoutOffset.success).toBe(true);
+    if (withoutOffset.success) {
+      const element = withoutOffset.data.elements[0];
+      expect(element && "labelOffset" in element ? element.labelOffset : undefined).toBeUndefined();
+    }
+  });
+
   it("rejects a neutralSection with a non-positive size", () => {
     const result = MapDocumentSchema.safeParse(
       minimalDoc({

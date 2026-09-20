@@ -5,6 +5,7 @@ import {
   defaultLayerIdForTool,
   elementBounds,
   boundsIntersect,
+  snapStep,
 } from "./EditorCanvas.js";
 
 const standardLayers: Layer[] = [
@@ -85,6 +86,28 @@ function label(x: number, y: number): MapElement {
 function trackPath(points: Array<{ x: number; y: number }>): MapElement {
   return { id: "track-1", layerId: "l", zIndex: 0, type: "trackPath", points };
 }
+
+describe("snapStep", () => {
+  it("puts platforms, platform numbers and neutral sections on half the grid step", () => {
+    // Owner request 2026-09-20 for neutralSection: a full grid square is a coarse jump for a
+    // sign that is only two squares across.
+    expect(snapStep("platform", 10)).toBe(5);
+    expect(snapStep("platformNumber", 10)).toBe(5);
+    expect(snapStep("neutralSection", 10)).toBe(5);
+  });
+
+  it("leaves everything else on the full grid step", () => {
+    expect(snapStep("berth", 10)).toBe(10);
+    expect(snapStep("signal", 10)).toBe(10);
+    expect(snapStep("trackPath", 10)).toBe(10);
+    expect(snapStep("label", 10)).toBe(10);
+    expect(snapStep(undefined, 10)).toBe(10);
+  });
+
+  it("never returns a zero or fractional-to-nothing step for a tiny grid", () => {
+    expect(snapStep("neutralSection", 1)).toBe(1);
+  });
+});
 
 describe("elementBounds", () => {
   it("uses x/y/width/height for a berth", () => {

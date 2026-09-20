@@ -572,6 +572,42 @@ describe("PropertyPanel neutral section fields (Milestone 53)", () => {
     expect(size).toHaveValue(20);
   });
 
+  it("detaches the label where it already sits, then reattaches it", async () => {
+    renderPanel(docWithNeutralSection(), "ns-a");
+
+    // Attached: the side picker is offered, the offset fields are not.
+    expect(await screen.findByLabelText("Label position")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Label offset X")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Detach label" }));
+
+    // The sign is at (30, 40) with size 20 and fontSize 10, labelPosition "below" — the
+    // detached offset must be exactly where the attached label was drawn, so it doesn't jump.
+    // below => y = top + size + gap + fontSize * 0.8 = 30 + 20 + 4 + 8 = 62 => offset y = 22.
+    expect(screen.getByLabelText("Label offset X")).toHaveValue(0);
+    expect(screen.getByLabelText("Label offset Y")).toHaveValue(22);
+    expect(screen.queryByLabelText("Label position")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reattach label" }));
+    expect(await screen.findByLabelText("Label position")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Label offset X")).toBeNull();
+  });
+
+  it("commits an edited label offset without disturbing the board position", async () => {
+    renderPanel(docWithNeutralSection(), "ns-a");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Detach label" }));
+
+    const offsetX = screen.getByLabelText("Label offset X");
+    fireEvent.change(offsetX, { target: { value: "-35" } });
+    fireEvent.blur(offsetX);
+    expect(offsetX).toHaveValue(-35);
+    // The Y half of the offset survives editing X (a whole-object setProperty, not a partial).
+    expect(screen.getByLabelText("Label offset Y")).toHaveValue(22);
+    expect(screen.getByLabelText("X")).toHaveValue(30);
+    expect(screen.getByLabelText("Y")).toHaveValue(40);
+  });
+
   it("offers no binding fields \u2014 a neutral section is display-only", async () => {
     renderPanel(docWithNeutralSection(), "ns-a");
 

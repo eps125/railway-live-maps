@@ -42,6 +42,16 @@ function snap(value: number, gridSize: number): number {
   return Math.round(value / gridSize) * gridSize;
 }
 
+/** Element/tool types the author positions at half the map grid step rather than on it: a
+ * platform's outline (so a shape's width can sit between grid lines, ADR 0005 rev.), a platform
+ * number, and — owner request 2026-09-20 — a neutral section sign and its detached label, which
+ * are small enough that a full grid square is a coarse jump. Everything else stays on the grid. */
+const HALF_GRID_TYPES = new Set(["platform", "platformNumber", "neutralSection"]);
+
+export function snapStep(type: string | undefined, gridSize: number): number {
+  return type !== undefined && HALF_GRID_TYPES.has(type) ? Math.max(1, gridSize / 2) : gridSize;
+}
+
 function flattenPoints(points: Array<{ x: number; y: number }>): number[] {
   return points.flatMap((p) => [p.x, p.y]);
 }
@@ -473,10 +483,7 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     const point = toWorldPoint(stage);
     const layerId = defaultLayerIdForTool(toolMode, doc.layers);
     if (!layerId) return;
-    const placeStep =
-      toolMode === "platform" || toolMode === "platformNumber"
-        ? Math.max(1, gridSize / 2)
-        : gridSize;
+    const placeStep = snapStep(toolMode, gridSize);
     const element = defaultElementForTool(toolMode, layerId, {
       x: snap(point.x, placeStep),
       y: snap(point.y, placeStep),
@@ -507,7 +514,7 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
   function handlePositionedDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
     const element = doc.elements.find((el) => el.id === elementId);
     if (!element || !("x" in element)) return;
-    const step = element.type === "platformNumber" ? Math.max(1, gridSize / 2) : gridSize;
+    const step = snapStep(element.type, gridSize);
     const newX = snap(e.target.x(), step);
     const newY = snap(e.target.y(), step);
     const dx = newX - element.x;
@@ -519,6 +526,27 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     dispatch({
       type: "dispatchCommand",
       command: { type: "moveElements", elementIds: idsToMove, dx, dy },
+    });
+  }
+
+  /**
+   * Owner request 2026-09-20: a *detached* neutral-section label is dragged on its own, inside
+   * the sign's Group, so the node's local x/y already is the offset from the board centre that
+   * `labelOffset` stores. Konva gives a draggable child priority over its draggable parent, so
+   * grabbing the label moves only the label and grabbing the board still moves the whole sign.
+   */
+  function handleLabelDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!element || element.type !== "neutralSection" || !element.labelOffset) return;
+    const step = snapStep(element.type, gridSize);
+    const next = { x: snap(e.target.x(), step), y: snap(e.target.y(), step) };
+    // Snap the node back to the stored value either way, so a sub-step drag doesn't leave the
+    // rendered label off its committed offset (same discipline as handlePositionedDragEnd).
+    e.target.position(element.labelOffset);
+    if (next.x === element.labelOffset.x && next.y === element.labelOffset.y) return;
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setProperty", elementId, property: "labelOffset", value: next },
     });
   }
 
@@ -1163,6 +1191,11 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                       text={label}
                       fontSize={element.fontSize}
                       fill={selected ? "#58a6ff" : style.labelFill}
+                      // Only a detached label is independently draggable; an attached one is
+                      // part of the sign and moves with the board.
+                      draggable={draggable && element.labelOffset !== undefined}
+                      onClick={(e) => handleElementClick(e, element.id)}
+                      onDragEnd={(e) => handleLabelDragEnd(e, element.id)}
                     />
                   ) : null}
                 </Group>

@@ -3060,6 +3060,36 @@ Known limitations / follow-up: the sign's label is single-line (use a separate `
 more); there is no dedicated lineside-feature layer yet, so signs land on Labels; tunnels,
 viaducts and signal boxes are not implemented — they should reuse this element's generic shape.
 
+### Addendum (2026-09-20): half-grid placement and a detachable label
+
+Two follow-ups from the owner after seeing the sign on the map.
+
+**Half-grid snap.** A neutral section places and drags on `gridSize / 2`. Rather than add a
+fourth copy of the `platform`/`platformNumber` ternary, the rule moved into a shared
+`snapStep(type, gridSize)` + `HALF_GRID_TYPES` set in `EditorCanvas.tsx`, which the placement and
+positioned-drag paths now both call. The polyline-vertex paths were left as they were — only
+`trackPath`/`platform` reach them, so routing them through the helper would have been churn with
+no behaviour change.
+
+**Detachable label.** New optional `neutralSection.labelOffset`. It is an offset from the board's
+centre, not an absolute point, so a detached label still moves with its sign and survives
+copy/paste; `labelPosition` is ignored while it is set but kept, so reattaching restores the side
+the author last picked. `neutralSectionGeometry` resolves the two cases, so the public renderer
+needed no change at all. In the editor the label becomes its own draggable Konva node inside the
+sign's group — a draggable child takes drag priority over its draggable parent, so the label moves
+alone and the board still moves the whole sign. "Detach label" seeds the offset from the label's
+current drawn position, so clicking it never makes the label jump (asserted in the panel test).
+
+Files changed: `packages/map-schema/src/document.ts`, `geometry.ts` (+ both tests),
+`apps/web/src/editor/EditorCanvas.tsx` (+ test), `PropertyPanel.tsx` (+ test),
+`apps/web/src/map/MapRenderer.test.tsx`, `EditorApp.test.tsx`, `docs/MAP_EDITOR_SPEC.md`.
+
+Migrations/configuration: none — `labelOffset` is optional and absent means "attached", so every
+existing document keeps its current appearance.
+
+Known limitations: a detached label is always centred on its offset; there is no per-label
+alignment control. Dragging it has no live guide/snap indicator beyond the half-grid snap itself.
+
 ## Milestone 54 — CI housekeeping: prune old runs and images (2026-09-20)
 
 Owner request: the Actions tab and GHCR had been accumulating since Milestone 20 made every push

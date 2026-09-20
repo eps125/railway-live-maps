@@ -46,6 +46,18 @@ describe("parseBackfillArgs", () => {
   });
 });
 
+describe("parseBackfillArgs — decode columns (replay)", () => {
+  it("fills td_s_event decode columns by default, since that is what replay reads", () => {
+    const parsed = parseBackfillArgs([], DEFAULT_TO);
+    expect(parsed.ok && parsed.args.decode).toBe(true);
+  });
+
+  it("honours --skip-decode for a transitions-only run", () => {
+    const parsed = parseBackfillArgs(["--skip-decode"], DEFAULT_TO);
+    expect(parsed.ok && parsed.args.decode).toBe(false);
+  });
+});
+
 describe("planSlices", () => {
   it("tiles the window exactly, with a short final slice", () => {
     const from = new Date("2026-09-10T00:00:00Z");
@@ -71,6 +83,8 @@ describe("planSlices", () => {
 
 describe("toFoldEvent", () => {
   const row = {
+    id: "4242",
+    event_at: new Date("2026-09-10T09:00:05.000Z"),
     raw_event_id: "987654",
     raw_event_normalized_at_utc: new Date("2026-09-10T09:00:05.000Z"),
     td_area: "M9",

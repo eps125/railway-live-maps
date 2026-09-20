@@ -105,8 +105,10 @@ Acceptance fixtures include normal step, cancel, interpose overwrite, empty sour
 `packages/domain/src/td/berthReducer.ts`; orchestrator in `apps/worker/src/td/projector.ts`
 (`project-td [--rebuild]` command) with integration tests in `projector.integration.test.ts`
 covering every acceptance scenario above; REST endpoints in `apps/api/src/routes/td.ts`. Known
-limitation: S-Class bit decoding (`td_s_bit_transition`) is created but left unpopulated — there
-is no verified S-Class decode spec/fixture yet (see Milestone 0), only raw storage.
+limitation _as of this milestone_: S-Class bit decoding (`td_s_bit_transition`) is created but
+left unpopulated — there is no verified S-Class decode spec/fixture yet (see Milestone 0), only
+raw storage. **Superseded:** Milestone 36a shipped a verified decode and the table has been
+populated by the live projector since 2026-09-19; Milestone 56 backfilled it 14 days further.
 
 ## Milestone 5 — canonical map schema and basic Lancaster renderer
 
@@ -1727,11 +1729,12 @@ Milestone 36's bindings. Original planning note kept below for history.
 it's done — not a Claude task.** Confirmed 2026-09-13: this stays parked until the owner picks it
 up; do not attempt it proactively. Listed here purely for planning continuity, not as work for
 Claude to pick up: not a code milestone at all, and no editor/platform work is required to unblock
-it once Milestones 29-32 land. One real dependency worth knowing about before or during authoring:
-**S-Class bit decoding is still unimplemented** (`td_s_bit_transition` exists but is unpopulated;
-no verified decode spec/fixture yet — this predates this plan, see Milestone 36). Authoring the
-map itself doesn't need to wait, but its signals will render blank (same as Lancaster/Preston
-today, CLAUDE.md rule 8) until that decode work happens.
+it once Milestones 29-32 land. One dependency that _used_ to
+qualify this and no longer does: S-Class bit decoding was unimplemented when this was written, but
+Milestone 36a shipped it and `td_s_bit_transition` has been populated since 2026-09-19 (Milestone
+56 backfilled 14 days further). **Lancaster's signals will still render blank, for a different and
+still-current reason:** CLAUDE.md rule 8 — Lancaster/Preston has no usable S-Class data at all, so
+there is no bit to bind, whatever the decoder can do. Nothing here blocks authoring the map.
 
 ---
 
@@ -1947,7 +1950,10 @@ test.ts` run against a disposable Postgres (SSH-tunnelled to a throwaway contain
 
 ## Milestone 36 — S-Class bit decoding and signal on/off display `[in progress — 36a/36b deployed, 36c implemented 2026-09-19]`
 
-Long-standing gap: `td_s_bit_transition` is unpopulated, no verified decode spec/fixture exists.
+Long-standing gap _this milestone exists to close_ (state before 36a, now closed —
+`td_s_bit_transition` has been populated by the live projector since 2026-09-19, and Milestone 56
+backfilled it 14 days further): `td_s_bit_transition` is unpopulated, no verified decode
+spec/fixture exists.
 Needed for any map (Blackpool, Milestone 33, included) to show real signal on/off state rather
 than permanently blank symbols — CLAUDE.md rules 9/10 (blank/on/off only, never inferred) still
 apply once this lands. Unblocked by Milestone 33 (Blackpool map authored — 70 signal elements,
@@ -3260,6 +3266,29 @@ this replays them.
   "the value of this byte _now_" and is what live/playback signal state resolves from (CLAUDE.md
   rules 9/10); replaying historic events into it would drag live signals backwards. The fold's
   prior state is therefore held in memory, per area, carried across slices.
+- **Also fills `td_s_event`'s decode columns** (`decoded_bitset`, `decode_status`,
+  `decode_version`, `decode_error_code`) in the same pass, default on, `--skip-decode` to opt out.
+  This is what makes _replay and `/state?at=`_ work, and it is a different table from the
+  transitions the explorer reads: `fetchSByteFactsAt` requires `decode_status = 'decoded'`, so
+  history left as `raw_only` renders every signal blank no matter how many transitions exist.
+  Found the hard way — M9's transitions were backfilled first and replay still showed nothing at
+  7 days ago (production check, 2026-09-20: 0 decoded rows vs 1,448 raw rows in the same window).
+  Only `raw_only` rows are updated, so a row the live projector already decoded is never
+  overwritten, and an undecodable row is recorded `unsupported` with its error code rather than
+  left silent (rule 18). This revises this command's original "never writes `td_s_event`" stance:
+  the raw truth (`message_type`/`address`/`raw_value`) is untouched and `decoded_bitset` is a
+  derived projection of it, which rule 3 requires to be rebuildable.
+- **Signals render blank where decode data is absent, by design** — `resolveSignalStates`
+  initialises every signal to `blank` and only overwrites it when a trusted fact exists. Jumping
+  to a time before an area was backfilled therefore greys out its signals rather than guessing
+  (rules 9/10). That is existing behaviour, verified, and deliberately preserved.
+- **Run it per area, on demand.** Measured cost is dominated by page-access locality, not volume:
+  the transitions INSERT is FK-bound at 18.9 ms/row (the FK probe into the 159M-row
+  `raw_feed_event` is 83% of it — 21.6 s of 26.2 s for 983 rows), while the decode UPDATE, which
+  touches no FK column, is 3.8-3.9 ms/row. Per area that is minutes (M9: 160,207 events); all 176
+  areas would be days, which is why nationwide is not the intended mode. Owner decision
+  (2026-09-20): backfill an area when it is actually needed, and let the live projector accumulate
+  the rest — in 14 days the question disappears on its own.
 - Idempotent (`td_s_bit_transition_source_uk` → `on conflict do nothing`), so an interrupted run
   is resumed by simply re-running it. **Dry-run by default**, like `prune-partitions`; `--execute`
   writes.

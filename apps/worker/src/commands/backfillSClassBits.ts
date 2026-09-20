@@ -1,12 +1,13 @@
 import { createPool } from "@railway/database";
 import {
+  TD_S_DECODE_VERSION,
   decodeSClassPayload,
   foldSClassEvents,
   sByteKey,
   type SByteState,
   type SClassFoldEvent,
 } from "@railway/domain";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { Config } from "../config.js";
 import { insertSBitTransitionsBulk } from "../td/projector.js";
 
@@ -26,8 +27,15 @@ import { insertSBitTransitionsBulk } from "../td/projector.js";
  *   "the value of this byte *now*" and is what live/playback signal state resolves from
  *   (CLAUDE.md rules 9/10). Historic events replayed into it would move signals backwards. The
  *   fold's prior state is therefore held in memory here, never loaded from or written to the DB.
- * - It never writes `td_s_event` either: those rows already exist and their `decode_status`
- *   describes how they were normalized at ingest, which is a historical fact, not a cache.
+ * - It *does* fill `td_s_event`'s decode columns (`decoded_bitset`, `decode_status`,
+ *   `decode_version`, `decode_error_code`), because that is what replay and `/state?at=` actually
+ *   read — `fetchSByteFactsAt` requires `decode_status = 'decoded'`, so history left as
+ *   `raw_only` renders every signal blank however many transitions exist. This revises an earlier,
+ *   over-cautious reading of that column as "a historical fact about ingest": the raw truth
+ *   (`message_type`, `address`, `raw_value`) is never touched, and `decoded_bitset` is a derived
+ *   projection of it, which CLAUDE.md rule 3 requires to be rebuildable. `decode_version` records
+ *   which decoder produced it. Only `raw_only` rows are updated, so a row the live projector
+ *   already decoded is never overwritten. Pass `--skip-decode` to fill transitions alone.
  *
  * Idempotent: `td_s_bit_transition_source_uk` makes every insert `on conflict do nothing`, so a
  * re-run (or an overlapping window, or resuming an interrupted run) adds nothing twice. Dry-run
@@ -35,7 +43,7 @@ import { insertSBitTransitionsBulk } from "../td/projector.js";
  *
  * Usage:
  *   backfill-s-class-bits [--days 14 | --from <ISO>] [--to <ISO>] [--area XX]
- *                         [--slice-hours 6] [--sleep-ms 250] [--execute]
+ *                         [--slice-hours 6] [--sleep-ms 250] [--skip-decode] [--execute]
  *
  * `--to` defaults to the oldest transition already recorded, i.e. exactly where the live decoder
  * took over, so the default run fills the gap and re-reads nothing.
@@ -54,6 +62,8 @@ export interface BackfillArgs {
   area: string | null;
   sliceHours: number;
   sleepMs: number;
+  /** Fill `td_s_event`'s decode columns as well as the transitions (default true). */
+  decode: boolean;
   execute: boolean;
 }
 
@@ -117,6 +127,7 @@ export function parseBackfillArgs(
       area: areaRaw ? areaRaw.toUpperCase() : null,
       sliceHours,
       sleepMs,
+      decode: !argv.includes("--skip-decode"),
       execute: argv.includes("--execute"),
     },
   };
@@ -134,6 +145,8 @@ export function planSlices(from: Date, to: Date, sliceHours: number): Array<[Dat
 
 /** One `td_s_event` row, as the backfill reads it. */
 export interface SEventRow {
+  id: string;
+  event_at: Date;
   raw_event_id: string;
   raw_event_normalized_at_utc: Date;
   td_area: string;
@@ -167,6 +180,51 @@ export function toFoldEvent(
   };
 }
 
+/** One row's decode outcome, ready to stamp onto `td_s_event`. */
+interface DecodeWrite {
+  id: string;
+  eventAt: Date;
+  /** `{"bytes":{"07":203}}` — the same shape `insertSEventsBulk` writes, or null when undecodable. */
+  bitset: string | null;
+  status: "decoded" | "unsupported";
+  errorCode: string | null;
+}
+
+/**
+ * Fills `td_s_event`'s decode columns for rows still marked `raw_only`. Keyed on the primary key
+ * `(id, event_at)` — `event_at` is the partition key, so each row is located in its own partition
+ * rather than probed across all of them. The `raw_only` guard is what makes this idempotent and
+ * keeps it from ever overwriting a row the live projector decoded.
+ *
+ * An undecodable row is recorded as `unsupported` with its `decode_error_code`, never left silent
+ * and never repaired (CLAUDE.md rule 18).
+ */
+async function updateSEventDecodeBulk(
+  client: PoolClient,
+  writes: readonly DecodeWrite[],
+): Promise<number> {
+  if (writes.length === 0) return 0;
+  const result = await client.query(
+    `update td_s_event e
+        set decoded_bitset = t.decoded_bitset,
+            decode_status = t.decode_status,
+            decode_error_code = t.decode_error_code,
+            decode_version = $6
+       from unnest($1::bigint[], $2::timestamptz[], $3::jsonb[], $4::text[], $5::text[])
+            as t(id, event_at, decoded_bitset, decode_status, decode_error_code)
+      where e.id = t.id and e.event_at = t.event_at and e.decode_status = 'raw_only'`,
+    [
+      writes.map((w) => w.id),
+      writes.map((w) => w.eventAt),
+      writes.map((w) => w.bitset),
+      writes.map((w) => w.status),
+      writes.map((w) => w.errorCode),
+      TD_S_DECODE_VERSION,
+    ],
+  );
+  return result.rowCount ?? 0;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The areas to walk: every area with S-Class events in the window (or just `--area`). */
@@ -192,6 +250,8 @@ interface AreaTotals {
   events: number;
   decodeFailures: number;
   transitions: number;
+  /** `td_s_event` rows whose decode columns were filled (were still `raw_only`). */
+  decoded: number;
 }
 
 /**
@@ -214,8 +274,8 @@ async function backfillSlice(
   // partition, never a seq scan.
   const result = await pool.query<SEventRow>(
     `with e as materialized (
-       select raw_event_id, raw_event_normalized_at_utc, td_area, message_type, address,
-              raw_value, ingestion_sequence
+       select id, event_at, raw_event_id, raw_event_normalized_at_utc, td_area, message_type,
+              address, raw_value, ingestion_sequence
          from td_s_event
         where td_area = $1 and event_at >= $2 and event_at < $3
      )
@@ -226,19 +286,43 @@ async function backfillSlice(
   totals.events += result.rows.length;
 
   const events: SClassFoldEvent[] = [];
+  const decodeWrites: DecodeWrite[] = [];
   for (const row of result.rows) {
     const mapped = toFoldEvent(row);
-    if (mapped.ok) events.push(mapped.event);
-    else totals.decodeFailures += 1;
+    if (mapped.ok) {
+      events.push(mapped.event);
+      decodeWrites.push({
+        id: row.id,
+        eventAt: row.event_at,
+        bitset: JSON.stringify({
+          bytes: Object.fromEntries(mapped.event.bytes.map((b) => [b.address, b.value])),
+        }),
+        status: "decoded",
+        errorCode: null,
+      });
+    } else {
+      totals.decodeFailures += 1;
+      decodeWrites.push({
+        id: row.id,
+        eventAt: row.event_at,
+        bitset: null,
+        status: "unsupported",
+        errorCode: mapped.errorCode,
+      });
+    }
   }
-  if (events.length === 0) return;
+  if (events.length === 0 && decodeWrites.length === 0) return;
 
   const fold = foldSClassEvents(state, events);
-  if (args.execute && fold.transitions.length > 0) {
+  const wantsWrite = fold.transitions.length > 0 || (args.decode && decodeWrites.length > 0);
+  if (args.execute && wantsWrite) {
+    // One transaction per slice: the transitions and the decode columns they were derived from
+    // land together, so an interrupted run never leaves a slice half-applied.
     const client = await pool.connect();
     try {
       await client.query("begin");
       totals.transitions += await insertSBitTransitionsBulk(client, fold);
+      if (args.decode) totals.decoded += await updateSEventDecodeBulk(client, decodeWrites);
       await client.query("commit");
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
@@ -248,6 +332,7 @@ async function backfillSlice(
     }
   } else {
     totals.transitions += fold.transitions.length;
+    if (args.decode) totals.decoded += decodeWrites.length;
   }
 
   for (const write of fold.byteWrites) {
@@ -281,12 +366,15 @@ export async function runBackfillSClassBits(config: Config, argv: string[]): Pro
       `  slices   ${args.sliceHours} h, ${args.sleepMs} ms between them` +
         `${args.area ? `, area ${args.area} only` : ", all areas"}`,
     );
+    console.log(
+      `  decode   ${args.decode ? "filling td_s_event decode columns (replay/state readable)" : "skipped (--skip-decode)"}`,
+    );
 
     const areas = await areasInWindow(pool, args);
     console.log(`  areas    ${areas.length}\n`);
 
     const started = Date.now();
-    const grand: AreaTotals = { events: 0, decodeFailures: 0, transitions: 0 };
+    const grand: AreaTotals = { events: 0, decodeFailures: 0, transitions: 0, decoded: 0 };
     // Slices outer, areas inner — deliberately, and measured on production (2026-09-20). Every
     // area's rows for a given period are interleaved on the same heap pages, so walking all areas
     // through one slice before moving on keeps the working set to that slice and lets the areas
@@ -307,7 +395,8 @@ export async function runBackfillSClassBits(config: Config, argv: string[]): Pro
       console.log(
         `[${String(index + 1).padStart(3)}/${slices.length}] ${start.toISOString()}: ` +
           `${grand.events - before.events} events, ` +
-          `${grand.transitions - before.transitions} transitions`,
+          `${grand.transitions - before.transitions} transitions` +
+          (args.decode ? `, ${grand.decoded - before.decoded} decoded` : ""),
       );
       if (args.sleepMs > 0) await sleep(args.sleepMs);
     }
@@ -316,6 +405,9 @@ export async function runBackfillSClassBits(config: Config, argv: string[]): Pro
     console.log(
       `\nbackfill-s-class-bits: ${grand.events} events read, ` +
         `${grand.transitions} transitions ${args.execute ? "written" : "would be written"}, ` +
+        (args.decode
+          ? `${grand.decoded} td_s_event rows ${args.execute ? "decoded" : "would be decoded"}, `
+          : "decode columns skipped, ") +
         `${grand.decodeFailures} undecodable, ${seconds}s`,
     );
     if (!args.execute) console.log("Dry run — nothing was written. Re-run with --execute.");

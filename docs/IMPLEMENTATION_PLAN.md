@@ -3304,8 +3304,14 @@ this replays them.
   `ingestion_sequence` — without it the planner leaves the `(td_area, event_at desc)` index for a
   nationwide scan of a 20 GB table (the pitfall from Milestone 33). Verified on production: an
   index scan of the single month partition.
-- `--to` defaults to the oldest transition already recorded, i.e. exactly where the live decoder
-  took over, so the default run fills the gap and re-reads nothing.
+- `--to` defaults to where this area's existing coverage starts, so the default run fills the gap
+  before it and re-reads nothing. **Scoped per area** — an earlier version took `min(event_at)`
+  across the whole table, which was fine on a virgin table and wrong the moment a second area was
+  backfilled: once M9 reached back to 2026-09-05, a bare `--area XX` on any other area computed
+  its window from _M9's_ boundary and silently targeted the wrong fortnight. Caught the same day
+  by reading the boundary line of a dry run, and confirmed against production: global boundary
+  2026-09-05, but M8 and R1 correctly 2026-09-19 (where the live projector started) once scoped.
+  This matters specifically because the intended mode is on-demand, one area at a time.
 
 **Explorer reach (`apps/api/src/routes/admin/sClass.ts`, `apps/web/src/auth/SClassExplorerPage.tsx`):**
 

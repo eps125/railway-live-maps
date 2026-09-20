@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBackfillArgs, planSlices, toFoldEvent } from "./backfillSClassBits.js";
+import { areaFlag, parseBackfillArgs, planSlices, toFoldEvent } from "./backfillSClassBits.js";
 
 /**
  * Milestone 56: the pure parts of `backfill-s-class-bits`. The DB-touching half is covered by
@@ -55,6 +55,24 @@ describe("parseBackfillArgs — decode columns (replay)", () => {
   it("honours --skip-decode for a transitions-only run", () => {
     const parsed = parseBackfillArgs(["--skip-decode"], DEFAULT_TO);
     expect(parsed.ok && parsed.args.decode).toBe(false);
+  });
+});
+
+describe("areaFlag — the boundary lookup must be per area, not global", () => {
+  it("reads and uppercases --area", () => {
+    expect(areaFlag(["--area", "m9", "--execute"])).toBe("M9");
+    expect(areaFlag(["--area", "M9"])).toBe("M9");
+  });
+
+  it("is null for a nationwide run", () => {
+    expect(areaFlag(["--execute"])).toBeNull();
+  });
+
+  it("is null for a malformed area, so a typo can never widen the boundary to all areas", () => {
+    // parseBackfillArgs rejects these outright; areaFlag must not quietly fall back to a
+    // nationwide boundary lookup in the meantime.
+    expect(areaFlag(["--area", "M99"])).toBeNull();
+    expect(areaFlag(["--area"])).toBeNull();
   });
 });
 

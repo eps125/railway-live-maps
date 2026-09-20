@@ -238,12 +238,38 @@ async function areasInWindow(pool: Pool, args: BackfillArgs): Promise<string[]> 
   return result.rows.map((r) => r.td_area);
 }
 
-/** Where the live decoder took over — the default `--to`. */
-async function oldestRecordedTransition(pool: Pool): Promise<Date | null> {
-  const result = await pool.query<{ oldest: Date | null }>(
-    `select min(event_at) as oldest from td_s_bit_transition`,
-  );
+/**
+ * Where this area's existing coverage starts — the default `--to`, so a default run fills the
+ * gap before it and re-reads nothing.
+ *
+ * **Scoped to `area` when one is given**, which it must be: the boundary is per area, not global.
+ * Taking `min(event_at)` across the whole table was wrong as soon as a second area was backfilled
+ * — once M9 had been filled back to 2026-09-05, a bare `--area XX` on any other area computed its
+ * window from *M9's* boundary and silently targeted the wrong fortnight (found 2026-09-20, after
+ * the M9 run). A fresh area has transitions only from when the live projector started, so this
+ * returns that; an already-backfilled area returns its earlier boundary, and re-running simply
+ * extends coverage further back.
+ */
+async function coverageStart(pool: Pool, area: string | null): Promise<Date | null> {
+  const result = area
+    ? await pool.query<{ oldest: Date | null }>(
+        `select min(event_at) as oldest from td_s_bit_transition where td_area = $1`,
+        [area],
+      )
+    : await pool.query<{ oldest: Date | null }>(
+        `select min(event_at) as oldest from td_s_bit_transition`,
+      );
   return result.rows[0]?.oldest ?? null;
+}
+
+/**
+ * Pure: the `--area` value as the boundary query needs it, before the full parse (which cannot
+ * run until the boundary is known). Malformed input yields null here and is reported properly by
+ * `parseBackfillArgs`, so a bad `--area` never silently becomes a nationwide boundary lookup.
+ */
+export function areaFlag(argv: string[]): string | null {
+  const raw = flag(argv, "--area");
+  return raw !== undefined && /^[A-Za-z0-9]{2}$/.test(raw) ? raw.toUpperCase() : null;
 }
 
 interface AreaTotals {
@@ -346,7 +372,7 @@ async function backfillSlice(
 export async function runBackfillSClassBits(config: Config, argv: string[]): Promise<void> {
   const pool = createPool({ connectionString: config.DATABASE_URL });
   try {
-    const oldest = await oldestRecordedTransition(pool);
+    const oldest = await coverageStart(pool, areaFlag(argv));
     const parsed = parseBackfillArgs(argv, oldest ?? new Date());
     if (!parsed.ok) {
       console.error(`backfill-s-class-bits: ${parsed.error}`);
@@ -360,7 +386,11 @@ export async function runBackfillSClassBits(config: Config, argv: string[]): Pro
     );
     console.log(`  window   ${args.from.toISOString()} .. ${args.to.toISOString()}`);
     console.log(
-      `  boundary ${oldest ? `oldest recorded transition ${oldest.toISOString()}` : "no transitions recorded yet"}`,
+      `  boundary ${
+        oldest
+          ? `existing coverage starts ${oldest.toISOString()}${areaFlag(argv) ? ` (for ${areaFlag(argv)})` : " (all areas)"}`
+          : "no transitions recorded yet"
+      }`,
     );
     console.log(
       `  slices   ${args.sliceHours} h, ${args.sleepMs} ms between them` +

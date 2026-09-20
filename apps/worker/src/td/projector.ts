@@ -331,7 +331,7 @@ async function loadSByteState(
 
 /** Bulk insert of one batch's bit transitions; `on conflict do nothing` against
  * `td_s_bit_transition_source_uk` makes a replayed event a no-op. */
-async function insertSBitTransitionsBulk(
+export async function insertSBitTransitionsBulk(
   client: PoolClient,
   fold: SClassFoldResult,
 ): Promise<number> {

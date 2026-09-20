@@ -140,8 +140,8 @@ describe("admin S-Class explorer (integration)", () => {
       const grid = (await app.inject({ url: `/api/v1/admin/s-class/areas/${AREA}/bits` })).json();
       const byte03 = grid.bytes.find((b: { address: string }) => b.address === "03");
       expect(byte03.value).toBe(4);
-      expect(byte03.bits[2]).toMatchObject({ bit: 2, value: true, changes24h: 6 });
-      expect(byte03.bits[0]).toMatchObject({ value: false, changes24h: 0, lastChangedAt: null });
+      expect(byte03.bits[2]).toMatchObject({ bit: 2, value: true, changes: 6 });
+      expect(byte03.bits[0]).toMatchObject({ value: false, changes: 0, lastChangedAt: null });
     } finally {
       await app.close();
     }

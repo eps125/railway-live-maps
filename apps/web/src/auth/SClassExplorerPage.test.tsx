@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SClassExplorerPage } from "./SClassExplorerPage.js";
 
@@ -16,7 +16,7 @@ const bits = (value: number, labels: Record<number, string> = {}) =>
     bit,
     value: ((value >> bit) & 1) === 1,
     lastChangedAt: null,
-    changes24h: bit === 2 ? 4 : 0,
+    changes: bit === 2 ? 4 : 0,
     definition: labels[bit]
       ? {
           tdArea: "M9",
@@ -42,7 +42,7 @@ function stubApi(): ReturnType<typeof vi.fn> {
         }),
       );
     }
-    if (url === "/api/v1/admin/s-class/areas/M9/bits") {
+    if (url.startsWith("/api/v1/admin/s-class/areas/M9/bits?")) {
       return Promise.resolve(
         jsonResponse({
           bytes: [
@@ -94,6 +94,20 @@ describe("SClassExplorerPage (Milestone 36c)", () => {
     fireEvent.click(within(grid).getByTitle(/^03:2 = 1/));
     expect(await screen.findByRole("heading", { name: "M9 03:2 — currently 1" })).toBeVisible();
     expect(screen.getByLabelText("Label (e.g. S3003, R1007)")).toHaveValue("S3003");
+  });
+
+  it("re-queries the grid over the chosen activity window (Milestone 56)", async () => {
+    const fetchMock = stubApi();
+    render(<SClassExplorerPage />);
+    fireEvent.change(await screen.findByLabelText("TD area"), { target: { value: "M9" } });
+    await screen.findByRole("table", { name: "M9 S-Class bits" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/s-class/areas/M9/bits?windowHours=24");
+
+    fireEvent.change(screen.getByLabelText("Activity window"), { target: { value: "336" } });
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/s-class/areas/M9/bits?windowHours=336"),
+    );
+    expect(await screen.findByLabelText("Only bytes with changes in 14 days")).toBeInTheDocument();
   });
 
   it("won't preview an import until the byte numbering is chosen", async () => {

@@ -31,7 +31,21 @@ type DefinitionSource = (typeof DEFINITION_SOURCES)[number];
 /** Correlation window either side of a bit change / berth step. */
 const CORRELATION_WINDOW_SECONDS = 10;
 const CORRELATION_DEFAULT_HOURS = 24;
-const CORRELATION_MAX_HOURS = 7 * 24;
+/** Milestone 56: `backfill-s-class-bits` fills `td_s_bit_transition` back 14 days, so the
+ * explorer's ranges reach that far too. Raising this alone would only widen empty windows — the
+ * backfill is what makes the extra days hold anything. */
+const CORRELATION_MAX_HOURS = 14 * 24;
+/** The bit grid's activity window (`?windowHours=`), bounded by the same retention. */
+const GRID_DEFAULT_WINDOW_HOURS = 24;
+const GRID_MAX_WINDOW_HOURS = CORRELATION_MAX_HOURS;
+
+/** `windowHours` for the bit grid — a positive number of hours, capped at the retained history. */
+export function parseWindowHours(raw: string | undefined): number | null {
+  if (raw === undefined) return GRID_DEFAULT_WINDOW_HOURS;
+  const hours = Number(raw);
+  if (!Number.isFinite(hours) || hours <= 0) return null;
+  return Math.min(hours, GRID_MAX_WINDOW_HOURS);
+}
 
 interface DefinitionRow {
   td_area: string;
@@ -259,14 +273,20 @@ export async function registerSClassAdminRoutes(
   });
 
   /** The live bit grid for one area: every byte's current value, and per bit its last change
-   * (within the last 24 h), change count in that window and definition. */
-  app.get<{ Params: { tdArea: string } }>(
+   * within `?windowHours=` (default 24 h, max the retained 14 days), change count in that window
+   * and definition. */
+  app.get<{ Params: { tdArea: string }; Querystring: { windowHours?: string } }>(
     "/api/v1/admin/s-class/areas/:tdArea/bits",
     async (request, reply) => {
       const { tdArea } = request.params;
       if (!isTdArea(tdArea)) {
         reply.code(400);
         return apiError("INVALID_TD_AREA", "tdArea must be a two-character TD area code");
+      }
+      const windowHours = parseWindowHours(request.query.windowHours);
+      if (windowHours === null) {
+        reply.code(400);
+        return apiError("INVALID_TIME_RANGE", "windowHours must be a positive number of hours");
       }
       const [bytes, activity, definitions] = await Promise.all([
         pool.query<{
@@ -282,16 +302,16 @@ export async function registerSClassAdminRoutes(
             order by address`,
           [TD_S_STATE_PROJECTION_VERSION, tdArea],
         ),
-        // First-sight rows (previous_value null) are not changes — excluded. Bounded to 24 h on
-        // the (td_area, address, event_at desc) index.
+        // First-sight rows (previous_value null) are not changes — excluded. Bounded to the
+        // requested window on the (td_area, address, event_at desc) index.
         pool.query<{ address: string; bit_index: number; last_changed_at: Date; changes: number }>(
           `select address, bit_index, max(event_at) as last_changed_at, count(*)::int as changes
              from td_s_bit_transition
             where projection_version = $1 and td_area = $2
-              and event_at > now() - interval '24 hours'
+              and event_at > now() - make_interval(hours => $3)
               and previous_value is not null
             group by address, bit_index`,
-          [TD_S_STATE_PROJECTION_VERSION, tdArea],
+          [TD_S_STATE_PROJECTION_VERSION, tdArea, windowHours],
         ),
         pool.query<DefinitionRow>(`select * from s_class_definition where td_area = $1`, [tdArea]),
       ]);
@@ -303,6 +323,7 @@ export async function registerSClassAdminRoutes(
       );
       return {
         tdArea,
+        windowHours,
         bytes: bytes.rows.map((row) => ({
           address: row.address,
           value: row.byte_value,
@@ -316,7 +337,7 @@ export async function registerSClassAdminRoutes(
               bit,
               value: ((row.byte_value >> bit) & 1) === 1,
               lastChangedAt: act ? act.last_changed_at.toISOString() : null,
-              changes24h: act?.changes ?? 0,
+              changes: act?.changes ?? 0,
               definition: def ? definitionResponse(def) : null,
             };
           }),

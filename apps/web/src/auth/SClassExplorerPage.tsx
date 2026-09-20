@@ -34,7 +34,7 @@ interface BitCell {
   bit: number;
   value: boolean;
   lastChangedAt: string | null;
-  changes24h: number;
+  changes: number;
   definition: Definition | null;
 }
 
@@ -126,6 +126,25 @@ function londonTime(iso: string): string {
   return new Date(iso).toLocaleString("en-GB", { timeZone: "Europe/London" });
 }
 
+/** Milestone 56: how far back the grid and the suggestion tools look. Capped at the 14 days
+ * `backfill-s-class-bits` fills `td_s_bit_transition` back to — a longer range would only ever
+ * return an empty window. */
+const WINDOW_OPTIONS = [
+  { hours: 24, label: "24 hours" },
+  { hours: 24 * 3, label: "3 days" },
+  { hours: 24 * 7, label: "7 days" },
+  { hours: 24 * 14, label: "14 days" },
+] as const;
+
+/** `from=` for the correlation endpoints: the start of the selected window. */
+function windowFromIso(hours: number): string {
+  return new Date(Date.now() - hours * 3_600_000).toISOString();
+}
+
+function windowLabel(hours: number): string {
+  return WINDOW_OPTIONS.find((o) => o.hours === hours)?.label ?? `${hours} h`;
+}
+
 export function SClassExplorerPage(): JSX.Element {
   const [areas, setAreas] = useState<AreaSummary[]>([]);
   const [area, setArea] = useState("");
@@ -135,6 +154,7 @@ export function SClassExplorerPage(): JSX.Element {
   const [onlyActive, setOnlyActive] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [selected, setSelected] = useState<{ address: string; bit: number } | null>(null);
+  const [windowHours, setWindowHours] = useState<number>(24);
 
   useEffect(() => {
     fetch("/api/v1/admin/s-class/areas")
@@ -151,7 +171,9 @@ export function SClassExplorerPage(): JSX.Element {
   const loadGrid = useCallback(async (): Promise<void> => {
     if (!area) return;
     try {
-      const response = await fetch(`/api/v1/admin/s-class/areas/${area}/bits`);
+      const response = await fetch(
+        `/api/v1/admin/s-class/areas/${area}/bits?windowHours=${windowHours}`,
+      );
       if (!response.ok) throw new Error(await errorMessage(response, "Could not load bits"));
       const body = await readApiJson<{ bytes: ByteRow[] }>(response);
       setBytes(body.bytes);
@@ -160,7 +182,7 @@ export function SClassExplorerPage(): JSX.Element {
     } catch (error) {
       setGridError(error instanceof Error ? error.message : "Could not load bits");
     }
-  }, [area]);
+  }, [area, windowHours]);
 
   useEffect(() => {
     setBytes(null);
@@ -179,7 +201,7 @@ export function SClassExplorerPage(): JSX.Element {
       ? bytes.find((b) => b.address === selected.address)?.bits[selected.bit]
       : undefined;
   const visibleBytes = (bytes ?? []).filter(
-    (row) => !onlyActive || row.bits.some((b) => b.changes24h > 0),
+    (row) => !onlyActive || row.bits.some((b) => b.changes > 0),
   );
 
   return (
@@ -228,7 +250,17 @@ export function SClassExplorerPage(): JSX.Element {
             checked={onlyActive}
             onChange={(e) => setOnlyActive(e.target.checked)}
           />
-          Only bytes with changes in 24 h
+          Only bytes with changes in {windowLabel(windowHours).toLowerCase()}
+        </label>
+        <label className="field">
+          Activity window
+          <select value={windowHours} onChange={(e) => setWindowHours(Number(e.target.value))}>
+            {WINDOW_OPTIONS.map((option) => (
+              <option key={option.hours} value={option.hours}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -274,12 +306,12 @@ export function SClassExplorerPage(): JSX.Element {
                           ]
                             .filter(Boolean)
                             .join(" ")}
-                          title={`${row.address}:${cell.bit} = ${cell.value ? 1 : 0} · changed ${ago(cell.lastChangedAt, now)} · ${cell.changes24h} changes/24 h${cell.definition?.label ? ` · ${cell.definition.label}` : ""}`}
+                          title={`${row.address}:${cell.bit} = ${cell.value ? 1 : 0} · changed ${ago(cell.lastChangedAt, now)} · ${cell.changes} changes/${windowLabel(windowHours).toLowerCase()}${cell.definition?.label ? ` · ${cell.definition.label}` : ""}`}
                           onClick={() => setSelected({ address: row.address, bit: cell.bit })}
                         >
                           <span className="s-class-bit__value">{cell.value ? 1 : 0}</span>
                           <span className="s-class-bit__label">
-                            {cell.definition?.label ?? (cell.changes24h > 0 ? "·" : "")}
+                            {cell.definition?.label ?? (cell.changes > 0 ? "·" : "")}
                           </span>
                         </button>
                       </td>
@@ -293,6 +325,7 @@ export function SClassExplorerPage(): JSX.Element {
           <div className="s-class-side">
             {selected && selectedCell ? (
               <BitPanel
+                windowHours={windowHours}
                 key={`${area}:${selected.address}:${selected.bit}`}
                 tdArea={area}
                 address={selected.address}
@@ -305,6 +338,7 @@ export function SClassExplorerPage(): JSX.Element {
             )}
             <StepSuggestPanel
               tdArea={area}
+              windowHours={windowHours}
               onPick={(address, bit) => setSelected({ address, bit })}
             />
             <ImportPanel tdArea={area} onImported={() => void loadGrid()} />
@@ -320,12 +354,14 @@ function BitPanel({
   address,
   bit,
   cell,
+  windowHours,
   onSaved,
 }: {
   tdArea: string;
   address: string;
   bit: number;
   cell: BitCell;
+  windowHours: number;
   onSaved: () => void;
 }): JSX.Element {
   const def = cell.definition;
@@ -369,7 +405,9 @@ function BitPanel({
   async function suggest(): Promise<void> {
     setLoadingSteps(true);
     try {
-      const response = await fetch(`${base}/bits/${address}/${bit}/correlated-steps`);
+      const response = await fetch(
+        `${base}/bits/${address}/${bit}/correlated-steps?from=${encodeURIComponent(windowFromIso(windowHours))}`,
+      );
       if (!response.ok) throw new Error(await errorMessage(response, "Suggestion failed"));
       setSteps(await readApiJson(response));
     } catch (error) {
@@ -385,7 +423,7 @@ function BitPanel({
         {tdArea} {address}:{bit} — currently {cell.value ? 1 : 0}
       </h3>
       <p className="field-hint">
-        {cell.changes24h} changes in the last 24 h
+        {cell.changes} changes in the last {windowLabel(windowHours).toLowerCase()}
         {cell.lastChangedAt ? `, last at ${londonTime(cell.lastChangedAt)}` : ""}.
       </p>
 
@@ -441,7 +479,9 @@ function BitPanel({
 
       <h4>Suggest berth steps (authoring aid)</h4>
       <button type="button" className="btn" disabled={loadingSteps} onClick={() => void suggest()}>
-        {loadingSteps ? "Working…" : "Find berth steps near this bit's changes (24 h)"}
+        {loadingSteps
+          ? "Working…"
+          : `Find berth steps near this bit's changes (${windowLabel(windowHours).toLowerCase()})`}
       </button>
       {steps ? (
         steps.steps.length === 0 ? (
@@ -508,9 +548,11 @@ function BitPanel({
 
 function StepSuggestPanel({
   tdArea,
+  windowHours,
   onPick,
 }: {
   tdArea: string;
+  windowHours: number;
   onPick: (address: string, bit: number) => void;
 }): JSX.Element {
   const [fromBerth, setFromBerth] = useState("");
@@ -524,7 +566,11 @@ function StepSuggestPanel({
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ fromBerth, toBerth });
+      const params = new URLSearchParams({
+        fromBerth,
+        toBerth,
+        from: windowFromIso(windowHours),
+      });
       const response = await fetch(
         `/api/v1/admin/s-class/areas/${tdArea}/correlated-bits?${params.toString()}`,
       );
@@ -541,9 +587,9 @@ function StepSuggestPanel({
     <form className="panel-card" onSubmit={(e) => void search(e)}>
       <h3>Which bit is the signal between two berths?</h3>
       <p className="field-hint">
-        Ranks bits that change within ±10 s of trains stepping between these berths over the last 24
-        h — a signal usually returns to red (its bit changes) as a train steps past it. A suggestion
-        to check against the diagram, not a binding.
+        Ranks bits that change within ±10 s of trains stepping between these berths over the last{" "}
+        {windowLabel(windowHours).toLowerCase()} — a signal usually returns to red (its bit changes)
+        as a train steps past it. A suggestion to check against the diagram, not a binding.
       </p>
       <label className="field">
         From berth
@@ -568,7 +614,7 @@ function StepSuggestPanel({
       {result ? (
         result.steps === 0 ? (
           <p className="field-hint">
-            No {fromBerth} → {toBerth} steps in the last 24 h.
+            No {fromBerth} → {toBerth} steps in the last {windowLabel(windowHours).toLowerCase()}.
           </p>
         ) : (
           <table className="users-table">

@@ -486,6 +486,101 @@ describe("PropertyPanel label fields", () => {
   });
 });
 
+function docWithStation(): MapDocument {
+  const doc = baseDoc();
+  doc.elements.push({
+    id: "station-a",
+    layerId: "l",
+    zIndex: 0,
+    type: "station",
+    x: 10,
+    y: 10,
+    name: "Lancaster",
+    fontSize: 16,
+  });
+  return doc;
+}
+
+function docWithNeutralSection(): MapDocument {
+  const doc = baseDoc();
+  doc.elements.push({
+    id: "ns-a",
+    layerId: "l",
+    zIndex: 0,
+    type: "neutralSection",
+    x: 30,
+    y: 40,
+    size: 20,
+    labelPosition: "below",
+    fontSize: 10,
+  });
+  return doc;
+}
+
+describe("PropertyPanel station fields", () => {
+  it("edits the name in a textarea so it can hold newlines (2026-09-20)", async () => {
+    renderPanel(docWithStation(), "station-a");
+
+    const nameField = await screen.findByLabelText("Name");
+    expect(nameField.tagName).toBe("TEXTAREA");
+
+    fireEvent.change(nameField, { target: { value: "Lancaster\nCastle Junction" } });
+    fireEvent.blur(nameField);
+    expect(nameField).toHaveValue("Lancaster\nCastle Junction");
+  });
+
+  it("flattens a multi-line station name in a berth's station picker", async () => {
+    const doc = docWithStation();
+    const station = doc.elements.find((el) => el.id === "station-a")!;
+    if (station.type === "station") station.name = "Lancaster\nCastle Junction";
+    renderPanel(doc, "berth-a");
+
+    const picker = await screen.findByLabelText("Station");
+    expect([...picker.querySelectorAll("option")].map((o) => o.textContent)).toContain(
+      "Lancaster Castle Junction",
+    );
+  });
+});
+
+describe("PropertyPanel neutral section fields (Milestone 53)", () => {
+  it("commits the label, its position, and the board size", async () => {
+    renderPanel(docWithNeutralSection(), "ns-a");
+
+    const labelField = await screen.findByLabelText("Label");
+    fireEvent.change(labelField, { target: { value: "Carnforth NS" } });
+    fireEvent.blur(labelField);
+    expect(labelField).toHaveValue("Carnforth NS");
+
+    const position = screen.getByLabelText("Label position");
+    expect(position).toHaveValue("below");
+    fireEvent.change(position, { target: { value: "above" } });
+    expect(position).toHaveValue("above");
+
+    const size = screen.getByLabelText("Size");
+    expect(size).toHaveValue(20);
+    fireEvent.change(size, { target: { value: "30" } });
+    fireEvent.blur(size);
+    expect(size).toHaveValue(30);
+  });
+
+  it("snaps back to the stored size rather than accepting a non-positive one the schema rejects", async () => {
+    renderPanel(docWithNeutralSection(), "ns-a");
+
+    const size = await screen.findByLabelText("Size");
+    fireEvent.change(size, { target: { value: "0" } });
+    fireEvent.blur(size);
+    expect(size).toHaveValue(20);
+  });
+
+  it("offers no binding fields \u2014 a neutral section is display-only", async () => {
+    renderPanel(docWithNeutralSection(), "ns-a");
+
+    await screen.findByLabelText("Label position");
+    expect(screen.queryByLabelText("TD area")).toBeNull();
+    expect(screen.queryByRole("button", { name: /bind/i })).toBeNull();
+  });
+});
+
 describe("PropertyPanel layer reassignment", () => {
   it("shows the selected element's current layer and moves it when changed", async () => {
     vi.stubGlobal(

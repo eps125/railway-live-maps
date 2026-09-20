@@ -51,6 +51,38 @@ export const MAP_STYLE = {
      * SVG renderer uses `var(--map-platform-fill, …)` with this as the fallback. */
     color: "#ffa500",
   },
+  /**
+   * Lineside feature symbols reproduced from the real signage — the first of a planned family
+   * (tunnels, viaducts and signal boxes are later work).
+   *
+   * Sign **AJ02 Issue 1** (RSSB, June 2015), "Neutral Section Indication Board": a 600x600 white
+   * board with a 30-unit corner radius carrying a black symbol of two vertical bars 70 wide and
+   * 60 apart, inset 40 from the top and bottom, each with an 80-tall arm running *outward* to 50
+   * from the board edge. Every fraction below is that drawing's own dimension over 600, so
+   * `neutralSectionGeometry` scales the symbol with the element's `size` and it stays true to the
+   * sign at any zoom.
+   */
+  neutralSection: {
+    /** Default board side, in map units, for a newly placed sign: 2x2 default grid squares
+     * (`canvas.gridSize` is 10 — owner request 2026-09-20). The board is square, and the size is
+     * per-element and author-editable, so this is only the starting value. */
+    size: 20,
+    cornerRadius: 30 / 600,
+    barWidth: 70 / 600,
+    barGap: 60 / 600,
+    barInsetY: 40 / 600,
+    armHeight: 80 / 600,
+    armInsetX: 50 / 600,
+    /** The sign's own colours ("Black symbol on a White background") rather than the dark map
+     * palette — the point of the symbol is that it looks like the real board. */
+    boardFill: "#ffffff",
+    symbolFill: "#111111",
+    /** Thin outline so a white board still reads as a board against the dark canvas. */
+    boardStroke: "#0d1117",
+    labelFill: "#c9d1d9",
+    /** Gap between the board edge and the near edge of the label. */
+    labelGap: 4,
+  },
   /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
   weldTolerance: 6,
 } as const;
@@ -64,4 +96,6 @@ export const MAP_CSS_TOKENS = {
   platformNumberBorder: "--map-platform-number-border",
   platformNumberText: "--map-platform-number-text",
   stationLabel: "--map-station-label",
+  neutralSectionBoard: "--map-neutral-section-board",
+  neutralSectionSymbol: "--map-neutral-section-symbol",
 } as const;

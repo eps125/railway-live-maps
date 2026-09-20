@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAP_STYLE } from "./style.js";
 
 /** Canonical map JSON format (docs/MAP_EDITOR_SPEC.md §2-5). This is the versioned,
  * renderer-independent document — React/SVG/Konva are runtime representations only. */
@@ -143,6 +144,10 @@ const StationElementSchema = BaseElementSchema.extend({
   type: z.literal("station"),
   x: z.number(),
   y: z.number(),
+  /** Owner request 2026-09-20: newlines stack the name into centred lines, exactly as a `label`
+   * already does — long station names ("Lancaster Castle Junction") need the vertical space on a
+   * crowded schematic. Both renderers split on a newline; a trailing `[CRS]`, when set, goes on
+   * the **last** line so it reads as part of the name rather than floating on its own row. */
   name: z.string().min(1),
   crs: CrsSchema.optional(),
   tiploc: z.string().optional(),
@@ -202,6 +207,31 @@ const BoundaryElementSchema = BaseElementSchema.extend({
   adjacentBoundaryName: z.string().optional(),
 });
 
+/**
+ * Milestone 53 (owner request 2026-09-20): an AC neutral section, drawn as the real lineside
+ * board — Sign **AJ02 Issue 1**, "Neutral Section Indication Board" (RSSB, June 2015), black
+ * symbol on white, reproduced to that drawing's own proportions by `neutralSectionGeometry`.
+ *
+ * Authored map furniture and nothing more: no binding, no live state, no projection, and no
+ * operational meaning is read from or attributed to it (CLAUDE.md rules 9/10) — the same
+ * standing as a `label`. It is deliberately the *generic* shape for the lineside-feature family
+ * the owner has flagged as coming next (tunnels, viaducts, signal boxes): a point, a scale, and
+ * an optional placed label, with only the symbol itself specific to this sign.
+ */
+const NeutralSectionElementSchema = BaseElementSchema.extend({
+  type: z.literal("neutralSection"),
+  /** The **centre** of the board (unlike a berth's top-left), so changing `size` grows the sign
+   * evenly about the placed point rather than pulling it off the track it sits on. */
+  x: z.number(),
+  y: z.number(),
+  /** Side of the square board, in map units. */
+  size: z.number().positive().default(MAP_STYLE.neutralSection.size),
+  /** Optional caption beside the board (e.g. the neutral section's name or mileage). */
+  label: z.string().optional(),
+  labelPosition: z.enum(["above", "below", "left", "right"]).default("below"),
+  fontSize: z.number().positive().default(10),
+});
+
 export const MapElementSchema = z.discriminatedUnion("type", [
   TrackPathElementSchema,
   BerthElementSchema,
@@ -210,6 +240,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   PlatformNumberElementSchema,
   StationElementSchema,
   LabelElementSchema,
+  NeutralSectionElementSchema,
   BoundaryElementSchema,
 ]);
 
@@ -284,6 +315,7 @@ export type PlatformElement = z.infer<typeof PlatformElementSchema>;
 export type PlatformNumberElement = z.infer<typeof PlatformNumberElementSchema>;
 export type StationElement = z.infer<typeof StationElementSchema>;
 export type LabelElement = z.infer<typeof LabelElementSchema>;
+export type NeutralSectionElement = z.infer<typeof NeutralSectionElementSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;

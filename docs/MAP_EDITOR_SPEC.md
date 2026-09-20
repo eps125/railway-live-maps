@@ -123,6 +123,38 @@ style; `tiploc`/`stanox` are not rendered — they're place identifiers for
 station-berth schedule deduction (ADR 0004 D7) will build on. A zone bracket around member
 platforms is later work.
 
+**Multi-line names** (Milestone 53, owner request 2026-09-20): `\n` in `name` stacks it into
+centred lines, exactly as a `label` already did — long names need the vertical space on a crowded
+schematic. The public SVG renderer emits one `<tspan>` per line (each re-anchored at the element's
+own `x`, so the block stays centred) and Konva wraps natively on the same newlines; a `[CRS]`
+suffix goes on the **last** line in both, so it reads as part of the name rather than floating on
+its own row. The Properties panel's station **Name** field is a textarea for this. Anywhere a
+station name is shown as a single run of text — the berth Properties panel's station picker —
+newlines are flattened to spaces.
+
+### `neutralSection`
+
+**Milestone 53 (owner request 2026-09-20).** An AC neutral section, drawn as the real lineside
+board: **Sign AJ02 Issue 1**, "Neutral Section Indication Board" (RSSB, June 2015) — a white
+rounded square carrying the black two-bar symbol, reproduced to that drawing's own proportions.
+Fields: `x`/`y` (the **centre** of the board, unlike a berth's top-left, so `size` scales it about
+the point it sits on), `size` (the board's side in map units; default 20 = two default grid
+squares, author-editable per sign), optional `label`, `labelPosition` (`above`/`below`/`left`/
+`right`, default `below`) and `fontSize`.
+
+`neutralSectionGeometry` (in `packages/map-schema`) derives the board rect, the four black symbol
+rects and the label anchor from `MAP_STYLE.neutralSection`, whose fractions are the AJ02 drawing's
+dimensions over 600 — so the symbol stays true to the sign at any size, and the public SVG
+renderer and the editor canvas draw an identical sign from one source (CLAUDE.md rule 13).
+
+Display only, exactly like a `label`: no binding, no live state, no projection, and nothing is
+inferred from or about it (rules 9/10). It is the first of the lineside-feature family the owner
+has flagged as coming next (tunnels, viaducts, signal boxes), so its shape is deliberately generic
+— a point, a scale and an optional placed label, with only the symbol itself specific to AJ02. New
+signs land on the **Labels** layer (the conventional stack has no lineside-feature layer, and
+adding one to fresh documents would leave already-drafted maps falling back to Track); a dedicated
+layer is an option once the family has more members.
+
 ### `label`
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line

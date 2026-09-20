@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  MAP_STYLE,
   Z_INDEX_LAYER_BAND,
   canonicalSAddress,
   type MapDocument,
@@ -20,8 +21,9 @@ interface TextFieldProps {
   label: string;
   value: string;
   onCommit: (value: string) => void;
-  /** Render a resizable textarea instead of a single-line input — for label text, which can
-   * span multiple lines (each newline wraps in the renderer). */
+  /** Render a resizable textarea instead of a single-line input — for text that can span
+   * multiple lines (each newline wraps in both renderers): a `label`'s text, and since
+   * 2026-09-20 a `station`'s name. */
   multiline?: boolean;
 }
 
@@ -57,9 +59,13 @@ interface NumberFieldProps {
   label: string;
   value: number;
   onCommit: (value: number) => void;
+  /** Inclusive lower bound, for a field the schema itself constrains (e.g. a positive board
+   * size). An entry below it is refused and the input snaps back to the stored value, rather
+   * than leaving the field showing a number the document never actually took. */
+  min?: number;
 }
 
-function NumberField({ label, value, onCommit }: NumberFieldProps): JSX.Element {
+function NumberField({ label, value, onCommit, min }: NumberFieldProps): JSX.Element {
   const [local, setLocal] = useState(String(value));
   useEffect(() => setLocal(String(value)), [value]);
   return (
@@ -67,11 +73,16 @@ function NumberField({ label, value, onCommit }: NumberFieldProps): JSX.Element 
       {label}
       <input
         type="number"
+        {...(min === undefined ? {} : { min })}
         value={local}
         onChange={(e) => setLocal(e.target.value)}
         onBlur={() => {
           const parsed = Number(local);
-          if (Number.isFinite(parsed) && parsed !== value) onCommit(parsed);
+          if (!Number.isFinite(parsed) || (min !== undefined && parsed < min)) {
+            setLocal(String(value));
+            return;
+          }
+          if (parsed !== value) onCommit(parsed);
         }}
       />
     </label>
@@ -724,7 +735,10 @@ export function PropertyPanel(): JSX.Element {
                 .filter((el) => el.type === "station")
                 .map((el) => (
                   <option key={el.id} value={el.id}>
-                    {el.type === "station" ? el.name : el.id}
+                    {/* A station name can now contain newlines; a dropdown option renders
+                        them as a single run of text, so flatten them to spaces here
+                        rather than showing words jammed together. */}
+                    {el.type === "station" ? el.name.replace(/\s*\n\s*/g, " ") : el.id}
                   </option>
                 ))}
             </select>
@@ -771,7 +785,16 @@ export function PropertyPanel(): JSX.Element {
 
       {element.type === "station" && (
         <>
-          <TextField label="Name" value={element.name} onCommit={(v) => setProp("name", v)} />
+          <TextField
+            label="Name"
+            value={element.name}
+            onCommit={(v) => setProp("name", v)}
+            multiline
+          />
+          <p className="field-hint">
+            Newlines stack the name into centred lines, the same as a label. A CRS, when set, is
+            appended to the last line.
+          </p>
           <TextField
             label="CRS"
             value={element.crs ?? ""}
@@ -794,6 +817,47 @@ export function PropertyPanel(): JSX.Element {
             value={element.fontSize}
             onCommit={(v) => setProp("fontSize", v)}
           />
+        </>
+      )}
+
+      {element.type === "neutralSection" && (
+        <>
+          <TextField
+            label="Label"
+            value={element.label ?? ""}
+            onCommit={(v) => setProp("label", v || undefined)}
+          />
+          <label className="field">
+            Label position
+            <select
+              value={element.labelPosition}
+              onChange={(e) => setProp("labelPosition", e.target.value)}
+            >
+              <option value="above">above</option>
+              <option value="below">below</option>
+              <option value="left">left</option>
+              <option value="right">right</option>
+            </select>
+          </label>
+          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
+          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <NumberField
+            label="Size"
+            value={element.size}
+            min={1}
+            onCommit={(v) => setProp("size", v)}
+          />
+          <NumberField
+            label="Font size"
+            value={element.fontSize}
+            onCommit={(v) => setProp("fontSize", v)}
+          />
+          <p className="field-hint">
+            Sign AJ02, the neutral section indication board. X/Y is the centre of the board and Size
+            is its side in map units, so it scales about the point it sits on — the default{" "}
+            {MAP_STYLE.neutralSection.size} is two squares of the default grid. Display only: a
+            neutral section carries no binding and no live state.
+          </p>
         </>
       )}
 

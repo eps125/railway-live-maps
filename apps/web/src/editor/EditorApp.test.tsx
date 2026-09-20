@@ -56,6 +56,57 @@ describe("EditorApp (Konva smoke test)", () => {
     await waitFor(() => expect(screen.getByLabelText(/properties/i)).toBeInTheDocument());
   });
 
+  it("renders a neutral section and a multi-line station on the Konva canvas (Milestone 53)", async () => {
+    // Konva throws on an unknown/invalid prop rather than ignoring it, so actually mounting the
+    // stage is the only thing that proves the sign's Group/Rect/Text props are real.
+    const doc = draftDoc();
+    doc.elements.push(
+      {
+        id: "ns-1",
+        layerId: "layer-default",
+        zIndex: 0,
+        type: "neutralSection",
+        x: 120,
+        y: 80,
+        size: 20,
+        label: "Carnforth NS",
+        labelPosition: "below",
+        fontSize: 10,
+      },
+      {
+        id: "stn-1",
+        layerId: "layer-default",
+        zIndex: 0,
+        type: "station",
+        x: 200,
+        y: 40,
+        name: "Lancaster\nCastle Junction",
+        crs: "LAN",
+        fontSize: 16,
+      },
+    );
+
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/draft")) {
+        return Promise.resolve(
+          jsonResponse({ slug: "lancaster", revision: 1, canonicalDocument: doc }),
+        );
+      }
+      if (url.includes("/td/areas")) {
+        return Promise.resolve(jsonResponse({ areas: [] }));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<EditorApp slug="lancaster" />);
+
+    expect(await screen.findByText(/Editing/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText(/properties/i)).toBeInTheDocument());
+    // The palette offers the tool that places one.
+    expect(screen.getByRole("button", { name: /neutral sect/i })).toBeInTheDocument();
+  });
+
   it("shows an actionable error when the session expires mid-visit (401)", async () => {
     const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 401 } as Response));
     vi.stubGlobal("fetch", fetchMock);

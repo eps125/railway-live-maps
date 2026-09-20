@@ -24,6 +24,9 @@ describe("defaultLayerIdForTool", () => {
     expect(defaultLayerIdForTool("label", standardLayers)).toBe("layer-labels");
     expect(defaultLayerIdForTool("trackPath", standardLayers)).toBe("layer-track");
     expect(defaultLayerIdForTool("platform", standardLayers)).toBe("layer-track");
+    // Milestone 53: no dedicated lineside-feature layer exists, so a sign lands on Labels (the
+    // "everything else" layer) rather than silently on Track.
+    expect(defaultLayerIdForTool("neutralSection", standardLayers)).toBe("layer-labels");
   });
 
   it("places platform and platformNumber tools on a Platforms layer when one exists (ADR 0005 E3)", () => {
@@ -106,6 +109,21 @@ describe("elementBounds", () => {
       ]),
     );
     expect(bounds).toEqual({ minX: 10, minY: 20, maxX: 50, maxY: 100 });
+  });
+
+  it("uses the whole board for a neutral section, whose x/y is its centre (Milestone 53)", () => {
+    const sign: MapElement = {
+      id: "ns-1",
+      layerId: "l",
+      zIndex: 0,
+      type: "neutralSection",
+      x: 100,
+      y: 50,
+      size: 20,
+      labelPosition: "below",
+      fontSize: 10,
+    };
+    expect(elementBounds(sign)).toEqual({ minX: 90, minY: 40, maxX: 110, maxY: 60 });
   });
 
   it("returns null for a points-based element with no points", () => {

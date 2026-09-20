@@ -5,6 +5,7 @@ import {
   MAP_STYLE,
   berthRenderRect,
   computeBoundingBox,
+  neutralSectionGeometry,
   sortElementsForPaint,
   type Layer as MapLayer,
   type MapElement,
@@ -100,6 +101,18 @@ export function elementBounds(element: MapElement): Bounds | null {
       maxY: element.y + element.height,
     };
   }
+  // A neutral section is the one point-anchored element with a real drawn size, and its x/y is
+  // the board's *centre* — so rubber-band select uses the board itself rather than a zero-sized
+  // point that only catches the exact middle of a visibly large symbol.
+  if (element.type === "neutralSection") {
+    const half = element.size / 2;
+    return {
+      minX: element.x - half,
+      minY: element.y - half,
+      maxX: element.x + half,
+      maxY: element.y + half,
+    };
+  }
   return { minX: element.x, minY: element.y, maxX: element.x, maxY: element.y };
 }
 
@@ -135,6 +148,11 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   trackPath: /track/i,
   platform: /platform/i,
   platformNumber: /platform/i,
+  // No dedicated lineside-feature layer exists in the conventional stack (and adding one to
+  // `blankDocument` would leave every already-drafted map without it, falling back to Track),
+  // so a sign lands on Labels — the "everything else" layer, on top, which is where it belongs
+  // visually anyway. A dedicated layer is a later option once the family has more members.
+  neutralSection: /label/i,
 };
 
 export function defaultLayerIdForTool(tool: ToolMode, layers: MapLayer[]): string | undefined {
@@ -197,6 +215,19 @@ function defaultElementForTool(
         y: point.y,
         name: "New station",
         fontSize: 16,
+      };
+    case "neutralSection":
+      return {
+        id,
+        layerId,
+        zIndex: 0,
+        type: "neutralSection",
+        // x/y is the board's centre, so place it exactly where the author clicked.
+        x: point.x,
+        y: point.y,
+        size: MAP_STYLE.neutralSection.size,
+        labelPosition: "below",
+        fontSize: 10,
       };
     case "trackPath":
       return {
@@ -1068,6 +1099,8 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                   key={element.id}
                   ref={setRef}
                   {...anchoredText(element.x, element.y, element.fontSize, "center")}
+                  // The CRS goes on the *last* line, matching the public renderer's per-tspan
+                  // placement for a multi-line name (CLAUDE.md rule 13).
                   text={element.crs ? `${element.name} [${element.crs}]` : element.name}
                   fontSize={element.fontSize}
                   fontStyle="bold"
@@ -1076,6 +1109,63 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                   onClick={(e) => handleElementClick(e, element.id)}
                   onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
                 />
+              );
+            }
+            if (element.type === "neutralSection") {
+              // Mirror the public renderer exactly (CLAUDE.md rule 13): the same
+              // `neutralSectionGeometry` board + four black bars, drawn relative to a Group at
+              // the element's centre so the drag handler's coordinates stay the authored x/y.
+              const geometry = neutralSectionGeometry(element);
+              const style = MAP_STYLE.neutralSection;
+              const label = element.label;
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                >
+                  <Rect
+                    x={geometry.board.x - element.x}
+                    y={geometry.board.y - element.y}
+                    width={geometry.board.width}
+                    height={geometry.board.height}
+                    cornerRadius={geometry.board.rx}
+                    fill={style.boardFill}
+                    stroke={selected ? "#58a6ff" : style.boardStroke}
+                    strokeWidth={selected ? 1.5 : 0.5}
+                  />
+                  {geometry.bars.map((bar, index) => (
+                    <Rect
+                      key={index}
+                      x={bar.x - element.x}
+                      y={bar.y - element.y}
+                      width={bar.width}
+                      height={bar.height}
+                      fill={style.symbolFill}
+                    />
+                  ))}
+                  {label ? (
+                    <Text
+                      {...anchoredText(
+                        geometry.label.x - element.x,
+                        geometry.label.y - element.y,
+                        element.fontSize,
+                        geometry.label.anchor === "middle"
+                          ? "center"
+                          : geometry.label.anchor === "end"
+                            ? "right"
+                            : "left",
+                      )}
+                      text={label}
+                      fontSize={element.fontSize}
+                      fill={selected ? "#58a6ff" : style.labelFill}
+                    />
+                  ) : null}
+                </Group>
               );
             }
             // boundary — mirror the public renderer: grey r=4 dot, name to its right on the

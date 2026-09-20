@@ -11,7 +11,8 @@ export type ToolMode =
   | "platform"
   | "platformNumber"
   | "station"
-  | "label";
+  | "label"
+  | "neutralSection";
 
 export interface Viewport {
   x: number;

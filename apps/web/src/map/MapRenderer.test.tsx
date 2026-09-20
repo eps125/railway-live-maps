@@ -509,6 +509,85 @@ describe("MapRenderer", () => {
     expect(container.querySelector("text")?.textContent).toBe("Lancaster [LAN]");
   });
 
+  it("stacks a multi-line station name and puts the CRS on the last line (2026-09-20)", () => {
+    const doc = bundle({
+      elementsById: {
+        "stn-1": {
+          id: "stn-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "station",
+          x: 100,
+          y: 20,
+          name: "Lancaster\nCastle Junction",
+          crs: "LAN",
+          fontSize: 16,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const spans = [...container.querySelectorAll("text tspan")];
+    expect(spans.map((span) => span.textContent)).toEqual(["Lancaster", "Castle Junction [LAN]"]);
+    // Every line is re-anchored at the element's own x, so the block stays centred.
+    expect(spans.every((span) => span.getAttribute("x") === "100")).toBe(true);
+    expect(spans[1]?.getAttribute("dy")).toBe("1.2em");
+  });
+
+  it("draws a neutral section as the AJ02 board plus its four symbol bars (Milestone 53)", () => {
+    const doc = bundle({
+      elementsById: {
+        "ns-1": {
+          id: "ns-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "neutralSection",
+          x: 100,
+          y: 50,
+          size: 20,
+          label: "Carnforth NS",
+          labelPosition: "below",
+          fontSize: 10,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const rects = [...container.querySelectorAll("rect")];
+    // One white board centred on the element's x/y, plus the four black bars.
+    expect(rects).toHaveLength(5);
+    const board = rects[0]!;
+    expect(board.getAttribute("x")).toBe("90");
+    expect(board.getAttribute("y")).toBe("40");
+    expect(board.getAttribute("width")).toBe("20");
+    expect(board.getAttribute("height")).toBe("20");
+    // The two vertical bars are 70/600 of the board wide and sit either side of its centre.
+    expect(rects[1]!.getAttribute("width")).toBeCloseTo(20 * (70 / 600), 6);
+    expect(container.querySelector("text")?.textContent).toBe("Carnforth NS");
+  });
+
+  it("renders a neutral section with no label at all when it has none", () => {
+    const doc = bundle({
+      elementsById: {
+        "ns-1": {
+          id: "ns-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "neutralSection",
+          x: 10,
+          y: 10,
+          size: 20,
+          labelPosition: "below",
+          fontSize: 10,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(container.querySelector("text")).toBeNull();
+    expect(container.querySelectorAll("rect")).toHaveLength(5);
+  });
+
   it("hides vacant berths when showEmptyBerths is false but keeps occupied ones (ADR 0004 D5)", () => {
     const berthEl = (id: string, x: number) => ({
       id,

@@ -11,9 +11,10 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
 → 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
-→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51; 33 (owner,
+→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 53; 33 (owner,
 done 2026-09-19). Milestone 52 (virtual GPS-fed berths) was reverted on `main` 2026-09-19 and
-lives on the `gps-berths` branch.
+lives on the `gps-berths` branch. **That number stays reserved for it** — the 2026-09-20 editor
+work took 53 rather than reusing 52, so the branch can come back without a clash.
 
 **Planned next, in current priority order (updated 2026-09-19):**
 36 (36a → 36b → 36c → 36d) → 37 → 38 → 13 → _Later/unscheduled_.
@@ -2999,6 +3000,65 @@ indexes.
 Known limitations / follow-up: no CSV/export option; no saved/recent searches; the TD-area picker
 is a plain multi-select rather than a searchable/checkbox list (fine at the current ~dozens of
 observed areas, may want revisiting if that grows much further).
+
+## Milestone 53 — multi-line station names and a neutral section symbol (2026-09-20)
+
+Two owner requests in one editor pass.
+
+**Multi-line station names.** `station.name` now stacks on `\n` the way `label.text` always has —
+asked for "for spacing reasons" on a crowded schematic. The public SVG renderer already split the
+name into `<tspan>`s, and Konva wraps natively, so the gap was purely in authoring: the Properties
+panel's **Name** field was a single-line input with no way to enter a newline at all. It is now a
+textarea, with a hint that the `[CRS]` suffix lands on the last line. The berth panel's station
+picker flattens newlines to spaces, since a `<option>` renders them as one run of text.
+
+**Neutral sections.** A new `neutralSection` element type and matching tool, drawn as Sign AJ02
+Issue 1 ("Neutral Section Indication Board", RSSB, June 2015 — the PDF the owner supplied): a
+white rounded square with the black two-bar symbol, reproduced to the drawing's own 600-unit
+dimensions. `MAP_STYLE.neutralSection` holds those dimensions as fractions of 600 and
+`neutralSectionGeometry` turns them into the board rect, four symbol rects and a label anchor, so
+both renderers draw one identical sign from a single source (rule 13). The board defaults to 20
+map units — two squares of the default grid, per the owner's follow-up — and `size` is editable
+per sign. Display only: no binding, no live state, nothing inferred (rules 9/10). This is
+explicitly the generic shape for the lineside-feature family the owner has flagged next (tunnels,
+viaducts, signal boxes).
+
+Files changed:
+
+- `packages/map-schema/src/style.ts` — `MAP_STYLE.neutralSection` (AJ02 dimensions, colours,
+  default size 20); `MAP_CSS_TOKENS.neutralSectionBoard`/`neutralSectionSymbol`.
+- `packages/map-schema/src/geometry.ts` (+ test) — `neutralSectionGeometry`, shared by both
+  renderers.
+- `packages/map-schema/src/document.ts` (+ test) — `NeutralSectionElementSchema` in the element
+  union; a doc comment recording that `station.name` is newline-aware.
+- `packages/map-schema/src/index.ts` — new exports.
+- `apps/web/src/map/MapRenderer.tsx` (+ test) — `renderNeutralSection`.
+- `apps/web/src/editor/EditorCanvas.tsx` (+ test) — Konva sign rendering, tool default element,
+  Labels-layer hint, board-sized `elementBounds` for rubber-band select.
+- `apps/web/src/editor/EditorState.tsx`, `ToolPalette.tsx` — the `neutralSection` tool.
+- `apps/web/src/editor/PropertyPanel.tsx` (+ test) — station Name textarea, flattened station
+  picker, the neutral-section form; `NumberField` gained an optional `min` that snaps a rejected
+  entry back to the stored value instead of leaving the field showing a number the document never
+  took.
+- `apps/web/src/styles.css` — the two new colour tokens.
+- `docs/MAP_EDITOR_SPEC.md` — the `neutralSection` section and the station multi-line rules.
+
+Acceptance criteria: a station name containing newlines renders as stacked centred lines in both
+the public map and the editor, with `[CRS]` on the last line, and is editable in the Properties
+panel; the neutral section tool places a sign whose geometry matches the AJ02 drawing exactly at
+any `size`; both renderers draw it identically from the shared helper; the element carries no
+binding or live state and no ingestion/projection path is touched.
+
+Tests run: `pnpm run typecheck` (clean), `pnpm exec vitest run` (full unit suite), plus a
+geometry test that asserts the computed board/bars against Sign AJ02's own published dimensions.
+
+Migrations/configuration: none — additive element type in the canonical document only. Already
+published immutable map versions are unaffected (rule 11); drafts saved before this parse
+unchanged.
+
+Known limitations / follow-up: the sign's label is single-line (use a separate `label` element for
+more); there is no dedicated lineside-feature layer yet, so signs land on Labels; tunnels,
+viaducts and signal boxes are not implemented — they should reuse this element's generic shape.
 
 ## Later / unscheduled
 

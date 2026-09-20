@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { berthRenderRect, pointOnPathAtX } from "./geometry.js";
+import { berthRenderRect, neutralSectionGeometry, pointOnPathAtX } from "./geometry.js";
 import { MapDocumentSchema, type BerthElement, type MapElement } from "./document.js";
 
 describe("pointOnPathAtX", () => {
@@ -149,5 +149,71 @@ describe("berthRenderRect", () => {
     const byId = Object.fromEntries(doc.elements.map((e) => [e.id, e]));
     const b = doc.elements.find((e) => e.id === "b1") as BerthElement;
     expect(berthRenderRect(b, byId).y).toBe(90);
+  });
+});
+
+describe("neutralSectionGeometry", () => {
+  // Every number here is read straight off Sign AJ02 Issue 1's own 600x600 drawing (RSSB, June
+  // 2015), so the test fails if the symbol ever drifts from the real board. Rendering at size
+  // 600 makes each computed value the drawing's dimension exactly.
+  const atFullSize = neutralSectionGeometry({
+    x: 300,
+    y: 300,
+    size: 600,
+    fontSize: 40,
+    labelPosition: "below",
+  });
+
+  it("reproduces the AJ02 board at the sign's own dimensions", () => {
+    expect(atFullSize.board).toEqual({ x: 0, y: 0, width: 600, height: 600, rx: 30 });
+  });
+
+  it("reproduces the AJ02 symbol: two 70-wide bars 60 apart, each with an outward 80-tall arm", () => {
+    expect(atFullSize.bars).toEqual([
+      { x: 200, y: 40, width: 70, height: 520 },
+      { x: 330, y: 40, width: 70, height: 520 },
+      // The arms run *outward* from their own bar, to 50 from each board edge.
+      { x: 50, y: 260, width: 220, height: 80 },
+      { x: 330, y: 260, width: 220, height: 80 },
+    ]);
+  });
+
+  it("treats x/y as the centre of the board, so size scales about the placed point", () => {
+    const small = neutralSectionGeometry({
+      x: 100,
+      y: 50,
+      size: 20,
+      fontSize: 10,
+      labelPosition: "below",
+    });
+    expect(small.board).toEqual({ x: 90, y: 40, width: 20, height: 20, rx: 1 });
+    const bigger = neutralSectionGeometry({
+      x: 100,
+      y: 50,
+      size: 40,
+      fontSize: 10,
+      labelPosition: "below",
+    });
+    expect(bigger.board.x + bigger.board.width / 2).toBe(100);
+    expect(bigger.board.y + bigger.board.height / 2).toBe(50);
+  });
+
+  it("anchors the label on the chosen side of the board", () => {
+    const base = { x: 100, y: 50, size: 20, fontSize: 10 } as const;
+    expect(neutralSectionGeometry({ ...base, labelPosition: "below" })).toMatchObject({
+      label: { x: 100, anchor: "middle" },
+    });
+    expect(neutralSectionGeometry({ ...base, labelPosition: "below" }).label.y).toBeGreaterThan(60);
+    expect(neutralSectionGeometry({ ...base, labelPosition: "above" }).label.y).toBeLessThan(40);
+    expect(neutralSectionGeometry({ ...base, labelPosition: "left" }).label).toEqual({
+      x: 86,
+      y: 53.5,
+      anchor: "end",
+    });
+    expect(neutralSectionGeometry({ ...base, labelPosition: "right" }).label).toEqual({
+      x: 114,
+      y: 53.5,
+      anchor: "start",
+    });
   });
 });

@@ -13,6 +13,7 @@ export {
   type PlatformNumberElement,
   type StationElement,
   type LabelElement,
+  type NeutralSectionElement,
   type BoundaryElement,
   type MapBinding,
   type TdBerthBinding,
@@ -31,4 +32,10 @@ export {
   type CompiledMapBundle,
 } from "./compiler.js";
 export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
-export { berthRenderRect, pointOnPathAtX, type Rect } from "./geometry.js";
+export {
+  berthRenderRect,
+  neutralSectionGeometry,
+  pointOnPathAtX,
+  type NeutralSectionGeometry,
+  type Rect,
+} from "./geometry.js";

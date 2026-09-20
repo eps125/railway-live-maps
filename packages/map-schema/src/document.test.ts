@@ -20,6 +20,59 @@ function minimalDoc(overrides: Record<string, unknown> = {}) {
 }
 
 describe("MapDocumentSchema", () => {
+  it("accepts a neutralSection element and defaults its size/labelPosition/fontSize", () => {
+    const result = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [{ id: "ns1", layerId: "l1", type: "neutralSection", x: 40, y: 80 }],
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const element = result.data.elements[0];
+    expect(element).toMatchObject({
+      type: "neutralSection",
+      x: 40,
+      y: 80,
+      size: 20,
+      labelPosition: "below",
+      fontSize: 10,
+      zIndex: 0,
+    });
+    // Display-only furniture: no binding field of any kind on the element (CLAUDE.md rules 9/10).
+    expect(element).not.toHaveProperty("bindingId");
+  });
+
+  it("rejects a neutralSection with a non-positive size", () => {
+    const result = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [{ id: "ns1", layerId: "l1", type: "neutralSection", x: 0, y: 0, size: 0 }],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("keeps newlines in a station name verbatim (2026-09-20 multi-line names)", () => {
+    const result = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [
+          {
+            id: "st1",
+            layerId: "l1",
+            type: "station",
+            x: 0,
+            y: 0,
+            name: "Lancaster\nCastle",
+            crs: "LAN",
+          },
+        ],
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.elements[0]).toMatchObject({ name: "Lancaster\nCastle" });
+    }
+  });
+
   it("accepts a minimal valid document", () => {
     const result = MapDocumentSchema.safeParse(minimalDoc());
     expect(result.success).toBe(true);

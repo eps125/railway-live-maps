@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  MAP_CSS_TOKENS,
   MAP_STYLE,
   berthRenderRect,
+  neutralSectionGeometry,
   pointOnPathAtX,
   sortElementsForPaint,
   type CompiledMapBundle,
   type MapElement,
+  type NeutralSectionElement,
   type PlatformElement,
   type PlatformNumberElement,
   type SignalElement,
@@ -152,6 +155,53 @@ function renderPlatform(
 /** ADR 0005 E3: standalone platform number — the author places it above its platform. */
 function renderPlatformNumber(element: PlatformNumberElement): JSX.Element {
   return <g key={element.id}>{numberBox(element.x, element.y, element.text, element.fontSize)}</g>;
+}
+
+/**
+ * Milestone 53: an AC neutral section, drawn as Sign AJ02 Issue 1's own board — a white
+ * rounded square carrying the black two-bar symbol, to the real drawing's proportions
+ * (`neutralSectionGeometry`). Static authored furniture: no binding, no live state, no click
+ * behaviour, nothing inferred from it (CLAUDE.md rules 9/10).
+ */
+function renderNeutralSection(element: NeutralSectionElement): JSX.Element {
+  const style = MAP_STYLE.neutralSection;
+  const geometry = neutralSectionGeometry(element);
+  const symbolFill = `var(${MAP_CSS_TOKENS.neutralSectionSymbol}, ${style.symbolFill})`;
+  return (
+    <g key={element.id}>
+      <rect
+        x={geometry.board.x}
+        y={geometry.board.y}
+        width={geometry.board.width}
+        height={geometry.board.height}
+        rx={geometry.board.rx}
+        fill={`var(${MAP_CSS_TOKENS.neutralSectionBoard}, ${style.boardFill})`}
+        stroke={style.boardStroke}
+        strokeWidth={0.5}
+      />
+      {geometry.bars.map((bar, index) => (
+        <rect
+          key={index}
+          x={bar.x}
+          y={bar.y}
+          width={bar.width}
+          height={bar.height}
+          fill={symbolFill}
+        />
+      ))}
+      {element.label ? (
+        <text
+          x={geometry.label.x}
+          y={geometry.label.y}
+          textAnchor={geometry.label.anchor}
+          fontSize={element.fontSize}
+          fill={style.labelFill}
+        >
+          {element.label}
+        </text>
+      ) : null}
+    </g>
+  );
 }
 
 /** ADR 0005 E4: a signal is either `inline` (head on the track at x,y — today's look) or
@@ -661,6 +711,9 @@ export function MapRenderer({
                 ))}
               </text>
             );
+          }
+          if (element.type === "neutralSection") {
+            return renderNeutralSection(element);
           }
           if (element.type === "boundary") {
             // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);

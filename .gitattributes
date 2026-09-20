@@ -1,0 +1,16 @@
+# Line endings.
+#
+# Every text blob committed to this repo is already LF. Without this file, a Windows checkout
+# with core.autocrlf=true writes CRLF working copies, and Prettier (which defaults to
+# endOfLine: "lf") then reports those files as style violations even though they are
+# byte-identical to HEAD. That is exactly what happened on 2026-09-20: `pnpm run format:check`
+# failed on 22 files locally while CI, which checks out on Linux, passed on the same commit.
+#
+# Pinning eol=lf makes every checkout match what is committed, on every platform, so the
+# working tree and `format:check` can no longer disagree for line-ending reasons alone.
+* text=auto eol=lf
+
+# The gzip feed fixtures carry CR bytes inside their binary payload. `text=auto` already
+# detects them as binary, but these are decompressed by tests where corruption would be
+# silent, so state it explicitly rather than relying on the heuristic.
+*.gz binary

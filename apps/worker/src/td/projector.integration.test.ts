@@ -115,6 +115,19 @@ async function anomalyCount(area: string): Promise<number> {
 
 describe("runProjectTd (integration)", () => {
   afterAll(async () => {
+    // This file projects fixtures at both real "now" and a 2031 partition-boundary date, so
+    // `runProjectTd` records `td_receive_silence` gaps spanning from now into 2031. A `feed_gap`
+    // row with a NULL `td_area` applies to EVERY area — the per-test cleanup below already says
+    // so for the one row it removes by `detected_start`, but the rest were left behind.
+    //
+    // That is not cosmetic: `duringFeedGap` (apps/worker/src/runLineage/projector.ts) suppresses
+    // step-chain propagation during a gap, so a leaked nationwide gap covering "now" silently
+    // stops any later file's run-lineage fixtures from linking at all. It broke
+    // runLineage/freshResolution's two step-chain upgrade cases on 2026-09-20 — deterministically
+    // in CI, but only when file ordering happened to put this file first, which is why it
+    // surfaced as "the Milestone 57 commit broke an unrelated worker test" and survived two
+    // wrong fixes before being traced here.
+    await pool.query("delete from feed_gap where detection_reason = 'td_receive_silence'");
     await pool.end();
   });
 

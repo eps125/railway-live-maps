@@ -133,6 +133,30 @@ The live map's click-a-berth popup, one round trip (`docs/PROJECT_SPEC.md` §5 "
 popup"). 404 with `error.code: "BERTH_NOT_OCCUPIED"` when the berth has no current occupancy —
 matches "click a **populated** berth."
 
+**`?at=<iso>` — playback (Milestone 57).** Optional. Without it the route answers "who is in this
+berth _now_", reading `berth_current_state`; that made every click on the playback map a silent
+no-op, since a berth occupied half an hour ago is almost always vacant now and 404'd. With `at`,
+the occupancy **covering that instant** is read from `berth_occupancy` instead (started at or
+before `at`, still open or released after it), and its `occupancyEnteredAt` is that occupancy's
+own `entered_at`. `BERTH_NOT_OCCUPIED` then means "this berth held nothing at that moment".
+A malformed `at` is a 400 with `error.code: "INVALID_AT"` — never silently answered as "now".
+
+The point of `at` is that it **reuses the identification the live map already made**: the
+occupancy's `berth_occupancy_run_link` row (Milestone 39, docs/adr/0007) was written while the
+train was live and carries the traffic day it was actually resolved against, so playback replays
+a stored answer rather than recomputing one. Where an occupancy has no link, the same
+`resolveFreshRunMatch` fallback runs, but keyed to `at` rather than the wall clock — `today` and
+`nowMinutes` both derive from `at`, so docs/adr/0008's two-date `[today, yesterday]` window
+follows the instant being viewed (owner decision, 2026-09-20, in preference to reporting those
+occupancies as `unmatched`). A `?at=` request is strictly **read-only**: it never writes a run
+link, so scrubbing through history cannot rewrite what the live path established, and a stored
+link and a fresh resolution can never disagree — the fallback only runs where there is no link.
+An occupancy that began more than 24 hours before `at` is not considered (a partition-pruning
+bound on the monthly-partitioned `berth_occupancy`, not a business rule).
+
+Everything below applies to both forms unless stated; `at` changes only _which_ occupancy is
+being described, never the response shape or the role-gating.
+
 The berth-run resolver ADR 0002 removed (2026-09-01) was rebuilt on garner (openrail-eps) data by
 ADR 0006 (2026-09-13, Milestones 34/35) — query-time only, no persisted resolution table or
 daemon. Candidate `cif_schedules` rows (`signalling_id` equals the berth's TD headcode, running

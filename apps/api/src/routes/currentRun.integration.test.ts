@@ -21,6 +21,7 @@ const createdTrustIds: string[] = [];
 const createdLocationReferenceTiplocs: string[] = [];
 const createdSmartBerthStepIds: string[] = [];
 const createdTrainAllocationIds: number[] = [];
+const createdTrainRunIds: string[] = [];
 
 /** Minimal in-memory stand-in for ioredis's `Redis` (this sandbox has no real Redis server —
  * mirrors the FakeRedis pattern in `../auth/session.test.ts`). Only the handful of methods
@@ -117,6 +118,11 @@ afterAll(async () => {
     await pool.query("delete from train_allocation where id = any($1::bigint[])", [
       createdTrainAllocationIds,
     ]);
+  }
+  // Milestone 57: `berth_occupancy_run_link` rows cascade with their occupancy (migration 0032),
+  // but `train_run` rows deliberately don't — they outlive their schedule pointer by design.
+  if (createdTrainRunIds.length > 0) {
+    await pool.query("delete from train_run where id = any($1::bigint[])", [createdTrainRunIds]);
   }
   await pool.end();
 });
@@ -1822,5 +1828,257 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         await app.close();
       }
     });
+  });
+});
+
+/**
+ * Milestone 57: `?at=` — the playback map's click-a-berth popup.
+ *
+ * The bug these cover: without `at` the route reads `berth_current_state`, so a berth occupied
+ * half an hour ago (and vacant now) 404s and the popup closes itself before its first paint.
+ * Every click on the playback map did nothing at all.
+ */
+async function seedClosedOccupancy(
+  tdArea: string,
+  berth: string,
+  description: string,
+  enteredAt: Date,
+  leftAt: Date | null,
+): Promise<{ occupancyId: string; enteredAt: Date }> {
+  const archiveResult = await pool.query<{ id: string }>(
+    `insert into raw_archive_object (object_key, bucket, content_sha256, compressed_size_bytes, source_kind)
+     values ($1, 'test-bucket', $2, 1, 'broker-frame') returning id`,
+    [`test/${randomUUID()}`, randomUUID()],
+  );
+  const frameResult = await pool.query<{ id: string }>(
+    `insert into feed_frame (feed_name, topic, received_at, body_hash, archive_object_id)
+     values ('TD', '/topic/TD_ALL_SIG_AREA', now(), $1, $2) returning id`,
+    [randomUUID(), archiveResult.rows[0]!.id],
+  );
+  const eventResult = await pool.query<{ id: string; normalized_event_at_utc: Date }>(
+    `insert into raw_feed_event (
+       frame_id, child_index, feed_name, event_type, message_class, td_area, raw_event_json,
+       normalized_event_at_utc, received_at_utc, semantic_hash, parse_status, parse_version
+     ) values ($1, 0, 'TD', 'CC', 'C', $2, '{}', $3, $3, $4, 'parsed', 1)
+     returning id, normalized_event_at_utc`,
+    [frameResult.rows[0]!.id, tdArea, enteredAt, randomUUID()],
+  );
+  const event = eventResult.rows[0]!;
+  // Deliberately no `berth_current_state` row — this occupancy is over, which is exactly the
+  // situation the live path cannot answer for.
+  const occupancyResult = await pool.query<{ id: string }>(
+    `insert into berth_occupancy (
+       projection_version, td_area, berth_code, description, entered_at, left_at,
+       entry_event_id, entry_event_normalized_at_utc, entry_reason, exit_reason
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'cc_interpose', $9)
+     returning id`,
+    [
+      TD_PROJECTION_VERSION,
+      tdArea,
+      berth,
+      description,
+      enteredAt,
+      leftAt,
+      event.id,
+      event.normalized_event_at_utc,
+      leftAt ? "cc_step" : null,
+    ],
+  );
+  const occupancyId = occupancyResult.rows[0]!.id;
+  createdOccupancyIds.push(occupancyId);
+  return { occupancyId, enteredAt };
+}
+
+/** The stored resolution the live map already made — `run-lineage-daemon`'s sweep or an earlier
+ * click writes exactly this shape (docs/adr/0007, migration 0032). */
+async function seedRunLink(
+  occupancyId: string,
+  enteredAt: Date,
+  scheduleId: number,
+  trainUid: string,
+  trafficDay: string,
+  tdArea: string,
+  berth: string,
+): Promise<void> {
+  const runResult = await pool.query<{ id: string }>(
+    `insert into train_run (
+       cif_schedule_id, cif_train_uid, traffic_day, match_basis, match_confidence,
+       established_td_area, established_berth
+     ) values ($1, $2, $3::date, 'trust_activation', 'solid', $4, $5) returning id`,
+    [scheduleId, trainUid, trafficDay, tdArea, berth],
+  );
+  const trainRunId = runResult.rows[0]!.id;
+  createdTrainRunIds.push(trainRunId);
+  await pool.query(
+    `insert into berth_occupancy_run_link (
+       berth_occupancy_id, occupancy_entered_at, train_run_id, link_basis
+     ) values ($1, $2, $3, 'resolved')`,
+    [occupancyId, enteredAt, trainRunId],
+  );
+}
+
+describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
+  it("answers for an occupancy that is over, where the live request 404s", async () => {
+    const area = uniqueArea();
+    const enteredAt = new Date(Date.now() - 40 * 60_000);
+    const leftAt = new Date(Date.now() - 35 * 60_000);
+    await seedClosedOccupancy(area, "0100", "1A23", enteredAt, leftAt);
+    const app = await buildApp();
+    try {
+      const live = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0100/current-run`,
+        headers: await authHeaders(),
+      });
+      expect(live.statusCode).toBe(404);
+
+      const at = new Date(enteredAt.getTime() + 60_000).toISOString();
+      const playback = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0100/current-run?at=${encodeURIComponent(at)}`,
+        headers: await authHeaders(),
+      });
+      expect(playback.statusCode).toBe(200);
+      const body = playback.json();
+      expect(body.headcode).toBe("1A23");
+      expect(body.occupancyEnteredAt).toBe(enteredAt.toISOString());
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("404s for an instant before the train arrived, and for one after it left", async () => {
+    const area = uniqueArea();
+    const enteredAt = new Date(Date.now() - 40 * 60_000);
+    const leftAt = new Date(Date.now() - 35 * 60_000);
+    await seedClosedOccupancy(area, "0101", "1A23", enteredAt, leftAt);
+    const app = await buildApp();
+    try {
+      const before = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0101/current-run?at=${encodeURIComponent(
+          new Date(enteredAt.getTime() - 60_000).toISOString(),
+        )}`,
+        headers: await authHeaders(),
+      });
+      expect(before.statusCode).toBe(404);
+      expect(before.json().error.code).toBe("BERTH_NOT_OCCUPIED");
+
+      const after = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0101/current-run?at=${encodeURIComponent(
+          new Date(leftAt.getTime() + 60_000).toISOString(),
+        )}`,
+        headers: await authHeaders(),
+      });
+      expect(after.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("picks the occupancy that covered the instant, not the berth's latest one", async () => {
+    const area = uniqueArea();
+    const firstEntered = new Date(Date.now() - 60 * 60_000);
+    const firstLeft = new Date(Date.now() - 50 * 60_000);
+    const secondEntered = new Date(Date.now() - 20 * 60_000);
+    await seedClosedOccupancy(area, "0102", "1A23", firstEntered, firstLeft);
+    await seedClosedOccupancy(area, "0102", "9Z99", secondEntered, null);
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0102/current-run?at=${encodeURIComponent(
+          new Date(firstEntered.getTime() + 60_000).toISOString(),
+        )}`,
+        headers: await authHeaders(),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().headcode).toBe("1A23");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("400s on an `at` that isn't a timestamp, rather than silently answering about now", async () => {
+    const area = uniqueArea();
+    await seedOccupiedBerth(area, "0103", "1A23");
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0103/current-run?at=yesterday-ish`,
+        headers: await authHeaders(),
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("INVALID_AT");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("replays the stored link's schedule rather than re-resolving the headcode", async () => {
+    const area = uniqueArea();
+    const enteredAt = new Date(Date.now() - 40 * 60_000);
+    const leftAt = new Date(Date.now() - 35 * 60_000);
+    const { occupancyId } = await seedClosedOccupancy(area, "0104", "1A23", enteredAt, leftAt);
+    // The link points at a schedule whose signalling id is deliberately NOT the berth's
+    // headcode: if the response carries this schedule, the stored identification was used, and
+    // a fresh headcode search could not have produced it.
+    const scheduleId = await seedSchedule("7Z77", "P");
+    await seedRunLink(
+      occupancyId,
+      enteredAt,
+      scheduleId,
+      `U${scheduleId}`,
+      londonTodayDateString(),
+      area,
+      "0104",
+    );
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0104/current-run?at=${encodeURIComponent(
+          new Date(enteredAt.getTime() + 60_000).toISOString(),
+        )}`,
+        headers: await authHeaders(),
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.matchStatus).toBe("matched");
+      expect(body.effective?.scheduleId).toBe(String(scheduleId));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("never writes a run link from a playback request — browsing history stays read-only", async () => {
+    const area = uniqueArea();
+    const enteredAt = new Date(Date.now() - 40 * 60_000);
+    const leftAt = new Date(Date.now() - 35 * 60_000);
+    const { occupancyId } = await seedClosedOccupancy(area, "0105", "4V44", enteredAt, leftAt);
+    // A schedule the fresh fallback genuinely can match, so the write path is reachable and
+    // it's the `!at` guard — not the absence of a match — that keeps the table clean.
+    await seedSchedule("4V44", "P");
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0105/current-run?at=${encodeURIComponent(
+          new Date(enteredAt.getTime() + 60_000).toISOString(),
+        )}`,
+        headers: await authHeaders(),
+      });
+      expect(response.statusCode).toBe(200);
+
+      const links = await pool.query(
+        "select 1 from berth_occupancy_run_link where berth_occupancy_id = $1",
+        [occupancyId],
+      );
+      expect(links.rowCount).toBe(0);
+    } finally {
+      await app.close();
+    }
   });
 });

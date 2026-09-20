@@ -195,6 +195,15 @@ export interface RunPopupProps {
    * section, successively, separated by a divider — rather than a picker that only shows one
    * member at a time (owner offered both, 2026-09-17; this shows everything with no extra click). */
   members?: RunPopupMember[];
+  /** Milestone 57: in playback, the instant being displayed — sent to the API as `?at=`, so the
+   * answer is about who was in this berth *then*. Omitted/`null` is live.
+   *
+   * Captured once when the popup opens and deliberately not followed afterwards: the playback
+   * clock ticks several times a second, and re-fetching on every tick would hammer the API and
+   * make the popup's content flicker between trains as the berth changes hands underneath it. A
+   * click means "tell me about this train, at this moment"; the shown time stays put until the
+   * visitor closes it and clicks again. */
+  atIso?: string | null;
   onClose: () => void;
 }
 
@@ -228,6 +237,21 @@ function formatTime(raw: string | null): string {
   const digits = raw.replace(/H$/, "");
   if (digits.length < 4) return raw;
   return `${digits.slice(0, 2)}:${digits.slice(2, 4)}${raw.endsWith("H") ? "½" : ""}`;
+}
+
+/** Milestone 57: the playback instant a frozen popup describes. CLAUDE.md rule 4 — canonical
+ * timestamps are UTC, user-facing times render in `Europe/London`, which `formatIso` above
+ * deliberately doesn't do (it shows raw UTC for the operational/diagnostic fields). */
+function formatLondonClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
 }
 
 function formatIso(iso: string | null): string {
@@ -528,11 +552,15 @@ export function RunPopup({
   tdArea,
   berth,
   members,
+  atIso = null,
   onClose,
 }: RunPopupProps): JSX.Element | null {
   const resolvedMembers = members && members.length > 0 ? members : [{ tdArea, berth }];
   const membersKey = resolvedMembers.map(memberKey).join(",");
   const [statesByKey, setStatesByKey] = useState<Record<string, MemberState>>({});
+  // Frozen at mount — see `atIso`'s own doc comment for why this doesn't follow the clock.
+  const [frozenAtIso] = useState<string | null>(atIso);
+  const isHistorical = frozenAtIso !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -540,8 +568,9 @@ export function RunPopup({
 
     function fetchMember(member: RunPopupMember): void {
       const key = memberKey(member);
+      const query = frozenAtIso === null ? "" : `?at=${encodeURIComponent(frozenAtIso)}`;
       fetch(
-        `/api/v1/td/areas/${encodeURIComponent(member.tdArea)}/berths/${encodeURIComponent(member.berth)}/current-run`,
+        `/api/v1/td/areas/${encodeURIComponent(member.tdArea)}/berths/${encodeURIComponent(member.berth)}/current-run${query}`,
       )
         .then(async (response) => {
           if (response.status === 404) {
@@ -583,6 +612,14 @@ export function RunPopup({
     }
 
     for (const member of resolvedMembers) fetchMember(member);
+    // Milestone 57: a historical answer can't change — the occupancy and its run link are
+    // settled facts about a past instant, so polling would re-fetch identical rows forever. The
+    // poll exists only because garner's mirror advances every ~20s underneath a *live* berth.
+    if (isHistorical) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const intervalId = setInterval(() => {
       for (const member of resolvedMembers) fetchMember(member);
     }, POLL_INTERVAL_MS);
@@ -592,7 +629,8 @@ export function RunPopup({
     };
     // resolvedMembers/fetchMember are recreated every render — membersKey is the stable,
     // content-based dependency that actually decides when to restart polling (this project has
-    // no react-hooks/exhaustive-deps lint rule configured to flag the omission).
+    // no react-hooks/exhaustive-deps lint rule configured to flag the omission). frozenAtIso and
+    // isHistorical never change after mount, so they add nothing to restart on.
   }, [membersKey]);
 
   const allSettled = resolvedMembers.every((m) => statesByKey[memberKey(m)] !== undefined);
@@ -620,6 +658,11 @@ export function RunPopup({
               {" "}
               · {resolvedMembers[0]!.tdArea} {resolvedMembers[0]!.berth}
             </span>
+          ) : null}
+          {/* Milestone 57: name the instant this describes. Without it a frozen popup is
+              indistinguishable from a live one that has stopped updating. */}
+          {frozenAtIso !== null ? (
+            <span className="map-inspector__subtitle"> · at {formatLondonClock(frozenAtIso)}</span>
           ) : null}
         </span>
         <button type="button" className="map-inspector__close" aria-label="Close" onClick={onClose}>

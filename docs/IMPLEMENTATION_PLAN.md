@@ -3349,6 +3349,70 @@ plus an explorer test that the activity window re-queries the grid.
 **Follow-up:** the backfill has not yet been run against production — it is dry-run by default and
 the ~11 GB / multi-hour `--execute` pass is the owner's call to schedule off-peak.
 
+## Milestone 57 — the train popup works in playback (2026-09-20)
+
+Owner report: clicking a train on the playback map did nothing, while the same click on the live
+map opens the run popup.
+
+Not a missing feature and not a deliberate gate — the click handler and `RunPopup` are the same
+shared `MapRenderer` code in both modes. The popup _opened_ and then immediately destroyed
+itself: it fetches `current-run`, which had no notion of time and read `berth_current_state`
+("who is in this berth **now**"). A berth occupied half an hour ago is almost always vacant now,
+so the request 404'd, the member settled as unoccupied, and `allSettled && !anyOccupied` closed
+it — before its first paint, thanks to the deliberate "render nothing until every member has
+settled" guard added 2026-09-14 (which is correct for live, and is what turned this into a
+completely dead click rather than a visible flash). A worse latent case sat behind it: where the
+berth _was_ occupied now by some other train, the popup would have shown today's live train's
+detail as if it were the one on screen in playback.
+
+**`GET .../current-run?at=<iso>`** (`apps/api/src/routes/currentRun.ts`):
+
+- Reads the occupancy **covering that instant** from `berth_occupancy` (started at or before
+  `at`, still open or released after it) instead of `berth_current_state`. Malformed `at` is a
+  400 (`INVALID_AT`), never silently answered as "now".
+- **Reuses the identification the live map already made**, which is the whole point (owner's
+  own framing: "why re-resolve when I have resolving done on the live map?"). The occupancy's
+  `berth_occupancy_run_link` row (Milestone 39, docs/adr/0007) was written while the train was
+  live — by a click here or by `run-lineage-daemon`'s proactive sweep — and carries the traffic
+  day it was actually resolved against. The existing lineage branch then renders it unchanged.
+  This is why the milestone needed no new date arithmetic: `effectiveTrafficDay` already comes
+  from the link, not from `londonToday(new Date())`.
+- **Fallback for occupancies with no link** (owner decision, 2026-09-20, chosen over reporting
+  them `unmatched`): the same `resolveFreshRunMatch`, keyed to `at`. Both `today` and
+  `nowMinutes` derive from `at`, so docs/adr/0008's two-date `[today, yesterday]` window follows
+  the instant being viewed. `resolveFreshRunMatch` already takes both as explicit arguments and
+  derives its own `yesterday` via `previousCalendarDate(today)`, so the seam existed by design
+  and no boundary logic was added here. Worked case, confirmed with the owner before building:
+  a 23:50 departure inspected at 00:30 the next day gets `today = <the 20th>` and probes
+  `[<20th>, <19th>]`, matching the 19th-dated schedule exactly as a real 00:30 live click would.
+- **`?at=` never writes a run link.** Browsing history is a read; it must not rewrite stored
+  lineage, and a historical re-resolution is weaker evidence than the live one it would
+  overwrite (garner's activation/movement data has moved on). This also means a stored link and
+  a fresh resolution can never contradict each other — the fallback only runs where no link
+  exists, and what it computes stays in the response rather than becoming a new fact about the
+  past.
+- **24-hour lower bound on `entered_at`** — a partition-pruning bound, not a business rule.
+  `berth_occupancy` is partitioned monthly, so `entered_at <= at` alone has no lower bound and
+  makes the planner touch every partition ever created (the same class of mistake as the
+  2026-09-14 run-lineage incident). Verified on production, 2026-09-20: bounded prunes to the
+  single current partition (`Subplans Removed: 6`, 4 shared buffers); unbounded scans four
+  (2026_07, 2026_08, 2026_09, default, 12 buffers). A real TD occupancy lasts minutes.
+
+**Web** (`RunPopup.tsx`, `MapRenderer.tsx`, `MapView.tsx`) — prop threading, no reducer changes:
+
+- `MapView`'s `PlaybackView` passes `pb.atIso` → `MapRenderer`'s new `atIso` → `RunPopup`.
+  Live passes nothing and its request URL is byte-for-byte unchanged.
+- `RunPopup` **freezes `atIso` at mount.** The playback clock ticks several times a second;
+  following it would hammer the API and flicker the popup between trains as the berth changes
+  hands underneath it. A click means "tell me about this train, at this moment".
+- **No polling when historical** — a past instant's occupancy and link are settled facts. The 5s
+  poll exists only because garner's mirror advances every ~20s beneath a _live_ berth.
+- The title names the frozen instant in `Europe/London` (rule 4), so a frozen popup can't be
+  mistaken for a live one that has stopped updating.
+
+Not done: nothing here changes what playback _renders_ — signals and barriers still go blank
+before an area has been decoded (Milestone 56), which is correct and deliberate.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

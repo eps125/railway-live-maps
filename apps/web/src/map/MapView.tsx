@@ -186,6 +186,7 @@ function PlaybackView({
         signals={pb.signals}
         crossings={pb.crossings}
         showEmptyBerths={showEmptyBerths}
+        atIso={pb.atIso}
       />
     </>
   );

@@ -713,3 +713,146 @@ describe("RunPopup combined berths (Milestone 50)", () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
+
+/** Milestone 57: clicking a train on the playback map used to do nothing at all — the popup
+ * asked the API who was in the berth *now*, got a 404 for a berth that had since gone vacant,
+ * and closed itself before its first paint (the `allSettled` guard). `atIso` is what makes the
+ * question historical. */
+describe("RunPopup in playback (Milestone 57)", () => {
+  it("asks the API about the playback instant, not now", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(jsonResponse(baseBody({ berth: "0512", occupancyEnteredAt: null }))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <RunPopup
+        elementId="berth-px-0512"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        atIso="2026-09-19T22:50:00.000Z"
+        onClose={() => {}}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/td/areas/PX/berths/0512/current-run?at=2026-09-19T22%3A50%3A00.000Z",
+    );
+  });
+
+  it("omits `at` entirely when live, so the live path is byte-for-byte unchanged", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(baseBody({ berth: "0512" }))));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <RunPopup
+        elementId="berth-px-0512"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        onClose={() => {}}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/td/areas/PX/berths/0512/current-run");
+  });
+
+  it("does not poll a historical answer — a past instant's occupancy can't change", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(baseBody({ berth: "0512" }))));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <RunPopup
+        elementId="berth-px-0512"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        atIso="2026-09-19T22:50:00.000Z"
+        onClose={() => {}}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it("stays frozen at the instant clicked while the playback clock runs on", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(baseBody({ berth: "0512" }))));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <RunPopup
+        elementId="berth-px-0512"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        atIso="2026-09-19T22:50:00.000Z"
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The playback clock advances several times a second; the popup must not chase it.
+    rerender(
+      <RunPopup
+        elementId="berth-px-0512"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        atIso="2026-09-19T22:50:12.000Z"
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/td/areas/PX/berths/0512/current-run?at=2026-09-19T22%3A50%3A00.000Z",
+    );
+  });
+
+  it("names the London instant it describes, so a frozen popup isn't mistaken for a stalled live one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(baseBody({ berth: "0512" })))),
+    );
+
+    render(
+      <RunPopup
+        elementId="berth-px-0512"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        // 22:50Z in September is BST, so London reads 23:50 — the exact overnight case that
+        // makes the traffic-day handling matter (docs/adr/0008).
+        atIso="2026-09-19T22:50:00.000Z"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("· at 23:50:00")).toBeInTheDocument();
+  });
+});

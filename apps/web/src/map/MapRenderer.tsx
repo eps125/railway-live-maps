@@ -43,6 +43,10 @@ export interface MapRendererProps {
    * from. Silently ignored if the element doesn't exist in this bundle or has no single (x, y)
    * point (e.g. a `trackPath`/`platform`, which are polylines). */
   centerElementId?: string | null;
+  /** Milestone 57: in playback, the instant currently being displayed. Passed straight through
+   * to `RunPopup`, which asks the API about the berth's occupancy *then* rather than now — the
+   * whole reason a click on the playback map used to do nothing. `null`/omitted means live. */
+  atIso?: string | null;
 }
 
 export interface ViewBox {
@@ -500,6 +504,7 @@ export function MapRenderer({
   crossings = {},
   showEmptyBerths = true,
   centerElementId,
+  atIso = null,
 }: MapRendererProps): JSX.Element {
   // `useRef`'s initial value is only ever evaluated on the first render, which is exactly "look
   // at this once, at mount" — a later change to `centerElementId` (or the visitor panning away)
@@ -915,6 +920,7 @@ export function MapRenderer({
           tdArea={selectedMembers[0]!.tdArea}
           berth={selectedMembers[0]!.berth}
           members={selectedMembers}
+          atIso={atIso}
           onClose={() => setSelectedElementId(null)}
         />
       ) : null}

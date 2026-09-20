@@ -72,11 +72,44 @@ export interface CurrentRunRoutesDeps {
  * Also owner request, shown to every visitor regardless of session: real unit/stock allocation
  * for the matched train, mirrored from garner's own `train_allocation` table (migration 0031) —
  * one row per unit in the formation, keyed by `cif_train_uid` + the traffic day.
+ *
+ * Milestone 57 — `?at=<iso>` (playback). Without it this route answers "who is in this berth
+ * *now*", reading `berth_current_state`; that made every click on the playback map a no-op,
+ * since a berth occupied half an hour ago is almost always vacant now and 404'd. With `at`, the
+ * occupancy covering that instant is read from `berth_occupancy` instead, and — the point of the
+ * whole thing — its `berth_occupancy_run_link` row is reused as-is. That link was written while
+ * the train was live (by a click here, or by `run-lineage-daemon`'s proactive sweep) and carries
+ * the traffic day it was actually resolved against, so playback replays the identification the
+ * live map already made rather than recomputing one. Where no link exists the same
+ * `resolveFreshRunMatch` fallback runs, but keyed to `at` rather than the wall clock (owner
+ * decision, 2026-09-20, in preference to reporting those occupancies as `unmatched`).
+ *
+ * A `?at=` request is strictly read-only: it never writes a link (see the `!at` guard below), so
+ * scrubbing through history can't rewrite what the live path established, and a stored link and
+ * a fresh resolution can never disagree — the fallback only runs where there is no link.
  */
 interface CurrentStateRow {
   description: string | null;
   occupancy_entered_at: Date | null;
 }
+
+/** The occupancy interval covering a `?at=` instant (Milestone 57) — `berth_occupancy` rather
+ * than `berth_current_state`, since the latter only ever describes right now. */
+interface HistoricalOccupancyRow {
+  id: string;
+  entered_at: Date;
+  description: string;
+}
+
+/** How far back before `at` an occupancy may have *started* and still be considered. This is a
+ * partition-pruning bound, not a business rule: `berth_occupancy` is partitioned monthly by
+ * `entered_at` (apps/worker/src/commands/ensurePartitions.ts), so `entered_at <= at` alone has
+ * no lower bound and makes the planner scan every partition ever created — the same class of
+ * mistake as the 2026-09-14 run-lineage incident. With this bound at most two partitions are
+ * touched. A real TD occupancy lasts minutes; 24h is far beyond any genuine one, and the effect
+ * of exceeding it is a `BERTH_NOT_OCCUPIED` for a berth that has been sat on a stale description
+ * for over a day — correct enough, and never a wrong identification. */
+const HISTORICAL_OCCUPANCY_LOOKBACK = "24 hours";
 
 interface ActivationExtraRow {
   trust_id: string;
@@ -255,7 +288,7 @@ export async function registerCurrentRunRoutes(
 ): Promise<void> {
   const { pool, redis, sessionTtlSeconds } = deps;
 
-  app.get<{ Params: { tdArea: string; berth: string } }>(
+  app.get<{ Params: { tdArea: string; berth: string }; Querystring: { at?: string } }>(
     "/api/v1/td/areas/:tdArea/berths/:berth/current-run",
     async (request, reply) => {
       const { tdArea, berth } = request.params;
@@ -266,31 +299,87 @@ export async function registerCurrentRunRoutes(
       const isAuthenticated =
         (await getSession(redis, request.cookies[SESSION_COOKIE_NAME], sessionTtlSeconds)) !== null;
 
-      const stateResult = await pool.query<CurrentStateRow>(
-        `select description, occupancy_entered_at
-         from berth_current_state
-         where projection_version = $1 and td_area = $2 and berth_code = $3`,
-        [TD_PROJECTION_VERSION, tdArea, berth],
-      );
-      const state = stateResult.rows[0];
-      // `description is not null` is the occupied signal — `occupancy_id` is NULL for berths the
-      // fast `project-td-live` projector has touched (ADR 0003) and was vestigial anyway.
-      if (!state || !state.description) {
-        reply.code(404);
-        return apiError("BERTH_NOT_OCCUPIED", `${tdArea} ${berth} has no current occupancy`);
+      // Milestone 57: `?at=<iso>` asks this same question about a past moment, so the playback
+      // map's click-a-berth popup behaves like the live one. Everything time-dependent below
+      // keys off `referenceNow`, never the wall clock — see this route's doc comment.
+      const atRaw = request.query.at;
+      let at: Date | null = null;
+      if (atRaw !== undefined) {
+        const parsed = new Date(atRaw);
+        if (Number.isNaN(parsed.getTime())) {
+          reply.code(400);
+          return apiError("INVALID_AT", "`at` must be an ISO 8601 timestamp");
+        }
+        at = parsed;
+      }
+      const referenceNow = at ?? new Date();
+
+      let headcode: string;
+      let occupancyEnteredAt: string | null;
+      let occupancy: { id: string; enteredAt: Date } | null;
+
+      if (at) {
+        // The occupancy interval covering `at`: started at or before it, and either still open
+        // or released after it. `berth_current_state` is deliberately not consulted — it only
+        // describes right now, and reading it for a historical question is exactly the bug this
+        // milestone fixes (a berth vacant now 404'd, so every playback click did nothing).
+        const historical = (
+          await pool.query<HistoricalOccupancyRow>(
+            `select id, entered_at, description
+             from berth_occupancy
+             where projection_version = $1 and td_area = $2 and berth_code = $3
+               and entered_at <= $4::timestamptz
+               and entered_at > $4::timestamptz - $5::interval
+               and (left_at is null or left_at > $4::timestamptz)
+             order by entered_at desc
+             limit 1`,
+            [TD_PROJECTION_VERSION, tdArea, berth, at.toISOString(), HISTORICAL_OCCUPANCY_LOOKBACK],
+          )
+        ).rows[0];
+        if (!historical) {
+          reply.code(404);
+          return apiError(
+            "BERTH_NOT_OCCUPIED",
+            `${tdArea} ${berth} had no occupancy at ${at.toISOString()}`,
+          );
+        }
+        headcode = historical.description;
+        occupancyEnteredAt = historical.entered_at.toISOString();
+        occupancy = { id: historical.id, enteredAt: historical.entered_at };
+      } else {
+        const stateResult = await pool.query<CurrentStateRow>(
+          `select description, occupancy_entered_at
+           from berth_current_state
+           where projection_version = $1 and td_area = $2 and berth_code = $3`,
+          [TD_PROJECTION_VERSION, tdArea, berth],
+        );
+        const state = stateResult.rows[0];
+        // `description is not null` is the occupied signal — `occupancy_id` is NULL for berths the
+        // fast `project-td-live` projector has touched (ADR 0003) and was vestigial anyway.
+        if (!state || !state.description) {
+          reply.code(404);
+          return apiError("BERTH_NOT_OCCUPIED", `${tdArea} ${berth} has no current occupancy`);
+        }
+        headcode = state.description;
+        occupancyEnteredAt = state.occupancy_entered_at
+          ? state.occupancy_entered_at.toISOString()
+          : null;
+        occupancy = await findOpenOccupancy(pool, tdArea, berth);
       }
 
-      const headcode = state.description;
-      const today = londonToday(new Date());
+      const today = londonToday(referenceNow);
 
-      // Milestone 39 (docs/adr/0007): does the currently open occupancy already carry a run
-      // link — established by an earlier click here, or inherited by `run-lineage-daemon` from a
-      // berth this train physically stepped from (or across an owner-curated TD-area boundary)?
-      // If so, skip headcode/position resolution entirely: the physical evidence behind the link
-      // is stronger than re-deriving from a headcode string, and re-deriving nationwide is
-      // exactly the redundant work sticky matching exists to avoid.
-      const openOccupancy = await findOpenOccupancy(pool, tdArea, berth);
-      const occupancyLink = openOccupancy ? await findOccupancyLink(pool, openOccupancy) : null;
+      // Milestone 39 (docs/adr/0007): does this occupancy already carry a run link — established
+      // by an earlier click here, or inherited by `run-lineage-daemon` from a berth this train
+      // physically stepped from (or across an owner-curated TD-area boundary)? If so, skip
+      // headcode/position resolution entirely: the physical evidence behind the link is stronger
+      // than re-deriving from a headcode string, and re-deriving nationwide is exactly the
+      // redundant work sticky matching exists to avoid.
+      //
+      // For `?at=` this is also the *whole* point (Milestone 57): the link was written while the
+      // run was live, carrying the traffic day it was actually resolved against, so playback
+      // reads back the identification the live map already made instead of recomputing one.
+      const occupancyLink = occupancy ? await findOccupancyLink(pool, occupancy) : null;
       const lineageSchedule =
         occupancyLink?.cifScheduleId != null
           ? await fetchScheduleRowById(pool, occupancyLink.cifScheduleId)
@@ -346,7 +435,15 @@ export async function registerCurrentRunRoutes(
         // Milestone 34 (docs/adr/0006), extracted to @railway/database's resolveFreshRunMatch so
         // apps/worker's proactive sweep (docs/adr/0007 addendum) shares the exact same logic —
         // see that function's own doc comment for the position-scoping/fallback rules.
-        const nowMinutes = londonMinutesSinceMidnight(new Date());
+        // Milestone 57: `today`/`nowMinutes` both derive from `referenceNow`, so a `?at=` query
+        // resolves against the traffic day that was current *at that moment*, not the one that
+        // happens to be current when the request arrives. `resolveFreshRunMatch` takes both as
+        // explicit arguments and derives its own `yesterday` via `previousCalendarDate(today)`
+        // (docs/adr/0008's two-date window), so the whole overnight-boundary behaviour follows
+        // `at` correctly without any date arithmetic here: a 23:50 departure inspected at 00:30
+        // the next day gets `today = <the 20th>` and probes `[<20th>, <19th>]`, matching the
+        // 19th-dated schedule exactly as the live path does when clicked at 00:30 for real.
+        const nowMinutes = londonMinutesSinceMidnight(referenceNow);
         const fresh = await resolveFreshRunMatch(pool, {
           tdArea,
           berth,
@@ -364,10 +461,18 @@ export async function registerCurrentRunRoutes(
 
         // Milestone 39 (docs/adr/0007): a real (non-lineage) match establishes/corrects the link
         // a later physical step can carry forward — never blocks the response on failure.
+        //
+        // Milestone 57: never from a `?at=` query. Browsing history is a read; it must not
+        // rewrite stored lineage, and a historical re-resolution is weaker evidence than the
+        // live one it would overwrite (garner's activation/movement data has moved on since).
+        // Keeping playback read-only also means a stored link and a fresh resolution can never
+        // contradict each other: the fallback only ever runs where no link exists, and what it
+        // computes stays in the response rather than becoming a new fact about the past.
         if (
+          !at &&
           matchStatus === "matched" &&
           effectiveRow &&
-          openOccupancy &&
+          occupancy &&
           matchBasis &&
           effectiveTrafficDay
         ) {
@@ -375,7 +480,7 @@ export async function registerCurrentRunRoutes(
           const basisForLink = matchBasis;
           const trafficDayForLink = effectiveTrafficDay;
           try {
-            await upsertResolvedLink(pool, openOccupancy, {
+            await upsertResolvedLink(pool, occupancy, {
               cifScheduleId: scheduleForLink.id,
               cifTrainUid: scheduleForLink.cif_train_uid,
               trafficDay: trafficDayForLink,
@@ -622,10 +727,6 @@ export async function registerCurrentRunRoutes(
           "No confirmed match to show without logging in — this berth's identification is either ambiguous, unmatched, or too weak to show publicly",
         );
       }
-
-      const occupancyEnteredAt = state.occupancy_entered_at
-        ? state.occupancy_entered_at.toISOString()
-        : null;
 
       if (!isAuthenticated) {
         // Reduced, departure-board-style view — see toPublicEffective's own doc comment for

@@ -66,6 +66,15 @@ so.
   resolution path, so rule 13 holds without a second implementation to keep in step. Playback
   emits `crossing.updated` alongside `signal.updated` from the same paged stream, including the
   blank-on-silence rule.
+- **Historical barrier state is blank until an area's S-Class history has been decoded**
+  (recorded 2026-09-20, after Milestone 56 found this while investigating "replay shows no
+  signals"). `fetchSByteFactsAt` only reads `td_s_event` rows with `decode_status = 'decoded'`,
+  and every row predating Milestone 36a is `raw_only`, so a window before an area was decoded or
+  backfilled has no facts to resolve against. Inherited by barriers unchanged: `resolveSignalStates`
+  initialises every element to blank and overwrites only on a trusted fact, so a crossing in such a
+  window is grey rather than guessed — which is the correct outcome under decision 1, not a bug to
+  be "fixed" by inferring a position. It is a coverage limit, not a resolution one: the same
+  crossing resolves normally once its area is backfilled.
 - `crossing.updated` carries absolute state, like `signal.updated`, so duplicate or replayed
   deltas are harmless.
 - The wire's `crossings` record is optional: a client or server that predates crossings keeps

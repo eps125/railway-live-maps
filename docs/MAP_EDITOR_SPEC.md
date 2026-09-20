@@ -241,6 +241,10 @@ must never be read as "up". A barrier position is not a signal aspect: rule 9's 
 vocabulary is untouched by it, and rule 10's "never infer" applies in full. See the ADR for how
 this reuses the signal state machinery with only a vocabulary conversion at the edges.
 
+Expect grey barriers when scrubbing playback back beyond an area's decoded S-Class history: like
+signals, a crossing resolves from decoded `td_s_event` rows, and history predating Milestone 36a
+is undecoded until that area is backfilled. Grey there means "not recorded", not "up".
+
 ### `label`
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line

@@ -7,6 +7,8 @@ import {
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
+  scaleShapeWidth,
+  viaductWidth,
   type MapDocument,
   type TdBerthBinding,
   type TdSBitBarrierBinding,
@@ -1116,10 +1118,26 @@ export function PropertyPanel(): JSX.Element {
             }}
             setProp={setProp}
           />
+          {element.type === "viaduct" && (
+            <NumberField
+              label="Deck width"
+              value={viaductWidth(element)}
+              min={1}
+              onCommit={(v) => setProp("width", v)}
+            />
+          )}
+          {element.type === "tunnel" && (
+            <NumberField
+              label="Width (across the bore)"
+              value={Math.round(pointsBounds(element.points).height * 100) / 100}
+              min={1}
+              onCommit={(v) => setProp("points", scaleShapeWidth(element.points, v, "y"))}
+            />
+          )}
           <p className="field-hint">
             {element.type === "viaduct"
-              ? "Drawn like a track path \u2014 drag its endpoints, double-click it to add a vertex. It paints beneath the rails so the line runs over the deck."
-              : "Drawn like a platform \u2014 drag its corners, double-click an edge to add one, double-click a corner to remove it. It paints below the track."}{" "}
+              ? "Select it to get endpoint handles: drag them to move or lengthen it, and double-click the line to add a vertex. It paints beneath the rails so the line runs over the deck."
+              : "Select it to get corner handles: drag them to reshape, double-click an edge to add a corner, double-click a corner to remove one. Width scales the shape about its own centre, so its length and position stay put. It paints below the track."}{" "}
             Scenery only: no binding and no live state.
           </p>
         </>

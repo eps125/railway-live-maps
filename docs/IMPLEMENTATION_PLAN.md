@@ -3199,6 +3199,48 @@ S-Class definition/discovery help, unlike signals (Milestone 36c) — the addres
 There is still no way to add a layer to an existing map, so scenery on an already-drafted map
 lands on whatever layer matches and relies on `zIndex: -1`.
 
+### Addendum (2026-09-20): editor fixes and the barrier redesign, after owner review
+
+The owner authored a crossing on `mroc-blackpool` and found four problems.
+
+**Vertex handles were missing entirely on all three new shapes.** They could not be reshaped at
+all: tunnel and water had no corner handles, a viaduct had no endpoint handles. The handles were
+written out inline per element type, so the Milestone 55 shapes simply had none. Extracted into
+one `renderVertexHandles` and given to all three.
+
+That turned out to be the same latent bug as the `hasPoints` one, in four more places: every
+vertex operation hardcoded `element.type === "platform"` as its test for "is a closed polygon" —
+the wrap-edge insertion, the minimum vertex count, and two snap-step lookups. All now go through
+`POLYGON_TYPES` / `isClosedShape` / `snapStep`, so tunnel and water behave like the platform they
+were modelled on. The minimum-vertex fix matters beyond cosmetics: removing a corner could
+previously take a tunnel below the 3 points its schema requires, making the document
+unpublishable.
+
+**Width controls.** `viaduct.width` is a new optional field (optional so an already-authored
+viaduct keeps rendering — `viaductWidth()` supplies the old track-derived default). A tunnel's
+width is not a stored field but a transform: `scaleShapeWidth` scales the outline about its own
+centre, so the Width box sets the bore width without moving the tunnel or changing its length.
+
+Adding `width` to viaduct immediately broke berth resizing, which guarded on `"width" in element`
+as a proxy for "is a berth" — a guard that silently stopped meaning that the moment a second type
+had a width. Now tests `element.type === "berth"`.
+
+**Barriers redesigned** (owner preference, replacing the Milestone 55 drawing). Two half-barriers
+on diagonally opposite posts, each at a road edge: `up` parks them along the road edge pointing
+away from the railway, `down` rotates them 90 degrees about the same posts to lie across the road
+and meet in the middle, and `blank` uses the lowered, track-parallel geometry in grey. Same post
+and same arm length in both states, so it reads as one mechanism rotating. Verified by rendering
+the three states rather than by reading the numbers.
+
+Files changed: `packages/map-schema/src/{geometry,document,style,index}.ts` (+ geometry tests),
+`apps/web/src/editor/{EditorCanvas,PropertyPanel}.tsx`, `apps/web/src/map/MapRenderer.tsx`,
+`docs/MAP_EDITOR_SPEC.md`.
+
+Known limitations: a raised arm can overshoot the road ends, because keeping the rotation
+length-preserving means the arm is `roadWidth` long regardless of `roadLength` — tunable per
+crossing via Road length. A tunnel's Width assumes it is traced along a horizontal track
+(`scaleShapeWidth` takes an axis, but the panel only offers the `y` case).
+
 ## Milestone 56 — 14 days of S-Class bit history, backfilled (2026-09-20)
 
 Owner request, out of an M9 investigation (below): the S-Class explorer could only ever look back

@@ -9,6 +9,7 @@ import {
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
+  viaductWidth,
   sortElementsForPaint,
   type Layer as MapLayer,
   type MapElement,
@@ -49,6 +50,16 @@ function snap(value: number, gridSize: number): number {
  * platform's outline (so a shape's width can sit between grid lines, ADR 0005 rev.), a platform
  * number, and — owner request 2026-09-20 — a neutral section sign and its detached label, which
  * are small enough that a full grid square is a coarse jump. Everything else stays on the grid. */
+/** Points-based types whose `points` are a closed outline rather than an open polyline. Drives
+ * the wrap-edge vertex insertion, the minimum vertex count, and `closed` on the rendered shape.
+ * Structural rather than a list of one, because Milestone 55 added two more (tunnel/water) and
+ * every place that hardcoded `=== "platform"` silently excluded them. */
+const POLYGON_TYPES = new Set(["platform", "tunnel", "water"]);
+
+function isClosedShape(type: string, pointCount: number): boolean {
+  return POLYGON_TYPES.has(type) && pointCount >= 3;
+}
+
 const HALF_GRID_TYPES = new Set([
   "platform",
   "platformNumber",
@@ -316,6 +327,7 @@ function defaultElementForTool(
           { x: point.x, y: point.y },
           { x: point.x + 160, y: point.y },
         ],
+        width: MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth,
         labelPosition: "below",
         fontSize: MAP_STYLE.placedLabel.fontSize,
       };
@@ -713,7 +725,7 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     const isEndpoint = pointIndex === 0 || pointIndex === points.length - 1;
     // Platform corners snap to half the grid step so a shape's width can sit between grid lines
     // (ADR 0005 rev.); tracks and everything else stay on the full grid.
-    const step = element.type === "platform" ? Math.max(1, gridSize / 2) : gridSize;
+    const step = snapStep(element.type, gridSize);
 
     let px = e.target.x();
     let py = e.target.y();
@@ -810,11 +822,11 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     const stage = e.target.getStage();
     if (!stage) return;
     const world = toWorldPoint(stage);
-    const vStep = element.type === "platform" ? Math.max(1, gridSize / 2) : gridSize;
+    const vStep = snapStep(element.type, gridSize);
     const p = { x: snap(world.x, vStep), y: snap(world.y, vStep) };
     // A platform with 3+ points is a closed polygon, so the wrap edge (last → first) is also a
     // candidate for insertion; a trackPath is an open polyline.
-    const closed = element.type === "platform" && element.points.length >= 3;
+    const closed = isClosedShape(element.type, element.points.length);
     const lastSeg = closed ? element.points.length : element.points.length - 1;
     let bestIdx = 0;
     let bestDist = Infinity;
@@ -846,8 +858,10 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     e.cancelBubble = true;
     const element = doc.elements.find((el) => el.id === elementId);
     if (!element || !("points" in element)) return;
-    // A platform polygon needs 3 points to stay a shape; a trackPath needs 2.
-    const minPoints = element.type === "platform" && element.points.length >= 3 ? 3 : 2;
+    // A closed shape (platform/tunnel/water) needs 3 points to stay a shape; an open polyline
+    // (trackPath/viaduct) needs 2. Their schemas enforce the same minimums, so dropping below
+    // would make the document unpublishable.
+    const minPoints = isClosedShape(element.type, element.points.length) ? 3 : 2;
     if (element.points.length <= minPoints) return;
     const newPoints = element.points.filter((_, i) => i !== pointIndex);
     dispatch({
@@ -859,7 +873,10 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
   function handleTransformEnd(elementId: string): void {
     const node = nodeRefs.current.get(elementId);
     const element = doc.elements.find((el) => el.id === elementId);
-    if (!node || !element || !("width" in element)) return;
+    // Only a berth is resized by the Transformer, and only a berth has both width and height.
+    // This used to test `"width" in element` as a proxy for that, which quietly stopped meaning
+    // "berth" the moment `viaduct` gained an optional width (Milestone 55 follow-up).
+    if (!node || element?.type !== "berth") return;
     const width = Math.max(
       gridSize,
       Math.round((element.width * node.scaleX()) / gridSize) * gridSize,
@@ -1000,6 +1017,29 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                 />
               );
             };
+            /** Milestone 55 fix: the draggable corner/endpoint handles for a selected
+             * points-based shape. Previously written out inline per type, so the three shapes
+             * added in Milestone 55 had none at all and could not be reshaped. Same behaviour as
+             * the trackPath/platform handles: drag to move, double-click to remove. */
+            const renderVertexHandles = (
+              shape: Extract<MapElement, { points: unknown }>,
+            ): JSX.Element[] | null =>
+              selected && draggable
+                ? shape.points.map((point, index) => (
+                    <Circle
+                      key={index}
+                      x={point.x}
+                      y={point.y}
+                      radius={5}
+                      fill="#0d1117"
+                      stroke="#58a6ff"
+                      strokeWidth={2}
+                      draggable
+                      onDblClick={(e) => handleRemoveVertex(e, shape.id, index)}
+                      onDragEnd={(e) => handlePointDragEnd(e, shape.id, index, shape.points)}
+                    />
+                  ))
+                : null;
             const setRef = (node: Konva.Node | null): void => {
               if (node) nodeRefs.current.set(element.id, node);
               else nodeRefs.current.delete(element.id);
@@ -1308,7 +1348,9 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                     onClick={(e) => handleElementClick(e, element.id)}
                     onDragEnd={(e) => handlePathDragEnd(e, element.id)}
                     onDblClick={(e) => handleInsertVertex(e, element.id)}
+                    hitStrokeWidth={16}
                   />
+                  {renderVertexHandles(element)}
                   {renderPlacedLabel(element)}
                 </Group>
               );
@@ -1320,14 +1362,16 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                     ref={setRef}
                     points={flattenPoints(element.points)}
                     stroke={selected ? "#58a6ff" : MAP_STYLE.viaduct.color}
-                    strokeWidth={MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth}
+                    strokeWidth={viaductWidth(element)}
                     lineJoin="round"
                     lineCap="butt"
+                    hitStrokeWidth={Math.max(16, viaductWidth(element))}
                     draggable={draggable}
                     onClick={(e) => handleElementClick(e, element.id)}
                     onDragEnd={(e) => handlePathDragEnd(e, element.id)}
                     onDblClick={(e) => handleInsertVertex(e, element.id)}
                   />
+                  {renderVertexHandles(element)}
                   {renderPlacedLabel(element)}
                 </Group>
               );

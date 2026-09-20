@@ -8,6 +8,7 @@ import {
   placedLabelAnchor,
   pointOnPathAtX,
   pointsBounds,
+  viaductWidth,
   sortElementsForPaint,
   type CompiledMapBundle,
   type MapElement,
@@ -222,7 +223,7 @@ function renderViaduct(element: ViaductElement): JSX.Element {
         points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
         fill="none"
         stroke={`var(${MAP_CSS_TOKENS.viaductColor}, ${style.color})`}
-        strokeWidth={MAP_STYLE.track.strokeWidth + style.extraWidth}
+        strokeWidth={viaductWidth(element)}
         strokeLinejoin="round"
         strokeLinecap="butt"
         shapeRendering="geometricPrecision"
@@ -260,9 +261,9 @@ function renderWater(element: WaterElement): JSX.Element {
 
 /**
  * Milestone 55 / ADR 0014: a level crossing — the road across the railway, plus a barrier arm
- * each side. The arms lie across the road when `down` and swing back alongside the railway when
- * `up`; `blank` (unbound, or a bit not currently trustworthy) draws them grey, so the crossing
- * still reads as a crossing without claiming a position.
+ * each side, drawn parallel to the railway (owner preference 2026-09-20). Only their colour
+ * reflects the state: red = down, green = up, grey = `blank` (unbound, or a bit not currently
+ * trustworthy), so the crossing still reads as a crossing without claiming a position.
  *
  * The state is whatever the bound S-Class bit says and nothing else — never derived from train
  * movements, routes, timetables or nearby signals (CLAUDE.md rule 10). These are barrier

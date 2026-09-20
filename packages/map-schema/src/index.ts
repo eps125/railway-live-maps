@@ -44,6 +44,8 @@ export {
   placedLabelAnchor,
   pointOnPathAtX,
   pointsBounds,
+  scaleShapeWidth,
+  viaductWidth,
   type BarrierDisplayState,
   type LevelCrossingGeometry,
   type NeutralSectionGeometry,

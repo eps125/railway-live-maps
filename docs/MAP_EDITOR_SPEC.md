@@ -202,6 +202,13 @@ child priority over its draggable parent, so grabbing the shape still moves the 
   Deliberately **not** welded by `weldTrackPaths` and never part of `topology`: it is scenery that
   follows the track, not track.
 
+Selecting any of the three shows draggable **vertex handles** (corners on a tunnel/water
+polygon, endpoints on a viaduct): drag to reshape, double-click an edge to add a vertex,
+double-click a vertex to remove one. A viaduct carries an author-set `width` (its deck width; a
+viaduct authored before that field existed falls back to the track-derived default via
+`viaductWidth`), and a tunnel's **Width** field scales its outline about its own centre
+(`scaleShapeWidth`), so setting the bore width leaves the tunnel's length and position untouched.
+
 All three place and drag on **half-grid** steps (they are traced over real features, not aligned
 to the grid) and are placed with **`zIndex: -1`**, which paints them below the rails within their
 own layer. A newly seeded map also gets a **Scenery** layer below Track; an already-drafted map
@@ -217,6 +224,14 @@ across the railway. `x`/`y` is the point on the track it crosses; `orientation` 
 angle in degrees (0 = square across a horizontal track); `roadLength` runs across the track and
 `roadWidth` along it. `crossingType` (MCB, AHB, UWC …) is an author's note — never rendered, and
 it never affects the display.
+
+Barriers are drawn as two half-barriers on **diagonally opposite posts**, each at one edge of
+the road and one side of the railway (owner design 2026-09-20). `up` parks them along the road
+edge pointing away from the railway (perpendicular to the track) so a raised pair frames the
+crossing; `down` swings them 90 degrees about the same posts to lie across the road (parallel to
+the track), meeting in the middle. It is a true rotation — same post, same arm length — so the two
+states read as one mechanism. `blank` uses the lowered, track-parallel geometry in grey, which is
+what the owner asked an unmapped crossing to look like; grey means "no information", never "up".
 
 Barriers are **optional and never inferred**. A crossing shows barrier positions only when bound
 to one S-Class bit by a `tdSBitBarrier` binding, which states in the barrier's own vocabulary what

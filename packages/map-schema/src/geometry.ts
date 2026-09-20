@@ -238,6 +238,40 @@ export function neutralSectionGeometry(element: {
   };
 }
 
+/** A viaduct's deck width: the author's value, or the default derived from the track stroke for
+ * one authored before `width` existed (CLAUDE.md rule 11 — published versions are immutable, so
+ * old documents must keep rendering unchanged). */
+export function viaductWidth(element: { width?: number | undefined }): number {
+  return element.width ?? MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth;
+}
+
+/**
+ * Owner request 2026-09-20: set a tunnel's width — the extent across the bore — numerically
+ * instead of dragging corners. Scales the outline about its own centre, so its length and
+ * position are untouched; for the rectangle a tunnel starts as, that is exactly "make the bore
+ * this many units wide".
+ *
+ * `axis` says which extent the width refers to: a tunnel traced along a horizontal track is
+ * `"y"` (the common case on a schematic), one down a vertical track is `"x"`. A degenerate
+ * extent (a perfectly flat outline) is returned unchanged rather than divided by zero.
+ */
+export function scaleShapeWidth(
+  points: ReadonlyArray<{ x: number; y: number }>,
+  width: number,
+  axis: "x" | "y" = "y",
+): Array<{ x: number; y: number }> {
+  const bounds = pointsBounds(points);
+  const current = axis === "y" ? bounds.height : bounds.width;
+  if (current <= 0) return points.map((point) => ({ ...point }));
+  const centre = axis === "y" ? bounds.y + bounds.height / 2 : bounds.x + bounds.width / 2;
+  const factor = width / current;
+  return points.map((point) =>
+    axis === "y"
+      ? { x: point.x, y: centre + (point.y - centre) * factor }
+      : { x: centre + (point.x - centre) * factor, y: point.y },
+  );
+}
+
 /** A level crossing's barrier position. `blank` = unbound, or the bound bit isn't currently
  * trustworthy — never a guess (ADR 0014).
  *
@@ -257,9 +291,10 @@ export interface Segment {
 export interface LevelCrossingGeometry {
   /** The two road edges, drawn across the track. */
   road: [Segment, Segment];
-  /** One barrier each side of the track. Lying across the road when `down`, swung back parallel
-   * to the railway when `up`; both are drawn in `blank` too, in grey, so an unbound crossing
-   * still reads as a crossing rather than disappearing. */
+  /** One barrier each side of the track, always drawn **parallel to the railway** (owner
+   * preference 2026-09-20 — the earlier perpendicular arm read wrong on a schematic). State
+   * changes their colour, not their geometry, and `blank` still draws them grey so an unbound
+   * crossing reads as a crossing rather than disappearing. */
   barriers: [Segment, Segment];
   /** Bounds the label anchors against (the road's full extent). */
   bounds: Rect;
@@ -271,8 +306,8 @@ export interface LevelCrossingGeometry {
  * "road square across a horizontal track". Pure, and shared by the public SVG renderer and the
  * editor canvas so a crossing looks the same in both (CLAUDE.md rule 13).
  *
- * `barrierState` only chooses which way the two barrier arms point; it never changes the road.
- * The state itself comes from the bound S-Class bit and nowhere else (rule 10).
+ * `barrierState` moves the two arms about their posts; it never changes the road. The state
+ * itself comes from the bound S-Class bit and nowhere else (rule 10).
  */
 export function levelCrossingGeometry(
   element: {
@@ -299,22 +334,26 @@ export function levelCrossingGeometry(
     y2: element.y + along.y * halfWidth * side + road.y * halfLength,
   });
 
-  // A barrier pivots at the roadside, clear of the track on each side.
+  // Two half-barriers on diagonally opposite posts, as a real pair is arranged: each post sits
+  // on one side of the railway, at one edge of the road. Owner design 2026-09-20:
+  //
+  //   up    - parked along the road edge, pointing away from the railway (perpendicular to the
+  //           track), so a raised pair frames the crossing rather than sitting in the middle of
+  //           it. Only ever shown for a crossing bound to an S-Class bit.
+  //   down  - swung 90 degrees about the same post, lying across the road (parallel to the
+  //           track) to block it. The two halves meet in the middle.
+  //   blank - an unbound crossing, or a bit not currently trustworthy. Drawn in the lowered
+  //           geometry but grey: parallel to the track, which is what the owner asked an
+  //           unmapped crossing to look like. Grey means "no information", never "up".
   const pivotDistance = element.roadLength * style.barrierDistance;
   const arm = (side: 1 | -1): Segment => {
-    const px = element.x + road.x * pivotDistance * side;
-    const py = element.y + road.y * pivotDistance * side;
-    // Down: lying across the road (so, along the railway), blocking it. Up: swung back to lie
-    // alongside the railway, pointing away from the track.
-    const direction = barrierState === "down" ? along : road;
-    const length = barrierState === "down" ? element.roadWidth : pivotDistance * 0.9;
-    const reach = barrierState === "down" ? 1 : side;
-    return {
-      x1: px - (barrierState === "down" ? direction.x * length * 0.5 : 0),
-      y1: py - (barrierState === "down" ? direction.y * length * 0.5 : 0),
-      x2: px + direction.x * length * (barrierState === "down" ? 0.5 : reach),
-      y2: py + direction.y * length * (barrierState === "down" ? 0.5 : reach),
-    };
+    const px = element.x + road.x * pivotDistance * side + along.x * halfWidth * side;
+    const py = element.y + road.y * pivotDistance * side + along.y * halfWidth * side;
+    const reach =
+      barrierState === "up"
+        ? { x: road.x * element.roadWidth * side, y: road.y * element.roadWidth * side }
+        : { x: -along.x * element.roadWidth * side, y: -along.y * element.roadWidth * side };
+    return { x1: px, y1: py, x2: px + reach.x, y2: py + reach.y };
   };
 
   const corners = [edge(1), edge(-1)].flatMap((segment) => [

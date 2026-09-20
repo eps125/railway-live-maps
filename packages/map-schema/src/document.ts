@@ -274,6 +274,9 @@ const TunnelElementSchema = BaseElementSchema.extend({
 const ViaductElementSchema = BaseElementSchema.extend({
   type: z.literal("viaduct"),
   points: z.array(PointSchema).min(2),
+  /** Deck width in map units (owner request 2026-09-20). Optional so a viaduct authored before
+   * it existed still parses; `viaductWidth()` supplies the default for those. */
+  width: z.number().positive().optional(),
   ...placedLabelFields,
 });
 

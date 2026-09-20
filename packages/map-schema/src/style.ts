@@ -104,7 +104,8 @@ export const MAP_STYLE = {
    * it — which is what a same-width line in a different colour would do. */
   viaduct: {
     color: "#6d6255",
-    /** Deck width = the track stroke width plus this. */
+    /** Default deck width = the track stroke width plus this. Author-editable per viaduct
+     * (owner request 2026-09-20), so this is only the starting value. */
     extraWidth: 7,
   },
   /** Milestone 55. Rivers, docks, the sea: a filled body with a lighter bank outline. Painted

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { MAP_STYLE } from "./style.js";
 import {
   berthRenderRect,
+  levelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
   pointOnPathAtX,
   pointsBounds,
+  scaleShapeWidth,
+  viaductWidth,
 } from "./geometry.js";
 import { MapDocumentSchema, type BerthElement, type MapElement } from "./document.js";
 
@@ -320,5 +324,123 @@ describe("placedLabelAnchor", () => {
     );
     expect(moved.x).toBe(90 + 200);
     expect(moved.y).toBe(35);
+  });
+});
+
+describe("viaductWidth", () => {
+  it("uses the author's width when set", () => {
+    expect(viaductWidth({ width: 24 })).toBe(24);
+  });
+
+  it("falls back to the track-derived default for a viaduct authored before width existed", () => {
+    // CLAUDE.md rule 11: published versions are immutable, so an old document must keep
+    // rendering exactly as it did rather than collapsing to a zero-width deck.
+    expect(viaductWidth({})).toBe(MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth);
+    expect(viaductWidth({ width: undefined })).toBe(
+      MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth,
+    );
+  });
+});
+
+describe("scaleShapeWidth", () => {
+  // A tunnel starts as a rectangle traced along the track; "width" is its extent across the bore.
+  const rect = [
+    { x: 100, y: 40 },
+    { x: 200, y: 40 },
+    { x: 200, y: 60 },
+    { x: 100, y: 60 },
+  ];
+
+  it("sets the across-track extent and leaves length and centre untouched", () => {
+    const wider = scaleShapeWidth(rect, 40);
+    const bounds = pointsBounds(wider);
+    expect(bounds.height).toBe(40);
+    // Length unchanged, and it grew about its own centre rather than one edge.
+    expect(bounds.width).toBe(100);
+    expect(bounds.x).toBe(100);
+    expect(bounds.y + bounds.height / 2).toBe(50);
+  });
+
+  it("narrows as well as widens", () => {
+    expect(pointsBounds(scaleShapeWidth(rect, 5)).height).toBe(5);
+  });
+
+  it("can scale the other axis for a tunnel traced down a vertical track", () => {
+    const bounds = pointsBounds(scaleShapeWidth(rect, 50, "x"));
+    expect(bounds.width).toBe(50);
+    expect(bounds.height).toBe(20);
+    expect(bounds.x + bounds.width / 2).toBe(150);
+  });
+
+  it("returns a flat outline unchanged instead of dividing by zero", () => {
+    const flat = [
+      { x: 0, y: 10 },
+      { x: 50, y: 10 },
+    ];
+    expect(scaleShapeWidth(flat, 20)).toEqual(flat);
+  });
+});
+
+describe("levelCrossingGeometry barriers (owner design 2026-09-20)", () => {
+  const crossing = {
+    x: 100,
+    y: 50,
+    orientation: 0,
+    roadLength: 34,
+    roadWidth: 16,
+    labelPosition: "below" as const,
+    fontSize: 10,
+  };
+
+  function lengthOf(segment: { x1: number; y1: number; x2: number; y2: number }): number {
+    return Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+  }
+
+  it("posts the two half-barriers diagonally opposite, at the road edges", () => {
+    const { barriers } = levelCrossingGeometry(crossing, "down");
+    // Road edges are at x = 100 +/- roadWidth/2; the posts sit on opposite edges and opposite
+    // sides of the railway, as a real half-barrier pair is arranged.
+    expect([barriers[0].x1, barriers[1].x1]).toEqual([108, 92]);
+    expect(barriers[0].y1).toBeGreaterThan(50);
+    expect(barriers[1].y1).toBeLessThan(50);
+  });
+
+  it("lies the arms across the road, parallel to the track, when down", () => {
+    const { barriers } = levelCrossingGeometry(crossing, "down");
+    for (const barrier of barriers) expect(barrier.y1).toBe(barrier.y2);
+  });
+
+  it("parks the arms along the road edge, perpendicular to the track, when up", () => {
+    const { barriers } = levelCrossingGeometry(crossing, "up");
+    for (const barrier of barriers) {
+      expect(barrier.x1).toBe(barrier.x2);
+      // Pointing away from the railway, not across it.
+      expect(Math.abs(barrier.y2 - 50)).toBeGreaterThan(Math.abs(barrier.y1 - 50));
+    }
+    // Parked at the road edges rather than the middle of the crossing.
+    expect([barriers[0].x1, barriers[1].x1]).toEqual([108, 92]);
+  });
+
+  it("is a true rotation about the post: same length, same pivot, both states", () => {
+    const up = levelCrossingGeometry(crossing, "up").barriers;
+    const down = levelCrossingGeometry(crossing, "down").barriers;
+    for (let i = 0; i < 2; i += 1) {
+      expect(lengthOf(up[i]!)).toBeCloseTo(lengthOf(down[i]!), 6);
+      expect([up[i]!.x1, up[i]!.y1]).toEqual([down[i]!.x1, down[i]!.y1]);
+    }
+  });
+
+  it("draws an unmapped crossing in the lowered, track-parallel geometry", () => {
+    // Owner preference: a crossing with no S-Class binding reads parallel to the track. It is
+    // grey, not green — blank means no information, never "up" (ADR 0014 decision 1).
+    const blank = levelCrossingGeometry(crossing, "blank").barriers;
+    const down = levelCrossingGeometry(crossing, "down").barriers;
+    expect(blank).toEqual(down);
+  });
+
+  it("rotates the whole crossing with orientation", () => {
+    const turned = levelCrossingGeometry({ ...crossing, orientation: 90 }, "down");
+    // Track now vertical, so a lowered arm lies vertically instead.
+    for (const barrier of turned.barriers) expect(barrier.x1).toBeCloseTo(barrier.x2, 6);
   });
 });

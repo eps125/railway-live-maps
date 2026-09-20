@@ -11,7 +11,7 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
 → 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
-→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 53; 33 (owner,
+→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 53 → 54; 33 (owner,
 done 2026-09-19). Milestone 52 (virtual GPS-fed berths) was reverted on `main` 2026-09-19 and
 lives on the `gps-berths` branch. **That number stays reserved for it** — the 2026-09-20 editor
 work took 53 rather than reusing 52, so the branch can come back without a clash.
@@ -3059,6 +3059,37 @@ unchanged.
 Known limitations / follow-up: the sign's label is single-line (use a separate `label` element for
 more); there is no dedicated lineside-feature layer yet, so signs land on Labels; tunnels,
 viaducts and signal boxes are not implemented — they should reuse this element's generic shape.
+
+## Milestone 54 — CI housekeeping: prune old runs and images (2026-09-20)
+
+Owner request: the Actions tab and GHCR had been accumulating since Milestone 20 made every push
+to `main` build, publish and deploy (202 `ci.yml` runs by 2026-09-20, plus a tagged image per
+service per commit).
+
+A `cleanup` job appended to `.github/workflows/ci.yml`, after `deploy`:
+
+- **Workflow runs — keep 3.** Deletes every older _completed_ run of `ci.yml`. Scoped to this one
+  workflow rather than `repos/.../actions/runs`, so a second workflow added later doesn't have its
+  history silently wiped too.
+- **GHCR images — keep 10 per service** (`-api`, `-worker`, `-web`), via
+  `actions/delete-package-versions@v5`.
+
+Owner decision on the keep counts (asked before implementing, 2026-09-20): runs pruned hard to 3,
+but images kept to 10 rather than 3, because a deploy pinned to an older commit SHA can only
+re-pull while that SHA's image still exists — 3 would have capped rollback at the last three
+deploys. The newest version is always kept, so `:latest` (what Watchtower pulls) is never at risk.
+
+The job is `continue-on-error: true` and runs under `always()`: housekeeping must never turn a
+green build red, never block the deploy above it, and must still prune after a red run.
+
+Files changed: `.github/workflows/ci.yml` only.
+
+Known limitations / follow-up: `GITHUB_TOKEN`'s `packages: write` is documented for publishing,
+and deleting versions of a **user-owned** GHCR package may return 403. The image steps therefore
+read `secrets.GHCR_CLEANUP_TOKEN || github.token` — if the first real run shows the image steps
+403ing, add a `GHCR_CLEANUP_TOKEN` PAT with `delete:packages` and nothing else changes. Run
+deletion uses `actions: write`, which is unambiguous. The first execution will delete ~199 runs;
+their logs are not recoverable.
 
 ## Later / unscheduled
 

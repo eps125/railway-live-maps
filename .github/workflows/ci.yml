@@ -188,3 +188,66 @@ jobs:
             http://127.0.0.1:6056/v1/update
         env:
           WATCHTOWER_HTTP_API_TOKEN: ${{ secrets.WATCHTOWER_HTTP_API_TOKEN }}
+
+  cleanup:
+    # Owner request 2026-09-20: keep the Actions tab and GHCR from accumulating forever.
+    #
+    # `always()` so history is pruned even when the run itself failed (a red run is the newest
+    # run, so it is always one of the ones kept). `continue-on-error` because housekeeping must
+    # never be the reason a green build reports red, and must never block the deploy above it.
+    needs: [deploy]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write
+      packages: write
+
+    steps:
+      - name: Delete all but the 3 most recent CI runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_RUNS: "3"
+        run: |
+          # Scoped to this workflow's own runs (not `repos/.../actions/runs`, which is every
+          # workflow in the repo) so adding a second workflow later doesn't silently wipe its
+          # history too. The API returns newest-first, so "skip the first KEEP_RUNS" is the
+          # whole selection rule.
+          #
+          # Only `completed` runs are deletable — the in-progress run doing the deleting is
+          # newest and therefore inside the keep window anyway, but the filter makes that
+          # explicit rather than relying on it. A failed delete (a run removed concurrently,
+          # say) must not abort the loop, hence the `|| true`.
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?per_page=100" \
+            --jq '.workflow_runs[] | [.id, .status] | @tsv' \
+            | awk -v keep="${KEEP_RUNS}" 'NR > keep && $2 == "completed" { print $1 }' \
+            | while read -r run_id; do
+                echo "Deleting workflow run ${run_id}"
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" || true
+              done
+
+      - name: Delete all but the 10 most recent api images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: railway-live-maps-api
+          package-type: container
+          min-versions-to-keep: 10
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
+
+      - name: Delete all but the 10 most recent worker images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: railway-live-maps-worker
+          package-type: container
+          min-versions-to-keep: 10
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
+
+      - name: Delete all but the 10 most recent web images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: railway-live-maps-web
+          package-type: container
+          min-versions-to-keep: 10
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}

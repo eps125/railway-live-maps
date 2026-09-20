@@ -1917,12 +1917,30 @@ async function seedRunLink(
   );
 }
 
+/**
+ * Every headcode these tests use is unique per run, never a fixed literal.
+ *
+ * Integration tests share one database and `resolveFreshRunMatch`'s fallback tier is a
+ * **nationwide** search by `signalling_id` with no area scoping (Milestone 34, docs/adr/0006) —
+ * so a `cif_schedules` row seeded here is visible to every other test file's resolution while it
+ * lives, and a fixed headcode can silently turn another test's unambiguous match into an
+ * ambiguous one. That is not hypothetical: these tests' first CI run broke
+ * `runLineage/freshResolution.integration.test.ts`'s step-chain upgrade cases, which only
+ * reproduced under the full suite and not pairwise (A/B'd on a disposable stack, 2026-09-20).
+ * `971444f` and `67fafd8` are earlier fixes to these same two files for the same class of
+ * problem. Unique headcodes make that collision impossible by construction rather than by luck.
+ */
+function uniqueHeadcode(): string {
+  return `9${randomUUID().replace(/-/g, "").slice(0, 3).toUpperCase()}`;
+}
+
 describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
   it("answers for an occupancy that is over, where the live request 404s", async () => {
     const area = uniqueArea();
     const enteredAt = new Date(Date.now() - 40 * 60_000);
     const leftAt = new Date(Date.now() - 35 * 60_000);
-    await seedClosedOccupancy(area, "0100", "1A23", enteredAt, leftAt);
+    const headcode = uniqueHeadcode();
+    await seedClosedOccupancy(area, "0100", headcode, enteredAt, leftAt);
     const app = await buildApp();
     try {
       const live = await app.inject({
@@ -1940,7 +1958,7 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
       });
       expect(playback.statusCode).toBe(200);
       const body = playback.json();
-      expect(body.headcode).toBe("1A23");
+      expect(body.headcode).toBe(headcode);
       expect(body.occupancyEnteredAt).toBe(enteredAt.toISOString());
     } finally {
       await app.close();
@@ -1951,7 +1969,7 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
     const area = uniqueArea();
     const enteredAt = new Date(Date.now() - 40 * 60_000);
     const leftAt = new Date(Date.now() - 35 * 60_000);
-    await seedClosedOccupancy(area, "0101", "1A23", enteredAt, leftAt);
+    await seedClosedOccupancy(area, "0101", uniqueHeadcode(), enteredAt, leftAt);
     const app = await buildApp();
     try {
       const before = await app.inject({
@@ -1982,8 +2000,9 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
     const firstEntered = new Date(Date.now() - 60 * 60_000);
     const firstLeft = new Date(Date.now() - 50 * 60_000);
     const secondEntered = new Date(Date.now() - 20 * 60_000);
-    await seedClosedOccupancy(area, "0102", "1A23", firstEntered, firstLeft);
-    await seedClosedOccupancy(area, "0102", "9Z99", secondEntered, null);
+    const firstHeadcode = uniqueHeadcode();
+    await seedClosedOccupancy(area, "0102", firstHeadcode, firstEntered, firstLeft);
+    await seedClosedOccupancy(area, "0102", uniqueHeadcode(), secondEntered, null);
     const app = await buildApp();
     try {
       const response = await app.inject({
@@ -1994,7 +2013,7 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
         headers: await authHeaders(),
       });
       expect(response.statusCode).toBe(200);
-      expect(response.json().headcode).toBe("1A23");
+      expect(response.json().headcode).toBe(firstHeadcode);
     } finally {
       await app.close();
     }
@@ -2002,7 +2021,7 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
 
   it("400s on an `at` that isn't a timestamp, rather than silently answering about now", async () => {
     const area = uniqueArea();
-    await seedOccupiedBerth(area, "0103", "1A23");
+    await seedOccupiedBerth(area, "0103", uniqueHeadcode());
     const app = await buildApp();
     try {
       const response = await app.inject({
@@ -2021,11 +2040,17 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
     const area = uniqueArea();
     const enteredAt = new Date(Date.now() - 40 * 60_000);
     const leftAt = new Date(Date.now() - 35 * 60_000);
-    const { occupancyId } = await seedClosedOccupancy(area, "0104", "1A23", enteredAt, leftAt);
+    const { occupancyId } = await seedClosedOccupancy(
+      area,
+      "0104",
+      uniqueHeadcode(),
+      enteredAt,
+      leftAt,
+    );
     // The link points at a schedule whose signalling id is deliberately NOT the berth's
     // headcode: if the response carries this schedule, the stored identification was used, and
     // a fresh headcode search could not have produced it.
-    const scheduleId = await seedSchedule("7Z77", "P");
+    const scheduleId = await seedSchedule(uniqueHeadcode(), "P");
     await seedRunLink(
       occupancyId,
       enteredAt,
@@ -2057,10 +2082,17 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
     const area = uniqueArea();
     const enteredAt = new Date(Date.now() - 40 * 60_000);
     const leftAt = new Date(Date.now() - 35 * 60_000);
-    const { occupancyId } = await seedClosedOccupancy(area, "0105", "4V44", enteredAt, leftAt);
+    const matchableHeadcode = uniqueHeadcode();
+    const { occupancyId } = await seedClosedOccupancy(
+      area,
+      "0105",
+      matchableHeadcode,
+      enteredAt,
+      leftAt,
+    );
     // A schedule the fresh fallback genuinely can match, so the write path is reachable and
     // it's the `!at` guard — not the absence of a match — that keeps the table clean.
-    await seedSchedule("4V44", "P");
+    await seedSchedule(matchableHeadcode, "P");
     const app = await buildApp();
     try {
       const response = await app.inject({

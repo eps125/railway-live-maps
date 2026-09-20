@@ -188,6 +188,10 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
           quality: { status: "unknown", gaps: [] },
           berths: { "berth-a": { description: null, enteredAt: null } },
           signals: {},
+          // Milestone 55 / ADR 0014: present and empty for a map with no level crossings — the
+          // snapshot always states the record, so a client never has to distinguish "no
+          // crossings" from "this server doesn't know about crossings".
+          crossings: {},
         },
       });
 

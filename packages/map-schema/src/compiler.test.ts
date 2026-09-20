@@ -551,3 +551,52 @@ describe("sortElementsForPaint", () => {
     expect(sortElementsForPaint(elements, layers).map((e) => e.id)).toEqual(["label", "orphan"]);
   });
 });
+
+describe("compileMapDocument barrier bindings (Milestone 55 / ADR 0014)", () => {
+  it("indexes a barrier binding separately from signal bindings, with a canonical address", () => {
+    const doc = MapDocumentSchema.parse({
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "m",
+        canvas: { width: 100, height: 100, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l1", name: "Track", order: 0 }],
+      elements: [
+        { id: "lx-1", layerId: "l1", type: "levelCrossing", x: 10, y: 20 },
+        { id: "sig-1", layerId: "l1", type: "signal", x: 30, y: 20 },
+      ],
+      topology: { nodes: [], edges: [] },
+      bindings: [
+        {
+          id: "b1",
+          elementId: "lx-1",
+          type: "tdSBitBarrier",
+          tdArea: "M9",
+          address: "a",
+          bit: 2,
+          activeMeans: "down",
+        },
+        {
+          id: "s1",
+          elementId: "sig-1",
+          type: "tdSBit",
+          tdArea: "M9",
+          address: "b",
+          bit: 3,
+          activeMeans: "off",
+        },
+      ],
+      editorMetadata: {},
+    });
+
+    const bundle = compileMapDocument(doc);
+    expect(bundle.barrierBindingIndex).toEqual({ "M9|0A|2": "lx-1" });
+    expect(bundle.barrierBindingActiveMeans).toEqual({ "M9|0A|2": "down" });
+    // A barrier bit must never leak into the signal index, or a crossing's bit would be read
+    // as an aspect (ADR 0014 decision 4).
+    expect(bundle.sBitBindingIndex).toEqual({ "M9|0B|3": "sig-1" });
+    expect(bundle.sBitBindingActiveMeans).toEqual({ "M9|0B|3": "off" });
+  });
+});

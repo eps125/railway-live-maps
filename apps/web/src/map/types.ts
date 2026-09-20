@@ -12,6 +12,13 @@ export interface SignalState {
   state: "blank" | "on" | "off";
 }
 
+/** Milestone 55 / ADR 0014: a level crossing's barrier position. Not a signal aspect — rule 9's
+ * blank/on/off vocabulary is untouched by it. `blank` means unbound, unknown or a feed gap, and
+ * is never to be read as "up". */
+export interface CrossingState {
+  state: "blank" | "up" | "down";
+}
+
 export interface MapStateResponse {
   mapSlug: string;
   mapVersion: number;
@@ -21,12 +28,28 @@ export interface MapStateResponse {
   quality: { status: "ok" | "stale" | "unknown"; gaps: string[] };
   berths: Record<string, BerthState>;
   signals: Record<string, SignalState>;
+  /** Absent from a response produced before crossings existed; read as "no crossings". */
+  crossings?: Record<string, CrossingState>;
 }
 
 /** One compact playback event from `GET /api/v1/maps/{slug}/events` — the same wire shape as a
  * live WS `berth.updated` / `berth.cleared` / `signal.updated` delta, so playback applies them
  * with the same semantics as the live socket. */
-export type PlaybackDelta = BerthPlaybackDelta | SignalPlaybackDelta;
+export type PlaybackDelta = BerthPlaybackDelta | SignalPlaybackDelta | CrossingPlaybackDelta;
+
+/** Milestone 55: a bound level crossing's absolute barrier position (only ever from its bound
+ * S-Class bit). Same absolute-state contract as `signal.updated`, so a replayed or duplicated
+ * delta is harmless. */
+export interface CrossingPlaybackDelta {
+  type: "crossing.updated";
+  sequence: number;
+  eventAt: string;
+  elementId: string;
+  state: CrossingState["state"];
+  tdArea: string;
+  address: string;
+  bit: number;
+}
 
 /** Milestone 36b: a bound signal's absolute state (only ever from its bound S-Class bit). */
 export interface SignalPlaybackDelta {

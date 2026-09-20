@@ -169,6 +169,63 @@ signs land on the **Labels** layer (the conventional stack has no lineside-featu
 adding one to fresh documents would leave already-drafted maps falling back to Track); a dedicated
 layer is an option once the family has more members.
 
+### Placed labels (shared)
+
+**Milestone 55.** `neutralSection`, `tunnel`, `viaduct`, `water` and `levelCrossing` all carry the
+same optional caption, declared once as `placedLabelFields` and resolved by one helper,
+`placedLabelAnchor(bounds, label)`:
+
+- `label` — the text; absent means no caption is drawn at all.
+- `labelPosition` — `above`/`below`/`left`/`right` (default `below`), placing it just outside the
+  element's own bounds.
+- `labelOffset` — **detaches** the label (owner request 2026-09-20). An offset from the **centre of
+  the element's bounds**, not an absolute point, so a detached label travels with its shape and
+  survives copy/paste. While set, `labelPosition` is ignored but retained, so re-attaching restores
+  the side last chosen; the label is centred on the offset point.
+- `fontSize`.
+
+In the editor, "Detach label" seeds the offset from the label's _current drawn position_ so it
+never jumps, the label then becomes independently draggable on the canvas (Konva gives a draggable
+child priority over its draggable parent, so grabbing the shape still moves the whole shape), and
+"Reattach label" clears it.
+
+### `tunnel`, `viaduct`, `water`
+
+**Milestone 55 (owner request 2026-09-20).** Three scenery types, all carrying placed labels:
+
+- **`tunnel`** — a reshapeable polygon, drawn exactly like a `platform` (drag corners,
+  double-click an edge to add one, double-click a corner to remove it). Rendered as a dark bore
+  with a dashed portal outline.
+- **`water`** — the same polygon model, for rivers, docks and coastlines, in any orientation. A
+  river crossing the railway at right angles is the common case but nothing restricts it.
+- **`viaduct`** — a polyline, drawn like a `trackPath`, rendered as a wider stone-coloured deck.
+  Deliberately **not** welded by `weldTrackPaths` and never part of `topology`: it is scenery that
+  follows the track, not track.
+
+All three place and drag on **half-grid** steps (they are traced over real features, not aligned
+to the grid) and are placed with **`zIndex: -1`**, which paints them below the rails within their
+own layer. A newly seeded map also gets a **Scenery** layer below Track; an already-drafted map
+has no layer under Track, so the negative `zIndex` is what makes "below the track" true there.
+A viaduct goes on the **Track** layer, with the line it carries.
+
+Scenery only: no binding, no live state, nothing inferred (CLAUDE.md rules 9/10).
+
+### `levelCrossing`
+
+**Milestone 55, [ADR 0014](adr/0014-level-crossing-barriers-from-s-class.md).** The road drawn
+across the railway. `x`/`y` is the point on the track it crosses; `orientation` is the road's
+angle in degrees (0 = square across a horizontal track); `roadLength` runs across the track and
+`roadWidth` along it. `crossingType` (MCB, AHB, UWC …) is an author's note — never rendered, and
+it never affects the display.
+
+Barriers are **optional and never inferred**. A crossing shows barrier positions only when bound
+to one S-Class bit by a `tdSBitBarrier` binding, which states in the barrier's own vocabulary what
+a set bit means (`up`/`down`), verified per crossing and never assumed. Displayed positions are
+red = down, green = up, grey = **blank**, where blank means unbound, unknown, or a feed gap — and
+must never be read as "up". A barrier position is not a signal aspect: rule 9's blank/on/off
+vocabulary is untouched by it, and rule 10's "never infer" applies in full. See the ADR for how
+this reuses the signal state machinery with only a vocabulary conversion at the edges.
+
 ### `label`
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line

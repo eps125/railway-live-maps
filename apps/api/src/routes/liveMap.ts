@@ -84,7 +84,7 @@ export async function registerLiveMapRoutes(
         forward(message);
       });
 
-      const { sourceSequence, berths, signals, quality } = await computeLiveState(
+      const { sourceSequence, berths, signals, crossings, quality } = await computeLiveState(
         pool,
         version.compiled_runtime_bundle,
         now,
@@ -97,7 +97,7 @@ export async function registerLiveMapRoutes(
         type: "snapshot",
         protocolVersion: LIVE_PROTOCOL_VERSION,
         sequence: sourceSequence,
-        state: { mode: "live", quality, berths, signals },
+        state: { mode: "live", quality, berths, signals, crossings },
       };
       socket.send(JSON.stringify(snapshot));
 

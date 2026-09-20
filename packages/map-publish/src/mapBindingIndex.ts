@@ -49,4 +49,18 @@ export async function insertMapBindingIndexRows(
       [mapVersionId, elementId, tdArea, address, bit, activeMeans],
     );
   }
+
+  // Milestone 55 / ADR 0014: a level crossing's barrier bit. Same shape as a signal binding, but
+  // its own binding_type and its own up/down `active_means` vocabulary (enforced by the check
+  // constraint in migration 0039), so a barrier bit can never be read as a signal bit.
+  for (const [key, elementId] of Object.entries(bundle.barrierBindingIndex ?? {})) {
+    const [tdArea, address, bit] = key.split("|");
+    const activeMeans = bundle.barrierBindingActiveMeans?.[key] ?? null;
+    await client.query(
+      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, address, bit, active_means)
+       values ($1, $2, 'td_s_bit_barrier', $3, $4, $5, $6)
+       on conflict do nothing`,
+      [mapVersionId, elementId, tdArea, address, bit, activeMeans],
+    );
+  }
 }

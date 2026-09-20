@@ -17,6 +17,10 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   // Milestone 53: the first lineside-feature symbol (Sign AJ02). Tunnels, viaducts and signal
   // boxes are the owner's stated next additions and will join it here.
   { mode: "neutralSection", label: "Neutral sect." },
+  { mode: "tunnel", label: "Tunnel" },
+  { mode: "viaduct", label: "Viaduct" },
+  { mode: "water", label: "Water" },
+  { mode: "levelCrossing", label: "Level xing" },
 ];
 
 /** docs/MAP_EDITOR_SPEC.md §6: "Left symbol/tool palette." Clicking a tool arms it; the next

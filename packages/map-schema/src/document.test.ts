@@ -74,6 +74,81 @@ describe("MapDocumentSchema", () => {
     }
   });
 
+  it("accepts the Milestone 55 scenery types with shared label defaults", () => {
+    const result = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [
+          {
+            id: "tun1",
+            layerId: "l1",
+            type: "tunnel",
+            points: [
+              { x: 0, y: 0 },
+              { x: 40, y: 0 },
+              { x: 40, y: 20 },
+            ],
+          },
+          {
+            id: "via1",
+            layerId: "l1",
+            type: "viaduct",
+            points: [
+              { x: 0, y: 0 },
+              { x: 60, y: 0 },
+            ],
+          },
+          {
+            id: "wat1",
+            layerId: "l1",
+            type: "water",
+            points: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+              { x: 10, y: 80 },
+            ],
+            label: "River Lune",
+            labelOffset: { x: 12, y: -4 },
+          },
+        ],
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    for (const element of result.data.elements) {
+      expect(element).toMatchObject({ labelPosition: "below", fontSize: 10, zIndex: 0 });
+    }
+    expect(result.data.elements[2]).toMatchObject({
+      label: "River Lune",
+      labelOffset: { x: 12, y: -4 },
+    });
+  });
+
+  it("requires a closed shape for tunnel/water and two points for a viaduct", () => {
+    const twoPointTunnel = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [
+          {
+            id: "tun1",
+            layerId: "l1",
+            type: "tunnel",
+            points: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(twoPointTunnel.success).toBe(false);
+
+    const onePointViaduct = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [{ id: "via1", layerId: "l1", type: "viaduct", points: [{ x: 0, y: 0 }] }],
+      }),
+    );
+    expect(onePointViaduct.success).toBe(false);
+  });
+
   it("rejects a neutralSection with a non-positive size", () => {
     const result = MapDocumentSchema.safeParse(
       minimalDoc({

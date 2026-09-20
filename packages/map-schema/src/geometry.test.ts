@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { berthRenderRect, neutralSectionGeometry, pointOnPathAtX } from "./geometry.js";
+import {
+  berthRenderRect,
+  neutralSectionGeometry,
+  placedLabelAnchor,
+  pointOnPathAtX,
+  pointsBounds,
+} from "./geometry.js";
 import { MapDocumentSchema, type BerthElement, type MapElement } from "./document.js";
 
 describe("pointOnPathAtX", () => {
@@ -248,5 +254,71 @@ describe("neutralSectionGeometry", () => {
       y: 53.5,
       anchor: "start",
     });
+  });
+});
+
+describe("pointsBounds", () => {
+  it("is the axis-aligned box of every vertex, in any winding order", () => {
+    expect(
+      pointsBounds([
+        { x: 30, y: 10 },
+        { x: 10, y: 40 },
+        { x: 50, y: 25 },
+      ]),
+    ).toEqual({ x: 10, y: 10, width: 40, height: 30 });
+  });
+
+  it("is a degenerate box for an empty list rather than Infinity", () => {
+    expect(pointsBounds([])).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+});
+
+describe("placedLabelAnchor", () => {
+  // Milestone 55: generalised from the neutral-section-only version, so every piece of map
+  // furniture anchors its caption the same way against its own bounds.
+  const bounds = { x: 100, y: 50, width: 40, height: 20 };
+  const base = { fontSize: 10 } as const;
+
+  it("puts an attached label just outside the chosen side", () => {
+    expect(placedLabelAnchor(bounds, { ...base, labelPosition: "above" })).toEqual({
+      x: 120,
+      y: 46,
+      anchor: "middle",
+    });
+    expect(placedLabelAnchor(bounds, { ...base, labelPosition: "below" })).toEqual({
+      x: 120,
+      y: 82,
+      anchor: "middle",
+    });
+    expect(placedLabelAnchor(bounds, { ...base, labelPosition: "left" })).toEqual({
+      x: 96,
+      y: 63.5,
+      anchor: "end",
+    });
+    expect(placedLabelAnchor(bounds, { ...base, labelPosition: "right" })).toEqual({
+      x: 144,
+      y: 63.5,
+      anchor: "start",
+    });
+  });
+
+  it("measures a detached label from the centre of the bounds and ignores labelPosition", () => {
+    const detached = placedLabelAnchor(bounds, {
+      ...base,
+      labelPosition: "below",
+      labelOffset: { x: -30, y: -25 },
+    });
+    // centre is (120, 60)
+    expect(detached).toEqual({ x: 90, y: 35, anchor: "middle" });
+  });
+
+  it("keeps a detached label with its shape when the shape moves", () => {
+    const offset = { x: -30, y: -25 };
+    const moved = placedLabelAnchor(
+      { ...bounds, x: bounds.x + 200 },
+      { ...base, labelPosition: "below", labelOffset: offset },
+    );
+    expect(moved.x).toBe(90 + 200);
+    expect(moved.y).toBe(35);
   });
 });

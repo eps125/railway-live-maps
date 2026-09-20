@@ -5,7 +5,10 @@ import {
   MAP_STYLE,
   berthRenderRect,
   computeBoundingBox,
+  levelCrossingGeometry,
   neutralSectionGeometry,
+  placedLabelAnchor,
+  pointsBounds,
   sortElementsForPaint,
   type Layer as MapLayer,
   type MapElement,
@@ -46,7 +49,17 @@ function snap(value: number, gridSize: number): number {
  * platform's outline (so a shape's width can sit between grid lines, ADR 0005 rev.), a platform
  * number, and — owner request 2026-09-20 — a neutral section sign and its detached label, which
  * are small enough that a full grid square is a coarse jump. Everything else stays on the grid. */
-const HALF_GRID_TYPES = new Set(["platform", "platformNumber", "neutralSection"]);
+const HALF_GRID_TYPES = new Set([
+  "platform",
+  "platformNumber",
+  "neutralSection",
+  // Milestone 55: scenery is traced over real features rather than aligned to the grid, so
+  // it wants the finer step for the same reason a platform outline does.
+  "tunnel",
+  "viaduct",
+  "water",
+  "levelCrossing",
+]);
 
 export function snapStep(type: string | undefined, gridSize: number): number {
   return type !== undefined && HALF_GRID_TYPES.has(type) ? Math.max(1, gridSize / 2) : gridSize;
@@ -111,6 +124,15 @@ export function elementBounds(element: MapElement): Bounds | null {
       maxY: element.y + element.height,
     };
   }
+  if (element.type === "levelCrossing") {
+    const { bounds } = levelCrossingGeometry(element);
+    return {
+      minX: bounds.x,
+      minY: bounds.y,
+      maxX: bounds.x + bounds.width,
+      maxY: bounds.y + bounds.height,
+    };
+  }
   // A neutral section is the one point-anchored element with a real drawn size, and its x/y is
   // the board's *centre* — so rubber-band select uses the board itself rather than a zero-sized
   // point that only catches the exact middle of a visibly large symbol.
@@ -163,6 +185,16 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   // so a sign lands on Labels — the "everything else" layer, on top, which is where it belongs
   // visually anyway. A dedicated layer is a later option once the family has more members.
   neutralSection: /label/i,
+  // Milestone 55: a fresh map gets a "Scenery" layer below Track (draftStore.ts); an already
+  // drafted map has no layer under Track at all, so these fall back to layers[0] and rely on
+  // their default `zIndex: -1` to sink below the rails within whatever layer they land on. A
+  // viaduct deliberately belongs with the track it carries (owner: "same layer as track").
+  tunnel: /scenery|terrain/i,
+  water: /scenery|terrain|water/i,
+  viaduct: /track/i,
+  // A crossing sits on the railway it crosses, so it belongs with the track rather than in
+  // scenery; it paints above the rails (default zIndex 0) because the road crosses over them.
+  levelCrossing: /track/i,
 };
 
 export function defaultLayerIdForTool(tool: ToolMode, layers: MapLayer[]): string | undefined {
@@ -238,6 +270,68 @@ function defaultElementForTool(
         size: MAP_STYLE.neutralSection.size,
         labelPosition: "below",
         fontSize: 10,
+      };
+    case "tunnel":
+      // zIndex -1: paints below the rails within its own layer (sortElementsForPaint's "small
+      // nudge reorders within the layer"), which is what makes "below the track" true even on a
+      // map whose layer stack has nothing under Track.
+      return {
+        id,
+        layerId,
+        zIndex: -1,
+        type: "tunnel",
+        points: [
+          { x: point.x, y: point.y - MAP_STYLE.rowPitch / 2 },
+          { x: point.x + 160, y: point.y - MAP_STYLE.rowPitch / 2 },
+          { x: point.x + 160, y: point.y + MAP_STYLE.rowPitch / 2 },
+          { x: point.x, y: point.y + MAP_STYLE.rowPitch / 2 },
+        ],
+        labelPosition: "below",
+        fontSize: MAP_STYLE.placedLabel.fontSize,
+      };
+    case "water":
+      return {
+        id,
+        layerId,
+        zIndex: -1,
+        type: "water",
+        // A starting box across the track, for the common perpendicular river; reshape with the
+        // vertex tools exactly like a platform.
+        points: [
+          { x: point.x - 20, y: point.y - 60 },
+          { x: point.x + 20, y: point.y - 60 },
+          { x: point.x + 20, y: point.y + 60 },
+          { x: point.x - 20, y: point.y + 60 },
+        ],
+        labelPosition: "below",
+        fontSize: MAP_STYLE.placedLabel.fontSize,
+      };
+    case "viaduct":
+      return {
+        id,
+        layerId,
+        zIndex: -1,
+        type: "viaduct",
+        points: [
+          { x: point.x, y: point.y },
+          { x: point.x + 160, y: point.y },
+        ],
+        labelPosition: "below",
+        fontSize: MAP_STYLE.placedLabel.fontSize,
+      };
+    case "levelCrossing":
+      return {
+        id,
+        layerId,
+        zIndex: 0,
+        type: "levelCrossing",
+        x: point.x,
+        y: point.y,
+        orientation: 0,
+        roadLength: MAP_STYLE.levelCrossing.roadLength,
+        roadWidth: MAP_STYLE.levelCrossing.roadWidth,
+        labelPosition: "below",
+        fontSize: MAP_STYLE.placedLabel.fontSize,
       };
     case "trackPath":
       return {
@@ -535,19 +629,48 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
    * `labelOffset` stores. Konva gives a draggable child priority over its draggable parent, so
    * grabbing the label moves only the label and grabbing the board still moves the whole sign.
    */
+  function commitLabelOffset(
+    elementId: string,
+    next: { x: number; y: number },
+    current: { x: number; y: number },
+  ): void {
+    if (next.x === current.x && next.y === current.y) return;
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setProperty", elementId, property: "labelOffset", value: next },
+    });
+  }
+
+  /** A neutral section's label lives *inside* the sign's Group, so the node's local x/y already
+   * is the offset from the board centre that `labelOffset` stores. */
   function handleLabelDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
     const element = doc.elements.find((el) => el.id === elementId);
-    if (!element || element.type !== "neutralSection" || !element.labelOffset) return;
+    if (!element || !("labelOffset" in element) || !element.labelOffset) return;
     const step = snapStep(element.type, gridSize);
     const next = { x: snap(e.target.x(), step), y: snap(e.target.y(), step) };
     // Snap the node back to the stored value either way, so a sub-step drag doesn't leave the
     // rendered label off its committed offset (same discipline as handlePositionedDragEnd).
     e.target.position(element.labelOffset);
-    if (next.x === element.labelOffset.x && next.y === element.labelOffset.y) return;
-    dispatch({
-      type: "dispatchCommand",
-      command: { type: "setProperty", elementId, property: "labelOffset", value: next },
-    });
+    commitLabelOffset(elementId, next, element.labelOffset);
+  }
+
+  /** Milestone 55: a points-based shape (tunnel/viaduct/water) draws at absolute coordinates, so
+   * its label node's x/y is absolute too — the stored offset is measured from the centre of the
+   * shape's own bounds, which is what `placedLabelAnchor` resolves against. */
+  function handleShapeLabelDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!element || !("points" in element) || !("labelOffset" in element)) return;
+    if (!element.labelOffset) return;
+    const bounds = pointsBounds(element.points);
+    const cx = bounds.x + bounds.width / 2;
+    const cy = bounds.y + bounds.height / 2;
+    const step = snapStep(element.type, gridSize);
+    const next = {
+      x: snap(e.target.x() - cx, step),
+      y: snap(e.target.y() - cy, step),
+    };
+    e.target.position({ x: cx + element.labelOffset.x, y: cy + element.labelOffset.y });
+    commitLabelOffset(elementId, next, element.labelOffset);
   }
 
   /** Points-based elements (trackPath/platform) render at node (0,0) with absolute points —
@@ -852,6 +975,31 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
             const layer = layersById.get(element.layerId)!;
             const selected = selection.includes(element.id);
             const draggable = toolMode === "select" && !layer.locked;
+            /** Milestone 55: the caption on a points-based scenery shape, at the same anchor the
+             * public renderer uses. Only a *detached* label is independently draggable; an
+             * attached one is part of the shape. */
+            const renderPlacedLabel = (
+              shape: Extract<MapElement, { points: unknown; labelPosition: unknown }>,
+            ): JSX.Element | null => {
+              if (!shape.label) return null;
+              const at = placedLabelAnchor(pointsBounds(shape.points), shape);
+              return (
+                <Text
+                  {...anchoredText(
+                    at.x,
+                    at.y,
+                    shape.fontSize,
+                    at.anchor === "middle" ? "center" : at.anchor === "end" ? "right" : "left",
+                  )}
+                  text={shape.label}
+                  fontSize={shape.fontSize}
+                  fill={selected ? "#58a6ff" : MAP_STYLE.placedLabel.fill}
+                  draggable={draggable && shape.labelOffset !== undefined}
+                  onClick={(e) => handleElementClick(e, shape.id)}
+                  onDragEnd={(e) => handleShapeLabelDragEnd(e, shape.id)}
+                />
+              );
+            };
             const setRef = (node: Konva.Node | null): void => {
               if (node) nodeRefs.current.set(element.id, node);
               else nodeRefs.current.delete(element.id);
@@ -1139,6 +1287,51 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                 />
               );
             }
+            if (element.type === "tunnel" || element.type === "water") {
+              // Same shape model as a platform (ADR 0005 rev.): a filled, reshapeable polygon
+              // whose vertices the author drags. Mirrors the public renderer's fill/stroke so
+              // the two views agree (CLAUDE.md rule 13).
+              const scenery = element.type === "tunnel" ? MAP_STYLE.tunnel : MAP_STYLE.water;
+              const dash = element.type === "tunnel" ? MAP_STYLE.tunnel.dash : undefined;
+              return (
+                <Group key={element.id}>
+                  <Line
+                    ref={setRef}
+                    points={flattenPoints(element.points)}
+                    closed
+                    fill={scenery.fill}
+                    stroke={selected ? "#58a6ff" : scenery.stroke}
+                    strokeWidth={selected ? 2 : scenery.strokeWidth}
+                    {...(dash && !selected ? { dash: [...dash] } : {})}
+                    lineJoin="round"
+                    draggable={draggable}
+                    onClick={(e) => handleElementClick(e, element.id)}
+                    onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                    onDblClick={(e) => handleInsertVertex(e, element.id)}
+                  />
+                  {renderPlacedLabel(element)}
+                </Group>
+              );
+            }
+            if (element.type === "viaduct") {
+              return (
+                <Group key={element.id}>
+                  <Line
+                    ref={setRef}
+                    points={flattenPoints(element.points)}
+                    stroke={selected ? "#58a6ff" : MAP_STYLE.viaduct.color}
+                    strokeWidth={MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth}
+                    lineJoin="round"
+                    lineCap="butt"
+                    draggable={draggable}
+                    onClick={(e) => handleElementClick(e, element.id)}
+                    onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                    onDblClick={(e) => handleInsertVertex(e, element.id)}
+                  />
+                  {renderPlacedLabel(element)}
+                </Group>
+              );
+            }
             if (element.type === "neutralSection") {
               // Mirror the public renderer exactly (CLAUDE.md rule 13): the same
               // `neutralSectionGeometry` board + four black bars, drawn relative to a Group at
@@ -1193,6 +1386,74 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                       fill={selected ? "#58a6ff" : style.labelFill}
                       // Only a detached label is independently draggable; an attached one is
                       // part of the sign and moves with the board.
+                      draggable={draggable && element.labelOffset !== undefined}
+                      onClick={(e) => handleElementClick(e, element.id)}
+                      onDragEnd={(e) => handleLabelDragEnd(e, element.id)}
+                    />
+                  ) : null}
+                </Group>
+              );
+            }
+            if (element.type === "levelCrossing") {
+              // Mirrors the public renderer (CLAUDE.md rule 13) from the same geometry. The
+              // editor always previews `blank` barriers: the canvas is an authoring view of the
+              // document, and a barrier position is live data that belongs to Test mode / the
+              // public map, never to the drawing surface.
+              const geometry = levelCrossingGeometry(element);
+              const style = MAP_STYLE.levelCrossing;
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                >
+                  {geometry.road.map((segment, index) => (
+                    <Line
+                      key={`road-${index}`}
+                      points={[
+                        segment.x1 - element.x,
+                        segment.y1 - element.y,
+                        segment.x2 - element.x,
+                        segment.y2 - element.y,
+                      ]}
+                      stroke={selected ? "#58a6ff" : style.roadColor}
+                      strokeWidth={style.roadStrokeWidth}
+                      lineCap="butt"
+                    />
+                  ))}
+                  {geometry.barriers.map((segment, index) => (
+                    <Line
+                      key={`barrier-${index}`}
+                      points={[
+                        segment.x1 - element.x,
+                        segment.y1 - element.y,
+                        segment.x2 - element.x,
+                        segment.y2 - element.y,
+                      ]}
+                      stroke={style.stateColors.blank}
+                      strokeWidth={style.barrierStrokeWidth}
+                      lineCap="round"
+                    />
+                  ))}
+                  {element.label ? (
+                    <Text
+                      {...anchoredText(
+                        geometry.label.x - element.x,
+                        geometry.label.y - element.y,
+                        element.fontSize,
+                        geometry.label.anchor === "middle"
+                          ? "center"
+                          : geometry.label.anchor === "end"
+                            ? "right"
+                            : "left",
+                      )}
+                      text={element.label}
+                      fontSize={element.fontSize}
+                      fill={selected ? "#58a6ff" : MAP_STYLE.placedLabel.fill}
                       draggable={draggable && element.labelOffset !== undefined}
                       onClick={(e) => handleElementClick(e, element.id)}
                       onDragEnd={(e) => handleLabelDragEnd(e, element.id)}

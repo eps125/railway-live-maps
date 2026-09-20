@@ -215,5 +215,34 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  // Milestone 55 / ADR 0014: the same two rules for a level crossing's barrier binding. A
+  // crossing shows exactly one bit, and a barrier binding only means something on a crossing.
+  const barrierCountByElement = new Map<string, number>();
+  for (const binding of doc.bindings) {
+    if (binding.type !== "tdSBitBarrier") continue;
+    const element = elementsById.get(binding.elementId);
+    if (element && element.type !== "levelCrossing") {
+      errors.push({
+        code: "invalid_barrier_binding",
+        message: `Barrier binding "${binding.id}" is on ${element.type} element "${element.id}" — only level crossings can have one`,
+        elementId: element.id,
+        bindingId: binding.id,
+      });
+    }
+    barrierCountByElement.set(
+      binding.elementId,
+      (barrierCountByElement.get(binding.elementId) ?? 0) + 1,
+    );
+  }
+  for (const [elementId, count] of barrierCountByElement) {
+    if (count > 1) {
+      errors.push({
+        code: "multiple_barrier_bindings",
+        message: `Level crossing "${elementId}" has ${count} barrier bindings — a crossing shows exactly one bit`,
+        elementId,
+      });
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }

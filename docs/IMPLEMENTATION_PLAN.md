@@ -11,7 +11,7 @@ e.g. `berth_occupancy.resolution_status`'s "Milestone 9" note, `/api/v1/maps/{sl
 **Done, in the order actually built:**
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 11 → 12 → 7 → 8 → 9 (→ removed/superseded by ADR 0002, see M9) → 10
 → 14a → 14c → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31
-→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 53 → 54; 33 (owner,
+→ 32 → 34 → 35 → 39 → 40 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 53 → 54 → 55; 33 (owner,
 done 2026-09-19). Milestone 52 (virtual GPS-fed berths) was reverted on `main` 2026-09-19 and
 lives on the `gps-berths` branch. **That number stays reserved for it** — the 2026-09-20 editor
 work took 53 rather than reusing 52, so the branch can come back without a clash.
@@ -3120,6 +3120,157 @@ read `secrets.GHCR_CLEANUP_TOKEN || github.token` — if the first real run show
 403ing, add a `GHCR_CLEANUP_TOKEN` PAT with `delete:packages` and nothing else changes. Run
 deletion uses `actions: write`, which is unambiguous. The first execution will delete ~199 runs;
 their logs are not recoverable.
+
+## Milestone 55 — lineside features: tunnel, viaduct, water, level crossing (2026-09-20)
+
+Owner request, following Milestone 53's neutral section: "a tunnel tool … a viaduct tool … a
+river/water tool … a level crossing tool", the last with "indications for barriers up / barriers
+down that can optionally be set and driven by S class data".
+
+**Owner decisions (asked before implementing, 2026-09-20):**
+
+- Level crossings ship complete — the drawable element _and_ the S-Class barrier state — in one
+  milestone, rather than staging the live-data half.
+- Scenery paints below the track via a negative `zIndex` rather than a new layer-creation feature,
+  so it works on Lancaster/Blackpool and every existing draft immediately with no migration. A
+  newly seeded map additionally gets a Scenery layer for tidiness.
+
+**Shared groundwork.** Four new element types all needed the same optional caption, so
+Milestone 53's neutral-section-only label was generalised into `placedLabelFields` (document) and
+`placedLabelAnchor(bounds, label)` (geometry), which `neutralSectionGeometry` now delegates to —
+its existing tests passing unchanged is the evidence that refactor was behaviour-preserving.
+
+Two latent bugs were fixed on the way, both the same shape: a hardcoded element-type list that a
+new points-based type would silently fall out of. `commands.ts`'s `hasPoints` (which would have
+written `x += dx` onto an element with no `x`, corrupting the document on a move),
+`compiler.ts`'s bounding box, and `MapRenderer`'s `elementCenterPoint` are all structural now.
+
+**Tunnel / water** are polygons on the platform model; **viaduct** is a polyline on the track
+model, rendered as a wider stone deck beneath the rails and deliberately excluded from
+`weldTrackPaths` and `topology`. All three place and drag on half-grid steps and default to
+`zIndex: -1`.
+
+**Level crossing + barriers (ADR 0014).** The road across the railway, with barrier arms whose
+position comes only from a bound S-Class bit. The key implementation decision is that
+`computeSignalStates` is not actually signal-specific — it resolves "one bound bit" into "two
+states or blank", including feed-gap trust, the live overlay and the lookback window — so barriers
+reuse it verbatim and convert vocabulary at the edges (`down` ≡ `on`, the restrictive state).
+Signals and crossings for a map resolve in a **single** call, so they cannot disagree about the
+facts or the instant. A barrier binding is its own `tdSBitBarrier` type, not a widened `tdSBit`,
+so a barrier bit can never be consumed as a signal aspect; the database enforces the pairing.
+
+Files changed:
+
+- `packages/map-schema/src/` — `style.ts` (tunnel/viaduct/water/levelCrossing/placedLabel),
+  `document.ts` (four element types, `placedLabelFields`, `tdSBitBarrier`), `geometry.ts`
+  (`placedLabelAnchor`, `pointsBounds`, `levelCrossingGeometry`), `compiler.ts` (barrier index,
+  structural bounding box), `validate.ts` (barrier binding rules), `index.ts`.
+- `packages/domain/src/td/signalState.ts` — the barrier vocabulary conversion.
+- `packages/protocol/src/liveWsMessages.ts` — `crossings` in the snapshot (optional on the wire),
+  `crossing.updated`.
+- `packages/map-publish/src/mapBindingIndex.ts` — publishes barrier bindings.
+- `packages/database/migrations/0039_level_crossing_barrier_bindings.sql`.
+- `apps/api/src/lib/` — `liveState.ts` (`sClassStatesForBundle`), `reconstructState.ts`,
+  `signalEvents.ts` (playback covers crossings); `routes/liveMap.ts`, `routes/maps.ts`.
+- `apps/worker/src/td/liveProjector.ts` — barrier bindings cache + `crossing.updated` deltas.
+- `apps/web/src/` — both renderers, tool palette, editor state, property panel (shared
+  `PlacedLabelFieldset`, `BarrierBindingFields`), `map/types.ts`, `useLiveMapSocket`,
+  `usePlayback`, `useMapData`, `MapView`, `styles.css`.
+- `docs/adr/0014-level-crossing-barriers-from-s-class.md`, `docs/MAP_EDITOR_SPEC.md`.
+
+Acceptance criteria: all four tools place, reshape, drag and label (attached or detached) in the
+editor and render identically on the public map; tunnels and water paint below the rails on both a
+freshly seeded map and an existing draft; a viaduct is never welded into track geometry; a level
+crossing renders blank barriers until bound, and a bound one shows up/down from its bit in live,
+`/state?at=` and playback alike; nothing infers a barrier position from anything but its bit;
+nationwide ingestion and every existing element type are untouched.
+
+Migrations/configuration: **`0039_level_crossing_barrier_bindings.sql` must be applied before
+publishing a map containing a barrier binding.** It widens three check constraints on
+`map_binding_index` (a small table) and adds two partial indexes. It deliberately drops the old
+checks by _looking them up_, because two of the three were column-level checks with
+Postgres-generated names this repo cannot verify offline — hardcoding a wrong name would have left
+the narrower check in place and rejected every barrier row at publish time.
+
+Known limitations / follow-up: the migration and the barrier live path have **not** been exercised
+against a real database in this session (no local Postgres; see Tests run). A detached label is
+always centred on its offset, with no per-label alignment. Level crossings have no dedicated
+S-Class definition/discovery help, unlike signals (Milestone 36c) — the address/bit must be known.
+There is still no way to add a layer to an existing map, so scenery on an already-drafted map
+lands on whatever layer matches and relies on `zIndex: -1`.
+
+## Milestone 56 — 14 days of S-Class bit history, backfilled (2026-09-20)
+
+Owner request, out of an M9 investigation (below): the S-Class explorer could only ever look back
+to the moment Milestone 36a's decoder was deployed (2026-09-19 14:58 UTC), because
+`td_s_bit_transition` starts there. Everything needed to reconstruct the earlier history was
+already retained — `td_s_event` keeps `message_type`, `address` and `raw_value` untouched for rows
+written long before the decoder existed (`decode_status = 'raw_only'`, `decode_version` null) — so
+this replays them.
+
+**`backfill-s-class-bits`** (`apps/worker/src/commands/backfillSClassBits.ts`), a new one-shot:
+
+- Decodes historic `td_s_event` rows through the _same_ `foldSClassEvents` +
+  `insertSBitTransitionsBulk` the live projector uses, so the backfilled rows cannot drift from
+  the live ones. `insertSBitTransitionsBulk` was exported from `td/projector.ts` for this rather
+  than copied.
+- Writes **only** `td_s_bit_transition`. It never touches `td_s_current_state` — that table is
+  "the value of this byte _now_" and is what live/playback signal state resolves from (CLAUDE.md
+  rules 9/10); replaying historic events into it would drag live signals backwards. The fold's
+  prior state is therefore held in memory, per area, carried across slices.
+- Idempotent (`td_s_bit_transition_source_uk` → `on conflict do nothing`), so an interrupted run
+  is resumed by simply re-running it. **Dry-run by default**, like `prune-partitions`; `--execute`
+  writes.
+- Walks **slices outer, areas inner** — `--slice-hours` (default 6 h) at a time, every area
+  through one slice before moving on, pausing `--sleep-ms` (default 250 ms) after each so a
+  multi-hour backfill yields to the live projector. This ordering was measured, not assumed
+  (2026-09-20): every area's rows for a period are interleaved on the same heap pages, so a slice
+  read cold cost 3 287 ms against 14 ms once cached, and a _second_ area over the same slice
+  already found 15 % of its pages resident. Area-outer would instead sweep the whole 14 days
+  (~34 GB, far past RAM) once per area, evicting everything before the next area re-read the very
+  same pages.
+- The per-slice read wraps its area/window filter in a `materialized` CTE before ordering by
+  `ingestion_sequence` — without it the planner leaves the `(td_area, event_at desc)` index for a
+  nationwide scan of a 20 GB table (the pitfall from Milestone 33). Verified on production: an
+  index scan of the single month partition.
+- `--to` defaults to the oldest transition already recorded, i.e. exactly where the live decoder
+  took over, so the default run fills the gap and re-reads nothing.
+
+**Explorer reach (`apps/api/src/routes/admin/sClass.ts`, `apps/web/src/auth/SClassExplorerPage.tsx`):**
+
+- `CORRELATION_MAX_HOURS` 7 days → 14 days.
+- The bit grid's hardcoded 24 h activity window became `?windowHours=` (default 24 h, capped at
+  14 days), surfaced as an "Activity window" selector (24 h / 3 d / 7 d / 14 d) that also drives
+  both suggestion tools' `from=`. The response field `changes24h` was renamed `changes`, since it
+  is now window-relative and the old name would have been a lie.
+
+**Production sizing measured before building (2026-09-20):** 69.4 M S-Class events across 176
+areas in the 14-day gap; the live decoder writes ~3.28 M transitions / 770 MB per day, so a full
+14-day backfill is roughly 46 M rows / ~11 GB against 601 GB free. Partitions already exist
+(`td_s_bit_transition` is in `PARTITIONED_TABLES`) and pruning is manual, so the history persists
+once written.
+
+**Origin — the M9 investigation that prompted this.** Asked to find M9's level-crossing state bit
+(the crossing between signals 3879 and 3870). Findings, from 24 h of M9 transitions:
+
+- Polarity: **bit set = signal off/cleared**, proved by the clear→0 transition coinciding 52/52
+  (S3879) and 45/46 (S3870) with the CA step out of that signal's own berth at 0 s median offset.
+- M9 has two signal populations: controlled (~5–12 % duty) and automatic (~89 % duty).
+- **There is no level-crossing bit in M9** — no bit is invariant at both signals' clears except
+  the ~89 %-duty automatics (trivially so), and none contains both route windows. The owner
+  independently confirmed M9 publishes signals and routes only.
+- Identified `0C`/4 as the **route bit for S3879** (set at 51/51 of its clears, 52 SET periods,
+  46 s median lead) and `0C`/2 as the **route for S3870** (46/46, 83 s lead). The route→clear gap
+  is never under 25 s and does not track the train's arrival, so it is the crossing's lowering and
+  proving time — an indirect proxy only, deliberately **not** rendered as crossing state
+  (CLAUDE.md rule 10).
+
+Tests: 10 new unit tests for the backfill's pure parts (argument validation, slice tiling, and
+`td_s_event` row → fold event including the `raw_feed_event` id the transition FK references),
+plus an explorer test that the activity window re-queries the grid.
+
+**Follow-up:** the backfill has not yet been run against production — it is dry-run by default and
+the ~11 GB / multi-hour `--execute` pass is the owner's call to schedule off-peak.
 
 ## Later / unscheduled
 

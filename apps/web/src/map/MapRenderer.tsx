@@ -3,15 +3,24 @@ import {
   MAP_CSS_TOKENS,
   MAP_STYLE,
   berthRenderRect,
+  levelCrossingGeometry,
   neutralSectionGeometry,
+  placedLabelAnchor,
   pointOnPathAtX,
+  pointsBounds,
   sortElementsForPaint,
   type CompiledMapBundle,
   type MapElement,
+  type BarrierDisplayState,
+  type LevelCrossingElement,
   type NeutralSectionElement,
+  type PlacedLabel,
   type PlatformElement,
   type PlatformNumberElement,
   type SignalElement,
+  type TunnelElement,
+  type ViaductElement,
+  type WaterElement,
 } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
 import { RunPopup } from "./RunPopup.js";
@@ -21,6 +30,9 @@ export interface MapRendererProps {
   bundle: CompiledMapBundle;
   berths: Record<string, BerthState>;
   signals: Record<string, SignalState>;
+  /** Milestone 55 / ADR 0014: each bound level crossing's barrier position. A crossing missing
+   * from this record renders `blank` — exactly like an unbound signal, and never a guess. */
+  crossings?: Record<string, { state: BarrierDisplayState }>;
   /** ADR 0004 D5: when false, vacant berths draw nothing (berthmaps behaviour); occupied
    * berths are unaffected. Defaults to true — parity with the pre-ADR renderer. */
   showEmptyBerths?: boolean;
@@ -157,6 +169,143 @@ function renderPlatformNumber(element: PlatformNumberElement): JSX.Element {
   return <g key={element.id}>{numberBox(element.x, element.y, element.text, element.fontSize)}</g>;
 }
 
+/** Milestone 55: the caption a piece of map furniture carries, at the anchor
+ * `placedLabelAnchor` worked out (attached to a side, or detached to a free offset). One
+ * implementation so a tunnel, viaduct, water body, neutral section and level crossing all label
+ * identically. Returns nothing when the element has no label. */
+function placedLabelText(at: PlacedLabel, text: string | undefined, fontSize: number) {
+  if (!text) return null;
+  return (
+    <text
+      x={at.x}
+      y={at.y}
+      textAnchor={at.anchor}
+      fontSize={fontSize}
+      fill={MAP_STYLE.placedLabel.fill}
+    >
+      {text}
+    </text>
+  );
+}
+
+/** Milestone 55: track in tunnel — a dark bore with a dashed portal outline, painted under the
+ * rails. Scenery: no binding, no state, nothing inferred. */
+function renderTunnel(element: TunnelElement): JSX.Element {
+  const style = MAP_STYLE.tunnel;
+  return (
+    <g key={element.id}>
+      <polygon
+        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill={`var(${MAP_CSS_TOKENS.tunnelFill}, ${style.fill})`}
+        stroke={style.stroke}
+        strokeWidth={style.strokeWidth}
+        strokeDasharray={style.dash.join(" ")}
+        strokeLinejoin="round"
+      />
+      {placedLabelText(
+        placedLabelAnchor(pointsBounds(element.points), element),
+        element.label,
+        element.fontSize,
+      )}
+    </g>
+  );
+}
+
+/** Milestone 55: a viaduct deck — the same polyline shape as a track path, but wider and
+ * stone-coloured, and painted *beneath* the rails so the line runs over it. Never welded into
+ * track geometry and never part of topology: scenery that follows the track, not track. */
+function renderViaduct(element: ViaductElement): JSX.Element {
+  const style = MAP_STYLE.viaduct;
+  return (
+    <g key={element.id}>
+      <polyline
+        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill="none"
+        stroke={`var(${MAP_CSS_TOKENS.viaductColor}, ${style.color})`}
+        strokeWidth={MAP_STYLE.track.strokeWidth + style.extraWidth}
+        strokeLinejoin="round"
+        strokeLinecap="butt"
+        shapeRendering="geometricPrecision"
+      />
+      {placedLabelText(
+        placedLabelAnchor(pointsBounds(element.points), element),
+        element.label,
+        element.fontSize,
+      )}
+    </g>
+  );
+}
+
+/** Milestone 55: a river, dock or coastline — any orientation, painted below the track so the
+ * railway crosses over it. */
+function renderWater(element: WaterElement): JSX.Element {
+  const style = MAP_STYLE.water;
+  return (
+    <g key={element.id}>
+      <polygon
+        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill={`var(${MAP_CSS_TOKENS.waterFill}, ${style.fill})`}
+        stroke={style.stroke}
+        strokeWidth={style.strokeWidth}
+        strokeLinejoin="round"
+      />
+      {placedLabelText(
+        placedLabelAnchor(pointsBounds(element.points), element),
+        element.label,
+        element.fontSize,
+      )}
+    </g>
+  );
+}
+
+/**
+ * Milestone 55 / ADR 0014: a level crossing — the road across the railway, plus a barrier arm
+ * each side. The arms lie across the road when `down` and swing back alongside the railway when
+ * `up`; `blank` (unbound, or a bit not currently trustworthy) draws them grey, so the crossing
+ * still reads as a crossing without claiming a position.
+ *
+ * The state is whatever the bound S-Class bit says and nothing else — never derived from train
+ * movements, routes, timetables or nearby signals (CLAUDE.md rule 10). These are barrier
+ * positions, not signal aspects; rule 9's blank/on/off vocabulary is untouched by them.
+ */
+function renderLevelCrossing(
+  element: LevelCrossingElement,
+  barrierState: BarrierDisplayState,
+): JSX.Element {
+  const style = MAP_STYLE.levelCrossing;
+  const geometry = levelCrossingGeometry(element, barrierState);
+  const barrierColor = style.stateColors[barrierState];
+  return (
+    <g key={element.id}>
+      {geometry.road.map((segment, index) => (
+        <line
+          key={`road-${index}`}
+          x1={segment.x1}
+          y1={segment.y1}
+          x2={segment.x2}
+          y2={segment.y2}
+          stroke={`var(${MAP_CSS_TOKENS.levelCrossingRoad}, ${style.roadColor})`}
+          strokeWidth={style.roadStrokeWidth}
+          strokeLinecap="butt"
+        />
+      ))}
+      {geometry.barriers.map((segment, index) => (
+        <line
+          key={`barrier-${index}`}
+          x1={segment.x1}
+          y1={segment.y1}
+          x2={segment.x2}
+          y2={segment.y2}
+          stroke={barrierColor}
+          strokeWidth={style.barrierStrokeWidth}
+          strokeLinecap="round"
+        />
+      ))}
+      {placedLabelText(geometry.label, element.label, element.fontSize)}
+    </g>
+  );
+}
+
 /**
  * Milestone 53: an AC neutral section, drawn as Sign AJ02 Issue 1's own board — a white
  * rounded square carrying the black two-bar symbol, to the real drawing's proportions
@@ -189,17 +338,7 @@ function renderNeutralSection(element: NeutralSectionElement): JSX.Element {
           fill={symbolFill}
         />
       ))}
-      {element.label ? (
-        <text
-          x={geometry.label.x}
-          y={geometry.label.y}
-          textAnchor={geometry.label.anchor}
-          fontSize={element.fontSize}
-          fill={style.labelFill}
-        >
-          {element.label}
-        </text>
-      ) : null}
+      {placedLabelText(geometry.label, element.label, element.fontSize)}
     </g>
   );
 }
@@ -318,13 +457,15 @@ function pointCenteredView(x: number, y: number, pxW = 1200, pxH = 700): ViewBox
   return { x: x - width / 2, y: y - height / 2, width, height };
 }
 
-/** The single (x, y) point of an element that has one — every type except the polyline-shaped
- * `trackPath`/`platform`. Exported for Milestone 31's centering logic and unit tests. */
+/** The single (x, y) point of an element that has one. A points-based element (trackPath,
+ * platform, and Milestone 55's tunnel/viaduct/water) has no single point, so it can't be
+ * centred on — tested structurally rather than against a type list, which had already fallen
+ * out of date once. Exported for Milestone 31's centering logic and unit tests. */
 export function elementCenterPoint(
   element: MapElement | undefined,
 ): { x: number; y: number } | null {
   if (!element) return null;
-  if (element.type === "trackPath" || element.type === "platform") return null;
+  if ("points" in element) return null;
   return { x: element.x, y: element.y };
 }
 
@@ -355,6 +496,7 @@ export function MapRenderer({
   bundle,
   berths,
   signals,
+  crossings = {},
   showEmptyBerths = true,
   centerElementId,
 }: MapRendererProps): JSX.Element {
@@ -714,6 +856,18 @@ export function MapRenderer({
           }
           if (element.type === "neutralSection") {
             return renderNeutralSection(element);
+          }
+          if (element.type === "tunnel") {
+            return renderTunnel(element);
+          }
+          if (element.type === "viaduct") {
+            return renderViaduct(element);
+          }
+          if (element.type === "water") {
+            return renderWater(element);
+          }
+          if (element.type === "levelCrossing") {
+            return renderLevelCrossing(element, crossings[element.id]?.state ?? "blank");
           }
           if (element.type === "boundary") {
             // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);

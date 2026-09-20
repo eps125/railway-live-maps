@@ -47,6 +47,24 @@ const BaseElementSchema = z.object({
   zIndex: z.number().int().default(0),
 });
 
+/**
+ * Milestone 55: the placed-label fields every piece of map furniture shares — `neutralSection`,
+ * `tunnel`, `viaduct`, `water` and `levelCrossing`. Declared once rather than copied per type, so
+ * the editor, both renderers and `placedLabelAnchor` can treat "a shape with an optional caption"
+ * uniformly.
+ *
+ * `labelOffset` detaches the label from its `labelPosition` anchor (owner request 2026-09-20,
+ * first added to `neutralSection`): an offset from the **centre of the element's own bounds**, so
+ * a detached label still travels with its shape and survives copy/paste. While set,
+ * `labelPosition` is ignored but retained, so re-attaching restores the side last chosen.
+ */
+const placedLabelFields = {
+  label: z.string().optional(),
+  labelPosition: z.enum(["above", "below", "left", "right"]).default("below"),
+  labelOffset: PointSchema.optional(),
+  fontSize: z.number().positive().default(MAP_STYLE.placedLabel.fontSize),
+};
+
 /** A schematic polyline. Visual line crossings do not imply connected track — logical
  * connectivity lives in `topology`, not here (docs/MAP_EDITOR_SPEC.md §4). */
 const TrackPathElementSchema = BaseElementSchema.extend({
@@ -226,17 +244,78 @@ const NeutralSectionElementSchema = BaseElementSchema.extend({
   y: z.number(),
   /** Side of the square board, in map units. */
   size: z.number().positive().default(MAP_STYLE.neutralSection.size),
-  /** Optional caption beside the board (e.g. the neutral section's name or mileage). */
-  label: z.string().optional(),
-  labelPosition: z.enum(["above", "below", "left", "right"]).default("below"),
-  /** Owner request 2026-09-20: detach the label from its `labelPosition` anchor and put it
-   * wherever is convenient on a crowded schematic. An **offset from the board's centre**, not an
-   * absolute point, so a detached label still travels with the sign when the sign is moved and a
-   * copy/paste keeps its layout. While set, `labelPosition` is ignored (the value is kept, so
-   * re-attaching restores the side the author last chose) and the label is centred on the offset
-   * point. Absent = attached, the default. */
-  labelOffset: PointSchema.optional(),
-  fontSize: z.number().positive().default(10),
+  /** Optional caption beside the board (e.g. the neutral section's name or mileage), attached
+   * to one side or detached to a free offset — see `placedLabelFields`, which owns these and
+   * which `tunnel`/`viaduct`/`water`/`levelCrossing` share. */
+  ...placedLabelFields,
+});
+
+/**
+ * Milestone 55 (owner request 2026-09-20): track in tunnel, drawn as a reshapeable polygon
+ * exactly like `platform` — the author traces the bore over the track it covers. Placed with
+ * `zIndex: -1` so it paints **below** the rails (see `defaultElementForTool`); the conventional
+ * layer stack has no layer under Track, and a negative nudge inside the layer is the documented
+ * way to sink an element without one (see `sortElementsForPaint`).
+ *
+ * Scenery, not signalling: no binding, no live state, nothing inferred (CLAUDE.md rules 9/10).
+ */
+const TunnelElementSchema = BaseElementSchema.extend({
+  type: z.literal("tunnel"),
+  points: z.array(PointSchema).min(3),
+  ...placedLabelFields,
+});
+
+/**
+ * Milestone 55: a viaduct deck. Drawn like a `trackPath` — a polyline the author runs along the
+ * line — but wider and stone-coloured, and placed with `zIndex: -1` on the Track layer so the
+ * rails visibly run *over* the deck. Deliberately **not** welded by `weldTrackPaths` and never
+ * part of `topology`: it is scenery that happens to follow the track, not track.
+ */
+const ViaductElementSchema = BaseElementSchema.extend({
+  type: z.literal("viaduct"),
+  points: z.array(PointSchema).min(2),
+  ...placedLabelFields,
+});
+
+/**
+ * Milestone 55: water — a river, dock or coastline, as a reshapeable polygon. Any orientation
+ * (a river crossing the railway at right angles is the common case, but nothing restricts it).
+ * `zIndex: -1`, so the railway crosses over the water.
+ */
+const WaterElementSchema = BaseElementSchema.extend({
+  type: z.literal("water"),
+  points: z.array(PointSchema).min(3),
+  ...placedLabelFields,
+});
+
+/**
+ * Milestone 55 (owner request 2026-09-20): a level crossing — the road drawn across the railway.
+ *
+ * `x`/`y` is the point on the track the road crosses; `orientation` is the road's angle in
+ * degrees, 0 meaning "square across a horizontal track" (the usual case) and anything else
+ * letting the author match a skewed crossing. `roadLength` runs across the track, `roadWidth`
+ * along it.
+ *
+ * Barriers are **optional and never inferred** (ADR 0014, extending ADR 0013's rule-10 discipline
+ * from signals to barriers): a crossing shows barrier positions only when bound to an S-Class bit
+ * via a `tdSBitBarrier` binding, and shows nothing at all otherwise. Nothing about train
+ * movements, routes, timetables or adjacent signals ever decides a barrier's position.
+ */
+const LevelCrossingElementSchema = BaseElementSchema.extend({
+  type: z.literal("levelCrossing"),
+  x: z.number(),
+  y: z.number(),
+  /** Degrees. 0 = the road runs square across a horizontal track. */
+  orientation: z.number().default(0),
+  /** Extent of the road across the track. */
+  roadLength: z.number().positive().default(MAP_STYLE.levelCrossing.roadLength),
+  /** Width of the road, measured along the track. */
+  roadWidth: z.number().positive().default(MAP_STYLE.levelCrossing.roadWidth),
+  trackElementId: z.string().optional(),
+  /** Author's note on the crossing type (MCB, AHB, UWC …). Metadata only — never rendered as a
+   * claim about how the crossing is worked, and it does not affect the barrier display. */
+  crossingType: z.string().optional(),
+  ...placedLabelFields,
 });
 
 export const MapElementSchema = z.discriminatedUnion("type", [
@@ -248,6 +327,10 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   StationElementSchema,
   LabelElementSchema,
   NeutralSectionElementSchema,
+  TunnelElementSchema,
+  ViaductElementSchema,
+  WaterElementSchema,
+  LevelCrossingElementSchema,
   BoundaryElementSchema,
 ]);
 
@@ -296,9 +379,31 @@ const TdSBitBindingSchema = z.object({
   activeMeans: z.enum(["on", "off"]),
 });
 
+/**
+ * Milestone 55 / ADR 0014: a level crossing's barrier position from one S-Class bit. Structurally
+ * identical to `tdSBit` (same area/address/bit), but with the barrier's own vocabulary for what a
+ * set bit means, so an author never has to think of a barrier in signal terms. Kept a separate
+ * binding type rather than widening `tdSBit.activeMeans` so the "a signal's bit means on/off"
+ * invariant stays exactly as ADR 0013 left it.
+ *
+ * As with a signal, `activeMeans` is verified per binding and never assumed — and the displayed
+ * position is always and only this bit's value (rule 10).
+ */
+const TdSBitBarrierBindingSchema = z.object({
+  id: z.string().min(1),
+  elementId: z.string().min(1),
+  type: z.literal("tdSBitBarrier"),
+  tdArea: z.string().min(1),
+  address: z.string().regex(/^[0-9A-Fa-f]{1,2}$/, "address must be 1-2 hex digits"),
+  bit: z.number().int().min(0).max(7),
+  /** What a set bit means for this crossing's barriers. */
+  activeMeans: z.enum(["up", "down"]),
+});
+
 export const MapBindingSchema = z.discriminatedUnion("type", [
   TdBerthBindingSchema,
   TdSBitBindingSchema,
+  TdSBitBarrierBindingSchema,
 ]);
 
 export const MapDocumentSchema = z.object({
@@ -323,9 +428,14 @@ export type PlatformNumberElement = z.infer<typeof PlatformNumberElementSchema>;
 export type StationElement = z.infer<typeof StationElementSchema>;
 export type LabelElement = z.infer<typeof LabelElementSchema>;
 export type NeutralSectionElement = z.infer<typeof NeutralSectionElementSchema>;
+export type TunnelElement = z.infer<typeof TunnelElementSchema>;
+export type ViaductElement = z.infer<typeof ViaductElementSchema>;
+export type WaterElement = z.infer<typeof WaterElementSchema>;
+export type LevelCrossingElement = z.infer<typeof LevelCrossingElementSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;
 export type TdSBitBinding = z.infer<typeof TdSBitBindingSchema>;
+export type TdSBitBarrierBinding = z.infer<typeof TdSBitBarrierBindingSchema>;
 export type TopologyNode = z.infer<typeof TopologyNodeSchema>;
 export type TopologyEdge = z.infer<typeof TopologyEdgeSchema>;

@@ -36,6 +36,13 @@ export interface CompiledMapBundle {
    * Milestone 36b. Optional at the type level because bundles compiled before it existed
    * (immutable, CLAUDE.md rule 11) lack it — a missing entry renders the signal blank. */
   sBitBindingActiveMeans?: Record<string, "on" | "off">;
+  /** Milestone 55 / ADR 0014: the same `${tdArea}|${address}|${bit}` keying for a level
+   * crossing's barrier binding, kept in its own index so a barrier bit can never be mistaken for
+   * a signal bit. Optional at the type level for the same reason as the two above: a bundle
+   * published before this existed (immutable, CLAUDE.md rule 11) has no such key, and a missing
+   * one must read exactly like an empty one. */
+  barrierBindingIndex?: Record<string, string>;
+  barrierBindingActiveMeans?: Record<string, "up" | "down">;
   /** Milestone 31: every `station`/`label` element carrying at least one place identifier
    * (`crs`/`tiploc`/`stanox`) — the source `map_place_index` is populated from at publish time,
    * for `GET /api/v1/places/search` to join against. An element with none of the three is not
@@ -218,7 +225,9 @@ export function computeBoundingBox(elements: MapElement[]): CompiledMapBundle["b
   };
 
   for (const element of elements) {
-    if (element.type === "trackPath" || element.type === "platform") {
+    // Structural (Milestone 55): every points-based type counts, including tunnel/viaduct/water,
+    // so the published bounding box covers them without this list needing to be kept in sync.
+    if ("points" in element) {
       for (const point of element.points) consider(point.x, point.y);
     } else {
       consider(element.x, element.y);
@@ -260,16 +269,23 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   const berthBindingOrder: Record<string, number> = {};
   const sBitBindingIndex: Record<string, string> = {};
   const sBitBindingActiveMeans: Record<string, "on" | "off"> = {};
+  const barrierBindingIndex: Record<string, string> = {};
+  const barrierBindingActiveMeans: Record<string, "up" | "down"> = {};
   for (const binding of doc.bindings) {
     if (binding.type === "tdBerth") {
       const key = `${binding.tdArea}|${binding.berth}`;
       berthBindingIndex[key] = binding.elementId;
       if (binding.combinedOrder !== undefined) berthBindingOrder[key] = binding.combinedOrder;
-    } else {
-      const key = `${binding.tdArea}|${canonicalSAddress(binding.address)}|${binding.bit}`;
-      sBitBindingIndex[key] = binding.elementId;
-      sBitBindingActiveMeans[key] = binding.activeMeans;
+      continue;
     }
+    const key = `${binding.tdArea}|${canonicalSAddress(binding.address)}|${binding.bit}`;
+    if (binding.type === "tdSBitBarrier") {
+      barrierBindingIndex[key] = binding.elementId;
+      barrierBindingActiveMeans[key] = binding.activeMeans;
+      continue;
+    }
+    sBitBindingIndex[key] = binding.elementId;
+    sBitBindingActiveMeans[key] = binding.activeMeans;
   }
 
   const topologyAdjacency: Record<string, string[]> = {};
@@ -327,6 +343,8 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     berthBindingOrder,
     sBitBindingIndex,
     sBitBindingActiveMeans,
+    barrierBindingIndex,
+    barrierBindingActiveMeans,
     placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),
     topologyAdjacency,

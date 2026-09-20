@@ -80,8 +80,61 @@ export const MAP_STYLE = {
     /** Thin outline so a white board still reads as a board against the dark canvas. */
     boardStroke: "#0d1117",
     labelFill: "#c9d1d9",
-    /** Gap between the board edge and the near edge of the label. */
-    labelGap: 4,
+  },
+  /** Milestone 55: the shared look of a placed label — the caption a piece of map furniture
+   * (neutral section, tunnel, viaduct, water, level crossing) carries, attached to one side of
+   * its shape or detached to a free offset. One set of values so every such label matches. */
+  placedLabel: {
+    /** Gap between the shape's edge and the near edge of the label. */
+    gap: 4,
+    fill: "#c9d1d9",
+    fontSize: 10,
+  },
+  /** Milestone 55. Track in tunnel: a dark bore with a dashed portal outline — the schematic
+   * convention, and it reads correctly painted *under* the rails (`zIndex: -1`). */
+  tunnel: {
+    fill: "#111820",
+    stroke: "#7c8899",
+    strokeWidth: 1.5,
+    /** SVG `stroke-dasharray` / Konva `dash`. */
+    dash: [6, 4],
+  },
+  /** Milestone 55. A viaduct is drawn like a track path but as a wider, stone-coloured deck
+   * painted beneath the rails, so the line visibly runs *over* it rather than the deck hiding
+   * it — which is what a same-width line in a different colour would do. */
+  viaduct: {
+    color: "#6d6255",
+    /** Deck width = the track stroke width plus this. */
+    extraWidth: 7,
+  },
+  /** Milestone 55. Rivers, docks, the sea: a filled body with a lighter bank outline. Painted
+   * below the track (`zIndex: -1`) so a river crosses *under* the railway. */
+  water: {
+    fill: "#16384f",
+    stroke: "#2d7098",
+    strokeWidth: 1,
+  },
+  /**
+   * Milestone 55: a level crossing — the road drawn across the railway, with an optional pair of
+   * barriers whose position comes only from a bound S-Class bit (ADR 0014), never inferred.
+   *
+   * `roadLength` runs *across* the track, `roadWidth` *along* it, both in map units; a barrier
+   * sits `barrierDistance` (a fraction of `roadLength`) out from the track centre on each side.
+   */
+  levelCrossing: {
+    roadLength: 34,
+    roadWidth: 16,
+    roadColor: "#9aa4b1",
+    roadStrokeWidth: 1.5,
+    barrierDistance: 0.3,
+    barrierStrokeWidth: 2.5,
+    /**
+     * A barrier's *physical position*, not a signal aspect — CLAUDE.md rule 9 governs signal
+     * aspects and none of this claims one. `down` is red because the road is blocked, `up` green
+     * because it is clear, `blank` grey for an unbound crossing or one whose bit isn't currently
+     * trustworthy.
+     */
+    stateColors: { blank: "#5f6b7a", up: "#3fb950", down: "#f85149" },
   },
   /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
   weldTolerance: 6,
@@ -96,6 +149,10 @@ export const MAP_CSS_TOKENS = {
   platformNumberBorder: "--map-platform-number-border",
   platformNumberText: "--map-platform-number-text",
   stationLabel: "--map-station-label",
+  tunnelFill: "--map-tunnel-fill",
+  viaductColor: "--map-viaduct-color",
+  waterFill: "--map-water-fill",
+  levelCrossingRoad: "--map-level-crossing-road",
   neutralSectionBoard: "--map-neutral-section-board",
   neutralSectionSymbol: "--map-neutral-section-symbol",
 } as const;

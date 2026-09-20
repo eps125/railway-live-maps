@@ -2,6 +2,8 @@ import type { Pool } from "pg";
 import {
   SIGNAL_GAP_TOLERANCE_MS,
   TD_RECEIVE_SILENCE_REASON,
+  barrierBindingsFromIndex,
+  barrierStateFromSignalState,
   signalBindingsFromIndex,
   signalStateForBit,
   type SignalBinding,
@@ -37,8 +39,14 @@ export interface EventSource {
   full: boolean;
 }
 
-function bindingsByByte(bindings: SignalBinding[]): Map<string, SignalBinding[]> {
-  const byByte = new Map<string, SignalBinding[]>();
+/** Milestone 55 / ADR 0014: playback covers level crossings as well as signals. Both resolve
+ * from the same bytes by the same rules, so they are paged together as one stream and only the
+ * emitted message type differs — keeping barrier playback in exact step with signal playback
+ * (including the blank-on-silence rule below) rather than as a second, drifting implementation. */
+type PlaybackBinding = SignalBinding & { kind: "signal" | "barrier" };
+
+function bindingsByByte(bindings: PlaybackBinding[]): Map<string, PlaybackBinding[]> {
+  const byByte = new Map<string, PlaybackBinding[]>();
   for (const binding of bindings) {
     const key = `${binding.tdArea}|${binding.address}`;
     byByte.set(key, [...(byByte.get(key) ?? []), binding]);
@@ -53,10 +61,14 @@ export async function fetchSignalPlaybackEvents(
   after: string,
   limit: number,
 ): Promise<EventSource[]> {
-  const bindings = signalBindingsFromIndex(
-    bundle.sBitBindingIndex ?? {},
-    bundle.sBitBindingActiveMeans,
-  );
+  const bindings: PlaybackBinding[] = [
+    ...signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans).map(
+      (binding) => ({ ...binding, kind: "signal" as const }),
+    ),
+    ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans).map(
+      (binding) => ({ ...binding, kind: "barrier" as const }),
+    ),
+  ];
   if (bindings.length === 0) return [];
   const byByte = bindingsByByte(bindings);
   const tdAreas = [...new Set(bindings.map((b) => b.tdArea))];
@@ -93,16 +105,30 @@ export async function fetchSignalPlaybackEvents(
     const messages: LiveDeltaMessage[] = [];
     for (const [address, value] of Object.entries(row.decoded_bitset.bytes)) {
       for (const binding of byByte.get(`${row.td_area}|${address}`) ?? []) {
-        messages.push({
-          type: "signal.updated",
-          sequence,
-          eventAt: row.event_at.toISOString(),
-          elementId: binding.elementId,
-          state: signalStateForBit(value, binding.bit, binding.activeMeans),
-          tdArea: row.td_area,
-          address,
-          bit: binding.bit,
-        });
+        const resolved = signalStateForBit(value, binding.bit, binding.activeMeans);
+        messages.push(
+          binding.kind === "barrier"
+            ? {
+                type: "crossing.updated",
+                sequence,
+                eventAt: row.event_at.toISOString(),
+                elementId: binding.elementId,
+                state: barrierStateFromSignalState(resolved),
+                tdArea: row.td_area,
+                address,
+                bit: binding.bit,
+              }
+            : {
+                type: "signal.updated",
+                sequence,
+                eventAt: row.event_at.toISOString(),
+                elementId: binding.elementId,
+                state: resolved,
+                tdArea: row.td_area,
+                address,
+                bit: binding.bit,
+              },
+        );
       }
     }
     // Kept even when empty: it is a fetched row the paging bound must account for.
@@ -131,7 +157,7 @@ export async function fetchSignalPlaybackEvents(
       sequence: BigInt(silence.affected_sequence_start),
       order: 1,
       messages: bindings.map((binding) => ({
-        type: "signal.updated",
+        type: binding.kind === "barrier" ? "crossing.updated" : "signal.updated",
         sequence,
         eventAt: silence.blank_at.toISOString(),
         elementId: binding.elementId,

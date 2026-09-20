@@ -3,9 +3,13 @@ import {
   MAP_STYLE,
   Z_INDEX_LAYER_BAND,
   canonicalSAddress,
+  levelCrossingGeometry,
   neutralSectionGeometry,
+  placedLabelAnchor,
+  pointsBounds,
   type MapDocument,
   type TdBerthBinding,
+  type TdSBitBarrierBinding,
   type TdSBitBinding,
 } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
@@ -391,6 +395,198 @@ function LayerSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+/**
+ * Milestone 55: the label controls every piece of map furniture shares — caption, which side it
+ * attaches to, and detach/reattach with a free offset (owner request 2026-09-20, generalised
+ * here from the neutral-section-only version). One component so a tunnel, viaduct, water body,
+ * neutral section and level crossing all label the same way.
+ *
+ * `detachAt` is where the label currently *is*, in element-local offset terms — the caller works
+ * it out from the element's own geometry so that clicking "Detach label" never makes the label
+ * jump. It is deliberately not rounded: rounding for a tidier field left a left/right detach half
+ * a unit off, which defeats the point.
+ */
+function PlacedLabelFieldset({
+  label,
+  labelPosition,
+  labelOffset,
+  fontSize,
+  detachAt,
+  setProp,
+}: {
+  label: string | undefined;
+  labelPosition: "above" | "below" | "left" | "right";
+  labelOffset: { x: number; y: number } | undefined;
+  fontSize: number;
+  detachAt: () => { x: number; y: number };
+  setProp: (property: string, value: unknown) => void;
+}): JSX.Element {
+  return (
+    <>
+      <TextField
+        label="Label"
+        value={label ?? ""}
+        onCommit={(v) => setProp("label", v || undefined)}
+      />
+      {labelOffset === undefined ? (
+        <>
+          <label className="field">
+            Label position
+            <select
+              value={labelPosition}
+              onChange={(e) => setProp("labelPosition", e.target.value)}
+            >
+              <option value="above">above</option>
+              <option value="below">below</option>
+              <option value="left">left</option>
+              <option value="right">right</option>
+            </select>
+          </label>
+          <button type="button" className="btn" onClick={() => setProp("labelOffset", detachAt())}>
+            Detach label
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="field-hint">
+            Label detached — drag it on the canvas, or set its offset from the shape&apos;s centre
+            below. It still moves with the shape.
+          </p>
+          <NumberField
+            label="Label offset X"
+            value={labelOffset.x}
+            onCommit={(v) => setProp("labelOffset", { ...labelOffset, x: v })}
+          />
+          <NumberField
+            label="Label offset Y"
+            value={labelOffset.y}
+            onCommit={(v) => setProp("labelOffset", { ...labelOffset, y: v })}
+          />
+          <button type="button" className="btn" onClick={() => setProp("labelOffset", undefined)}>
+            Reattach label
+          </button>
+        </>
+      )}
+      <NumberField label="Font size" value={fontSize} onCommit={(v) => setProp("fontSize", v)} />
+    </>
+  );
+}
+
+/**
+ * Milestone 55 / ADR 0014: bind a level crossing's barriers to one S-Class bit. Deliberately a
+ * separate, simpler control from `SignalBindingFields` — it speaks the barrier's own up/down
+ * vocabulary, so an author never has to think of a barrier in signal terms, and it has no
+ * signal-definition lookup.
+ *
+ * Same discipline as a signal binding (ADR 0013): `activeMeans` is verified per crossing and
+ * never assumed, and the displayed position is always and only this bit's value — never derived
+ * from train movements, routes or timetables (CLAUDE.md rule 10). An unbound crossing shows grey
+ * barriers, which means "no information", not "up".
+ */
+function BarrierBindingFields({
+  elementId,
+  binding,
+}: {
+  elementId: string;
+  binding: TdSBitBarrierBinding | undefined;
+}): JSX.Element {
+  const dispatch = useEditorDispatch();
+  const areas = useSClassAreas();
+  const [area, setArea] = useState(binding?.tdArea ?? "");
+  const [address, setAddress] = useState(binding?.address ?? "");
+  const [bit, setBit] = useState(binding ? String(binding.bit) : "");
+  const [activeMeans, setActiveMeans] = useState<"up" | "down">(binding?.activeMeans ?? "down");
+  useEffect(() => {
+    setArea(binding?.tdArea ?? "");
+    setAddress(binding?.address ?? "");
+    setBit(binding ? String(binding.bit) : "");
+    setActiveMeans(binding?.activeMeans ?? "down");
+  }, [elementId, binding]);
+
+  const areaCode = area.trim().toUpperCase();
+  const canonical = /^[0-9A-Fa-f]{1,2}$/.test(address.trim())
+    ? canonicalSAddress(address.trim())
+    : null;
+  const bitNumber = /^[0-7]$/.test(bit.trim()) ? Number(bit.trim()) : null;
+  const valid = /^[A-Z0-9]{2}$/.test(areaCode) && canonical !== null && bitNumber !== null;
+
+  function apply(): void {
+    if (!valid || canonical === null || bitNumber === null) return;
+    const next: TdSBitBarrierBinding = {
+      id: binding?.id ?? `bind-${elementId}-barrier-${Date.now()}`,
+      elementId,
+      type: "tdSBitBarrier",
+      tdArea: areaCode,
+      address: canonical,
+      bit: bitNumber,
+      activeMeans,
+    };
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setBinding", elementId, binding: next },
+    });
+  }
+
+  return (
+    <fieldset>
+      <legend>Barrier S-Class binding</legend>
+      <label className="field">
+        TD area
+        <input
+          list="s-class-areas-barrier"
+          value={area}
+          onChange={(e) => setArea(e.target.value.toUpperCase())}
+        />
+        <datalist id="s-class-areas-barrier">
+          {areas.map((a) => (
+            <option key={a} value={a} />
+          ))}
+        </datalist>
+      </label>
+      <label className="field">
+        Address (hex)
+        <input value={address} onChange={(e) => setAddress(e.target.value)} />
+      </label>
+      <label className="field">
+        Bit (0-7)
+        <input value={bit} onChange={(e) => setBit(e.target.value)} />
+      </label>
+      <label className="field">
+        Bit set means
+        <select
+          value={activeMeans}
+          onChange={(e) => setActiveMeans(e.target.value === "up" ? "up" : "down")}
+        >
+          <option value="down">barriers down</option>
+          <option value="up">barriers up</option>
+        </select>
+      </label>
+      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
+        {binding ? "Update binding" : "Bind barriers"}
+      </button>
+      {binding ? (
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            dispatch({
+              type: "dispatchCommand",
+              command: { type: "setBinding", elementId, binding: null },
+            })
+          }
+        >
+          Clear binding
+        </button>
+      ) : null}
+      <p className="field-hint">
+        The crossing shows only this bit: red = barriers down, green = up, grey = blank (unbound,
+        unknown, or a feed gap). Verify what the bit actually means for this crossing before binding
+        it — nothing here is inferred from train movements or timetables.
+      </p>
+    </fieldset>
   );
 }
 
@@ -823,67 +1019,17 @@ export function PropertyPanel(): JSX.Element {
 
       {element.type === "neutralSection" && (
         <>
-          <TextField
-            label="Label"
-            value={element.label ?? ""}
-            onCommit={(v) => setProp("label", v || undefined)}
+          <PlacedLabelFieldset
+            label={element.label}
+            labelPosition={element.labelPosition}
+            labelOffset={element.labelOffset}
+            fontSize={element.fontSize}
+            detachAt={() => {
+              const geometry = neutralSectionGeometry(element);
+              return { x: geometry.label.x - element.x, y: geometry.label.y - element.y };
+            }}
+            setProp={setProp}
           />
-          {element.labelOffset === undefined ? (
-            <>
-              <label className="field">
-                Label position
-                <select
-                  value={element.labelPosition}
-                  onChange={(e) => setProp("labelPosition", e.target.value)}
-                >
-                  <option value="above">above</option>
-                  <option value="below">below</option>
-                  <option value="left">left</option>
-                  <option value="right">right</option>
-                </select>
-              </label>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  // Detach where the label already is, so it never jumps on the first click —
-                  // the same geometry the canvas just drew it with, turned into an offset from
-                  // the board's centre.
-                  const geometry = neutralSectionGeometry(element);
-                  setProp("labelOffset", {
-                    x: geometry.label.x - element.x,
-                    y: geometry.label.y - element.y,
-                  });
-                }}
-              >
-                Detach label
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="field-hint">
-                Label detached — drag it on the canvas, or set its offset from the board centre
-                below. It still moves with the sign.
-              </p>
-              <NumberField
-                label="Label offset X"
-                value={element.labelOffset.x}
-                onCommit={(v) => setProp("labelOffset", { ...element.labelOffset, x: v })}
-              />
-              <NumberField
-                label="Label offset Y"
-                value={element.labelOffset.y}
-                onCommit={(v) => setProp("labelOffset", { ...element.labelOffset, y: v })}
-              />
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setProp("labelOffset", undefined)}
-              >
-                Reattach label
-              </button>
-            </>
-          )}
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <NumberField
@@ -892,17 +1038,89 @@ export function PropertyPanel(): JSX.Element {
             min={1}
             onCommit={(v) => setProp("size", v)}
           />
-          <NumberField
-            label="Font size"
-            value={element.fontSize}
-            onCommit={(v) => setProp("fontSize", v)}
-          />
           <p className="field-hint">
             Sign AJ02, the neutral section indication board. X/Y is the centre of the board and Size
             is its side in map units, so it scales about the point it sits on — the default{" "}
             {MAP_STYLE.neutralSection.size} is two squares of the default grid, and signs place and
             drag on half-grid steps. Display only: a neutral section carries no binding and no live
             state.
+          </p>
+        </>
+      )}
+
+      {element.type === "levelCrossing" && (
+        <>
+          <PlacedLabelFieldset
+            label={element.label}
+            labelPosition={element.labelPosition}
+            labelOffset={element.labelOffset}
+            fontSize={element.fontSize}
+            detachAt={() => {
+              const geometry = levelCrossingGeometry(element);
+              return { x: geometry.label.x - element.x, y: geometry.label.y - element.y };
+            }}
+            setProp={setProp}
+          />
+          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
+          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <NumberField
+            label="Road length (across the track)"
+            value={element.roadLength}
+            min={1}
+            onCommit={(v) => setProp("roadLength", v)}
+          />
+          <NumberField
+            label="Road width (along the track)"
+            value={element.roadWidth}
+            min={1}
+            onCommit={(v) => setProp("roadWidth", v)}
+          />
+          <NumberField
+            label="Orientation (degrees)"
+            value={element.orientation}
+            onCommit={(v) => setProp("orientation", v)}
+          />
+          <TextField
+            label="Crossing type"
+            value={element.crossingType ?? ""}
+            onCommit={(v) => setProp("crossingType", v || undefined)}
+          />
+          <p className="field-hint">
+            0° is square across a horizontal track. Crossing type (MCB, AHB, UWC …) is a note to
+            yourself — it is never rendered and never affects the barrier display.
+          </p>
+          <BarrierBindingFields
+            elementId={elementId}
+            binding={doc.bindings.find(
+              (b): b is TdSBitBarrierBinding =>
+                b.type === "tdSBitBarrier" && b.elementId === elementId,
+            )}
+          />
+        </>
+      )}
+
+      {(element.type === "tunnel" || element.type === "water" || element.type === "viaduct") && (
+        <>
+          <PlacedLabelFieldset
+            label={element.label}
+            labelPosition={element.labelPosition}
+            labelOffset={element.labelOffset}
+            fontSize={element.fontSize}
+            detachAt={() => {
+              const bounds = pointsBounds(element.points);
+              const at = placedLabelAnchor(bounds, element);
+              return {
+                x: at.x - (bounds.x + bounds.width / 2),
+                y: at.y - (bounds.y + bounds.height / 2),
+              };
+            }}
+            setProp={setProp}
+          />
+          <p className="field-hint">
+            {element.type === "viaduct"
+              ? "Drawn like a track path \u2014 drag its endpoints, double-click it to add a vertex. It paints beneath the rails so the line runs over the deck."
+              : "Drawn like a platform \u2014 drag its corners, double-click an edge to add one, double-click a corner to remove it. It paints below the track."}{" "}
+            Scenery only: no binding and no live state.
           </p>
         </>
       )}

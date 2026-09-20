@@ -26,6 +26,13 @@ const QualityStateSchema = z.object({
   gaps: z.array(z.string()),
 });
 
+/** Milestone 55 / ADR 0014: a level crossing's barrier position. A barrier position is not a
+ * signal aspect — CLAUDE.md rule 9's blank/on/off vocabulary is untouched by it — and it comes
+ * only from the crossing's bound S-Class bit (rule 10). */
+export const BarrierStateSchema = z.object({
+  state: z.enum(["blank", "up", "down"]),
+});
+
 /** Same shape as the `state` body of `GET /api/v1/maps/{slug}/state` (docs/API_CONTRACT.md §1),
  * minus the envelope fields (`mapSlug`/`mapVersion`/`asOf`) which are implicit in the socket
  * connection itself. */
@@ -34,6 +41,10 @@ export const LiveSnapshotStateSchema = z.object({
   quality: QualityStateSchema,
   berths: z.record(z.string(), SnapshotBerthStateSchema),
   signals: z.record(z.string(), SignalStateSchema),
+  /** Milestone 55 / ADR 0014: each level crossing's barrier position. Optional on the wire so a
+   * client built before crossings existed, or a server that hasn't been upgraded yet, keeps
+   * working; a missing record reads as "no crossings", never as "barriers up". */
+  crossings: z.record(z.string(), BarrierStateSchema).optional(),
 });
 export type LiveSnapshotState = z.infer<typeof LiveSnapshotStateSchema>;
 
@@ -85,6 +96,21 @@ export const SignalUpdatedMessageSchema = z.object({
 });
 export type SignalUpdatedMessage = z.infer<typeof SignalUpdatedMessageSchema>;
 
+/** Milestone 55 / ADR 0014: a bound level crossing's barrier position changed. Always the
+ * absolute position (never a toggle), so a duplicate or replayed delta is harmless — the same
+ * contract as `signal.updated`. `tdArea`/`address`/`bit` are informational lineage. */
+export const CrossingUpdatedMessageSchema = z.object({
+  type: z.literal("crossing.updated"),
+  sequence: z.number().int().nonnegative(),
+  eventAt: z.string(),
+  elementId: z.string(),
+  state: z.enum(["blank", "up", "down"]),
+  tdArea: z.string(),
+  address: z.string(),
+  bit: z.number().int().min(0).max(7),
+});
+export type CrossingUpdatedMessage = z.infer<typeof CrossingUpdatedMessageSchema>;
+
 export const QualityUpdatedMessageSchema = z.object({
   type: z.literal("quality.updated"),
   sequence: z.number().int().nonnegative(),
@@ -121,6 +147,7 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   BerthUpdatedMessageSchema,
   BerthClearedMessageSchema,
   SignalUpdatedMessageSchema,
+  CrossingUpdatedMessageSchema,
   QualityUpdatedMessageSchema,
   HeartbeatMessageSchema,
   ResyncRequiredMessageSchema,
@@ -132,7 +159,11 @@ export type LiveWsMessage = z.infer<typeof LiveWsMessageSchema>;
  * `heartbeat` (synthesized by the route). `resync.required` with reason `feed_gap` is the one
  * sequence-less message a delta source forwards (Milestone 36b). */
 export type LiveDeltaMessage =
-  BerthUpdatedMessage | BerthClearedMessage | SignalUpdatedMessage | QualityUpdatedMessage;
+  | BerthUpdatedMessage
+  | BerthClearedMessage
+  | SignalUpdatedMessage
+  | CrossingUpdatedMessage
+  | QualityUpdatedMessage;
 
 /** Everything a `LiveDeltaSource` can hand the WS route: sequenced deltas, plus the
  * sequence-less `resync.required` (`feed_gap`) the route forwards and then closes on. */

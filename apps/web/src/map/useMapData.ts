@@ -101,6 +101,7 @@ export function useMapData(slug: string): UseMapDataResult {
           quality: live.quality ?? { status: "unknown", gaps: [] },
           berths: live.berths,
           signals: live.signals ?? {},
+          crossings: live.crossings ?? {},
         }
       : restState;
 

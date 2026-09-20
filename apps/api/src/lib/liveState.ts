@@ -1,9 +1,12 @@
 import type { Pool } from "pg";
 import {
   TD_PROJECTION_VERSION,
+  barrierBindingsFromIndex,
+  barrierStateFromSignalState,
   computeSignalStates,
   joinCombinedBerthState,
   signalBindingsFromIndex,
+  type BarrierDisplayState,
   type SignalDisplayState,
 } from "@railway/domain";
 import { createSignalFactsPort } from "@railway/database";
@@ -33,6 +36,10 @@ export interface LiveState {
   sourceSequence: number;
   berths: Record<string, BerthState>;
   signals: Record<string, SignalState>;
+  /** Milestone 55 / ADR 0014: each level crossing's barrier position. Empty when the map has no
+   * crossings; a crossing with no binding is present and `blank`, exactly like an unbound
+   * signal. */
+  crossings: Record<string, { state: BarrierDisplayState }>;
   quality: QualityState;
 }
 
@@ -106,7 +113,7 @@ export async function computeLiveState(
     berths[elementId] = joinCombinedBerthState(members);
   }
 
-  const signals = await signalStatesForBundle(pool, bundle, now, true);
+  const { signals, crossings } = await sClassStatesForBundle(pool, bundle, now, true);
 
   const areas = tdAreasFromBundle(bundle);
   const [status, { gaps }] = await Promise.all([
@@ -115,25 +122,56 @@ export async function computeLiveState(
   ]);
   const quality: QualityState = { status, gaps };
 
-  return { sourceSequence, berths, signals, quality };
+  return { sourceSequence, berths, signals, crossings, quality };
 }
 
-/** Every signal element's state for a compiled bundle at `at` (Milestone 36b). Only an explicit
- * `tdSBit` binding ever gives a signal a non-blank state — never train movements, routes or
- * timetables (CLAUDE.md rules 9/10). Shared by live state (`live = true`: brings the stored facts
- * up to "now") and `/state?at=` (`reconstructState.ts`). */
-export async function signalStatesForBundle(
+/**
+ * Every signal element's and level crossing's state for a compiled bundle at `at` (Milestone 36b;
+ * crossings added by Milestone 55 / ADR 0014). Only an explicit binding ever gives either a
+ * non-blank state — never train movements, routes or timetables (CLAUDE.md rules 9/10). Shared by
+ * live state (`live = true`: brings the stored facts up to "now") and `/state?at=`
+ * (`reconstructState.ts`).
+ *
+ * Signals and barriers resolve in **one** call, not two: they are the same "one bound bit, two
+ * states or blank" problem over the same byte facts, so combining them keeps it to a single set
+ * of database round-trips and makes it impossible for the two to be resolved against different
+ * facts or a different `at`. Only the vocabulary differs, and `@railway/domain` converts it at
+ * the edges.
+ */
+export async function sClassStatesForBundle(
   pool: Pool,
   bundle: CompiledMapBundle,
   at: Date,
   live: boolean,
-): Promise<Record<string, SignalState>> {
-  return computeSignalStates(createSignalFactsPort(pool), {
-    signalElementIds: Object.values(bundle.elementsById)
-      .filter((element) => element.type === "signal")
-      .map((element) => element.id),
-    bindings: signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans),
+): Promise<{
+  signals: Record<string, SignalState>;
+  crossings: Record<string, { state: BarrierDisplayState }>;
+}> {
+  const elements = Object.values(bundle.elementsById);
+  const signalElementIds = elements
+    .filter((element) => element.type === "signal")
+    .map((element) => element.id);
+  const crossingElementIds = elements
+    .filter((element) => element.type === "levelCrossing")
+    .map((element) => element.id);
+
+  const resolved = await computeSignalStates(createSignalFactsPort(pool), {
+    signalElementIds: [...signalElementIds, ...crossingElementIds],
+    bindings: [
+      ...signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans),
+      ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans),
+    ],
     at,
     live,
   });
+
+  const signals: Record<string, SignalState> = {};
+  for (const id of signalElementIds) signals[id] = resolved[id] ?? { state: "blank" };
+  const crossings: Record<string, { state: BarrierDisplayState }> = {};
+  for (const id of crossingElementIds) {
+    crossings[id] = {
+      state: barrierStateFromSignalState(resolved[id]?.state ?? "blank"),
+    };
+  }
+  return { signals, crossings };
 }

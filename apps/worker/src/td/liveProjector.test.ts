@@ -99,9 +99,16 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
       string,
       Array<{ mapSlug: string; elementId: string; bit: number; activeMeans: "on" | "off" | null }>
     >,
+    barriers: Record<
+      string,
+      Array<{ mapSlug: string; elementId: string; bit: number; activeMeans: "up" | "down" | null }>
+    > = {},
   ): BindingsCache {
     return {
       getSignals: async (tdArea: string, address: string) => signals[`${tdArea} ${address}`] ?? [],
+      // Milestone 55 / ADR 0014: the delta builder reads barrier bindings off the same cache.
+      getBarriers: async (tdArea: string, address: string) =>
+        barriers[`${tdArea} ${address}`] ?? [],
     } as unknown as BindingsCache;
   }
   const sRow = (seq: number, type: string, address: string, data: string): RawSClassRow => ({

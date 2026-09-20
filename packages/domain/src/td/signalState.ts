@@ -257,3 +257,54 @@ export async function computeSignalStates(
     at: input.at,
   });
 }
+
+/**
+ * Milestone 55 / ADR 0014: a level crossing's barrier position, from one bound S-Class bit.
+ *
+ * The bit machinery above is not signal-specific — it resolves "one bound bit" into "one of two
+ * states, or blank when nothing trustworthy is known". A barrier is exactly that shape, so it
+ * reuses `computeSignalStates` verbatim rather than growing a parallel implementation that could
+ * drift from it (feed-gap trust, the live overlay and the lookback window are all subtle and
+ * already correct here). Only the vocabulary differs, and it is converted at these two edges.
+ *
+ * The analogy is deliberate and exact: a barrier that is DOWN is the restrictive state, as a
+ * signal that is ON is. Nothing about a barrier is ever inferred from train movements, routes,
+ * timetables or nearby signals (CLAUDE.md rule 10), and none of this claims a signal aspect
+ * (rule 9) — a barrier position is not an aspect.
+ */
+export type BarrierDisplayState = "blank" | "up" | "down";
+
+/** A barrier binding's `activeMeans`, in the shared bit machinery's vocabulary. */
+export function barrierActiveMeansAsSignal(activeMeans: "up" | "down"): "on" | "off" {
+  return activeMeans === "down" ? "on" : "off";
+}
+
+/** The shared machinery's result, back in the barrier's vocabulary. */
+export function barrierStateFromSignalState(state: SignalDisplayState): BarrierDisplayState {
+  if (state === "blank") return "blank";
+  return state === "on" ? "down" : "up";
+}
+
+/** A compiled bundle's `barrierBindingIndex` (+ `barrierBindingActiveMeans`) as binding records
+ * the shared machinery understands. A bundle published before barriers existed has neither key,
+ * which must read exactly like an empty one (CLAUDE.md rule 11: published versions are
+ * immutable). */
+export function barrierBindingsFromIndex(
+  index: Record<string, string> | undefined,
+  activeMeans: Record<string, "up" | "down"> | undefined,
+): SignalBinding[] {
+  const bindings: SignalBinding[] = [];
+  for (const [key, elementId] of Object.entries(index ?? {})) {
+    const [tdArea, address, bit] = key.split("|");
+    if (!tdArea || !address || bit === undefined) continue;
+    const means = activeMeans?.[key];
+    bindings.push({
+      elementId,
+      tdArea,
+      address,
+      bit: Number(bit),
+      ...(means ? { activeMeans: barrierActiveMeansAsSignal(means) } : {}),
+    });
+  }
+  return bindings;
+}

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CompiledMapBundle } from "@railway/map-schema";
+import { MAP_STYLE, type CompiledMapBundle } from "@railway/map-schema";
 import {
   MapRenderer,
   elementCenterPoint,
@@ -616,6 +616,145 @@ describe("MapRenderer", () => {
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     expect(container.querySelector("text")).toBeNull();
     expect(container.querySelectorAll("rect")).toHaveLength(5);
+  });
+
+  it("draws the Milestone 55 scenery shapes and labels them (tunnel, viaduct, water)", () => {
+    const el = (id: string, type: "tunnel" | "viaduct" | "water", label: string) => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: -1,
+      type,
+      points: [
+        { x: 0, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 20 },
+      ],
+      label,
+      labelPosition: "below" as const,
+      fontSize: 10,
+    });
+    const doc = bundle({
+      elementsById: {
+        "tun-1": el("tun-1", "tunnel", "Morecambe Tunnel"),
+        "via-1": el("via-1", "viaduct", "Lune Viaduct"),
+        "wat-1": el("wat-1", "water", "River Lune"),
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    // Tunnel and water are filled polygons; a viaduct is a polyline deck.
+    expect(container.querySelectorAll("polygon")).toHaveLength(2);
+    expect(container.querySelectorAll("polyline")).toHaveLength(1);
+    // A tunnel is dashed, which is what makes it read as a bore rather than a block of colour.
+    const tunnel = container.querySelectorAll("polygon")[0]!;
+    expect(tunnel.getAttribute("stroke-dasharray")).toBeTruthy();
+    expect([...container.querySelectorAll("text")].map((t) => t.textContent)).toEqual([
+      "Morecambe Tunnel",
+      "Lune Viaduct",
+      "River Lune",
+    ]);
+  });
+
+  it("anchors a detached scenery label at its offset from the shape's centre", () => {
+    const doc = bundle({
+      elementsById: {
+        "wat-1": {
+          id: "wat-1",
+          layerId: "layer-visible",
+          zIndex: -1,
+          type: "water",
+          points: [
+            { x: 80, y: 0 },
+            { x: 120, y: 0 },
+            { x: 120, y: 100 },
+            { x: 80, y: 100 },
+          ],
+          label: "River Lune",
+          labelPosition: "below",
+          labelOffset: { x: 30, y: -10 },
+          fontSize: 10,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const text = container.querySelector("text")!;
+    // bounds centre is (100, 50)
+    expect(text.getAttribute("x")).toBe("130");
+    expect(text.getAttribute("y")).toBe("40");
+  });
+
+  it("draws a level crossing's barriers from its state, blank when it has none (ADR 0014)", () => {
+    const crossing = {
+      id: "lx-1",
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "levelCrossing" as const,
+      x: 100,
+      y: 50,
+      orientation: 0,
+      roadLength: 34,
+      roadWidth: 16,
+      labelPosition: "below" as const,
+      fontSize: 10,
+    };
+    const doc = bundle({ elementsById: { "lx-1": crossing } });
+
+    // Two road edges + two barrier arms, always.
+    const blank = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(blank.container.querySelectorAll("line")).toHaveLength(4);
+    const blankBarrier = blank.container.querySelectorAll("line")[2]!;
+    expect(blankBarrier.getAttribute("stroke")).toBe(MAP_STYLE.levelCrossing.stateColors.blank);
+    blank.unmount();
+
+    const down = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{}}
+        signals={{}}
+        crossings={{ "lx-1": { state: "down" } }}
+      />,
+    );
+    const downBarrier = down.container.querySelectorAll("line")[2]!;
+    expect(downBarrier.getAttribute("stroke")).toBe(MAP_STYLE.levelCrossing.stateColors.down);
+    // Down: the arm lies across the road, i.e. along the railway (a horizontal bar here).
+    expect(downBarrier.getAttribute("y1")).toBe(downBarrier.getAttribute("y2"));
+    down.unmount();
+
+    const up = render(
+      <MapRenderer bundle={doc} berths={{}} signals={{}} crossings={{ "lx-1": { state: "up" } }} />,
+    );
+    const upBarrier = up.container.querySelectorAll("line")[2]!;
+    expect(upBarrier.getAttribute("stroke")).toBe(MAP_STYLE.levelCrossing.stateColors.up);
+    // Up: swung back alongside the railway, so it is no longer a horizontal bar.
+    expect(upBarrier.getAttribute("y1")).not.toBe(upBarrier.getAttribute("y2"));
+  });
+
+  it("renders an unknown crossing as blank rather than assuming the barriers are up", () => {
+    // ADR 0014 decision 1: blank means "no information". A crossing absent from `crossings`
+    // must never be drawn as up.
+    const doc = bundle({
+      elementsById: {
+        "lx-1": {
+          id: "lx-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "levelCrossing",
+          x: 100,
+          y: 50,
+          orientation: 0,
+          roadLength: 34,
+          roadWidth: 16,
+          labelPosition: "below",
+          fontSize: 10,
+        },
+      },
+    });
+    const { container } = render(
+      <MapRenderer bundle={doc} berths={{}} signals={{}} crossings={{ other: { state: "up" } }} />,
+    );
+    const barrier = container.querySelectorAll("line")[2]!;
+    expect(barrier.getAttribute("stroke")).toBe(MAP_STYLE.levelCrossing.stateColors.blank);
   });
 
   it("hides vacant berths when showEmptyBerths is false but keeps occupied ones (ADR 0004 D5)", () => {

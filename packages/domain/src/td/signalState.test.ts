@@ -6,6 +6,9 @@ import {
   signalBindingsFromIndex,
   signalStateForBit,
   SIGNAL_GAP_TOLERANCE_MS,
+  barrierActiveMeansAsSignal,
+  barrierBindingsFromIndex,
+  barrierStateFromSignalState,
 } from "./signalState.js";
 
 const t = (iso: string): Date => new Date(`2026-09-19T${iso}Z`);
@@ -163,6 +166,47 @@ describe("signalBindingsFromIndex", () => {
     ).toEqual([
       { elementId: "sig-1", tdArea: "M9", address: "0A", bit: 3, activeMeans: "off" },
       { elementId: "sig-2", tdArea: "M9", address: "0B", bit: 0 },
+    ]);
+  });
+});
+
+describe("barrier vocabulary (Milestone 55 / ADR 0014)", () => {
+  it("maps a barrier's activeMeans onto the shared bit machinery", () => {
+    // down is the restrictive state, exactly as a signal that is on is.
+    expect(barrierActiveMeansAsSignal("down")).toBe("on");
+    expect(barrierActiveMeansAsSignal("up")).toBe("off");
+  });
+
+  it("maps the machinery's result back, keeping blank as blank", () => {
+    expect(barrierStateFromSignalState("on")).toBe("down");
+    expect(barrierStateFromSignalState("off")).toBe("up");
+    // blank must never become "up": it means no information (ADR 0014 decision 1).
+    expect(barrierStateFromSignalState("blank")).toBe("blank");
+  });
+
+  it("round-trips a bound bit into the barrier's own vocabulary", () => {
+    const value = 0b0000_0100;
+    const down = barrierStateFromSignalState(
+      signalStateForBit(value, 2, barrierActiveMeansAsSignal("down")),
+    );
+    expect(down).toBe("down");
+    const up = barrierStateFromSignalState(
+      signalStateForBit(value, 3, barrierActiveMeansAsSignal("down")),
+    );
+    expect(up).toBe("up");
+  });
+
+  it("reads a bundle's barrier index, and a bundle without one as empty", () => {
+    expect(barrierBindingsFromIndex({ "M9|03|2": "lx-1" }, { "M9|03|2": "down" })).toEqual([
+      { elementId: "lx-1", tdArea: "M9", address: "03", bit: 2, activeMeans: "on" },
+    ]);
+
+    // A version published before barriers existed is immutable and has neither key.
+    expect(barrierBindingsFromIndex(undefined, undefined)).toEqual([]);
+
+    // No recorded activeMeans -> no activeMeans -> blank downstream, never a guess.
+    expect(barrierBindingsFromIndex({ "M9|03|2": "lx-1" }, undefined)).toEqual([
+      { elementId: "lx-1", tdArea: "M9", address: "03", bit: 2 },
     ]);
   });
 });

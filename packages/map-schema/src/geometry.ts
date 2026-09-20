@@ -106,6 +106,76 @@ export function berthRenderRect(berth: BerthElement, elements: ElementLookup): R
   return { x: berth.x, y: trackY - berth.height / 2, width: berth.width, height: berth.height };
 }
 
+/** Where a placed label sits. `anchor` is SVG `text-anchor` vocabulary (Konva's equivalent is
+ * `align`); `y` is an alphabetic baseline, matching every other text in both renderers. */
+export interface PlacedLabel {
+  x: number;
+  y: number;
+  anchor: "start" | "middle" | "end";
+}
+
+/** The label half of any piece of map furniture (see `placedLabelFields` in document.ts). */
+export interface PlacedLabelFields {
+  labelPosition: "above" | "below" | "left" | "right";
+  labelOffset?: { x: number; y: number } | undefined;
+  fontSize: number;
+}
+
+/** Axis-aligned bounding box of a point list — the shape a polygon/polyline label anchors to. */
+export function pointsBounds(points: ReadonlyArray<{ x: number; y: number }>): Rect {
+  if (points.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+}
+
+/**
+ * Milestone 55: where a piece of map furniture's caption goes, for **any** shape — generalised
+ * from the neutral-section-only version added 2026-09-20 so `tunnel`, `viaduct`, `water` and
+ * `levelCrossing` all place their labels by the same rule.
+ *
+ * Attached: just outside `bounds` on the chosen side. Detached (`labelOffset` set): centred on
+ * that offset **from the centre of `bounds`**, so the label travels with its shape and
+ * `labelPosition` no longer applies — the author placed it by hand.
+ *
+ * Pure and shared by the public SVG renderer and the editor canvas, so a label sits in the same
+ * spot in both (CLAUDE.md rule 13).
+ */
+export function placedLabelAnchor(bounds: Rect, label: PlacedLabelFields): PlacedLabel {
+  const gap = MAP_STYLE.placedLabel.gap;
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+
+  if (label.labelOffset) {
+    return {
+      x: centerX + label.labelOffset.x,
+      y: centerY + label.labelOffset.y,
+      anchor: "middle",
+    };
+  }
+
+  switch (label.labelPosition) {
+    case "above":
+      return { x: centerX, y: bounds.y - gap, anchor: "middle" };
+    case "left":
+      return { x: bounds.x - gap, y: centerY + label.fontSize * 0.35, anchor: "end" };
+    case "right":
+      return {
+        x: bounds.x + bounds.width + gap,
+        y: centerY + label.fontSize * 0.35,
+        anchor: "start",
+      };
+    default:
+      return {
+        x: centerX,
+        y: bounds.y + bounds.height + gap + label.fontSize * 0.8,
+        anchor: "middle",
+      };
+  }
+}
+
 export interface NeutralSectionGeometry {
   /** The white board itself. `rx` is the AJ02 corner radius scaled to this board. */
   board: Rect & { rx: number };
@@ -113,10 +183,9 @@ export interface NeutralSectionGeometry {
    * vertical bar, left (outward) arm, right (outward) arm. They are drawn as separate rects
    * rather than one path because both renderers can express a rect natively. */
   bars: Rect[];
-  /** Where the optional label goes: the `labelPosition` anchor, or `labelOffset` from the
-   * board's centre when the author has detached it. `anchor` is SVG `text-anchor` vocabulary;
-   * `y` is an alphabetic baseline, matching every other text in both renderers. */
-  label: { x: number; y: number; anchor: "start" | "middle" | "end" };
+  /** Where the optional label goes — `placedLabelAnchor` over the board's own rect, so a sign's
+   * caption follows the same rule as every other piece of map furniture's. */
+  label: PlacedLabel;
 }
 
 /**
@@ -155,36 +224,109 @@ export function neutralSectionGeometry(element: {
   const leftArmX = left + armInset;
   const rightArmEnd = left + size - armInset;
 
-  const gap = s.labelGap;
-  // A detached label (owner request 2026-09-20) is centred on its own offset from the board's
-  // centre, and `labelPosition` no longer applies — the author placed it by hand.
-  const detached = element.labelOffset;
-  const label = detached
-    ? { x: element.x + detached.x, y: element.y + detached.y, anchor: "middle" as const }
-    : element.labelPosition === "above"
-      ? { x: element.x, y: top - gap, anchor: "middle" as const }
-      : element.labelPosition === "left"
-        ? { x: left - gap, y: element.y + element.fontSize * 0.35, anchor: "end" as const }
-        : element.labelPosition === "right"
-          ? {
-              x: left + size + gap,
-              y: element.y + element.fontSize * 0.35,
-              anchor: "start" as const,
-            }
-          : {
-              x: element.x,
-              y: top + size + gap + element.fontSize * 0.8,
-              anchor: "middle" as const,
-            };
+  const board: Rect = { x: left, y: top, width: size, height: size };
 
   return {
-    board: { x: left, y: top, width: size, height: size, rx: size * s.cornerRadius },
+    board: { ...board, rx: size * s.cornerRadius },
     bars: [
       { x: leftBarX, y: barTop, width: barWidth, height: barHeight },
       { x: rightBarX, y: barTop, width: barWidth, height: barHeight },
       { x: leftArmX, y: armTop, width: leftBarX + barWidth - leftArmX, height: armHeight },
       { x: rightBarX, y: armTop, width: rightArmEnd - rightBarX, height: armHeight },
     ],
-    label,
+    label: placedLabelAnchor(board, element),
+  };
+}
+
+/** A level crossing's barrier position. `blank` = unbound, or the bound bit isn't currently
+ * trustworthy — never a guess (ADR 0014).
+ *
+ * Deliberately mirrors `@railway/domain`'s identically-named type rather than importing it:
+ * map-schema describes the *document* and must not depend on the state layer (the same reason
+ * `apps/web`'s `SignalState` restates domain's). They are the same literal union, so the two
+ * stay assignable and a drift would fail to compile at the API boundary that joins them. */
+export type BarrierDisplayState = "blank" | "up" | "down";
+
+export interface Segment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface LevelCrossingGeometry {
+  /** The two road edges, drawn across the track. */
+  road: [Segment, Segment];
+  /** One barrier each side of the track. Lying across the road when `down`, swung back parallel
+   * to the railway when `up`; both are drawn in `blank` too, in grey, so an unbound crossing
+   * still reads as a crossing rather than disappearing. */
+  barriers: [Segment, Segment];
+  /** Bounds the label anchors against (the road's full extent). */
+  bounds: Rect;
+  label: PlacedLabel;
+}
+
+/**
+ * Milestone 55: the on-screen geometry of a level crossing at `orientation` degrees, where 0 is
+ * "road square across a horizontal track". Pure, and shared by the public SVG renderer and the
+ * editor canvas so a crossing looks the same in both (CLAUDE.md rule 13).
+ *
+ * `barrierState` only chooses which way the two barrier arms point; it never changes the road.
+ * The state itself comes from the bound S-Class bit and nowhere else (rule 10).
+ */
+export function levelCrossingGeometry(
+  element: {
+    x: number;
+    y: number;
+    orientation: number;
+    roadLength: number;
+    roadWidth: number;
+  } & PlacedLabelFields,
+  barrierState: BarrierDisplayState = "blank",
+): LevelCrossingGeometry {
+  const style = MAP_STYLE.levelCrossing;
+  const theta = (element.orientation * Math.PI) / 180;
+  // `road` runs across the track; `along` runs with it. At orientation 0 that is (0,1) and (1,0).
+  const road = { x: Math.sin(theta), y: Math.cos(theta) };
+  const along = { x: Math.cos(theta), y: -Math.sin(theta) };
+
+  const halfLength = element.roadLength / 2;
+  const halfWidth = element.roadWidth / 2;
+  const edge = (side: 1 | -1): Segment => ({
+    x1: element.x + along.x * halfWidth * side - road.x * halfLength,
+    y1: element.y + along.y * halfWidth * side - road.y * halfLength,
+    x2: element.x + along.x * halfWidth * side + road.x * halfLength,
+    y2: element.y + along.y * halfWidth * side + road.y * halfLength,
+  });
+
+  // A barrier pivots at the roadside, clear of the track on each side.
+  const pivotDistance = element.roadLength * style.barrierDistance;
+  const arm = (side: 1 | -1): Segment => {
+    const px = element.x + road.x * pivotDistance * side;
+    const py = element.y + road.y * pivotDistance * side;
+    // Down: lying across the road (so, along the railway), blocking it. Up: swung back to lie
+    // alongside the railway, pointing away from the track.
+    const direction = barrierState === "down" ? along : road;
+    const length = barrierState === "down" ? element.roadWidth : pivotDistance * 0.9;
+    const reach = barrierState === "down" ? 1 : side;
+    return {
+      x1: px - (barrierState === "down" ? direction.x * length * 0.5 : 0),
+      y1: py - (barrierState === "down" ? direction.y * length * 0.5 : 0),
+      x2: px + direction.x * length * (barrierState === "down" ? 0.5 : reach),
+      y2: py + direction.y * length * (barrierState === "down" ? 0.5 : reach),
+    };
+  };
+
+  const corners = [edge(1), edge(-1)].flatMap((segment) => [
+    { x: segment.x1, y: segment.y1 },
+    { x: segment.x2, y: segment.y2 },
+  ]);
+  const bounds = pointsBounds(corners);
+
+  return {
+    road: [edge(1), edge(-1)],
+    barriers: [arm(1), arm(-1)],
+    bounds,
+    label: placedLabelAnchor(bounds, element),
   };
 }

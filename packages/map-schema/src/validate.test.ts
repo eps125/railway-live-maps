@@ -445,3 +445,74 @@ describe("validateMapDocument", () => {
     });
   });
 });
+
+describe("level crossing barrier bindings (Milestone 55 / ADR 0014)", () => {
+  function docWith(elements: unknown[], bindings: unknown[]): unknown {
+    return {
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "m",
+        canvas: { width: 100, height: 100, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l1", name: "Track", order: 0 }],
+      elements,
+      topology: { nodes: [], edges: [] },
+      bindings,
+      editorMetadata: {},
+    };
+  }
+
+  const crossing = { id: "lx-1", layerId: "l1", type: "levelCrossing", x: 0, y: 0 };
+  const barrier = (id: string, bit: number) => ({
+    id,
+    elementId: "lx-1",
+    type: "tdSBitBarrier",
+    tdArea: "M9",
+    address: "03",
+    bit,
+    activeMeans: "down",
+  });
+
+  it("accepts one barrier binding on a level crossing", () => {
+    const result = validateMapDocument(docWith([crossing], [barrier("b1", 2)]));
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects a barrier binding on anything but a level crossing", () => {
+    const signal = { id: "sig-1", layerId: "l1", type: "signal", x: 0, y: 0 };
+    const result = validateMapDocument(
+      docWith([signal], [{ ...barrier("b1", 2), elementId: "sig-1" }]),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((e) => e.code)).toContain("invalid_barrier_binding");
+  });
+
+  it("rejects a crossing with two barrier bindings \u2014 it shows exactly one bit", () => {
+    const result = validateMapDocument(docWith([crossing], [barrier("b1", 2), barrier("b2", 3)]));
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((e) => e.code)).toContain("multiple_barrier_bindings");
+  });
+
+  it("rejects a signal binding on a level crossing (the mirror rule)", () => {
+    const result = validateMapDocument(
+      docWith(
+        [crossing],
+        [
+          {
+            id: "b1",
+            elementId: "lx-1",
+            type: "tdSBit",
+            tdArea: "M9",
+            address: "03",
+            bit: 2,
+            activeMeans: "off",
+          },
+        ],
+      ),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((e) => e.code)).toContain("invalid_signal_binding");
+  });
+});

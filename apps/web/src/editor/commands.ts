@@ -41,8 +41,11 @@ export interface ApplyCommandResult {
   inverse: EditorCommand;
 }
 
+/** Structural, not a hardcoded type list: `moveElements` treats anything without `points` as an
+ * x/y element, so a new points-based type missing from a list here would have `x += dx` written
+ * onto it and silently corrupt. Milestone 55 added three such types (tunnel/viaduct/water). */
 function hasPoints(element: MapElement): element is Extract<MapElement, { points: unknown }> {
-  return element.type === "trackPath" || element.type === "platform";
+  return "points" in element;
 }
 
 function hasPosition(

@@ -12,7 +12,11 @@ export type ToolMode =
   | "platformNumber"
   | "station"
   | "label"
-  | "neutralSection";
+  | "neutralSection"
+  | "tunnel"
+  | "viaduct"
+  | "water"
+  | "levelCrossing";
 
 export interface Viewport {
   x: number;

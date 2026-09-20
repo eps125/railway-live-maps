@@ -337,3 +337,60 @@ describe("applyCommand", () => {
     expect(layer.visible).toBe(false);
   });
 });
+
+describe("moveElements on points-based scenery (Milestone 55)", () => {
+  // Regression guard: `hasPoints` used to be a hardcoded ["trackPath", "platform"] list, so a
+  // new points-based type would fall through to the x/y branch and have `x += dx` written onto
+  // an element that has no x at all — silently corrupting the document instead of moving it.
+  function docWithTunnel(): MapDocument {
+    const doc = baseDoc();
+    doc.elements.push({
+      id: "tunnel-1",
+      layerId: "l1",
+      zIndex: -1,
+      type: "tunnel",
+      points: [
+        { x: 0, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 20 },
+      ],
+      labelPosition: "below",
+      fontSize: 10,
+    });
+    return doc;
+  }
+
+  it("moves every vertex and adds no stray x/y", () => {
+    const command: EditorCommand = {
+      type: "moveElements",
+      elementIds: ["tunnel-1"],
+      dx: 15,
+      dy: -5,
+    };
+    const { doc } = applyCommand(docWithTunnel(), command);
+    const moved = doc.elements.find((el) => el.id === "tunnel-1")!;
+    expect(moved).toMatchObject({
+      points: [
+        { x: 15, y: -5 },
+        { x: 55, y: -5 },
+        { x: 55, y: 15 },
+      ],
+    });
+    expect(moved).not.toHaveProperty("x");
+    expect(moved).not.toHaveProperty("y");
+  });
+
+  it("undoes back to the original vertices", () => {
+    const start = docWithTunnel();
+    const { doc, inverse } = applyCommand(start, {
+      type: "moveElements",
+      elementIds: ["tunnel-1"],
+      dx: 15,
+      dy: -5,
+    });
+    const { doc: undone } = applyCommand(doc, inverse);
+    expect(undone.elements.find((el) => el.id === "tunnel-1")).toEqual(
+      start.elements.find((el) => el.id === "tunnel-1"),
+    );
+  });
+});

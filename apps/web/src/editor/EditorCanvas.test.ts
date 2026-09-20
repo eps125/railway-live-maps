@@ -40,6 +40,18 @@ describe("defaultLayerIdForTool", () => {
     expect(defaultLayerIdForTool("platformNumber", withPlatforms)).toBe("layer-platforms");
   });
 
+  it("puts scenery on a Scenery layer when one exists, and a viaduct with the track", () => {
+    // Milestone 55: a freshly seeded map has Scenery below Track (draftStore.ts). A viaduct
+    // belongs with the track it carries (owner: "same layer as track").
+    const withScenery: Layer[] = [
+      { id: "layer-scenery", name: "Scenery", order: -1, visible: true, locked: false },
+      ...standardLayers,
+    ];
+    expect(defaultLayerIdForTool("tunnel", withScenery)).toBe("layer-scenery");
+    expect(defaultLayerIdForTool("water", withScenery)).toBe("layer-scenery");
+    expect(defaultLayerIdForTool("viaduct", withScenery)).toBe("layer-track");
+  });
+
   it("falls back to the first layer when no name match exists", () => {
     const unnamedLayers: Layer[] = [
       { id: "layer-a", name: "Alpha", order: 0, visible: true, locked: false },
@@ -94,6 +106,10 @@ describe("snapStep", () => {
     expect(snapStep("platform", 10)).toBe(5);
     expect(snapStep("platformNumber", 10)).toBe(5);
     expect(snapStep("neutralSection", 10)).toBe(5);
+    // Milestone 55: scenery is traced over real features, not aligned to the grid.
+    expect(snapStep("tunnel", 10)).toBe(5);
+    expect(snapStep("viaduct", 10)).toBe(5);
+    expect(snapStep("water", 10)).toBe(5);
   });
 
   it("leaves everything else on the full grid step", () => {

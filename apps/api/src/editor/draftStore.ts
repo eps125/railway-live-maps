@@ -27,6 +27,10 @@ function blankDocument(slug: string, name: string): MapDocument {
     // platform numbers, berths, signals and labels each land where a human expects (see
     // EditorCanvas.tsx defaultLayerIdForTool). Existing drafts are untouched.
     layers: [
+      // Milestone 55: Scenery sits *below* Track (negative order) so tunnels and water paint
+      // under the rails. An already-seeded draft has no such layer; those elements default to
+      // zIndex -1 instead, which sinks them below the track inside whatever layer they land on.
+      { id: "layer-scenery", name: "Scenery", visible: true, locked: false, order: -1 },
       { id: "layer-track", name: "Track", visible: true, locked: false, order: 0 },
       { id: "layer-platforms", name: "Platforms", visible: true, locked: false, order: 1 },
       { id: "layer-berths", name: "Berths", visible: true, locked: false, order: 2 },

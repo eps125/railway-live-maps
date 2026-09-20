@@ -10,11 +10,18 @@ import {
   TD_PROJECTION_VERSION,
   decodeSClassPayload,
   detectReceiveSilences,
+  barrierActiveMeansAsSignal,
+  barrierStateFromSignalState,
   signalStateForBit,
+  type BarrierDisplayState,
   type ReceivedRow,
   type SignalDisplayState,
 } from "@railway/domain";
-import type { ResyncRequiredMessage, SignalUpdatedMessage } from "@railway/protocol";
+import type {
+  CrossingUpdatedMessage,
+  ResyncRequiredMessage,
+  SignalUpdatedMessage,
+} from "@railway/protocol";
 import {
   berthChangesForEvent,
   buildDeltaMessages,
@@ -145,11 +152,21 @@ export interface CachedSignalBinding {
   activeMeans: "on" | "off" | null;
 }
 
+/** A `td_s_bit_barrier` map binding (Milestone 55 / ADR 0014), keyed the same way. Its
+ * `activeMeans` speaks the barrier's own vocabulary; the delta builder converts it. */
+export interface CachedBarrierBinding {
+  mapSlug: string;
+  elementId: string;
+  bit: number;
+  activeMeans: "up" | "down" | null;
+}
+
 /** In-process cache of `td_berth` and `td_s_bit` map bindings (they change only on map
  * publish). */
 export class BindingsCache {
   private byKey = new Map<string, CachedMapBinding[]>();
   private signalsByKey = new Map<string, CachedSignalBinding[]>();
+  private barriersByKey = new Map<string, CachedBarrierBinding[]>();
   private signalSlugs: string[] = [];
   private loadedAt = 0;
 
@@ -173,7 +190,15 @@ export class BindingsCache {
     return this.signalsByKey.get(`${tdArea} ${address}`) ?? [];
   }
 
-  /** Slugs of every open map version with at least one signal binding. */
+  /** Barrier bindings on the S-Class byte `(tdArea, address)` across every open map version. */
+  async getBarriers(tdArea: string, address: string): Promise<CachedBarrierBinding[]> {
+    if (Date.now() - this.loadedAt > this.ttlMs) {
+      await this.reload();
+    }
+    return this.barriersByKey.get(`${tdArea} ${address}`) ?? [];
+  }
+
+  /** Slugs of every open map version with at least one signal or barrier binding. */
   async signalMapSlugs(): Promise<string[]> {
     if (Date.now() - this.loadedAt > this.ttlMs) {
       await this.reload();
@@ -209,32 +234,50 @@ export class BindingsCache {
       td_area: string;
       address: string;
       bit: number;
-      active_means: "on" | "off" | null;
+      active_means: "on" | "off" | "up" | "down" | null;
+      binding_type: "td_s_bit" | "td_s_bit_barrier";
       mapSlug: string;
       elementId: string;
     }>(
-      `select mbi.td_area, mbi.address, mbi.bit, mbi.active_means, m.slug as "mapSlug",
-              mbi.element_id as "elementId"
+      `select mbi.td_area, mbi.address, mbi.bit, mbi.active_means, mbi.binding_type,
+              m.slug as "mapSlug", mbi.element_id as "elementId"
        from map_binding_index mbi
        join map_version mv on mv.id = mbi.map_version_id
        join map m on m.id = mv.map_id
-       where mbi.binding_type = 'td_s_bit' and mv.effective_to is null`,
+       where mbi.binding_type in ('td_s_bit', 'td_s_bit_barrier') and mv.effective_to is null`,
     );
     const nextSignals = new Map<string, CachedSignalBinding[]>();
+    const nextBarriers = new Map<string, CachedBarrierBinding[]>();
     const slugs = new Set<string>();
     for (const row of signalRows.rows) {
       const key = `${row.td_area} ${row.address}`;
-      const list = nextSignals.get(key) ?? [];
-      list.push({
-        mapSlug: row.mapSlug,
-        elementId: row.elementId,
-        bit: row.bit,
-        activeMeans: row.active_means,
-      });
-      nextSignals.set(key, list);
+      // One query, two caches: the check constraint in migration 0039 guarantees the
+      // active_means vocabulary matches the binding_type, so the split is exact.
+      if (row.binding_type === "td_s_bit_barrier") {
+        const list = nextBarriers.get(key) ?? [];
+        list.push({
+          mapSlug: row.mapSlug,
+          elementId: row.elementId,
+          bit: row.bit,
+          activeMeans:
+            row.active_means === "up" || row.active_means === "down" ? row.active_means : null,
+        });
+        nextBarriers.set(key, list);
+      } else {
+        const list = nextSignals.get(key) ?? [];
+        list.push({
+          mapSlug: row.mapSlug,
+          elementId: row.elementId,
+          bit: row.bit,
+          activeMeans:
+            row.active_means === "on" || row.active_means === "off" ? row.active_means : null,
+        });
+        nextSignals.set(key, list);
+      }
       slugs.add(row.mapSlug);
     }
     this.signalsByKey = nextSignals;
+    this.barriersByKey = nextBarriers;
     this.signalSlugs = [...slugs];
     this.loadedAt = Date.now();
   }
@@ -255,6 +298,9 @@ export interface RawSClassRow {
  * bit) doesn't re-send it. Per process; a restart just re-sends each signal's state once, which
  * is harmless (deltas carry absolute state). */
 const lastSignalState = new Map<string, SignalDisplayState>();
+
+/** The same per-process de-duplication for barrier positions (Milestone 55 / ADR 0014). */
+const lastBarrierState = new Map<string, BarrierDisplayState>();
 
 /**
  * Milestone 36b (docs/adr/0013): `signal.updated` for every bound signal whose state an S-Class
@@ -293,6 +339,38 @@ export async function buildSignalDeltas(
         pending.push({
           mapSlug: binding.mapSlug,
           key: `S ${row.td_area} ${byte.address} ${binding.bit}`,
+          sequence,
+          message: JSON.stringify(message),
+        });
+      }
+
+      // Milestone 55 / ADR 0014: the same bit, read as a barrier position for any level
+      // crossing bound to it. Deliberately a separate delta key prefix ("B"), so a crossing and
+      // a signal bound to the same byte never collide in `publishDeltaIfNewer`.
+      for (const binding of await bindings.getBarriers(row.td_area, byte.address)) {
+        const state = barrierStateFromSignalState(
+          signalStateForBit(
+            byte.value,
+            binding.bit,
+            binding.activeMeans ? barrierActiveMeansAsSignal(binding.activeMeans) : undefined,
+          ),
+        );
+        const memoryKey = `${binding.mapSlug}|${binding.elementId}`;
+        if (lastBarrierState.get(memoryKey) === state) continue;
+        lastBarrierState.set(memoryKey, state);
+        const message: CrossingUpdatedMessage = {
+          type: "crossing.updated",
+          sequence,
+          eventAt: row.normalized_event_at_utc.toISOString(),
+          elementId: binding.elementId,
+          state,
+          tdArea: row.td_area,
+          address: byte.address,
+          bit: binding.bit,
+        };
+        pending.push({
+          mapSlug: binding.mapSlug,
+          key: `B ${row.td_area} ${byte.address} ${binding.bit}`,
           sequence,
           message: JSON.stringify(message),
         });

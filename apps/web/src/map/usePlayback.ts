@@ -4,6 +4,7 @@ import type {
   MapEventsResponse,
   MapStateResponse,
   PlaybackDelta,
+  CrossingState,
   SignalState,
 } from "./types.js";
 
@@ -39,12 +40,13 @@ const LIVE_EDGE_MS = 5_000;
 
 type Berths = Record<string, BerthState>;
 type Signals = Record<string, SignalState>;
+type Crossings = Record<string, CrossingState>;
 type Quality = { status: "ok" | "stale" | "unknown"; gaps: string[] };
 
 /** Pure: apply one compact event to a berth map (same semantics as the live WS client). Signal
  * events don't touch berths. */
 export function applyPlaybackDelta(berths: Berths, delta: PlaybackDelta): Berths {
-  if (delta.type === "signal.updated") return berths;
+  if (delta.type === "signal.updated" || delta.type === "crossing.updated") return berths;
   if (delta.type === "berth.cleared") {
     return { ...berths, [delta.elementId]: { description: null, enteredAt: null } };
   }
@@ -61,6 +63,12 @@ export function applyPlaybackSignalDelta(signals: Signals, delta: PlaybackDelta)
   return { ...signals, [delta.elementId]: { state: delta.state } };
 }
 
+/** Milestone 55: the barrier equivalent — absolute state, so replaying is idempotent. */
+export function applyPlaybackCrossingDelta(crossings: Crossings, delta: PlaybackDelta): Crossings {
+  if (delta.type !== "crossing.updated") return crossings;
+  return { ...crossings, [delta.elementId]: { state: delta.state } };
+}
+
 export interface UsePlaybackResult {
   /** Current playback position, ms epoch. */
   clock: number;
@@ -71,6 +79,7 @@ export interface UsePlaybackResult {
   error: string | null;
   berths: Berths;
   signals: Signals;
+  crossings: Crossings;
   quality: Quality;
   /** True once the clock has reached the live edge — further forward play is capped. */
   atLiveEdge: boolean;
@@ -97,6 +106,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   const [error, setError] = useState<string | null>(null);
   const [berths, setBerths] = useState<Berths>({});
   const [signals, setSignals] = useState<Signals>({});
+  const [crossings, setCrossings] = useState<Crossings>({});
   const [quality, setQuality] = useState<Quality>({ status: "unknown", gaps: [] });
 
   // Refs the interval tick reads without forcing itself to re-subscribe.
@@ -105,6 +115,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   const speedRef = useRef(speed);
   const berthsRef = useRef(berths);
   const signalsRef = useRef(signals);
+  const crossingsRef = useRef(crossings);
   const bufferRef = useRef<PlaybackDelta[]>([]);
   const bufferIdxRef = useRef(0);
   /** ISO `from` of the current seek — every refill page keeps this lower bound and walks
@@ -119,6 +130,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
   speedRef.current = speed;
   berthsRef.current = berths;
   signalsRef.current = signals;
+  crossingsRef.current = crossings;
 
   const seed = useCallback(
     async (atMs: number) => {
@@ -144,6 +156,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
         if (seekId !== seekIdRef.current) return;
         setBerths(state.berths);
         setSignals(state.signals);
+        setCrossings(state.crossings ?? {});
         setQuality(state.quality);
         bufferRef.current = events.events;
         bufferIdxRef.current = 0;
@@ -218,10 +231,16 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
       const buffer = bufferRef.current;
       let applied: Berths | null = null;
       let appliedSignals: Signals | null = null;
+      let appliedCrossings: Crossings | null = null;
       while (bufferIdxRef.current < buffer.length) {
         const delta = buffer[bufferIdxRef.current];
         if (!delta || Date.parse(delta.eventAt) > next) break;
-        if (delta.type === "signal.updated") {
+        if (delta.type === "crossing.updated") {
+          appliedCrossings = applyPlaybackCrossingDelta(
+            appliedCrossings ?? crossingsRef.current,
+            delta,
+          );
+        } else if (delta.type === "signal.updated") {
           appliedSignals = applyPlaybackSignalDelta(appliedSignals ?? signalsRef.current, delta);
         } else {
           applied = applyPlaybackDelta(applied ?? berthsRef.current, delta);
@@ -230,6 +249,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
       }
       if (applied) setBerths(applied);
       if (appliedSignals) setSignals(appliedSignals);
+      if (appliedCrossings) setCrossings(appliedCrossings);
       clockRef.current = next;
       setClock(next);
 
@@ -274,6 +294,7 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
     error,
     berths,
     signals,
+    crossings,
     quality,
     atLiveEdge: clock >= Date.now() - LIVE_EDGE_MS - TICK_MS,
     play,

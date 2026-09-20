@@ -13,11 +13,16 @@ export {
   type PlatformNumberElement,
   type StationElement,
   type LabelElement,
+  type LevelCrossingElement,
   type NeutralSectionElement,
+  type TunnelElement,
+  type ViaductElement,
+  type WaterElement,
   type BoundaryElement,
   type MapBinding,
   type TdBerthBinding,
   type TdSBitBinding,
+  type TdSBitBarrierBinding,
   type TopologyNode,
   type TopologyEdge,
 } from "./document.js";
@@ -34,8 +39,15 @@ export {
 export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
 export {
   berthRenderRect,
+  levelCrossingGeometry,
   neutralSectionGeometry,
+  placedLabelAnchor,
   pointOnPathAtX,
+  pointsBounds,
+  type BarrierDisplayState,
+  type LevelCrossingGeometry,
   type NeutralSectionGeometry,
+  type PlacedLabel,
+  type PlacedLabelFields,
   type Rect,
 } from "./geometry.js";

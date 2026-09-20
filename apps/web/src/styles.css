@@ -39,6 +39,12 @@
      print theme can override them, not because the map palette should tint them. */
   --map-neutral-section-board: #ffffff;
   --map-neutral-section-symbol: #111111;
+  /* Milestone 55 scenery. Tunnels and water paint below the track, so these are backdrop
+     colours, not foreground ones — keep them darker than the rails. */
+  --map-tunnel-fill: #111820;
+  --map-viaduct-color: #6d6255;
+  --map-water-fill: #16384f;
+  --map-level-crossing-road: #9aa4b1;
 
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono:

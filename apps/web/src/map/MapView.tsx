@@ -125,6 +125,7 @@ export function MapView({
           bundle={definition.definition}
           berths={state?.berths ?? {}}
           signals={state?.signals ?? {}}
+          crossings={state?.crossings ?? {}}
           showEmptyBerths={showEmptyBerths}
           centerElementId={resolvedCenterElementId}
         />
@@ -183,6 +184,7 @@ function PlaybackView({
         bundle={bundle}
         berths={pb.berths}
         signals={pb.signals}
+        crossings={pb.crossings}
         showEmptyBerths={showEmptyBerths}
       />
     </>

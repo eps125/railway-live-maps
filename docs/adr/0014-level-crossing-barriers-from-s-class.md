@@ -87,6 +87,49 @@ so.
 - A crossing can be drawn without ever being bound. That is the expected common case: the road
   symbol is useful on its own, and grey barriers say plainly that nothing is known.
 
+## Finding and verifying a barrier bit
+
+Decision 5 requires the author to state what a bit means and verify it, but says nothing about
+_how_. This is the method, established empirically against M9 on 2026-09-20 by the concurrent
+Milestone 56 session and recorded here so it does not have to be re-derived. `backfill-s-class-bits
+--area XX` gives 14 days of decoded history for a candidate area in roughly 12 minutes, which is
+what makes this tractable.
+
+The test that works is **state invariance, not transition correlation**. A crossing must be proved
+down before either protecting signal can clear, so a genuine crossing bit is in the same state at
+_every_ clear of _both_ protecting signals.
+
+1. **Establish polarity empirically, per area.** Correlate a signal bit's transitions to 0 against
+   CA berth steps out of that signal's own berth, within ±10s. In M9 that gave 52/52 and 45/46 at
+   0s median offset, establishing that a set bit meant the signal was off. Never assume it.
+2. **Compute each bit's duty cycle.** M9 split cleanly into controlled signals (~5-12% set) and
+   automatics (~89% set); a bit outside those bands is a candidate for something else.
+3. **Sample each bit ~2s before every clear of _both_ protecting signals.** A real crossing bit is
+   invariant across all of them.
+
+Two traps, both of which produced convincing false positives:
+
+- **A bit set 89% of the time is invariant across 97 clears by chance alone.** Weight by duty
+  cycle — check `pow(duty, n)` — or every automatic signal looks like a crossing.
+- **Route bits mimic a crossing for a single signal.** M9's best candidates, `0C/4` (51/51 of
+  S3879's clears) and `0C/2` (46/46 of S3870's), were direction-specific, roughly 1:1 with their
+  own signal's clear count, and only 17% overlapping. A crossing is one physical thing serving both
+  directions, so it must be invariant for **both** signals; splitting the test per signal is what
+  exposed them.
+
+A confirming signature for a real crossing: the delay between the route bit setting and the signal
+clearing never fell below 25s and clustered at 40-90s, and did not track the train's arrival (median
+267s after it, IQR 469s). That gap is the crossing lowering and proving.
+
+Note that this sequence is observable **even in an area that publishes no crossing bit at all** —
+which is precisely why it must never be rendered as barrier state. Inferring a position from the
+signal sequence is what decision 1 forbids, and it would be most tempting exactly where no bit
+exists.
+
+Finally, whether a feed carries crossing bits at all appears to be a per-signaller-area property,
+not a national one: M9 was confirmed to publish signals and routes only. Establish that an area
+publishes crossing state before spending time trawling it.
+
 ## Alternatives rejected
 
 - **Infer barriers from the signals protecting the crossing.** Directly against rule 10, and

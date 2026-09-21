@@ -1471,6 +1471,87 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     });
 
+    it("keeps a run on its second visit to this berth's station — the PX 0109 / 5Z01 / S23328 real case (2026-09-21)", async () => {
+      // ECS Blackpool North -> Preston -> Ribble Jn -> back to Preston (terminates). Its reports
+      // from the *first* Preston visit and from Ribble Jn (visited between the two Preston
+      // calls) must not count as "already passed" while it is back at Preston.
+      const area = uniqueArea();
+      const station = `LP${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stationStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      const loopJn = `LJ${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const loopJnStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(station, "Loop Station", stationStanox);
+      await seedLocationReference(loopJn, "Loop Junction", loopJnStanox);
+      await seedSmartBerthStep(area, "0033", stationStanox);
+      await seedOccupiedBerth(area, "0033", "5X33");
+
+      const loopingId = await seedSchedule("5X33", "P");
+      await seedScheduleLocation(loopingId, 1, station, "LI", { departure: "2152" });
+      await seedScheduleLocation(loopingId, 2, loopJn, "LI");
+      await seedScheduleLocation(loopingId, 3, loopJn, "LI");
+      await seedScheduleLocation(loopingId, 4, station, "LT", { arrival: "2342" });
+      const loopingTrustId = await seedActivation(loopingId, "5X33");
+      await seedMovement(loopingTrustId, stationStanox, 0x01, 0);
+      await seedMovement(loopingTrustId, loopJnStanox, 0x01, 0);
+      await seedMovement(loopingTrustId, stationStanox, 0x01, 0);
+
+      // A second activated same-headcode candidate, so the movement filter actually runs.
+      const otherId = await seedSchedule("5X33", "P");
+      await seedScheduleLocation(otherId, 1, station, "LO", { departure: "0900" });
+      const downstream = `LD${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const downstreamStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(downstream, "Loop Downstream", downstreamStanox);
+      await seedScheduleLocation(otherId, 2, downstream, "LT", { arrival: "1000" });
+      const otherTrustId = await seedActivation(otherId, "5X33");
+      await seedMovement(otherTrustId, downstreamStanox, 0x01, 0);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0033/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("trust_activation");
+        expect(body.effective.scheduleId).toBe(String(loopingId));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("never treats a report at this berth's own station as having passed it", async () => {
+      // Both candidates have been reported *at* the station (an arrival while standing there);
+      // neither has anything beyond it, so neither is excluded and the clash stays visible.
+      const area = uniqueArea();
+      const tiploc = `MA${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Arrival Loc", stanox);
+      await seedSmartBerthStep(area, "0034", stanox);
+      await seedOccupiedBerth(area, "0034", "1X34");
+      for (let i = 0; i < 2; i += 1) {
+        const id = await seedSchedule("1X34", "P");
+        await seedScheduleLocation(id, 1, tiploc, "LT", { arrival: "0900" });
+        const trustId = await seedActivation(id, "1X34");
+        await seedMovement(trustId, stanox, 0x01, 0);
+      }
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0034/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().matchStatus).toBe("ambiguous");
+      } finally {
+        await app.close();
+      }
+    });
+
     it("stays ambiguous when neither activated candidate has confirmed movement evidence of having passed this berth", async () => {
       const area = uniqueArea();
       const tiploc = `MW${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;

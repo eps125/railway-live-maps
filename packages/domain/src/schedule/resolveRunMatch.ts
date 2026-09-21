@@ -86,7 +86,9 @@ export interface StationTiming<T> {
  * history already showed it well past this exact berth, terminated hours earlier). Positive TRUST
  * movement evidence outranks every tier below it — it's real physical evidence, not inference —
  * so `alreadyPassedScheduleIds` (a schedule the caller has confirmed, via `trust_movement`, has
- * already reported a movement at or beyond this berth's own calling point) is filtered out of the
+ * already reported a movement strictly beyond its *last* visit to this berth's calling point —
+ * tightened 2026-09-21 for a run that passes the same station twice, PX 5Z01/S23328, see
+ * `findAlreadyPassedScheduleIds`) is filtered out of the
  * candidate pool *before any tier runs*, not just the `trust_activation` check: a demonstrably
  * already-gone train must never win by STP precedence or scheduled-time-closeness either. Absence
  * of movement data is never treated as evidence of anything (could mean "hasn't started yet" or

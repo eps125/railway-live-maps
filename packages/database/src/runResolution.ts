@@ -545,8 +545,22 @@ export async function callingTimeMinutesByScheduleId(
  * widened trust-activation window, but whose own TRUST movement history already showed it well
  * past this exact berth, terminated hours earlier). For each `(scheduleId, trustId)` pair —
  * schedules with *some* activation in the window, worth checking — returns the subset whose own
- * `trust_movement` history already reports a location at or beyond this berth's own calling
- * point in that schedule's sequence. Only ever positive evidence: a schedule with no movement
+ * `trust_movement` history already reports a location *strictly beyond its last visit* to this
+ * berth's calling point in that schedule's sequence.
+ *
+ * 2026-09-21 (real report: PX 0109/0038, headcode `5Z01`, UID `S23328` — an ECS working
+ * Blackpool North → Preston 21:52 → Ribble Jn → back to Ribble Jn 23:40 → Preston 23:42 term):
+ * this used to test "at or beyond the *first* visit". On the train's second visit to Preston its
+ * own first-visit reports counted as "already passed", so the only live candidate was thrown out
+ * and the berth resolved `unmatched`. The same "at" wording also let a train standing at the
+ * station rule itself out as soon as TRUST reported its arrival there. Now: the anchor is the
+ * *last* occurrence of this berth's TIPLOC(s) in the schedule, and a movement only counts if
+ * every schedule position its STANOX could mean lies after that anchor — so a report at the
+ * station itself, or at anywhere visited both before and after it, is never evidence. A run that
+ * *terminated* here with nothing reported beyond is therefore no longer excluded; a same-headcode
+ * clash then stays `ambiguous` (owner-accepted trade-off, 2026-09-21) — visible, never wrong.
+ *
+ * Only ever positive evidence: a schedule with no movement
  * rows at all (hasn't started yet, or a data gap in the garner mirror) is never included here —
  * `resolveRunMatch` treats absence from this set as "not confirmed gone", never as proof either
  * way. Position-scoped only — with no real calling point tied to this berth there's nothing to
@@ -563,7 +577,7 @@ export async function findAlreadyPassedScheduleIds(
        select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id
      ),
      berth_seq as (
-       select l.cif_schedule_id, min(l.seq_no) as berth_seq_no
+       select l.cif_schedule_id, max(l.seq_no) as last_berth_seq_no
        from cif_schedule_locations l
        where l.cif_schedule_id = any($1::bigint[]) and l.tiploc_code = any($3::text[])
        group by l.cif_schedule_id
@@ -572,12 +586,18 @@ export async function findAlreadyPassedScheduleIds(
             exists (
               select 1
               from trust_movement m
-              join location_reference lr on lr.stanox = m.loc_stanox
-              join cif_schedule_locations l
-                on l.cif_schedule_id = p.schedule_id and l.tiploc_code = lr.tiploc
               where m.trust_id = p.trust_id
-                and l.seq_no >= coalesce(
-                  (select bs.berth_seq_no from berth_seq bs where bs.cif_schedule_id = p.schedule_id),
+                -- Earliest schedule position this report's STANOX could refer to (one STANOX can
+                -- cover several TIPLOCs, each possibly visited more than once). NULL — no match
+                -- in this schedule at all — compares false, so it's never evidence.
+                and (
+                  select min(l.seq_no)
+                  from location_reference lr
+                  join cif_schedule_locations l
+                    on l.cif_schedule_id = p.schedule_id and l.tiploc_code = lr.tiploc
+                  where lr.stanox = m.loc_stanox
+                ) > coalesce(
+                  (select bs.last_berth_seq_no from berth_seq bs where bs.cif_schedule_id = p.schedule_id),
                   2147483647
                 )
             ) as passed

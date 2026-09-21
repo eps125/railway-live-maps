@@ -3613,6 +3613,31 @@ schema change, left for owner approval.
 **Tests:** dedupe (the production duplicate), `diffScheduleWindow` (skipped schedule as R61798;
 locationless as B32229/B32230; unseen withdrawal/amendment; RLM-only never reported), and dispatch.
 
+## Milestone 61 — a run passing the same station twice no longer rules itself out (2026-09-21)
+
+Owner report: 5Z01 (S23328) gave no popup at PX 0109/0038, though its schedule and activation
+were both present after Milestone 60. S23328 is an ECS working: Blackpool North → Preston 21:52 →
+Ribble Jn → back to Ribble Jn 23:40 → Preston 23:42, where it terminates. Milestone 45's movement
+filter excluded any candidate reported "at or beyond this berth's calling point", measured from
+the **first** visit. On its second visit to Preston, the train's own first-visit reports counted
+as "already passed". It was the only live candidate, so the result was `unmatched`. The same
+"at" wording also let a train standing at a station rule itself out once TRUST reported its
+arrival there (seen on 6X81, 11 s after it entered PX 0115).
+
+**Rule now** (`findAlreadyPassedScheduleIds`, owner-approved 2026-09-21): a candidate is
+excluded only when a TRUST report is at a location that, in its schedule, comes **strictly after
+its last visit** to this berth's TIPLOC(s). A STANOX can cover several TIPLOCs, each visited more
+than once, so a report only counts if *every* schedule position it could mean lies after that
+anchor. Accepted trade-off: a run that terminated here earlier with nothing reported beyond it is
+no longer excluded, so a same-headcode clash then shows `ambiguous` instead of being hidden.
+
+**Checked on production data before shipping:** 5Z01's S23328 is no longer excluded. For the
+original Milestone 45 1M11 case, the runs TRUST shows past Preston (W33973, C04493) are still
+excluded, and today's not-yet-past C04561 is kept.
+
+**Tests:** 2 integration tests (the 5Z01 loop shape; a report at the station itself is never
+evidence). The existing 1M11 test is unchanged and still applies.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

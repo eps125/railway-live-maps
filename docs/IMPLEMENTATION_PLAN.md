@@ -3627,7 +3627,7 @@ arrival there (seen on 6X81, 11 s after it entered PX 0115).
 **Rule now** (`findAlreadyPassedScheduleIds`, owner-approved 2026-09-21): a candidate is
 excluded only when a TRUST report is at a location that, in its schedule, comes **strictly after
 its last visit** to this berth's TIPLOC(s). A STANOX can cover several TIPLOCs, each visited more
-than once, so a report only counts if *every* schedule position it could mean lies after that
+than once, so a report only counts if _every_ schedule position it could mean lies after that
 anchor. Accepted trade-off: a run that terminated here earlier with nothing reported beyond it is
 no longer excluded, so a same-headcode clash then shows `ambiguous` instead of being hidden.
 

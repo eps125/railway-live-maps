@@ -3548,6 +3548,54 @@ silence, and one-row paging that forces every page to seed the input it doesn't 
 migration 0040 accepting input rows beside a signal on the same bit while refusing barrier
 vocabulary on one.
 
+## Milestone 60 — garner schedule mirror: gaps found, fixed and backfilled (2026-09-21)
+
+Owner report: 6X81 (B32230) and 6Z98 (R61798) gave no public popup at PX, though garner tracked
+both correctly. Not a resolver regression: `resolveFreshRunMatch` returned `unmatched` with zero
+candidates because the schedules were missing from RLM's mirror of garner. A diff of the whole
+table against garner found:
+
+- **34,179 schedules never mirrored**: 32,913 from garner's 2026-09-05 CIF load and 1,266 from
+  2026-09-18 (R61798 / id 843031 among them). garner writes a CIF load in one long transaction;
+  later rows with higher ids committed first, the bridge read them, and its `id > watermark`
+  cursor passed the whole block before it became visible. It never looked back.
+- **2,797 schedules mirrored with zero calling points** (B32229/B32230 among them): the same race
+  one level down. The header was read before its locations committed, and the watermark had
+  already advanced past it. With no locations, position scoping finds nothing at the berth.
+- **A tick-killing upsert error** ("ON CONFLICT DO UPDATE command cannot affect row a second
+  time", logged every cycle today): a schedule both created and withdrawn since the last tick came
+  back from both the `id >` and the `deleted >` query, and went into one upsert twice.
+
+The schedule-sync code dated from ADR 0002 (2026-09-01) and had not changed since 2026-09-13.
+This was a latent bug, not a recent change. It became visible when these trains' schedules
+happened to fall in the gaps.
+
+**Fix** (`apps/worker/src/garner/bridge.ts`):
+
+- `dedupeScheduleRowsById` before the upsert.
+- `syncCifScheduleLocations` replaces a schedule's locations in one transaction, so a failure
+  can't leave a schedule with no calling points.
+- **Reconciliation.** No cursor closes every visibility race against a source we don't control,
+  so the mirror is now diffed against garner and repaired. `reconcileCifScheduleWindow` compares
+  one id window: missing ids, a changed `update_id`/`deleted`, or a differing location count. It
+  re-fetches and repairs every difference. `ingest-garner` runs `runGarnerScheduleReconcile` on
+  its ~5 min reference cadence, covering the newest 60k ids (where late-committing loads land)
+  plus a rolling 20k-id window that laps the whole table (~45 cycles). Repairs are logged as a
+  warning. RLM-only rows are never deleted.
+- **Backfill:** new one-shot `reconcile-garner-schedules` runs one full pass, and is idempotent.
+
+**TRUST, checked the same way** (UTC epoch buckets since 2026-09-02): `trust_activation` and
+`trust_activation_extra` match garner exactly. `trust_movement` is 10,864 rows short (~0.07%,
+every day). That is not skipping: the RLM primary key `(trust_id, created, loc_stanox,
+actual_timestamp)` collapses a genuine arrival + departure pair reported at the same location in
+the same minute (flags 341/342), and `on conflict do nothing` drops one of them. On 2026-09-20
+garner had 418,918 rows and 418,575 distinct RLM keys, exactly RLM's count. Fixing that needs a
+primary-key change on a ~14.5M-row table, and is **deferred for owner approval**. The small
+cancellation/change-table differences are likely the same key-collapse class (unconfirmed).
+
+**Tests:** dedupe (the production duplicate), `diffScheduleWindow` (skipped schedule as R61798;
+locationless as B32229/B32230; unseen withdrawal/amendment; RLM-only never reported), and dispatch.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

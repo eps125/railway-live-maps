@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { GARNER_NOT_DELETED, garnerDeletedToTs, sequenceScheduleLocations } from "./bridge.js";
+import {
+  GARNER_NOT_DELETED,
+  dedupeScheduleRowsById,
+  diffScheduleWindow,
+  garnerDeletedToTs,
+  sequenceScheduleLocations,
+} from "./bridge.js";
 
 describe("garnerDeletedToTs", () => {
   it("maps garner's NOT_DELETED sentinel (0xffffffff) to null — a live schedule", () => {
@@ -73,5 +79,76 @@ describe("sequenceScheduleLocations", () => {
   it("is a no-op ordering for a schedule that never crosses midnight", () => {
     const rows = [loc("C", 30, 0), loc("A", 10, 0), loc("B", 20, 0)];
     expect(sequenceScheduleLocations(rows).map((r) => r.tiploc_code)).toEqual(["A", "B", "C"]);
+  });
+});
+
+describe("dedupeScheduleRowsById", () => {
+  // Production, 2026-09-21: a schedule created *and* withdrawn since the last tick was returned by
+  // both the `id >` and the `deleted >` query; passing it twice to one upsert failed every tick
+  // with "ON CONFLICT DO UPDATE command cannot affect row a second time".
+  it("keeps one row per id, preferring the later occurrence", () => {
+    const rows = [
+      { id: 871026, deleted: GARNER_NOT_DELETED },
+      { id: 871027, deleted: GARNER_NOT_DELETED },
+      { id: 871026, deleted: 1790020000 },
+    ];
+    expect(dedupeScheduleRowsById(rows)).toEqual([
+      { id: 871026, deleted: 1790020000 },
+      { id: 871027, deleted: GARNER_NOT_DELETED },
+    ]);
+  });
+});
+
+describe("diffScheduleWindow", () => {
+  const live = (id: number, updateId = 18) => ({ id, updateId, deletedEpoch: null });
+
+  it("reports a garner schedule the id cursor skipped (R61798 / id 843031, 2026-09-18 load)", () => {
+    const diff = diffScheduleWindow(
+      [live(843030), live(843031), live(843289)],
+      [live(843030), live(843289)],
+      new Map([
+        [843030, 5],
+        [843031, 24],
+        [843289, 3],
+      ]),
+      new Map([
+        [843030, 5],
+        [843289, 3],
+      ]),
+    );
+    expect(diff).toEqual({ scheduleIds: [843031], locationOnlyIds: [] });
+  });
+
+  it("reports a present schedule whose calling points never arrived (B32230 / id 822834)", () => {
+    const diff = diffScheduleWindow(
+      [live(822833), live(822834)],
+      [live(822833), live(822834)],
+      new Map([
+        [822833, 23],
+        [822834, 17],
+      ]),
+      new Map(),
+    );
+    expect(diff).toEqual({ scheduleIds: [], locationOnlyIds: [822833, 822834] });
+  });
+
+  it("reports a withdrawal or amendment RLM hasn't seen, but nothing when in sync", () => {
+    const counts = new Map([
+      [1, 2],
+      [2, 2],
+      [3, 2],
+    ]);
+    const diff = diffScheduleWindow(
+      [live(1), { id: 2, updateId: 18, deletedEpoch: 1790020390 }, live(3, 19)],
+      [live(1), live(2), live(3, 18)],
+      counts,
+      counts,
+    );
+    expect(diff).toEqual({ scheduleIds: [2, 3], locationOnlyIds: [] });
+  });
+
+  it("never reports an RLM-only schedule — the mirror does not delete history", () => {
+    const diff = diffScheduleWindow([], [live(5)], new Map(), new Map([[5, 4]]));
+    expect(diff).toEqual({ scheduleIds: [], locationOnlyIds: [] });
   });
 });

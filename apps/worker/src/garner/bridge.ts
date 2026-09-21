@@ -1,4 +1,4 @@
-import type { Pool as PgPool } from "pg";
+import type { Pool as PgPool, PoolClient } from "pg";
 import type { Pool as MysqlPool, RowDataPacket } from "mysql2/promise";
 import {
   getOrCreateProjectionDefinition,
@@ -108,10 +108,13 @@ async function seedWatermarkIfFresh(pg: PgPool, defId: string, epochFloor: numbe
   }
 }
 
+/** A pool or a checked-out client (for work that must share one transaction). */
+type PgQueryable = PgPool | PoolClient;
+
 /** Insert `rows` into `table` (columns `cols`) in chunks, with an `on conflict` tail. Each row is
  * a positional value array matching `cols`. */
 async function chunkedInsert(
-  pg: PgPool,
+  pg: PgQueryable,
   table: string,
   cols: string[],
   rows: unknown[][],
@@ -416,9 +419,37 @@ async function syncCifSchedules(
      where deleted > ? and deleted < ${GARNER_NOT_DELETED} order by deleted asc limit ${SCHEDULE_BATCH}`,
     [sinceDeleted],
   );
-  const rows = [...newRows, ...deletedRows];
+  // A schedule created *and* withdrawn since the two watermarks appears in both result sets —
+  // passing it twice to one `insert ... on conflict do update` is a hard Postgres error ("cannot
+  // affect row a second time", production 2026-09-21), which failed the tick and re-failed it
+  // every cycle until one watermark happened to move past the row.
+  const rows = dedupeScheduleRowsById([...newRows, ...deletedRows]);
   if (rows.length === 0) return { upserted: 0, touchedIds: [] };
 
+  const upserted = await upsertScheduleRows(pg, rows);
+
+  if (newRows.length > 0) {
+    const hi = newRows.reduce((max, row) => Math.max(max, row.id), sinceId);
+    await advanceCheckpoint(pg, insDefId, String(hi));
+  }
+  if (deletedRows.length > 0) {
+    const hi = deletedRows.reduce((max, row) => Math.max(max, row.deleted), sinceDeleted);
+    await advanceCheckpoint(pg, delDefId, String(hi));
+  }
+
+  return { upserted, touchedIds: rows.map((row) => row.id) };
+}
+
+/** Collapse garner schedule rows to one per `id`, keeping the last occurrence. Both copies come
+ * from the same garner table moments apart, so the later one is at least as current. Exported
+ * for tests. */
+export function dedupeScheduleRowsById<T extends { id: number }>(rows: T[]): T[] {
+  const byId = new Map<number, T>();
+  for (const row of rows) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+async function upsertScheduleRows(pg: PgQueryable, rows: CifScheduleRow[]): Promise<number> {
   const tuples = rows.map((row) => [
     row.id,
     row.update_id,
@@ -459,24 +490,7 @@ async function syncCifSchedules(
     row.deduced_headcode_status ?? "",
   ]);
 
-  const upserted = await chunkedInsert(
-    pg,
-    "cif_schedules",
-    CIF_SCHEDULE_COLS,
-    tuples,
-    CIF_SCHEDULE_CONFLICT,
-  );
-
-  if (newRows.length > 0) {
-    const hi = newRows.reduce((max, row) => Math.max(max, row.id), sinceId);
-    await advanceCheckpoint(pg, insDefId, String(hi));
-  }
-  if (deletedRows.length > 0) {
-    const hi = deletedRows.reduce((max, row) => Math.max(max, row.deleted), sinceDeleted);
-    await advanceCheckpoint(pg, delDefId, String(hi));
-  }
-
-  return { upserted, touchedIds: rows.map((row) => row.id) };
+  return chunkedInsert(pg, "cif_schedules", CIF_SCHEDULE_COLS, tuples, CIF_SCHEDULE_CONFLICT);
 }
 
 /** Pure ordering step for `syncCifScheduleLocations` below (kept separate and exported so the
@@ -529,11 +543,6 @@ async function syncCifScheduleLocations(
     [scheduleIds],
   );
 
-  await pg.query(`delete from cif_schedule_locations where cif_schedule_id = any($1::bigint[])`, [
-    scheduleIds,
-  ]);
-  if (rawRows.length === 0) return 0;
-
   const rows = sequenceScheduleLocations(rawRows);
   const tuples = rows.map((row) => {
     return [
@@ -560,6 +569,27 @@ async function syncCifScheduleLocations(
     ];
   });
 
+  // Delete + re-insert in one transaction: a failure between the two must not leave a schedule
+  // with no calling points (it would then be invisible to every position-scoped resolution).
+  const client = await pg.connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `delete from cif_schedule_locations where cif_schedule_id = any($1::bigint[])`,
+      [scheduleIds],
+    );
+    const written = await insertScheduleLocationTuples(client, tuples);
+    await client.query("commit");
+    return written;
+  } catch (err) {
+    await client.query("rollback").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function insertScheduleLocationTuples(pg: PgQueryable, tuples: unknown[][]): Promise<number> {
   return chunkedInsert(
     pg,
     "cif_schedule_locations",
@@ -588,6 +618,209 @@ async function syncCifScheduleLocations(
     tuples,
     "on conflict (cif_schedule_id, seq_no) do nothing",
   );
+}
+
+// ---------------------------------------------------------------------------
+// CIF schedule reconciliation (2026-09-21 incident)
+// ---------------------------------------------------------------------------
+
+/** How many garner `cif_schedules.id` values one reconcile window covers. */
+export const RECONCILE_WINDOW_IDS = 20_000;
+/** The daemon re-checks this many of the *newest* ids every reconcile cycle — wide enough to
+ * cover a whole CIF load (~35k rows) committing late behind rows the id cursor already passed. */
+const RECONCILE_TAIL_IDS = 60_000;
+/** Max schedules re-fetched / location-resynced per statement batch. */
+const RECONCILE_FETCH_BATCH = 2000;
+
+export interface ScheduleFingerprint {
+  id: number;
+  updateId: number;
+  /** Withdrawal epoch-seconds, or `null` for a live schedule — already normalised through
+   * `garnerDeletedToTs` on the garner side so both sides compare like-for-like. */
+  deletedEpoch: number | null;
+}
+
+export interface ScheduleWindowDiff {
+  /** Missing from RLM, or present with a different `update_id`/`deleted` — re-fetch the header
+   * *and* its locations. */
+  scheduleIds: number[];
+  /** Header matches but the calling-point count differs — re-sync locations only. */
+  locationOnlyIds: number[];
+}
+
+/**
+ * Pure comparison of one id window of garner vs RLM. Why this exists at all (production,
+ * 2026-09-21): the incremental sync's `id > watermark` cursor is only safe if ids become visible
+ * in order, and garner's CIF load is one long transaction — rows stamped `created` 05:30:02 on
+ * 2026-09-05 (32,913 of them) and 2026-09-18 (1,266) committed *after* later, higher-id rows the
+ * bridge had already read, so the cursor jumped the whole block and never looked back. The same
+ * race one level down left 2,797 schedules with zero calling points (header read before its
+ * locations committed). No cursor design closes every such race against a source we don't
+ * control, so the mirror is periodically diffed against garner and repaired instead.
+ *
+ * RLM rows garner no longer has are *not* reported — the mirror never deletes history.
+ */
+export function diffScheduleWindow(
+  garnerRows: ScheduleFingerprint[],
+  rlmRows: ScheduleFingerprint[],
+  garnerLocationCounts: Map<number, number>,
+  rlmLocationCounts: Map<number, number>,
+): ScheduleWindowDiff {
+  const rlmById = new Map(rlmRows.map((row) => [row.id, row]));
+  const scheduleIds: number[] = [];
+  const locationOnlyIds: number[] = [];
+  for (const g of garnerRows) {
+    const r = rlmById.get(g.id);
+    if (!r || r.updateId !== g.updateId || r.deletedEpoch !== g.deletedEpoch) {
+      scheduleIds.push(g.id);
+    } else if ((garnerLocationCounts.get(g.id) ?? 0) !== (rlmLocationCounts.get(g.id) ?? 0)) {
+      locationOnlyIds.push(g.id);
+    }
+  }
+  return { scheduleIds, locationOnlyIds };
+}
+
+export interface ScheduleReconcileSummary {
+  fromId: number;
+  toId: number;
+  schedulesRepaired: number;
+  locationSetsRepaired: number;
+}
+
+/** Reconcile garner `cif_schedules` ids in `[fromId, toId)` into RLM: diff, then re-fetch and
+ * upsert every missing/changed header and re-sync every mismatched location set. Idempotent. */
+export async function reconcileCifScheduleWindow(
+  garner: MysqlPool,
+  pg: PgPool,
+  fromId: number,
+  toId: number,
+): Promise<ScheduleReconcileSummary> {
+  const [garnerHeaders] = await garner.query<RowDataPacket[]>(
+    `select id, update_id, deleted from cif_schedules where id >= ? and id < ?`,
+    [fromId, toId],
+  );
+  const [garnerLocs] = await garner.query<RowDataPacket[]>(
+    `select cif_schedule_id, count(*) as n from cif_schedule_locations
+     where cif_schedule_id >= ? and cif_schedule_id < ? group by cif_schedule_id`,
+    [fromId, toId],
+  );
+  const rlmHeaders = await pg.query<{
+    id: string;
+    update_id: number;
+    deleted_epoch: string | null;
+  }>(
+    `select id, update_id, extract(epoch from deleted)::bigint as deleted_epoch
+     from cif_schedules where id >= $1 and id < $2`,
+    [fromId, toId],
+  );
+  const rlmLocs = await pg.query<{ cif_schedule_id: string; n: number }>(
+    `select cif_schedule_id, count(*)::int as n from cif_schedule_locations
+     where cif_schedule_id >= $1 and cif_schedule_id < $2 group by cif_schedule_id`,
+    [fromId, toId],
+  );
+
+  const diff = diffScheduleWindow(
+    garnerHeaders.map((row) => ({
+      id: Number(row.id),
+      updateId: Number(row.update_id),
+      deletedEpoch: garnerDeletedToTs(Number(row.deleted)) ? Number(row.deleted) : null,
+    })),
+    rlmHeaders.rows.map((row) => ({
+      id: Number(row.id),
+      updateId: Number(row.update_id),
+      deletedEpoch: row.deleted_epoch === null ? null : Number(row.deleted_epoch),
+    })),
+    new Map(garnerLocs.map((row) => [Number(row.cif_schedule_id), Number(row.n)])),
+    new Map(rlmLocs.rows.map((row) => [Number(row.cif_schedule_id), row.n])),
+  );
+
+  for (let i = 0; i < diff.scheduleIds.length; i += RECONCILE_FETCH_BATCH) {
+    const ids = diff.scheduleIds.slice(i, i + RECONCILE_FETCH_BATCH);
+    const [rows] = await garner.query<CifScheduleRow[]>(
+      `select ${CIF_SCHEDULE_SELECT_COLS} from cif_schedules where id in (?)`,
+      [ids],
+    );
+    await upsertScheduleRows(pg, dedupeScheduleRowsById(rows));
+    await syncCifScheduleLocations(garner, pg, ids);
+  }
+  for (let i = 0; i < diff.locationOnlyIds.length; i += RECONCILE_FETCH_BATCH) {
+    await syncCifScheduleLocations(
+      garner,
+      pg,
+      diff.locationOnlyIds.slice(i, i + RECONCILE_FETCH_BATCH),
+    );
+  }
+
+  return {
+    fromId,
+    toId,
+    schedulesRepaired: diff.scheduleIds.length,
+    locationSetsRepaired: diff.locationOnlyIds.length,
+  };
+}
+
+async function garnerMaxScheduleId(garner: MysqlPool): Promise<number> {
+  const [rows] = await garner.query<RowDataPacket[]>(`select max(id) as max_id from cif_schedules`);
+  return Number(rows[0]?.max_id ?? 0);
+}
+
+/**
+ * Continuous self-healing, run by `ingest-garner` on its reference cadence: always the newest
+ * `RECONCILE_TAIL_IDS` ids (where late-committing loads land, so a repeat of the 2026-09-05/18
+ * gap heals within one cycle), plus one rolling window that walks the whole id space and wraps —
+ * so any older divergence, whatever its cause, is found within a full lap
+ * (~45 windows at today's table size).
+ */
+export async function runGarnerScheduleReconcile(
+  garner: MysqlPool,
+  pg: PgPool,
+): Promise<{ schedulesRepaired: number; locationSetsRepaired: number }> {
+  const maxId = await garnerMaxScheduleId(garner);
+  if (maxId === 0) return { schedulesRepaired: 0, locationSetsRepaired: 0 };
+
+  let schedulesRepaired = 0;
+  let locationSetsRepaired = 0;
+  const tailFrom = Math.max(0, maxId + 1 - RECONCILE_TAIL_IDS);
+  for (let from = tailFrom; from <= maxId; from += RECONCILE_WINDOW_IDS) {
+    const r = await reconcileCifScheduleWindow(garner, pg, from, from + RECONCILE_WINDOW_IDS);
+    schedulesRepaired += r.schedulesRepaired;
+    locationSetsRepaired += r.locationSetsRepaired;
+  }
+
+  const cursorDefId = await watermarkDefId(pg, "garner-cif_schedules-reconcile-cursor");
+  const cursor = await readWatermark(pg, cursorDefId);
+  const from = cursor > maxId ? 0 : cursor;
+  const r = await reconcileCifScheduleWindow(garner, pg, from, from + RECONCILE_WINDOW_IDS);
+  schedulesRepaired += r.schedulesRepaired;
+  locationSetsRepaired += r.locationSetsRepaired;
+  const next = from + RECONCILE_WINDOW_IDS > maxId ? 0 : from + RECONCILE_WINDOW_IDS;
+  // `advanceCheckpoint` is monotonic (`greatest`), so a wrap back to 0 is written directly.
+  await pg.query(
+    `update projection_checkpoint set last_ingestion_sequence = $2, last_completed_at = now(),
+       updated_at = now() where projection_definition_id = $1`,
+    [cursorDefId, String(next)],
+  );
+
+  return { schedulesRepaired, locationSetsRepaired };
+}
+
+/** One full pass over every garner schedule id — the historical backfill for the 2026-09-21
+ * incident, and the tool to reach for if the mirror is ever suspected incomplete again. */
+export async function runGarnerScheduleFullReconcile(
+  garner: MysqlPool,
+  pg: PgPool,
+  onWindow: (summary: ScheduleReconcileSummary) => void,
+): Promise<{ schedulesRepaired: number; locationSetsRepaired: number }> {
+  const maxId = await garnerMaxScheduleId(garner);
+  let schedulesRepaired = 0;
+  let locationSetsRepaired = 0;
+  for (let from = 0; from <= maxId; from += RECONCILE_WINDOW_IDS) {
+    const r = await reconcileCifScheduleWindow(garner, pg, from, from + RECONCILE_WINDOW_IDS);
+    schedulesRepaired += r.schedulesRepaired;
+    locationSetsRepaired += r.locationSetsRepaired;
+    onWindow(r);
+  }
+  return { schedulesRepaired, locationSetsRepaired };
 }
 
 // ---------------------------------------------------------------------------

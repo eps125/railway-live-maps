@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { createGarnerPool } from "../garner/garnerPool.js";
 import {
   runGarnerReferenceSync,
+  runGarnerScheduleReconcile,
   runGarnerScheduleSync,
   runGarnerTrainAllocationSync,
   runGarnerTrustSync,
@@ -133,6 +134,14 @@ export async function runIngestGarner(config: Config): Promise<void> {
       if (tick % REFERENCE_EVERY_N_TICKS === 0) {
         const reference = await runGarnerReferenceSync(garner, pg);
         console.log("ingest-garner: reference sync", reference);
+
+        // Self-healing diff of the schedule mirror against garner (2026-09-21 incident — see
+        // runGarnerScheduleReconcile). Logged every time it repairs anything: a non-zero count
+        // means the incremental sync missed rows, which should be rare and worth seeing.
+        const reconcile = await runGarnerScheduleReconcile(garner, pg);
+        if (reconcile.schedulesRepaired > 0 || reconcile.locationSetsRepaired > 0) {
+          console.warn("ingest-garner: schedule reconcile repaired divergence", reconcile);
+        }
       }
     },
     onShutdown: async () => {

@@ -26,6 +26,7 @@ describe("parseCommand", () => {
     "snapshot-maps",
     "snapshot-maps-daemon",
     "repair-open-occupancies",
+    "reconcile-garner-schedules",
   ])("accepts the known command %s", (name) => {
     expect(parseCommand([name])).toBe(name);
   });

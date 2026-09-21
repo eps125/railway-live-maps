@@ -218,8 +218,10 @@ export function validateMapDocument(json: unknown): ValidationResult {
   // Milestone 55 / ADR 0014: the same two rules for a level crossing's barrier binding. A
   // crossing shows exactly one bit, and a barrier binding only means something on a crossing.
   const barrierCountByElement = new Map<string, number>();
+  // Milestone 59 / ADR 0015: an inferred binding is a barrier source too, so it counts toward the
+  // same one-per-crossing limit and the same levelCrossing-only rule as a direct LXC bit.
   for (const binding of doc.bindings) {
-    if (binding.type !== "tdSBitBarrier") continue;
+    if (binding.type !== "tdSBitBarrier" && binding.type !== "tdSBitBarrierInferred") continue;
     const element = elementsById.get(binding.elementId);
     if (element && element.type !== "levelCrossing") {
       errors.push({
@@ -238,18 +240,7 @@ export function validateMapDocument(json: unknown): ValidationResult {
     if (count > 1) {
       errors.push({
         code: "multiple_barrier_bindings",
-        message: `Level crossing "${elementId}" has ${count} barrier bindings — a crossing shows exactly one bit`,
-        elementId,
-      });
-    }
-    // Milestone 58 / ADR 0014 addendum: realistic barriers are always drawn down, so on a crossing
-    // whose barriers come from a live S-Class bit they would contradict that bit. The editor won't
-    // offer the combination; this makes it unpublishable rather than trusting the UI alone.
-    const element = elementsById.get(elementId);
-    if (element?.type === "levelCrossing" && element.realisticBarriers) {
-      errors.push({
-        code: "realistic_barriers_on_bound_crossing",
-        message: `Level crossing "${elementId}" has realistic barriers and an S-Class barrier binding — realistic barriers are always drawn down, so they are only allowed on an unbound crossing`,
+        message: `Level crossing "${elementId}" has ${count} barrier sources — a crossing is driven by one S-Class bit, one inferred rule, or nothing`,
         elementId,
       });
     }

@@ -8,7 +8,9 @@ import {
 } from "@railway/database";
 import {
   TD_PROJECTION_VERSION,
+  TD_S_STATE_PROJECTION_VERSION,
   decodeSClassPayload,
+  inferredBarrierState,
   detectReceiveSilences,
   barrierActiveMeansAsSignal,
   barrierStateFromSignalState,
@@ -161,12 +163,30 @@ export interface CachedBarrierBinding {
   activeMeans: "up" | "down" | null;
 }
 
+/** Milestone 59 / ADR 0015: one input signal of an inferred crossing (a
+ * `td_s_bit_barrier_input` row). `elementId` is the crossing; `activeMeans` is in the signal's
+ * vocabulary. A crossing's full input list is every row sharing its `mapSlug` + `elementId`. */
+export interface CachedInferredInput {
+  mapSlug: string;
+  elementId: string;
+  tdArea: string;
+  address: string;
+  bit: number;
+  activeMeans: "on" | "off" | null;
+}
+
 /** In-process cache of `td_berth` and `td_s_bit` map bindings (they change only on map
  * publish). */
 export class BindingsCache {
   private byKey = new Map<string, CachedMapBinding[]>();
   private signalsByKey = new Map<string, CachedSignalBinding[]>();
   private barriersByKey = new Map<string, CachedBarrierBinding[]>();
+  private inputsByKey = new Map<string, CachedInferredInput[]>();
+  private inputsByCrossing = new Map<string, CachedInferredInput[]>();
+  /** Each inferred input byte's value from `td_s_current_state` at the last reload — the fallback
+   * for an input this process hasn't yet seen live, so a restart doesn't leave a crossing unknown
+   * until its signals' bytes are next restated (areas refresh only every ~2 hours). */
+  private seededInputBytes = new Map<string, number>();
   private signalSlugs: string[] = [];
   private loadedAt = 0;
 
@@ -196,6 +216,24 @@ export class BindingsCache {
       await this.reload();
     }
     return this.barriersByKey.get(`${tdArea} ${address}`) ?? [];
+  }
+
+  /** Inferred-crossing inputs on the S-Class byte `(tdArea, address)` across every open map. */
+  async getInferredInputs(tdArea: string, address: string): Promise<CachedInferredInput[]> {
+    if (Date.now() - this.loadedAt > this.ttlMs) {
+      await this.reload();
+    }
+    return this.inputsByKey.get(`${tdArea} ${address}`) ?? [];
+  }
+
+  /** Every input of one inferred crossing (valid after any `getInferredInputs` call). */
+  inferredCrossingInputs(mapSlug: string, elementId: string): CachedInferredInput[] {
+    return this.inputsByCrossing.get(`${mapSlug}|${elementId}`) ?? [];
+  }
+
+  /** An inferred input byte's value as stored at the last reload, if it was known. */
+  seededInputByte(tdArea: string, address: string): number | undefined {
+    return this.seededInputBytes.get(`${tdArea} ${address}`);
   }
 
   /** Slugs of every open map version with at least one signal or barrier binding. */
@@ -233,9 +271,10 @@ export class BindingsCache {
     const signalRows = await this.pool.query<{
       td_area: string;
       address: string;
-      bit: number;
+      /** `map_binding_index.bit` is a text column (migration 0010) — coerced where it is read. */
+      bit: string;
       active_means: "on" | "off" | "up" | "down" | null;
-      binding_type: "td_s_bit" | "td_s_bit_barrier";
+      binding_type: "td_s_bit" | "td_s_bit_barrier" | "td_s_bit_barrier_input";
       mapSlug: string;
       elementId: string;
     }>(
@@ -244,13 +283,35 @@ export class BindingsCache {
        from map_binding_index mbi
        join map_version mv on mv.id = mbi.map_version_id
        join map m on m.id = mv.map_id
-       where mbi.binding_type in ('td_s_bit', 'td_s_bit_barrier') and mv.effective_to is null`,
+       where mbi.binding_type in ('td_s_bit', 'td_s_bit_barrier', 'td_s_bit_barrier_input')
+         and mv.effective_to is null`,
     );
     const nextSignals = new Map<string, CachedSignalBinding[]>();
     const nextBarriers = new Map<string, CachedBarrierBinding[]>();
+    const nextInputs = new Map<string, CachedInferredInput[]>();
+    const nextInputsByCrossing = new Map<string, CachedInferredInput[]>();
     const slugs = new Set<string>();
     for (const row of signalRows.rows) {
       const key = `${row.td_area} ${row.address}`;
+      if (row.binding_type === "td_s_bit_barrier_input") {
+        const input: CachedInferredInput = {
+          mapSlug: row.mapSlug,
+          elementId: row.elementId,
+          tdArea: row.td_area,
+          address: row.address,
+          bit: Number(row.bit),
+          activeMeans:
+            row.active_means === "on" || row.active_means === "off" ? row.active_means : null,
+        };
+        nextInputs.set(key, [...(nextInputs.get(key) ?? []), input]);
+        const crossingKey = `${row.mapSlug}|${row.elementId}`;
+        nextInputsByCrossing.set(crossingKey, [
+          ...(nextInputsByCrossing.get(crossingKey) ?? []),
+          input,
+        ]);
+        slugs.add(row.mapSlug);
+        continue;
+      }
       // One query, two caches: the check constraint in migration 0039 guarantees the
       // active_means vocabulary matches the binding_type, so the split is exact.
       if (row.binding_type === "td_s_bit_barrier") {
@@ -258,7 +319,7 @@ export class BindingsCache {
         list.push({
           mapSlug: row.mapSlug,
           elementId: row.elementId,
-          bit: row.bit,
+          bit: Number(row.bit),
           activeMeans:
             row.active_means === "up" || row.active_means === "down" ? row.active_means : null,
         });
@@ -268,7 +329,7 @@ export class BindingsCache {
         list.push({
           mapSlug: row.mapSlug,
           elementId: row.elementId,
-          bit: row.bit,
+          bit: Number(row.bit),
           activeMeans:
             row.active_means === "on" || row.active_means === "off" ? row.active_means : null,
         });
@@ -278,6 +339,28 @@ export class BindingsCache {
     }
     this.signalsByKey = nextSignals;
     this.barriersByKey = nextBarriers;
+    this.inputsByKey = nextInputs;
+    this.inputsByCrossing = nextInputsByCrossing;
+
+    const nextSeeded = new Map<string, number>();
+    if (nextInputs.size > 0) {
+      const wanted = [...nextInputs.keys()].map((key) => key.split(" "));
+      const seeded = await this.pool.query<{
+        td_area: string;
+        address: string;
+        byte_value: number;
+      }>(
+        `select s.td_area, s.address, s.byte_value
+         from td_s_current_state s
+         join unnest($2::text[], $3::text[]) as k(td_area, address)
+           on s.td_area = k.td_area and s.address = k.address
+         where s.projection_version = $1 and s.byte_value is not null`,
+        [TD_S_STATE_PROJECTION_VERSION, wanted.map((k) => k[0]), wanted.map((k) => k[1])],
+      );
+      for (const row of seeded.rows)
+        nextSeeded.set(`${row.td_area} ${row.address}`, row.byte_value);
+    }
+    this.seededInputBytes = nextSeeded;
     this.signalSlugs = [...slugs];
     this.loadedAt = Date.now();
   }
@@ -299,8 +382,17 @@ export interface RawSClassRow {
  * is harmless (deltas carry absolute state). */
 const lastSignalState = new Map<string, SignalDisplayState>();
 
-/** The same per-process de-duplication for barrier positions (Milestone 55 / ADR 0014). */
+/** The same per-process de-duplication for barrier positions (Milestone 55 / ADR 0014), shared
+ * by direct and inferred crossings — a crossing has one source, so its key never collides. */
 const lastBarrierState = new Map<string, BarrierDisplayState>();
+
+/** Milestone 59 / ADR 0015: each inferred input's last state seen live by this process, keyed
+ * per crossing and bit. An input missing here falls back to the byte seeded at cache reload. */
+const lastInferredInputState = new Map<string, SignalDisplayState>();
+
+function inferredInputKey(input: CachedInferredInput): string {
+  return `${input.mapSlug}|${input.elementId}|${input.tdArea}|${input.address}|${input.bit}`;
+}
 
 /**
  * Milestone 36b (docs/adr/0013): `signal.updated` for every bound signal whose state an S-Class
@@ -320,7 +412,17 @@ export async function buildSignalDeltas(
     const decoded = decodeSClassPayload(row.event_type, payload.address, payload.data);
     if (!decoded.ok) continue;
     const sequence = Number(row.ingestion_sequence);
+    // Inferred crossings this row touched, with the input that triggered each (Milestone 59).
+    const touched = new Map<string, { input: CachedInferredInput; address: string }>();
     for (const byte of decoded.bytes) {
+      for (const input of await bindings.getInferredInputs(row.td_area, byte.address)) {
+        lastInferredInputState.set(
+          inferredInputKey(input),
+          signalStateForBit(byte.value, input.bit, input.activeMeans ?? undefined),
+        );
+        touched.set(`${input.mapSlug}|${input.elementId}`, { input, address: byte.address });
+      }
+
       for (const binding of await bindings.getSignals(row.td_area, byte.address)) {
         const state = signalStateForBit(byte.value, binding.bit, binding.activeMeans ?? undefined);
         const memoryKey = `${binding.mapSlug}|${binding.elementId}`;
@@ -375,6 +477,42 @@ export async function buildSignalDeltas(
           message: JSON.stringify(message),
         });
       }
+    }
+
+    // Milestone 59 / ADR 0015: an inferred crossing's position is the combination of all its
+    // inputs (`inferredBarrierState`), so recompute it once per row that restated any of them.
+    for (const [crossingKey, { input: trigger, address }] of touched) {
+      const states = bindings
+        .inferredCrossingInputs(trigger.mapSlug, trigger.elementId)
+        .map((input): SignalDisplayState => {
+          const live = lastInferredInputState.get(inferredInputKey(input));
+          if (live !== undefined) return live;
+          const seeded = bindings.seededInputByte(input.tdArea, input.address);
+          return seeded === undefined
+            ? "blank"
+            : signalStateForBit(seeded, input.bit, input.activeMeans ?? undefined);
+        });
+      const state = inferredBarrierState(states);
+      if (lastBarrierState.get(crossingKey) === state) continue;
+      lastBarrierState.set(crossingKey, state);
+      const message: CrossingUpdatedMessage = {
+        type: "crossing.updated",
+        sequence,
+        eventAt: row.normalized_event_at_utc.toISOString(),
+        elementId: trigger.elementId,
+        state,
+        tdArea: row.td_area,
+        address,
+        bit: trigger.bit,
+      };
+      pending.push({
+        mapSlug: trigger.mapSlug,
+        // Per crossing rather than per bit: its state depends on several bits, and the newer-only
+        // guard must order every change to it, whichever input caused it.
+        key: `I ${trigger.elementId}`,
+        sequence,
+        message: JSON.stringify(message),
+      });
     }
   }
   return pending;

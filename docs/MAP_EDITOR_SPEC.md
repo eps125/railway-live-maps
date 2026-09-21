@@ -233,8 +233,8 @@ the track), meeting in the middle. It is a true rotation — same post, same arm
 states read as one mechanism. `blank` uses the lowered, track-parallel geometry in grey, which is
 what the owner asked an unmapped crossing to look like; grey means "no information", never "up".
 
-Barriers are **optional and never inferred**. A crossing shows barrier positions only when bound
-to one S-Class bit by a `tdSBitBarrier` binding, which states in the barrier's own vocabulary what
+Barriers are **never guessed**. A crossing shows a barrier position only from its configured source
+(see _Barrier position source_ below) — a `tdSBitBarrier` binding to one S-Class bit, which states in the barrier's own vocabulary what
 a set bit means (`up`/`down`), verified per crossing and never assumed. Displayed positions are
 red = down, green = up, grey = **blank**, where blank means unbound, unknown, or a feed gap — and
 must never be read as "up". A barrier position is not a signal aspect: rule 9's blank/on/off
@@ -245,25 +245,50 @@ Expect grey barriers when scrubbing playback back beyond an area's decoded S-Cla
 signals, a crossing resolves from decoded `td_s_event` rows, and history predating Milestone 36a
 is undecoded until that area is backfilled. Grey there means "not recorded", not "up".
 
-**Realistic barriers (Milestone 58, owner request 2026-09-21).** An optional
-`realisticBarriers` tickbox ("Realistic crossing barriers") swaps the schematic lines for a drawing
-that looks like the real thing: asphalt on each approach with a dashed white centreline, and on
-each side of the railway a red-and-white banded arm lowered across the road with a white picket
-skirt hanging beneath it. It is drawn as if viewed from a slight angle, not strictly top down
-(owner), which is what lets the skirt read as a fence below the arm; at the usual orientation 0
-both skirts hang straight down. The arms sit exactly where the schematic `down` arms do, so ticking
-the box restyles a crossing without moving anything, and the band count is always odd so both ends
-of an arm are red.
+**Realistic barriers — the default (Milestones 58/59, owner decisions 2026-09-21,
+[ADR 0015](adr/0015-inferred-crossing-state-and-realistic-default.md)).** Every crossing is drawn
+realistically unless its "Schematic style" tickbox (`schematicBarriers`) is set: asphalt on each
+approach with a dashed white centreline, and on each side of the railway a red-and-white banded arm
+with a white picket skirt. It is drawn as if viewed from a slight angle, not strictly top down.
+Position is shown by **pose**, never colour — the red is the arm's paint, not a state:
 
-It is **always the down pose** and is **only offered on a crossing with no S-Class binding** —
-a fixed piece of scenery, not a barrier position (see the ADR 0014 addendum). The tickbox is
-disabled on a bound crossing, binding is refused while it is ticked, `validateMapDocument` rejects
-the combination (`realistic_barriers_on_bound_crossing`), and the public renderer falls back to
-the live state if one ever arrives for a realistic crossing. The span between the two barriers is
+- **Lowered** — the arm lies across the road exactly where the schematic `down` arm does, its
+  skirt hanging below it (straight down at the usual orientation 0). Drawn for `down`, and also
+  for `blank`: an unbound crossing, a bound crossing whose bit isn't currently trustworthy, and an
+  inferred crossing that can't decide are all drawn lowered, in full colour (owner decision). In
+  this style, unknown is therefore indistinguishable from down.
+- **Raised** — swung 90° about the same post to stand upright on screen, _both_ arms pointing up,
+  so the barrier below the track rises across it (owner design); the skirt folds shallow against
+  the arm on the carriageway side. Drawn for `up`.
+
+The band count is always odd, so both ends of an arm are red. The span between the two barriers is
 left unsurfaced on purpose: a crossing paints above the rails, so a solid road there would hide the
 running line, whereas leaving it open keeps every track through the crossing visible without
-splitting the element across paint layers. Drawn from `realisticLevelCrossingGeometry`, shared by
-the public renderer and the editor canvas (CLAUDE.md rule 13).
+splitting the element across paint layers. The editor canvas always previews the lowered pose —
+the live position belongs to Test mode and the public map. Drawn from
+`realisticLevelCrossingGeometry`, shared by the public renderer and the editor canvas (CLAUDE.md
+rule 13). The schematic style keeps ADR 0014's colours, including grey for unknown. Milestone 58's
+opt-in `realisticBarriers` flag no longer has any effect.
+
+**Barrier position source (Milestone 59, ADR 0015).** The "Barrier position" picker gives a
+crossing exactly one of:
+
+- **Not driven** — for areas without S-Class coverage. Always drawn lowered.
+- **S-Class crossing bit** — a `tdSBitBarrier` binding, as above (ADR 0014).
+- **Inferred from protecting signals** — a `tdSBitBarrierInferred` binding: one row per protecting
+  signal (typically two, one per direction), each a TD area, S-Class address and bit, what a set bit
+  means for _that signal_, and an optional signal name as a note. The rule is fixed: **lowered if
+  any signal is at proceed, raised only if every one is confirmed at danger, otherwise unknown**
+  (drawn lowered). For areas that publish signals but no crossing bit, such as M9's Carleton
+  crossing from S3879 (07:4) and S3870 (06:6). Verify each signal's polarity before applying — on
+  M9 a set bit means the signal is off. The editor says plainly, beside the inputs, that this shows
+  raised for part of every cycle while the barriers are really down (they lower and prove before a
+  signal clears, and stay down after it returns to danger until the train has passed) — the owner's
+  accepted trade-off, recorded in ADR 0015.
+
+Applying either form replaces whatever source the crossing had; choosing "Not driven" clears it
+(undoable). `validateMapDocument` rejects a crossing with more than one source
+(`multiple_barrier_bindings`) or a source on anything but a crossing (`invalid_barrier_binding`).
 
 ### `label`
 

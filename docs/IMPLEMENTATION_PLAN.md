@@ -3468,6 +3468,86 @@ binding refused while ticked).
 Not verified: the Konva editor branch was checked by typecheck and shares its geometry with the
 tested SVG path, but was not rendered in a browser — jsdom can't draw a canvas.
 
+## Milestone 59 — realistic crossings by default, raised barriers, inferred crossings (2026-09-21)
+
+Owner requests, recorded as [ADR 0015](adr/0015-inferred-crossing-state-and-realistic-default.md):
+make Milestone 58's realistic drawing the default for every crossing, bound or not; add a raised
+pose; and let a crossing be driven three ways — undriven (no S-Class coverage), by an S-Class
+crossing bit (ADR 0014), or **inferred** from its protecting signals where an area publishes
+signals but no crossing bit (the owner's example: M9's Carleton crossing, from S3879 07:4 and
+S3870 06:6). Unbound crossings are unchanged: always drawn lowered.
+
+**Decisions put to the owner before building, with their answers:**
+
+- The rule as first written (`if (07:4) or (06:6) == 0 then raised`) would have shown raised
+  whenever either signal was at danger — nearly always. Restated by the owner: both at danger =
+  raised; either at proceed = lowered.
+- "Both at danger ⇒ raised" is wrong for part of every cycle: barriers lower and prove before a
+  signal clears (40-90 s on M9, ADR 0014's own measurement) and stay down after it returns to
+  danger. Recommended: show unknown between trains. **Owner chose raised**, knowingly; the editor
+  says so beside the inputs.
+- Unknown (stale bit, feed gap, or an inferred crossing that can't decide): recommended greyed;
+  **owner chose lowered, full colour**.
+- Keep the schematic style as a per-crossing opt-out: yes.
+- Raised pose, from the rendered preview: both arms upright on screen even where the lower one
+  crosses the track, each folded skirt on the carriageway side (two owner corrections).
+
+**Model** (`packages/map-schema`): new binding `tdSBitBarrierInferred` — 1-6 inputs, each a TD
+area/address/bit, what a set bit means for that _signal_ (`on`/`off`), and an optional name. A
+crossing has at most one barrier source (`multiple_barrier_bindings` now counts both kinds;
+`invalid_barrier_binding` covers both). `schematicBarriers` replaces Milestone 58's
+`realisticBarriers` (dropped on parse; realistic is the default anyway), and the Milestone 58
+`realistic_barriers_on_bound_crossing` error is removed. The compiler emits
+`inferredBarrierBindings` (elementId -> inputs, canonical addresses, labels dropped).
+
+**Rule** (`@railway/domain`, `inferredBarrierState`): down if any input is off; up only if every
+input is confirmed on; otherwise blank. Each input resolves through `computeSignalStates` under a
+synthetic element id (`<crossing>#in<n>`), so polarity, trust and lookback are the signal
+machinery's, not a copy.
+
+**Three producers, one rule:**
+
+- **Snapshot** (`sClassStatesForBundle` — live, `/state?at=`, editor Test mode): inputs join the
+  single `computeSignalStates` call, then combine.
+- **Playback** (`fetchSignalPlaybackEvents`): a row restates only its own bytes, but inputs can sit
+  in different bytes, so each page seeds every input's state as of its first row with the snapshot's
+  resolver, then folds forward row by row. Silences are fetched first so the fold resets inputs to
+  unknown exactly where the stream blanks; each silence also emits `blank` for every inferred
+  crossing. Input bindings never emit messages of their own.
+- **Live** (`projector-td-live`): `BindingsCache` loads `td_s_bit_barrier_input` rows and seeds each
+  input byte from `td_s_current_state` at reload; the delta builder keeps a per-process memory of
+  each input's last live state, recomputes the crossing once per row that restates any input, and
+  publishes under a per-crossing delta key.
+
+**Persistence**: migration 0040 widens `map_binding_index`'s checks for `td_s_bit_barrier_input`
+rows (signal on/off vocabulary), adds a per-crossing unique index — not per bit, since the same bit
+can be both a drawn signal and a crossing input — and a lookup index. Publishing writes one row per
+input.
+
+**Rendering**: realistic unless `schematicBarriers`. `realisticLevelCrossingGeometry(element, pose)`
+gains the raised pose (same post, same arm length; upright on screen; skirt folded to
+`foldedSkirtDepth` on the carriageway side; centreline runs to the barrier line). The public
+renderer maps `up` -> raised and `down`/`blank` -> lowered; the editor canvas previews lowered.
+
+**Editor**: a "Schematic style" tickbox and a "Barrier position" picker (Not driven / S-Class
+crossing bit / Inferred from protecting signals). The inferred form starts with two input rows, adds
+up to six, applies with one button, and carries the known-limitation warning. Applying either form
+replaces the crossing's existing source.
+
+**Found along the way:** `map_binding_index.bit` is a `text` column (migration 0010), but the live
+worker typed it as a number and put it straight into `signal.updated`/`crossing.updated` messages,
+which have carried `"bit": "4"` against a protocol that says number since Milestone 36b. The bit
+arithmetic coerced implicitly, so state was always right; the three read sites now coerce with
+`Number()` and the row type says `string`.
+
+**Tests**: domain 6 (truth table; the Carleton rule from raw bits; bindings and combination),
+map-schema 5 validation + 7 geometry + 1 compiler, worker 3 live-delta (the owner's rule; never
+raised on an unknown input; seeded fallback after restart), web 4 renderer + 7 PropertyPanel, and
+two integration files — the Carleton timeline through `/state?at=` and playback (including a feed
+silence, and one-row paging that forces every page to seed the input it doesn't restate), and
+migration 0040 accepting input rows beside a signal on the same bit while refusing barrier
+vocabulary on one.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

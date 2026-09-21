@@ -23,6 +23,8 @@ export {
   type TdBerthBinding,
   type TdSBitBinding,
   type TdSBitBarrierBinding,
+  type TdSBitBarrierInferredBinding,
+  type InferredBarrierInputDoc,
   type TopologyNode,
   type TopologyEdge,
 } from "./document.js";

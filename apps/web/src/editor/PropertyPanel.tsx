@@ -12,6 +12,7 @@ import {
   type MapDocument,
   type TdBerthBinding,
   type TdSBitBarrierBinding,
+  type TdSBitBarrierInferredBinding,
   type TdSBitBinding,
 } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
@@ -488,27 +489,12 @@ function PlacedLabelFieldset({
  * from train movements, routes or timetables (CLAUDE.md rule 10). An unbound crossing shows grey
  * barriers, which means "no information", not "up".
  */
-/** The crossing's barrier binding, if it has one. */
-function barrierBindingFor(
-  bindings: ReadonlyArray<{ type: string; elementId: string }>,
-  elementId: string,
-): TdSBitBarrierBinding | undefined {
-  return bindings.find(
-    (b): b is TdSBitBarrierBinding => b.type === "tdSBitBarrier" && b.elementId === elementId,
-  );
-}
-
 function BarrierBindingFields({
   elementId,
   binding,
-  realistic,
 }: {
   elementId: string;
   binding: TdSBitBarrierBinding | undefined;
-  /** Milestone 58: realistic barriers are always drawn down, so they and a live binding are
-   * mutually exclusive (ADR 0014 addendum) — while they're on, binding is refused here and by
-   * `validateMapDocument`. Clearing an existing binding stays possible either way. */
-  realistic: boolean;
 }): JSX.Element {
   const dispatch = useEditorDispatch();
   const areas = useSClassAreas();
@@ -581,19 +567,9 @@ function BarrierBindingFields({
           <option value="up">barriers up</option>
         </select>
       </label>
-      <button
-        type="button"
-        className="btn btn--primary"
-        disabled={!valid || realistic}
-        onClick={apply}
-      >
+      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
         {binding ? "Update binding" : "Bind barriers"}
       </button>
-      {realistic ? (
-        <p className="field-hint">
-          Turn off realistic crossing barriers to bind this crossing to an S-Class bit.
-        </p>
-      ) : null}
       {binding ? (
         <button
           type="button"
@@ -609,9 +585,248 @@ function BarrierBindingFields({
         </button>
       ) : null}
       <p className="field-hint">
-        The crossing shows only this bit: red = barriers down, green = up, grey = blank (unbound,
-        unknown, or a feed gap). Verify what the bit actually means for this crossing before binding
-        it — nothing here is inferred from train movements or timetables.
+        The crossing shows only this bit: barriers raised or lowered (in schematic style, green =
+        up, red = down, grey = unknown). Unknown — a stale bit or a feed gap — is drawn lowered in
+        the realistic style. Verify what the bit actually means for this crossing before binding it.
+      </p>
+    </fieldset>
+  );
+}
+
+type BarrierSource = "none" | "bit" | "inferred";
+
+/**
+ * Milestone 59 / ADR 0015: where a level crossing's barrier position comes from — nothing (drawn
+ * lowered), a direct S-Class crossing (LXC) bit, or a rule inferred from its protecting signals.
+ * A crossing has exactly one source or none; applying either form replaces whatever was there
+ * (`setBinding` swaps every binding on the element), so they can never coexist.
+ */
+function BarrierSourceFields({
+  elementId,
+  binding,
+}: {
+  elementId: string;
+  binding: TdSBitBarrierBinding | TdSBitBarrierInferredBinding | undefined;
+}): JSX.Element {
+  const dispatch = useEditorDispatch();
+  const stored: BarrierSource =
+    binding?.type === "tdSBitBarrier"
+      ? "bit"
+      : binding?.type === "tdSBitBarrierInferred"
+        ? "inferred"
+        : "none";
+  // The picker can move ahead of the document — choosing a source only shows its form; nothing is
+  // committed until that form is applied — except "Not driven", which clears at once (undoable).
+  const [source, setSource] = useState<BarrierSource>(stored);
+  useEffect(() => setSource(stored), [elementId, stored]);
+
+  return (
+    <>
+      <label className="field">
+        Barrier position
+        <select
+          value={source}
+          onChange={(e) => {
+            const next = e.target.value as BarrierSource;
+            setSource(next);
+            if (next === "none" && binding) {
+              dispatch({
+                type: "dispatchCommand",
+                command: { type: "setBinding", elementId, binding: null },
+              });
+            }
+          }}
+        >
+          <option value="none">Not driven — always shown lowered</option>
+          <option value="bit">S-Class crossing bit</option>
+          <option value="inferred">Inferred from protecting signals</option>
+        </select>
+      </label>
+      {source === "none" ? (
+        <p className="field-hint">
+          For an area with no S-Class coverage: the barriers are always drawn lowered, which says
+          nothing about where they really are.
+        </p>
+      ) : null}
+      {source === "bit" ? (
+        <BarrierBindingFields
+          elementId={elementId}
+          binding={binding?.type === "tdSBitBarrier" ? binding : undefined}
+        />
+      ) : null}
+      {source === "inferred" ? (
+        <InferredBarrierFields
+          elementId={elementId}
+          binding={binding?.type === "tdSBitBarrierInferred" ? binding : undefined}
+        />
+      ) : null}
+    </>
+  );
+}
+
+interface InferredInputRow {
+  tdArea: string;
+  address: string;
+  bit: string;
+  activeMeans: "on" | "off";
+  label: string;
+}
+
+const MAX_INFERRED_INPUTS = 6;
+
+function emptyInferredRow(): InferredInputRow {
+  return { tdArea: "", address: "", bit: "", activeMeans: "off", label: "" };
+}
+
+function inferredRowsFrom(binding: TdSBitBarrierInferredBinding | undefined): InferredInputRow[] {
+  if (!binding) return [emptyInferredRow(), emptyInferredRow()];
+  return binding.inputs.map((input) => ({
+    tdArea: input.tdArea,
+    address: input.address,
+    bit: String(input.bit),
+    activeMeans: input.activeMeans,
+    label: input.label ?? "",
+  }));
+}
+
+function inferredRowValid(row: InferredInputRow): boolean {
+  return (
+    /^[A-Z0-9]{2}$/.test(row.tdArea.trim().toUpperCase()) &&
+    /^[0-9A-Fa-f]{1,2}$/.test(row.address.trim()) &&
+    /^[0-7]$/.test(row.bit.trim())
+  );
+}
+
+/**
+ * Milestone 59 / ADR 0015: a crossing inferred from the signals protecting it, for an area whose
+ * feed publishes signals but no crossing bit. Each row is one signal's bit and what a set bit
+ * means for *that signal* — verified per input, as for a signal binding. The rule itself is fixed
+ * (`inferredBarrierState`): lowered if any is off, raised only if every one is confirmed on.
+ * Typically two rows, one per direction. Applied with one explicit button so a half-filled form
+ * never commits a wrong rule.
+ */
+function InferredBarrierFields({
+  elementId,
+  binding,
+}: {
+  elementId: string;
+  binding: TdSBitBarrierInferredBinding | undefined;
+}): JSX.Element {
+  const dispatch = useEditorDispatch();
+  const areas = useSClassAreas();
+  const [rows, setRows] = useState<InferredInputRow[]>(() => inferredRowsFrom(binding));
+  useEffect(() => setRows(inferredRowsFrom(binding)), [elementId, binding]);
+
+  const valid = rows.length > 0 && rows.every(inferredRowValid);
+  const update = (index: number, patch: Partial<InferredInputRow>): void =>
+    setRows((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+  function apply(): void {
+    if (!valid) return;
+    const next: TdSBitBarrierInferredBinding = {
+      id: binding?.id ?? `bind-${elementId}-inferred-${Date.now()}`,
+      elementId,
+      type: "tdSBitBarrierInferred",
+      inputs: rows.map((row) => ({
+        tdArea: row.tdArea.trim().toUpperCase(),
+        address: canonicalSAddress(row.address.trim()),
+        bit: Number(row.bit.trim()),
+        activeMeans: row.activeMeans,
+        ...(row.label.trim() ? { label: row.label.trim() } : {}),
+      })),
+    };
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setBinding", elementId, binding: next },
+    });
+  }
+
+  return (
+    <fieldset>
+      <legend>Inferred from protecting signals</legend>
+      <datalist id="s-class-areas-inferred">
+        {areas.map((a) => (
+          <option key={a} value={a} />
+        ))}
+      </datalist>
+      {rows.map((row, i) => (
+        <div key={i} className="field-row">
+          {/* `.field` divs rather than <label>s: every row repeats the same visible text, and each
+              input's accessible name is its row-specific aria-label (see CombinedMemberRow). */}
+          <div className="field">
+            <span aria-hidden="true">Signal</span>
+            <input
+              aria-label={`Input ${i + 1} signal name`}
+              value={row.label}
+              placeholder="e.g. S3879"
+              onChange={(e) => update(i, { label: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <span aria-hidden="true">TD area</span>
+            <input
+              aria-label={`Input ${i + 1} TD area`}
+              list="s-class-areas-inferred"
+              value={row.tdArea}
+              onChange={(e) => update(i, { tdArea: e.target.value.toUpperCase() })}
+            />
+          </div>
+          <div className="field">
+            <span aria-hidden="true">Address (hex)</span>
+            <input
+              aria-label={`Input ${i + 1} address`}
+              value={row.address}
+              onChange={(e) => update(i, { address: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <span aria-hidden="true">Bit (0-7)</span>
+            <input
+              aria-label={`Input ${i + 1} bit`}
+              value={row.bit}
+              onChange={(e) => update(i, { bit: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <span aria-hidden="true">Bit set means</span>
+            <select
+              aria-label={`Input ${i + 1} bit set means`}
+              value={row.activeMeans}
+              onChange={(e) => update(i, { activeMeans: e.target.value === "on" ? "on" : "off" })}
+            >
+              <option value="off">signal off (proceed)</option>
+              <option value="on">signal on (danger)</option>
+            </select>
+          </div>
+          {rows.length > 1 ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setRows((prev) => prev.filter((_, j) => j !== i))}
+            >
+              Remove
+            </button>
+          ) : null}
+        </div>
+      ))}
+      {rows.length < MAX_INFERRED_INPUTS ? (
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setRows((prev) => [...prev, emptyInferredRow()])}
+        >
+          + Add signal
+        </button>
+      ) : null}
+      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
+        {binding ? "Update rule" : "Apply rule"}
+      </button>
+      <p className="field-hint">
+        Lowered whenever any of these signals is at proceed; raised only when every one is confirmed
+        at danger; otherwise unknown, which is drawn lowered. Verify what a set bit means for each
+        signal before applying — on M9 a set bit means the signal is off. Signals clear only after
+        the barriers are down and return to danger before they rise, so this will show raised for
+        part of each cycle while the barriers are really still down.
       </p>
     </fieldset>
   );
@@ -1116,34 +1331,27 @@ export function PropertyPanel(): JSX.Element {
             0° is square across a horizontal track. Crossing type (MCB, AHB, UWC …) is a note to
             yourself — it is never rendered and never affects the barrier display.
           </p>
-          {(() => {
-            const barrierBinding = barrierBindingFor(doc.bindings, elementId);
-            return (
-              <>
-                <label className="field field--checkbox">
-                  <input
-                    type="checkbox"
-                    checked={element.realisticBarriers === true}
-                    disabled={barrierBinding !== undefined && !element.realisticBarriers}
-                    onChange={(e) =>
-                      setProp("realisticBarriers", e.target.checked ? true : undefined)
-                    }
-                  />
-                  Realistic crossing barriers
-                </label>
-                <p className="field-hint">
-                  {barrierBinding
-                    ? "Not available while the barriers are bound to an S-Class bit — a bound crossing always shows its live position. Clear the binding to use it."
-                    : "Draws the road with a white centreline and red-and-white barriers lowered across it, with a white fence beneath. Always shown down: it is scenery, not a barrier state, which is why it is only offered on a crossing with no S-Class binding."}
-                </p>
-                <BarrierBindingFields
-                  elementId={elementId}
-                  binding={barrierBinding}
-                  realistic={element.realisticBarriers === true}
-                />
-              </>
-            );
-          })()}
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={element.schematicBarriers === true}
+              onChange={(e) => setProp("schematicBarriers", e.target.checked ? true : undefined)}
+            />
+            Schematic style
+          </label>
+          <p className="field-hint">
+            Crossings are drawn realistically by default — asphalt road with a white centreline,
+            red-and-white barriers with a white fence. Tick this for the plain schematic lines
+            instead, e.g. where the realistic drawing is too busy.
+          </p>
+          <BarrierSourceFields
+            elementId={elementId}
+            binding={doc.bindings.find(
+              (b): b is TdSBitBarrierBinding | TdSBitBarrierInferredBinding =>
+                (b.type === "tdSBitBarrier" || b.type === "tdSBitBarrierInferred") &&
+                b.elementId === elementId,
+            )}
+          />
         </>
       )}
 

@@ -43,6 +43,15 @@ export interface CompiledMapBundle {
    * one must read exactly like an empty one. */
   barrierBindingIndex?: Record<string, string>;
   barrierBindingActiveMeans?: Record<string, "up" | "down">;
+  /** Milestone 59 / ADR 0015: crossings whose barrier position is inferred from protecting
+   * signals — elementId -> its input signal bits, addresses canonical. Kept apart from the direct
+   * barrier index because a crossing's state here is a *combination* of several bits, not one.
+   * Optional for the same immutability reason as the indexes above: a bundle published before
+   * this existed has no such key, and a missing one must read exactly like an empty one. */
+  inferredBarrierBindings?: Record<
+    string,
+    Array<{ tdArea: string; address: string; bit: number; activeMeans: "on" | "off" }>
+  >;
   /** Milestone 31: every `station`/`label` element carrying at least one place identifier
    * (`crs`/`tiploc`/`stanox`) — the source `map_place_index` is populated from at publish time,
    * for `GET /api/v1/places/search` to join against. An element with none of the three is not
@@ -271,7 +280,18 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   const sBitBindingActiveMeans: Record<string, "on" | "off"> = {};
   const barrierBindingIndex: Record<string, string> = {};
   const barrierBindingActiveMeans: Record<string, "up" | "down"> = {};
+  const inferredBarrierBindings: NonNullable<CompiledMapBundle["inferredBarrierBindings"]> = {};
   for (const binding of doc.bindings) {
+    if (binding.type === "tdSBitBarrierInferred") {
+      // The author's `label` is a note, not an input to the inference, so it isn't compiled in.
+      inferredBarrierBindings[binding.elementId] = binding.inputs.map((input) => ({
+        tdArea: input.tdArea,
+        address: canonicalSAddress(input.address),
+        bit: input.bit,
+        activeMeans: input.activeMeans,
+      }));
+      continue;
+    }
     if (binding.type === "tdBerth") {
       const key = `${binding.tdArea}|${binding.berth}`;
       berthBindingIndex[key] = binding.elementId;
@@ -345,6 +365,7 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     sBitBindingActiveMeans,
     barrierBindingIndex,
     barrierBindingActiveMeans,
+    inferredBarrierBindings,
     placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),
     topologyAdjacency,

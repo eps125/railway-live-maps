@@ -308,3 +308,80 @@ export function barrierBindingsFromIndex(
   }
   return bindings;
 }
+
+/**
+ * Milestone 59 / ADR 0015 (owner decision 2026-09-21): a level crossing whose barrier position
+ * is **inferred** from the signals protecting it, for an area whose feed publishes signals but no
+ * crossing (LXC) bit — e.g. M9's Carleton crossing from S3879 and S3870.
+ *
+ * Each input is one signal bit, read through exactly the same machinery as a bound signal
+ * (per-binding `activeMeans`, feed-gap trust, lookback), so nothing about reading a bit is
+ * reimplemented here. Only the combination is new:
+ *
+ * - **down** if any input signal is `off` (at proceed). A protected crossing's interlocking will
+ *   not clear its signal until the barriers are down and proven, so this direction is sound.
+ * - **up** only if *every* input signal is confirmed `on` (at danger).
+ * - otherwise **blank** — an input unknown and none at proceed.
+ *
+ * The `up` direction is the owner's explicit choice and is **not** guaranteed by the railway:
+ * barriers lower and prove before a signal clears (ADR 0014 measured 40-90s on M9) and stay down
+ * after it returns to danger until the train has passed, so `up` will be shown in those windows
+ * while the barriers are physically down. Recorded in ADR 0015, not hidden.
+ */
+export function inferredBarrierState(inputs: readonly SignalDisplayState[]): BarrierDisplayState {
+  if (inputs.length === 0) return "blank";
+  if (inputs.some((state) => state === "off")) return "down";
+  if (inputs.every((state) => state === "on")) return "up";
+  return "blank";
+}
+
+/** One input of an inferred crossing: a signal bit and what a set bit means for that signal.
+ * `address` is canonical (`canonicalSAddress`). */
+export interface InferredBarrierInput {
+  tdArea: string;
+  address: string;
+  bit: number;
+  activeMeans: "on" | "off";
+}
+
+/** The synthetic element id an inferred crossing's `index`th input resolves under, so the inputs
+ * can ride through `computeSignalStates` alongside real signals without colliding with them. */
+export function inferredInputElementId(crossingElementId: string, index: number): string {
+  return `${crossingElementId}#in${index}`;
+}
+
+/** A compiled bundle's `inferredBarrierBindings` as signal bindings under synthetic element ids.
+ * A bundle published before inferred crossings existed has no such key, which must read exactly
+ * like an empty one (CLAUDE.md rule 11). */
+export function inferredInputBindings(
+  index: Record<string, readonly InferredBarrierInput[]> | undefined,
+): SignalBinding[] {
+  const bindings: SignalBinding[] = [];
+  for (const [elementId, inputs] of Object.entries(index ?? {})) {
+    inputs.forEach((input, i) => {
+      bindings.push({
+        elementId: inferredInputElementId(elementId, i),
+        tdArea: input.tdArea,
+        address: input.address,
+        bit: input.bit,
+        activeMeans: input.activeMeans,
+      });
+    });
+  }
+  return bindings;
+}
+
+/** Pure: every inferred crossing's state, given resolved states keyed by element id (as
+ * `computeSignalStates` returns them, including the synthetic input ids). */
+export function inferredCrossingStates(
+  index: Record<string, readonly InferredBarrierInput[]> | undefined,
+  resolved: Readonly<Record<string, { state: SignalDisplayState } | undefined>>,
+): Record<string, BarrierDisplayState> {
+  const out: Record<string, BarrierDisplayState> = {};
+  for (const [elementId, inputs] of Object.entries(index ?? {})) {
+    out[elementId] = inferredBarrierState(
+      inputs.map((_, i) => resolved[inferredInputElementId(elementId, i)]?.state ?? "blank"),
+    );
+  }
+  return out;
+}

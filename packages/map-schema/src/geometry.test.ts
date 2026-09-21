@@ -465,13 +465,69 @@ describe("realisticLevelCrossingGeometry (Milestone 58, owner request 2026-09-21
     expect(barriers.map((b) => b.arm)).toEqual(schematic.barriers);
   });
 
-  it("is always the down pose — there is no state input at all", () => {
-    // Scenery, not a barrier position (ADR 0014 addendum): the function takes no state, so a
-    // realistic crossing cannot be drawn up, and cannot be made to look like it reflects one.
-    expect(realisticLevelCrossingGeometry.length).toBe(1);
+  it("draws the lowered pose by default", () => {
+    // The editor canvas and every unknown or unbound crossing use this pose.
+    expect(realisticLevelCrossingGeometry(crossing)).toEqual(
+      realisticLevelCrossingGeometry(crossing, "down"),
+    );
     for (const { arm } of realisticLevelCrossingGeometry(crossing).barriers) {
       expect(arm.y1).toBe(arm.y2);
     }
+  });
+
+  describe("raised pose (Milestone 59, owner 2026-09-21)", () => {
+    const raised = realisticLevelCrossingGeometry(crossing, "up");
+
+    it("swings each arm about the same post the lowered arm uses", () => {
+      const lowered = realisticLevelCrossingGeometry(crossing, "down");
+      for (let i = 0; i < 2; i += 1) {
+        expect(raised.barriers[i]!.post).toEqual(lowered.barriers[i]!.post);
+        expect(lengthOf(raised.barriers[i]!.arm)).toBeCloseTo(
+          lengthOf(lowered.barriers[i]!.arm),
+          6,
+        );
+      }
+    });
+
+    it("stands BOTH arms upright on screen, the lower one crossing the track", () => {
+      // Owner: "the lower barrier ... needs to be +90 deg instead - it will cover the track but
+      // that's okay".
+      for (const { arm } of raised.barriers) {
+        expect(arm.x1).toBeCloseTo(arm.x2, 6);
+        expect(arm.y2).toBeLessThan(arm.y1);
+      }
+      const lower = raised.barriers.find((b) => b.post.y > crossing.y)!;
+      expect(lower.arm.y2).toBeLessThan(crossing.y);
+    });
+
+    it("folds each skirt toward the carriageway, on both barriers", () => {
+      // Owner: the lower barrier's folded skirt was on the wrong side.
+      for (const { post, pickets } of raised.barriers) {
+        for (const picket of pickets) {
+          expect(Math.abs(picket.x2 - crossing.x)).toBeLessThan(Math.abs(post.x - crossing.x));
+        }
+      }
+    });
+
+    it("folds the skirt shallow against a raised arm", () => {
+      for (const { pickets } of raised.barriers) {
+        for (const picket of pickets) {
+          expect(lengthOf(picket)).toBeCloseTo(look.foldedSkirtDepth, 6);
+        }
+      }
+    });
+
+    it("runs each centreline right up to the barrier line — the road is open", () => {
+      for (const line of raised.centreline) {
+        expect(Math.abs(line.y1 - crossing.y)).toBeCloseTo(pivot, 6);
+      }
+    });
+
+    it("falls back to away-from-the-railway on a road with no screen 'up' (orientation 90)", () => {
+      const turned = realisticLevelCrossingGeometry({ ...crossing, orientation: 90 }, "up");
+      const tips = turned.barriers.map((b) => Math.sign(b.arm.x2 - b.post.x));
+      expect(new Set(tips).size).toBe(2);
+    });
   });
 
   it("divides each arm into an odd number of bands, so both ends are red as on a real barrier", () => {

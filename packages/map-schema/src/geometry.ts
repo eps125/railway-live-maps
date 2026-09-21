@@ -397,30 +397,38 @@ export interface RealisticLevelCrossingGeometry {
 }
 
 /**
- * Milestone 58 (owner request 2026-09-21): the "realistic barriers" drawing of a level crossing —
- * asphalt approaches with a white centreline, and a red/white banded arm lowered across the road
- * on each side of the railway with a white picket skirt beneath it. Pure, and shared by the public
- * SVG renderer and the editor canvas (CLAUDE.md rule 13).
+ * The realistic drawing of a level crossing — asphalt approaches with a white centreline, and a
+ * red/white banded arm on each side of the railway with a white picket skirt. Pure, and shared by
+ * the public SVG renderer and the editor canvas (CLAUDE.md rule 13).
  *
- * Always the lowered pose, whatever the crossing's state (owner: "draw them in the down position,
- * that's fine"). That is only acceptable because this drawing is offered solely on a crossing with
- * no S-Class binding (ADR 0014 addendum; `validateMapDocument` rejects the combination) — it is a
- * fixed piece of scenery, never a barrier position, and nothing here reads or implies live state.
+ * Milestone 58 introduced it as a lowered-only drawing for unbound crossings; Milestone 59 (owner
+ * decision 2026-09-21) made it the default for every crossing and added the raised pose, so it now
+ * shows a bound crossing's live position too. `pose` is the *drawn* pose, not the state: the
+ * renderer maps `up` to raised and both `down` and `blank` (unknown, or an unbound crossing) to
+ * lowered — the owner chose to draw an unknown crossing lowered, in full colour.
+ *
+ * - **Lowered:** exactly where `levelCrossingGeometry` puts a `down` arm, across the road.
+ * - **Raised:** swung 90 degrees about the same post to stand upright on screen, both barriers
+ *   pointing up — even where that crosses the track (owner, 2026-09-21) — with the skirt folded
+ *   tight against the arm, as a real hinged skirt folds when the boom rises.
  *
  * Viewed from a slight angle rather than strictly top down (owner: "happy for crossings to look
  * like they're viewed from an angle"), which is what lets the skirt read as a fence hanging
- * *below* the arm. "Below" is the arm's perpendicular on the screen-downward side, so a crossing
- * at the usual orientation 0 — arms horizontal — shows its skirts hanging straight down, like the
- * reference photos, and any other orientation still gets a sensible skirt rather than one that
- * collapses onto its own arm.
+ * *below* the arm. "Below" is the arm's perpendicular on the screen-downward side, so a lowered
+ * crossing at the usual orientation 0 — arms horizontal — shows its skirts hanging straight down,
+ * like the reference photos, and any other orientation still gets a sensible skirt rather than one
+ * that collapses onto its own arm.
  */
-export function realisticLevelCrossingGeometry(element: {
-  x: number;
-  y: number;
-  orientation: number;
-  roadLength: number;
-  roadWidth: number;
-}): RealisticLevelCrossingGeometry {
+export function realisticLevelCrossingGeometry(
+  element: {
+    x: number;
+    y: number;
+    orientation: number;
+    roadLength: number;
+    roadWidth: number;
+  },
+  pose: "down" | "up" = "down",
+): RealisticLevelCrossingGeometry {
   const style = MAP_STYLE.levelCrossing;
   const look = style.realistic;
   const theta = (element.orientation * Math.PI) / 180;
@@ -429,6 +437,7 @@ export function realisticLevelCrossingGeometry(element: {
   const halfLength = element.roadLength / 2;
   const halfWidth = element.roadWidth / 2;
   const pivotDistance = element.roadLength * style.barrierDistance;
+  const skirtDepth = pose === "up" ? look.foldedSkirtDepth : look.skirtDepth;
 
   // A point `r` out from the crossing's centre across the track, and `a` along it.
   const at = (r: number, a: number): { x: number; y: number } => ({
@@ -443,10 +452,26 @@ export function realisticLevelCrossingGeometry(element: {
     at(pivotDistance * side, -halfWidth),
   ];
 
+  // Unit vector from a side's post to its arm's tip, for the drawn pose. Lowered is exactly
+  // `levelCrossingGeometry`'s `down` arm. Raised stands **upright on screen** for both barriers
+  // (owner, 2026-09-21: "the lower barrier ... needs to be +90 deg instead - it will cover the
+  // track but that's okay") — the natural reading of a raised boom seen from an angle, unlike the
+  // schematic `up`, which points each arm away from the railway. Only a road running exactly
+  // horizontally on screen (orientation ±90) has no "up" along it; that falls back to the
+  // schematic away-from-the-railway direction.
+  const armDirection = (side: 1 | -1): { x: number; y: number } => {
+    if (pose === "down") return { x: -along.x * side, y: -along.y * side };
+    if (Math.abs(road.y) > 1e-9) return road.y < 0 ? road : { x: -road.x, y: -road.y };
+    return { x: road.x * side, y: road.y * side };
+  };
+
   // The way a side's skirt hangs: the arm's perpendicular on the screen-downward side, with a tie
-  // (a vertical arm) broken toward +x. The arm itself runs post to tip, i.e. -along for side +1.
+  // (a vertical arm) broken toward +x.
   const skirtDirection = (side: 1 | -1): { x: number; y: number } => {
-    const dir = { x: -along.x * side, y: -along.y * side };
+    // A raised boom's folded skirt faces the carriageway — the side the arm lay across before it
+    // rose — for both barriers (owner, 2026-09-21: the lower one had it on the wrong side).
+    if (pose === "up") return { x: -along.x * side, y: -along.y * side };
+    const dir = armDirection(side);
     const down = { x: -dir.y, y: dir.x };
     return down.y < -1e-9 || (Math.abs(down.y) <= 1e-9 && down.x < 0)
       ? { x: -down.x, y: -down.y }
@@ -454,28 +479,28 @@ export function realisticLevelCrossingGeometry(element: {
   };
 
   const centreline = (side: 1 | -1): Segment => {
-    // Where this side's skirt hangs out over its own approach, rather than back toward the
-    // railway, start the line beyond it: otherwise the white line shows between the pickets and
-    // reads as a stray, thicker picket.
-    const down = skirtDirection(side);
-    const outward =
-      (down.x * road.x + down.y * road.y) * side * (look.armWidth / 2 + look.skirtDepth);
-    const start = Math.min(
-      halfLength,
-      pivotDistance + (outward > 0 ? outward + look.centrelineGap : 0),
-    );
-    const from = at(start * side, 0);
+    // A lowered arm lies across the road, so where its skirt hangs out over this side's approach
+    // (rather than back toward the railway) start the line beyond it: otherwise the white line
+    // shows between the pickets and reads as a stray, thicker picket. A raised arm lies along the
+    // road edge, off the carriageway, so the line runs right up to the barrier line.
+    let start = pivotDistance;
+    if (pose === "down") {
+      const down = skirtDirection(side);
+      const outward = (down.x * road.x + down.y * road.y) * side * (look.armWidth / 2 + skirtDepth);
+      if (outward > 0) start = pivotDistance + outward + look.centrelineGap;
+    }
+    const from = at(Math.min(halfLength, start) * side, 0);
     const to = at(halfLength * side, 0);
     return { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
   };
 
   const barrier = (side: 1 | -1): RealisticBarrierGeometry => {
-    // Identical to `levelCrossingGeometry`'s lowered arm, so ticking the box restyles the barrier
-    // the author already placed rather than moving it.
+    // The post is where `levelCrossingGeometry` pivots both poses, so switching between the
+    // schematic and realistic styles, or between up and down, never moves the barrier.
     const post = at(pivotDistance * side, halfWidth * side);
-    const tip = at(pivotDistance * side, -halfWidth * side);
     const length = element.roadWidth;
-    const dir = { x: (tip.x - post.x) / length, y: (tip.y - post.y) / length };
+    const dir = armDirection(side);
+    const tip = { x: post.x + dir.x * length, y: post.y + dir.y * length };
     const down = skirtDirection(side);
 
     const bands = Math.max(3, 2 * Math.round((length / look.bandLength - 1) / 2) + 1);
@@ -486,7 +511,7 @@ export function realisticLevelCrossingGeometry(element: {
     const start = pointAt(look.skirtStart);
     const end = pointAt(look.skirtEnd);
     const top = look.armWidth / 2;
-    const bottom = top + look.skirtDepth;
+    const bottom = top + skirtDepth;
     const skirtLength = length * (look.skirtEnd - look.skirtStart);
     const count = Math.max(2, Math.floor(skirtLength / look.picketSpacing) + 1);
     const pickets: Segment[] = [];

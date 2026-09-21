@@ -4,6 +4,8 @@ import {
   barrierBindingsFromIndex,
   barrierStateFromSignalState,
   computeSignalStates,
+  inferredCrossingStates,
+  inferredInputBindings,
   joinCombinedBerthState,
   signalBindingsFromIndex,
   type BarrierDisplayState,
@@ -155,22 +157,29 @@ export async function sClassStatesForBundle(
     .filter((element) => element.type === "levelCrossing")
     .map((element) => element.id);
 
+  const inputElementIds = inferredInputBindings(bundle.inferredBarrierBindings).map(
+    (binding) => binding.elementId,
+  );
   const resolved = await computeSignalStates(createSignalFactsPort(pool), {
-    signalElementIds: [...signalElementIds, ...crossingElementIds],
+    signalElementIds: [...signalElementIds, ...crossingElementIds, ...inputElementIds],
     bindings: [
       ...signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans),
       ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans),
+      // Milestone 59 / ADR 0015: each inferred crossing's input signals, resolved under synthetic
+      // element ids by the very same machinery (trust, lookback, live overlay) as a real signal.
+      ...inferredInputBindings(bundle.inferredBarrierBindings),
     ],
     at,
     live,
   });
+  const inferred = inferredCrossingStates(bundle.inferredBarrierBindings, resolved);
 
   const signals: Record<string, SignalState> = {};
   for (const id of signalElementIds) signals[id] = resolved[id] ?? { state: "blank" };
   const crossings: Record<string, { state: BarrierDisplayState }> = {};
   for (const id of crossingElementIds) {
     crossings[id] = {
-      state: barrierStateFromSignalState(resolved[id]?.state ?? "blank"),
+      state: inferred[id] ?? barrierStateFromSignalState(resolved[id]?.state ?? "blank"),
     };
   }
   return { signals, crossings };

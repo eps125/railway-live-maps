@@ -684,7 +684,8 @@ describe("MapRenderer", () => {
     expect(text.getAttribute("y")).toBe("40");
   });
 
-  it("draws a level crossing's barriers from its state, blank when it has none (ADR 0014)", () => {
+  it("draws a schematic crossing's barriers from its state, blank when it has none (ADR 0014)", () => {
+    // Milestone 59: realistic is the default; the schematic lines are the opt-out.
     const crossing = {
       id: "lx-1",
       layerId: "layer-visible",
@@ -697,6 +698,7 @@ describe("MapRenderer", () => {
       roadWidth: 16,
       labelPosition: "below" as const,
       fontSize: 10,
+      schematicBarriers: true,
     };
     const doc = bundle({ elementsById: { "lx-1": crossing } });
 
@@ -730,8 +732,8 @@ describe("MapRenderer", () => {
     expect(upBarrier.getAttribute("y1")).not.toBe(upBarrier.getAttribute("y2"));
   });
 
-  describe("realistic crossing barriers (Milestone 58)", () => {
-    const realisticCrossing = {
+  describe("realistic crossing barriers (Milestones 58/59)", () => {
+    const crossing = {
       id: "lx-1",
       layerId: "layer-visible",
       zIndex: 0,
@@ -743,65 +745,71 @@ describe("MapRenderer", () => {
       roadWidth: 16,
       labelPosition: "below" as const,
       fontSize: 10,
-      realisticBarriers: true,
     };
     const look = MAP_STYLE.levelCrossing.realistic;
+    const doc = bundle({ elementsById: { "lx-1": crossing } });
+    const drawn = (state?: "up" | "down" | "blank") =>
+      render(
+        <MapRenderer
+          bundle={doc}
+          berths={{}}
+          signals={{}}
+          {...(state ? { crossings: { "lx-1": { state } } } : {})}
+        />,
+      ).container;
+    const arms = (container: HTMLElement) =>
+      [...container.querySelectorAll("line")].filter(
+        (l) => l.getAttribute("stroke") === look.armWhite,
+      );
 
-    it("draws asphalt, a centreline and banded arms with a picket skirt", () => {
-      const doc = bundle({ elementsById: { "lx-1": realisticCrossing } });
-      const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
-
-      // Asphalt on each approach.
+    it("is the default: asphalt, a centreline and banded arms with a picket skirt", () => {
+      const container = drawn();
       const surfaces = container.querySelectorAll("polygon");
       expect(surfaces).toHaveLength(2);
       for (const surface of surfaces) expect(surface.getAttribute("fill")).toBe(look.surfaceColor);
 
       const lines = [...container.querySelectorAll("line")];
       const stroke = (colour: string) => lines.filter((l) => l.getAttribute("stroke") === colour);
-      // A dashed white centreline on each approach.
       const centreline = stroke(look.centrelineColor);
       expect(centreline).toHaveLength(2);
       for (const line of centreline) expect(line.getAttribute("stroke-dasharray")).toBeTruthy();
-      // Each arm is a white bar with red bands dashed over it.
       expect(stroke(look.armWhite)).toHaveLength(2);
       const bands = stroke(look.armRed);
       expect(bands).toHaveLength(2);
       for (const band of bands) expect(band.getAttribute("stroke-dasharray")).toBeTruthy();
-      // A skirt of pickets plus a bottom rail beneath each arm.
       expect(stroke(look.skirtColor).length).toBeGreaterThan(4);
-      // None of it uses the live-state colours: red/white is the arm's paint, not "down".
+      // Position is shown by pose, never by the schematic state colours.
       for (const colour of Object.values(MAP_STYLE.levelCrossing.stateColors)) {
         expect(stroke(colour)).toHaveLength(0);
       }
     });
 
-    it("never hides a live barrier reading behind the fixed down picture", () => {
-      // Validation forbids realistic barriers on a bound crossing, but if a live state ever
-      // arrives for one, the real position must win (ADR 0014).
-      const doc = bundle({ elementsById: { "lx-1": realisticCrossing } });
-      const { container } = render(
-        <MapRenderer
-          bundle={doc}
-          berths={{}}
-          signals={{}}
-          crossings={{ "lx-1": { state: "up" } }}
-        />,
-      );
-      expect(container.querySelectorAll("polygon")).toHaveLength(0);
-      const barrier = container.querySelectorAll("line")[2]!;
-      expect(barrier.getAttribute("stroke")).toBe(MAP_STYLE.levelCrossing.stateColors.up);
+    it("raises the arms when the crossing is up", () => {
+      for (const arm of arms(drawn("up"))) {
+        expect(arm.getAttribute("x1")).toBe(arm.getAttribute("x2"));
+      }
     });
 
-    it("leaves a crossing without the flag exactly as it was", () => {
-      const { realisticBarriers: _, ...plain } = realisticCrossing;
-      const doc = bundle({ elementsById: { "lx-1": plain } });
-      const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    it("lowers the arms when down, and when the state is unknown or the crossing unbound", () => {
+      // Owner decision 2026-09-21: an unknown crossing is drawn lowered, in full colour.
+      for (const state of ["down", "blank", undefined] as const) {
+        for (const arm of arms(drawn(state))) {
+          expect(arm.getAttribute("y1")).toBe(arm.getAttribute("y2"));
+        }
+      }
+    });
+
+    it("draws the plain schematic lines when the crossing opts out", () => {
+      const schematic = bundle({
+        elementsById: { "lx-1": { ...crossing, schematicBarriers: true } },
+      });
+      const { container } = render(<MapRenderer bundle={schematic} berths={{}} signals={{}} />);
       expect(container.querySelectorAll("polygon")).toHaveLength(0);
       expect(container.querySelectorAll("line")).toHaveLength(4);
     });
   });
 
-  it("renders an unknown crossing as blank rather than assuming the barriers are up", () => {
+  it("renders an unknown schematic crossing as blank rather than assuming the barriers are up", () => {
     // ADR 0014 decision 1: blank means "no information". A crossing absent from `crossings`
     // must never be drawn as up.
     const doc = bundle({
@@ -818,6 +826,7 @@ describe("MapRenderer", () => {
           roadWidth: 16,
           labelPosition: "below",
           fontSize: 10,
+          schematicBarriers: true,
         },
       },
     });

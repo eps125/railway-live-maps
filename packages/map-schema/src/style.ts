@@ -116,8 +116,9 @@ export const MAP_STYLE = {
     strokeWidth: 1,
   },
   /**
-   * Milestone 55: a level crossing — the road drawn across the railway, with an optional pair of
-   * barriers whose position comes only from a bound S-Class bit (ADR 0014), never inferred.
+   * Milestone 55: a level crossing — the road drawn across the railway, with a pair of barriers
+   * whose position comes from a bound S-Class crossing bit (ADR 0014), from the author-configured
+   * protecting-signal rule (ADR 0015, Milestone 59), or from nothing (drawn lowered).
    *
    * `roadLength` runs *across* the track, `roadWidth` *along* it, both in map units; a barrier
    * sits `barrierDistance` (a fraction of `roadLength`) out from the track centre on each side.
@@ -137,14 +138,11 @@ export const MAP_STYLE = {
      */
     stateColors: { blank: "#5f6b7a", up: "#3fb950", down: "#f85149" },
     /**
-     * Milestone 58 (owner request 2026-09-21): the optional "realistic barriers" look — an
-     * asphalt road with a white centreline, and red/white banded arms lowered across it with a
-     * white picket skirt hanging beneath, drawn as if viewed from a slight angle (owner: "doesn't
-     * need to be full top down"). Only ever offered on a crossing with no S-Class binding
-     * (ADR 0014 addendum): it is scenery in a fixed pose, not a barrier state.
-     *
-     * The red here is the arm's actual paint, not `stateColors.down` — a realistic crossing
-     * carries no state at all.
+     * Milestone 58/59 (owner, 2026-09-21): the realistic look — an asphalt road with a white
+     * centreline, and red/white banded arms with a white picket skirt, drawn as if viewed from a
+     * slight angle (owner: "doesn't need to be full top down"). The default for every crossing
+     * since Milestone 59: position is shown by the arms' *pose* (lowered or raised), never by
+     * colour, so the red here is the arm's actual paint, not `stateColors.down`.
      */
     realistic: {
       surfaceColor: "#3a4049",
@@ -161,6 +159,8 @@ export const MAP_STYLE = {
       bandLength: 2.4,
       skirtColor: "#e8ecf0",
       skirtDepth: 3.2,
+      /** Milestone 59: a raised boom's hinged skirt folds up against it, so it's drawn shallow. */
+      foldedSkirtDepth: 0.9,
       picketWidth: 0.45,
       picketSpacing: 1.3,
       skirtRailWidth: 0.6,

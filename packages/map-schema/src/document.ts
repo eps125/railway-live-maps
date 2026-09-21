@@ -318,13 +318,13 @@ const LevelCrossingElementSchema = BaseElementSchema.extend({
   /** Author's note on the crossing type (MCB, AHB, UWC …). Metadata only — never rendered as a
    * claim about how the crossing is worked, and it does not affect the barrier display. */
   crossingType: z.string().optional(),
-  /** Milestone 58 (owner request 2026-09-21): draw this crossing "realistically" — asphalt road
-   * with a white centreline, red/white banded arms lowered across it, a white picket skirt — in
-   * place of the plain schematic lines (`realisticLevelCrossingGeometry`). Only allowed on a
-   * crossing with no `tdSBitBarrier` binding: the arms are always drawn down, so on a bound
-   * crossing it would contradict the live barrier state (ADR 0014 addendum). Optional so every
-   * crossing authored before it existed parses unchanged, as the schematic look. */
-  realisticBarriers: z.boolean().optional(),
+  /** Milestone 59 (owner decision 2026-09-21): the realistic drawing (asphalt, centreline,
+   * red/white banded arms, picket skirt — `realisticLevelCrossingGeometry`) is now the **default**
+   * for every crossing, bound or not; this opts one crossing back into the plain schematic lines,
+   * e.g. where the realistic drawing is too busy. Replaces Milestone 58's opt-in
+   * `realisticBarriers`, which no longer has any effect (an old document carrying it simply parses
+   * with the field dropped, and is realistic by default anyway). */
+  schematicBarriers: z.boolean().optional(),
   ...placedLabelFields,
 });
 
@@ -410,10 +410,42 @@ const TdSBitBarrierBindingSchema = z.object({
   activeMeans: z.enum(["up", "down"]),
 });
 
+/**
+ * Milestone 59 / ADR 0015 (owner decision 2026-09-21): a level crossing whose barrier position is
+ * **inferred** from the signals protecting it — for an area whose feed publishes signals but no
+ * crossing bit (e.g. M9's Carleton crossing, from S3879 and S3870).
+ *
+ * Each input is one signal bit with its own `activeMeans` in the *signal's* vocabulary (what a set
+ * bit means for that signal), verified per input exactly as for a `tdSBit` binding. Inputs are
+ * bits rather than references to signal elements, so a crossing can be inferred without the
+ * signals themselves being drawn. The combination is fixed (`inferredBarrierState`): down if any
+ * input signal is off, up only when every input is confirmed on, otherwise blank.
+ *
+ * Mutually exclusive with a `tdSBitBarrier` binding on the same crossing: a crossing has one
+ * barrier source or none.
+ */
+const InferredBarrierInputSchema = z.object({
+  tdArea: z.string().min(1),
+  address: z.string().regex(/^[0-9A-Fa-f]{1,2}$/, "address must be 1-2 hex digits"),
+  bit: z.number().int().min(0).max(7),
+  /** What a set bit means for this *signal* — on M9, set means off (ADR 0014's polarity check). */
+  activeMeans: z.enum(["on", "off"]),
+  /** Author's note naming the signal (e.g. "S3879"). Not used in the inference. */
+  label: z.string().optional(),
+});
+
+const TdSBitBarrierInferredBindingSchema = z.object({
+  id: z.string().min(1),
+  elementId: z.string().min(1),
+  type: z.literal("tdSBitBarrierInferred"),
+  inputs: z.array(InferredBarrierInputSchema).min(1).max(6),
+});
+
 export const MapBindingSchema = z.discriminatedUnion("type", [
   TdBerthBindingSchema,
   TdSBitBindingSchema,
   TdSBitBarrierBindingSchema,
+  TdSBitBarrierInferredBindingSchema,
 ]);
 
 export const MapDocumentSchema = z.object({
@@ -447,5 +479,7 @@ export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;
 export type TdSBitBinding = z.infer<typeof TdSBitBindingSchema>;
 export type TdSBitBarrierBinding = z.infer<typeof TdSBitBarrierBindingSchema>;
+export type TdSBitBarrierInferredBinding = z.infer<typeof TdSBitBarrierInferredBindingSchema>;
+export type InferredBarrierInputDoc = z.infer<typeof InferredBarrierInputSchema>;
 export type TopologyNode = z.infer<typeof TopologyNodeSchema>;
 export type TopologyEdge = z.infer<typeof TopologyEdgeSchema>;

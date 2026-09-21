@@ -495,26 +495,57 @@ describe("level crossing barrier bindings (Milestone 55 / ADR 0014)", () => {
     expect(result.errors.map((e) => e.code)).toContain("multiple_barrier_bindings");
   });
 
-  // Milestone 58 / ADR 0014 addendum: realistic barriers are always drawn down, so they may only
-  // appear on a crossing with no live barrier state. The editor won't offer the combination; this
-  // makes it unpublishable rather than relying on the UI.
-  it("accepts realistic barriers on an unbound crossing", () => {
-    const result = validateMapDocument(docWith([{ ...crossing, realisticBarriers: true }], []));
+  // Milestone 59 / ADR 0015: a crossing's barrier position may instead be inferred from its
+  // protecting signals. That is a barrier *source*, so it shares the one-per-crossing and
+  // levelCrossing-only rules with a direct LXC bit.
+  const inferred = (id: string, elementId = "lx-1") => ({
+    id,
+    elementId,
+    type: "tdSBitBarrierInferred",
+    inputs: [
+      { tdArea: "M9", address: "07", bit: 4, activeMeans: "off", label: "S3879" },
+      { tdArea: "M9", address: "6", bit: 6, activeMeans: "off", label: "S3870" },
+    ],
+  });
+
+  it("accepts an inferred rule on a level crossing", () => {
+    const result = validateMapDocument(docWith([crossing], [inferred("i1")]));
     expect(result.valid).toBe(true);
   });
 
-  it("rejects realistic barriers on a crossing bound to an S-Class bit", () => {
-    const result = validateMapDocument(
-      docWith([{ ...crossing, realisticBarriers: true }], [barrier("b1", 2)]),
-    );
+  it("rejects an inferred rule on anything but a level crossing", () => {
+    const signal = { id: "sig-1", layerId: "l1", type: "signal", x: 0, y: 0 };
+    const result = validateMapDocument(docWith([signal], [inferred("i1", "sig-1")]));
     expect(result.valid).toBe(false);
-    expect(result.errors.map((e) => e.code)).toContain("realistic_barriers_on_bound_crossing");
+    expect(result.errors.map((e) => e.code)).toContain("invalid_barrier_binding");
   });
 
-  it("does not object to a bound crossing that has realistic barriers switched off", () => {
-    const result = validateMapDocument(
-      docWith([{ ...crossing, realisticBarriers: false }], [barrier("b1", 2)]),
+  it("rejects a crossing driven by both an S-Class bit and an inferred rule", () => {
+    const result = validateMapDocument(docWith([crossing], [barrier("b1", 2), inferred("i1")]));
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((e) => e.code)).toContain("multiple_barrier_bindings");
+  });
+
+  it("rejects an inferred rule with no inputs, or a malformed input bit", () => {
+    const empty = validateMapDocument(docWith([crossing], [{ ...inferred("i1"), inputs: [] }]));
+    expect(empty.valid).toBe(false);
+    const badBit = validateMapDocument(
+      docWith(
+        [crossing],
+        [
+          {
+            ...inferred("i1"),
+            inputs: [{ tdArea: "M9", address: "07", bit: 8, activeMeans: "off" }],
+          },
+        ],
+      ),
     );
+    expect(badBit.valid).toBe(false);
+  });
+
+  it("still parses a crossing saved with Milestone 58's retired realisticBarriers flag", () => {
+    // Realistic is now the default; the old opt-in flag is simply dropped on parse.
+    const result = validateMapDocument(docWith([{ ...crossing, realisticBarriers: true }], []));
     expect(result.valid).toBe(true);
   });
 

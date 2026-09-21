@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  inferredBarrierState,
+  inferredCrossingStates,
+  inferredInputBindings,
+  inferredInputElementId,
+  signalStateForBit as signalStateForBitForInference,
   detectReceiveSilences,
   resolveSignalStates,
   sByteTrustedAt,
@@ -208,5 +213,73 @@ describe("barrier vocabulary (Milestone 55 / ADR 0014)", () => {
     expect(barrierBindingsFromIndex({ "M9|03|2": "lx-1" }, undefined)).toEqual([
       { elementId: "lx-1", tdArea: "M9", address: "03", bit: 2 },
     ]);
+  });
+});
+
+describe("inferred crossing state (Milestone 59 / ADR 0015)", () => {
+  it("is down if any protecting signal is at proceed", () => {
+    expect(inferredBarrierState(["off", "on"])).toBe("down");
+    expect(inferredBarrierState(["on", "off"])).toBe("down");
+    expect(inferredBarrierState(["off", "off"])).toBe("down");
+    // A signal at proceed proves the crossing down even if the other one is unknown.
+    expect(inferredBarrierState(["off", "blank"])).toBe("down");
+  });
+
+  it("is up only when every protecting signal is confirmed at danger", () => {
+    expect(inferredBarrierState(["on", "on"])).toBe("up");
+    expect(inferredBarrierState(["on"])).toBe("up");
+  });
+
+  it("is blank when an input is unknown and none is at proceed — never up on a guess", () => {
+    expect(inferredBarrierState(["on", "blank"])).toBe("blank");
+    expect(inferredBarrierState(["blank", "blank"])).toBe("blank");
+    expect(inferredBarrierState([])).toBe("blank");
+  });
+
+  it("reproduces the owner's Carleton rule from raw bits (M9 07:4 and 06:6, set = off)", () => {
+    // Owner: "both signals at danger = raised; either one at proceed = crossing lowered".
+    // On M9 a set bit means the signal is off (ADR 0014's polarity finding), so activeMeans "off".
+    const carleton = (s3879: number, s3870: number) =>
+      inferredBarrierState([
+        signalStateForBitForInference(s3879 << 4, 4, "off"),
+        signalStateForBitForInference(s3870 << 6, 6, "off"),
+      ]);
+    expect(carleton(0, 0)).toBe("up");
+    expect(carleton(1, 0)).toBe("down");
+    expect(carleton(0, 1)).toBe("down");
+    expect(carleton(1, 1)).toBe("down");
+  });
+
+  it("turns a bundle's inferred index into signal bindings under non-colliding synthetic ids", () => {
+    const bindings = inferredInputBindings({
+      "lx-carleton": [
+        { tdArea: "M9", address: "07", bit: 4, activeMeans: "off" },
+        { tdArea: "M9", address: "06", bit: 6, activeMeans: "off" },
+      ],
+    });
+    expect(bindings).toEqual([
+      { elementId: "lx-carleton#in0", tdArea: "M9", address: "07", bit: 4, activeMeans: "off" },
+      { elementId: "lx-carleton#in1", tdArea: "M9", address: "06", bit: 6, activeMeans: "off" },
+    ]);
+    expect(inferredInputElementId("lx-carleton", 1)).toBe("lx-carleton#in1");
+    // A bundle published before inferred crossings existed.
+    expect(inferredInputBindings(undefined)).toEqual([]);
+  });
+
+  it("combines resolved input states per crossing", () => {
+    const index = {
+      a: [
+        { tdArea: "M9", address: "07", bit: 4, activeMeans: "off" as const },
+        { tdArea: "M9", address: "06", bit: 6, activeMeans: "off" as const },
+      ],
+      b: [{ tdArea: "M9", address: "01", bit: 0, activeMeans: "on" as const }],
+    };
+    expect(
+      inferredCrossingStates(index, {
+        "a#in0": { state: "on" },
+        "a#in1": { state: "on" },
+        // b's only input has no resolved state at all.
+      }),
+    ).toEqual({ a: "up", b: "blank" });
   });
 });

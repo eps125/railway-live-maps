@@ -4,10 +4,17 @@ import {
   TD_RECEIVE_SILENCE_REASON,
   barrierBindingsFromIndex,
   barrierStateFromSignalState,
+  computeSignalStates,
+  inferredBarrierState,
+  inferredInputBindings,
+  inferredInputElementId,
   signalBindingsFromIndex,
   signalStateForBit,
+  type BarrierDisplayState,
   type SignalBinding,
+  type SignalDisplayState,
 } from "@railway/domain";
+import { createSignalFactsPort } from "@railway/database";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import type { LiveDeltaMessage } from "@railway/protocol";
 
@@ -43,7 +50,7 @@ export interface EventSource {
  * from the same bytes by the same rules, so they are paged together as one stream and only the
  * emitted message type differs — keeping barrier playback in exact step with signal playback
  * (including the blank-on-silence rule below) rather than as a second, drifting implementation. */
-type PlaybackBinding = SignalBinding & { kind: "signal" | "barrier" };
+type PlaybackBinding = SignalBinding & { kind: "signal" | "barrier" | "input" };
 
 function bindingsByByte(bindings: PlaybackBinding[]): Map<string, PlaybackBinding[]> {
   const byByte = new Map<string, PlaybackBinding[]>();
@@ -61,6 +68,16 @@ export async function fetchSignalPlaybackEvents(
   after: string,
   limit: number,
 ): Promise<EventSource[]> {
+  // Milestone 59 / ADR 0015: an inferred crossing's inputs ride along as bindings of their own
+  // kind, so rows touching their bytes are fetched by the same query — but they never emit a
+  // message themselves; they feed the crossing's combined state below.
+  const inferredIndex = bundle.inferredBarrierBindings ?? {};
+  const inputBindings = inferredInputBindings(inferredIndex);
+  const inputOwner = new Map<string, string>();
+  for (const [crossingId, inputs] of Object.entries(inferredIndex)) {
+    inputs.forEach((_, i) => inputOwner.set(inferredInputElementId(crossingId, i), crossingId));
+  }
+
   const bindings: PlaybackBinding[] = [
     ...signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans).map(
       (binding) => ({ ...binding, kind: "signal" as const }),
@@ -68,6 +85,7 @@ export async function fetchSignalPlaybackEvents(
     ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans).map(
       (binding) => ({ ...binding, kind: "barrier" as const }),
     ),
+    ...inputBindings.map((binding) => ({ ...binding, kind: "input" as const })),
   ];
   if (bindings.length === 0) return [];
   const byByte = bindingsByByte(bindings);
@@ -99,13 +117,73 @@ export async function fetchSignalPlaybackEvents(
     [tdAreas, range.from, range.to, addresses, after, limit],
   );
 
+  // Silences whose tolerance ran out inside the window. Fetched before the rows are folded so an
+  // inferred crossing's inputs can be reset to unknown at the same point the stream blanks.
+  const toleranceSeconds = SIGNAL_GAP_TOLERANCE_MS / 1000;
+  const silences = await pool.query<{ affected_sequence_start: string; blank_at: Date }>(
+    `select g.affected_sequence_start::text as affected_sequence_start,
+            g.detected_start + make_interval(secs => $5) as blank_at
+       from feed_gap g
+      where g.feed_name = 'TD' and g.detection_reason = $1
+        and g.affected_sequence_start is not null
+        and g.detected_start + make_interval(secs => $5) >= $2
+        and g.detected_start + make_interval(secs => $5) < $3
+        and g.affected_sequence_start > $4
+      order by g.affected_sequence_start
+      limit $6`,
+    [TD_RECEIVE_SILENCE_REASON, range.from, range.to, after, toleranceSeconds, limit],
+  );
+
+  // A row carries only the bytes it restated, but an inferred crossing combines bits that can
+  // live in different bytes. So seed every input's state as of this page's first row, with the
+  // exact resolver the snapshot uses (trust, lookback), then fold forward row by row.
+  const inputState = new Map<string, SignalDisplayState>();
+  const firstRow = rows.rows[0];
+  if (inputBindings.length > 0 && firstRow) {
+    const seeded = await computeSignalStates(createSignalFactsPort(pool), {
+      signalElementIds: inputBindings.map((b) => b.elementId),
+      bindings: inputBindings,
+      at: firstRow.event_at,
+      live: false,
+    });
+    for (const binding of inputBindings) {
+      inputState.set(binding.elementId, seeded[binding.elementId]?.state ?? "blank");
+    }
+  }
+  const combined = (crossingId: string): BarrierDisplayState =>
+    inferredBarrierState(
+      (inferredIndex[crossingId] ?? []).map(
+        (_, i) => inputState.get(inferredInputElementId(crossingId, i)) ?? "blank",
+      ),
+    );
+  const resetInputs = (): void => {
+    for (const binding of inputBindings) inputState.set(binding.elementId, "blank");
+  };
+  const silenceSequences = silences.rows.map((s) => BigInt(s.affected_sequence_start));
+  let nextSilence = 0;
+
   const events: SequencedEvent[] = [];
   for (const row of rows.rows) {
     const sequence = Number(row.ingestion_sequence);
+    const rowSequence = BigInt(row.ingestion_sequence);
+    // A silence that began before this row blanked every input before it arrived.
+    while (nextSilence < silenceSequences.length && silenceSequences[nextSilence]! < rowSequence) {
+      resetInputs();
+      nextSilence += 1;
+    }
+
     const messages: LiveDeltaMessage[] = [];
+    // Inferred crossings this row touched, with the input bit that triggered each.
+    const touched = new Map<string, { address: string; bit: number }>();
     for (const [address, value] of Object.entries(row.decoded_bitset.bytes)) {
       for (const binding of byByte.get(`${row.td_area}|${address}`) ?? []) {
         const resolved = signalStateForBit(value, binding.bit, binding.activeMeans);
+        if (binding.kind === "input") {
+          inputState.set(binding.elementId, resolved);
+          const crossingId = inputOwner.get(binding.elementId);
+          if (crossingId) touched.set(crossingId, { address, bit: binding.bit });
+          continue;
+        }
         messages.push(
           binding.kind === "barrier"
             ? {
@@ -131,41 +209,69 @@ export async function fetchSignalPlaybackEvents(
         );
       }
     }
+    // Absolute state, emitted whenever an input is restated — like every other entry here, a
+    // repeat is harmless, and it never depends on whether the seed already included this row.
+    for (const [crossingId, trigger] of touched) {
+      messages.push({
+        type: "crossing.updated",
+        sequence,
+        eventAt: row.event_at.toISOString(),
+        elementId: crossingId,
+        state: combined(crossingId),
+        tdArea: row.td_area,
+        address: trigger.address,
+        bit: trigger.bit,
+      });
+    }
     // Kept even when empty: it is a fetched row the paging bound must account for.
-    events.push({ sequence: BigInt(row.ingestion_sequence), order: 0, messages });
+    events.push({ sequence: rowSequence, order: 0, messages });
+
+    // A silence sequenced at this row blanks after the row's own entries (order 1 below).
+    while (nextSilence < silenceSequences.length && silenceSequences[nextSilence] === rowSequence) {
+      resetInputs();
+      nextSilence += 1;
+    }
   }
 
-  // Silences whose tolerance ran out inside the window.
-  const toleranceSeconds = SIGNAL_GAP_TOLERANCE_MS / 1000;
-  const silences = await pool.query<{ affected_sequence_start: string; blank_at: Date }>(
-    `select g.affected_sequence_start::text as affected_sequence_start,
-            g.detected_start + make_interval(secs => $5) as blank_at
-       from feed_gap g
-      where g.feed_name = 'TD' and g.detection_reason = $1
-        and g.affected_sequence_start is not null
-        and g.detected_start + make_interval(secs => $5) >= $2
-        and g.detected_start + make_interval(secs => $5) < $3
-        and g.affected_sequence_start > $4
-      order by g.affected_sequence_start
-      limit $6`,
-    [TD_RECEIVE_SILENCE_REASON, range.from, range.to, after, toleranceSeconds, limit],
-  );
   const blanks: SequencedEvent[] = [];
   for (const silence of silences.rows) {
     const sequence = Number(silence.affected_sequence_start);
+    const eventAt = silence.blank_at.toISOString();
     blanks.push({
       sequence: BigInt(silence.affected_sequence_start),
       order: 1,
-      messages: bindings.map((binding) => ({
-        type: binding.kind === "barrier" ? "crossing.updated" : "signal.updated",
-        sequence,
-        eventAt: silence.blank_at.toISOString(),
-        elementId: binding.elementId,
-        state: "blank",
-        tdArea: binding.tdArea,
-        address: binding.address,
-        bit: binding.bit,
-      })),
+      messages: [
+        ...bindings
+          .filter((binding) => binding.kind !== "input")
+          .map((binding): LiveDeltaMessage => ({
+            type: binding.kind === "barrier" ? "crossing.updated" : "signal.updated",
+            sequence,
+            eventAt,
+            elementId: binding.elementId,
+            state: "blank",
+            tdArea: binding.tdArea,
+            address: binding.address,
+            bit: binding.bit,
+          })),
+        // Every input unknown, so every inferred crossing is too.
+        ...Object.entries(inferredIndex).flatMap(([crossingId, inputs]): LiveDeltaMessage[] => {
+          const first = inputs[0];
+          return first
+            ? [
+                {
+                  type: "crossing.updated",
+                  sequence,
+                  eventAt,
+                  elementId: crossingId,
+                  state: "blank",
+                  tdArea: first.tdArea,
+                  address: first.address,
+                  bit: first.bit,
+                },
+              ]
+            : [];
+        }),
+      ],
     });
   }
 

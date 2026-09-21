@@ -29,6 +29,15 @@ bytes with no decoded statement in the last 6 hours (including all history befor
 has lasted more than 5 minutes. Live mode also reads S-Class rows newer than the history
 projector's checkpoint, so a live snapshot is never behind the deltas that follow it.
 
+`crossings` (Milestone 55, ADR 0014; inferred source Milestone 59, ADR 0015): each level crossing's
+`state` is `up` | `down` | `blank`. From an S-Class crossing bit, it is that bit through its
+binding's `activeMeans`. From an inferred rule, each input signal bit is resolved exactly as a
+signal is (same trust and lookback) and combined: `down` if any input signal is off, `up` only if
+every input is confirmed on, otherwise `blank`. An unbound crossing is `blank`. Playback `/events`
+and the live WS emit the same absolute states as `crossing.updated`; for an inferred crossing the
+message's `tdArea`/`address`/`bit` name the input that triggered it. How `blank` is _drawn_ is a
+renderer concern (the default realistic style draws it lowered — see MAP_EDITOR_SPEC).
+
 Response outline:
 
 ```json

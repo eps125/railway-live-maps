@@ -1446,12 +1446,12 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
               // public map, never to the drawing surface.
               const geometry = levelCrossingGeometry(element);
               const style = MAP_STYLE.levelCrossing;
-              // Milestone 58: the realistic drawing previews exactly as the public map paints it —
-              // it is authored scenery in a fixed pose, not live data, so unlike a barrier state
-              // it belongs on the drawing surface. Offered only on an unbound crossing.
-              const realistic = element.realisticBarriers
-                ? realisticLevelCrossingGeometry(element)
-                : null;
+              // Milestone 59: realistic by default, as on the public map. Always previewed lowered —
+              // the pose a crossing takes when its position is unknown — because a live barrier
+              // position belongs to Test mode and the public map, never the drawing surface.
+              const realistic = element.schematicBarriers
+                ? null
+                : realisticLevelCrossingGeometry(element, "down");
               const look = style.realistic;
               const rel = (segment: { x1: number; y1: number; x2: number; y2: number }) => [
                 segment.x1 - element.x,

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MapDocument } from "@railway/map-schema";
+import type { MapBinding, MapDocument } from "@railway/map-schema";
 import { EditorStateProvider, useEditorDispatch, useEditorState } from "./EditorState.js";
 import { PropertyPanel } from "./PropertyPanel.js";
 
@@ -782,8 +782,8 @@ describe("PropertyPanel S-Class signal binding (Milestone 36c)", () => {
   });
 });
 
-describe("PropertyPanel realistic crossing barriers (Milestone 58)", () => {
-  function crossingDoc(options: { bound?: boolean; realistic?: boolean } = {}): MapDocument {
+describe("PropertyPanel crossing style and barrier source (Milestone 59)", () => {
+  function crossingDoc(extra: { schematic?: boolean; bindings?: MapBinding[] } = {}): MapDocument {
     const doc = baseDoc();
     return {
       ...doc,
@@ -801,82 +801,136 @@ describe("PropertyPanel realistic crossing barriers (Milestone 58)", () => {
           roadWidth: 16,
           labelPosition: "below",
           fontSize: 10,
-          ...(options.realistic ? { realisticBarriers: true } : {}),
+          ...(extra.schematic ? { schematicBarriers: true } : {}),
         },
       ],
-      bindings: options.bound
-        ? [
-            ...doc.bindings,
-            {
-              id: "bind-lx",
-              elementId: "lx-1",
-              type: "tdSBitBarrier",
-              tdArea: "M9",
-              address: "03",
-              bit: 2,
-              activeMeans: "down",
-            },
-          ]
-        : doc.bindings,
+      bindings: [...doc.bindings, ...(extra.bindings ?? [])],
     };
   }
 
-  /** Shows what the crossing's flag is in the document, so a test can assert the commit. */
-  function FlagProbe(): JSX.Element {
+  const directBit: MapBinding = {
+    id: "bind-lx",
+    elementId: "lx-1",
+    type: "tdSBitBarrier",
+    tdArea: "M9",
+    address: "03",
+    bit: 2,
+    activeMeans: "down",
+  };
+
+  /** Shows the crossing's style flag and its barrier bindings, so tests can assert commits. */
+  function Probe(): JSX.Element {
     const { document: doc } = useEditorState();
     const crossing = doc.elements.find((e) => e.id === "lx-1");
-    const flag = crossing?.type === "levelCrossing" ? crossing.realisticBarriers : "n/a";
-    return <pre data-testid="flag">{String(flag)}</pre>;
+    return (
+      <>
+        <pre data-testid="schematic">
+          {String(crossing?.type === "levelCrossing" ? crossing.schematicBarriers : "n/a")}
+        </pre>
+        <pre data-testid="bindings">
+          {JSON.stringify(doc.bindings.filter((b) => b.elementId === "lx-1"))}
+        </pre>
+      </>
+    );
   }
 
   function renderCrossing(doc: MapDocument) {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ areas: [] }))),
+      vi.fn(() => Promise.resolve(jsonResponse({ areas: ["M9"] }))),
     );
     return render(
       <EditorStateProvider initialDocument={doc}>
         <Select id="lx-1" />
         <PropertyPanel />
-        <FlagProbe />
+        <Probe />
       </EditorStateProvider>,
     );
   }
+  const committed = () => JSON.parse(screen.getByTestId("bindings").textContent ?? "[]");
 
-  it("offers the tickbox on an unbound crossing and commits it", async () => {
+  it("is realistic by default; the tickbox opts into schematic and unticking removes the field", async () => {
     renderCrossing(crossingDoc());
-    const box = await screen.findByLabelText("Realistic crossing barriers");
-    expect(box).not.toBeDisabled();
+    const box = await screen.findByLabelText("Schematic style");
     expect(box).not.toBeChecked();
-
     fireEvent.click(box);
-    expect(box).toBeChecked();
-    expect(screen.getByTestId("flag")).toHaveTextContent("true");
-  });
-
-  it("removes the field again when unticked, rather than storing false", async () => {
-    renderCrossing(crossingDoc({ realistic: true }));
-    const box = await screen.findByLabelText("Realistic crossing barriers");
-    expect(box).toBeChecked();
+    expect(screen.getByTestId("schematic")).toHaveTextContent("true");
     fireEvent.click(box);
-    expect(screen.getByTestId("flag")).toHaveTextContent("undefined");
+    expect(screen.getByTestId("schematic")).toHaveTextContent("undefined");
   });
 
-  it("is not available while the barriers are bound to an S-Class bit", async () => {
-    // A bound crossing always shows its live position (ADR 0014 addendum).
-    renderCrossing(crossingDoc({ bound: true }));
-    const box = await screen.findByLabelText("Realistic crossing barriers");
-    expect(box).toBeDisabled();
-    expect(screen.getByText(/Not available while the barriers are bound/)).toBeInTheDocument();
+  it("offers the style choice on a bound crossing too — realistic shows live position by pose", async () => {
+    renderCrossing(crossingDoc({ bindings: [directBit] }));
+    expect(await screen.findByLabelText("Schematic style")).not.toBeDisabled();
   });
 
-  it("refuses a new binding while realistic barriers are on", async () => {
-    renderCrossing(crossingDoc({ realistic: true }));
-    expect(await screen.findByRole("button", { name: "Bind barriers" })).toBeDisabled();
-    expect(
-      screen.getByText(
-        "Turn off realistic crossing barriers to bind this crossing to an S-Class bit.",
-      ),
-    ).toBeInTheDocument();
+  it("shows the source a crossing already has", async () => {
+    renderCrossing(crossingDoc({ bindings: [directBit] }));
+    expect(await screen.findByLabelText("Barrier position")).toHaveValue("bit");
+  });
+
+  it("defaults to not driven, and choosing it clears an existing source", async () => {
+    renderCrossing(crossingDoc({ bindings: [directBit] }));
+    const source = await screen.findByLabelText("Barrier position");
+    fireEvent.change(source, { target: { value: "none" } });
+    expect(committed()).toEqual([]);
+  });
+
+  it("applies an inferred rule from the protecting signals' bits (Carleton)", async () => {
+    renderCrossing(crossingDoc());
+    const source = await screen.findByLabelText("Barrier position");
+    expect(source).toHaveValue("none");
+    fireEvent.change(source, { target: { value: "inferred" } });
+
+    const apply = screen.getByRole("button", { name: "Apply rule" });
+    expect(apply).toBeDisabled(); // two empty rows to start
+
+    const fill = (i: number, signal: string, address: string, bit: string) => {
+      fireEvent.change(screen.getByLabelText(`Input ${i} signal name`), {
+        target: { value: signal },
+      });
+      fireEvent.change(screen.getByLabelText(`Input ${i} TD area`), { target: { value: "m9" } });
+      fireEvent.change(screen.getByLabelText(`Input ${i} address`), { target: { value: address } });
+      fireEvent.change(screen.getByLabelText(`Input ${i} bit`), { target: { value: bit } });
+    };
+    fill(1, "S3879", "7", "4");
+    fill(2, "S3870", "06", "6");
+    expect(apply).not.toBeDisabled();
+    fireEvent.click(apply);
+
+    const [binding] = committed();
+    expect(binding).toMatchObject({
+      elementId: "lx-1",
+      type: "tdSBitBarrierInferred",
+      inputs: [
+        { tdArea: "M9", address: "07", bit: 4, activeMeans: "off", label: "S3879" },
+        { tdArea: "M9", address: "06", bit: 6, activeMeans: "off", label: "S3870" },
+      ],
+    });
+  });
+
+  it("replaces a direct bit with the inferred rule — a crossing never has both", async () => {
+    renderCrossing(crossingDoc({ bindings: [directBit] }));
+    fireEvent.change(await screen.findByLabelText("Barrier position"), {
+      target: { value: "inferred" },
+    });
+    // Two starting rows; keep only the first.
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[1]!);
+    fireEvent.change(screen.getByLabelText("Input 1 TD area"), { target: { value: "M9" } });
+    fireEvent.change(screen.getByLabelText("Input 1 address"), { target: { value: "07" } });
+    fireEvent.change(screen.getByLabelText("Input 1 bit"), { target: { value: "4" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply rule" }));
+
+    const bindings = committed();
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0].type).toBe("tdSBitBarrierInferred");
+  });
+
+  it("warns plainly that the raised inference is wrong for part of every cycle", async () => {
+    renderCrossing(crossingDoc());
+    fireEvent.change(await screen.findByLabelText("Barrier position"), {
+      target: { value: "inferred" },
+    });
+    expect(screen.getByText(/will show raised for part of each cycle/)).toBeInTheDocument();
   });
 });

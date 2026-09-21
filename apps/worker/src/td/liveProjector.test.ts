@@ -4,6 +4,7 @@ import {
   foldLiveBerthState,
   publishInSequenceOrder,
   type BindingsCache,
+  type CachedInferredInput,
   type RawCClassRow,
   type RawSClassRow,
 } from "./liveProjector.js";
@@ -109,6 +110,10 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
       // Milestone 55 / ADR 0014: the delta builder reads barrier bindings off the same cache.
       getBarriers: async (tdArea: string, address: string) =>
         barriers[`${tdArea} ${address}`] ?? [],
+      // Milestone 59: no inferred crossings in these tests.
+      getInferredInputs: async () => [],
+      inferredCrossingInputs: () => [],
+      seededInputByte: () => undefined,
     } as unknown as BindingsCache;
   }
   const sRow = (seq: number, type: string, address: string, data: string): RawSClassRow => ({
@@ -151,5 +156,85 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
       sRow(201, "SF_MSG", "07", "01"),
     ]);
     expect(pending.map((p) => JSON.parse(p.message).state)).toEqual(["blank"]);
+  });
+});
+
+describe("buildSignalDeltas — inferred crossings (Milestone 59 / ADR 0015)", () => {
+  // Carleton-style: two protecting signals in different bytes of one area; set bit = signal off.
+  // Each test uses its own crossing id — the builder's de-dup memory is per process.
+  function carletonInputs(elementId: string): CachedInferredInput[] {
+    return [
+      { mapSlug: "bpool", elementId, tdArea: "M9", address: "07", bit: 4, activeMeans: "off" },
+      { mapSlug: "bpool", elementId, tdArea: "M9", address: "06", bit: 6, activeMeans: "off" },
+    ];
+  }
+  function inferredCache(
+    inputs: CachedInferredInput[],
+    seeded: Record<string, number> = {},
+  ): BindingsCache {
+    return {
+      getSignals: async () => [],
+      getBarriers: async () => [],
+      getInferredInputs: async (tdArea: string, address: string) =>
+        inputs.filter((i) => i.tdArea === tdArea && i.address === address),
+      inferredCrossingInputs: (mapSlug: string, elementId: string) =>
+        inputs.filter((i) => i.mapSlug === mapSlug && i.elementId === elementId),
+      seededInputByte: (tdArea: string, address: string) => seeded[`${tdArea} ${address}`],
+    } as unknown as BindingsCache;
+  }
+  const row = (seq: number, address: string, data: string): RawSClassRow => ({
+    id: String(seq),
+    normalized_event_at_utc: new Date("2026-09-21T12:00:00Z"),
+    ingestion_sequence: String(seq),
+    event_type: "SF_MSG",
+    td_area: "M9",
+    raw_event_json: { SF_MSG: { area_id: "M9", address, data } },
+  });
+  const states = (pending: Awaited<ReturnType<typeof buildSignalDeltas>>) =>
+    pending.map((p) => [p.sequence, p.key, JSON.parse(p.message).state]);
+
+  it("follows the owner's rule: either signal at proceed = lowered, both at danger = raised", async () => {
+    const cache = inferredCache(carletonInputs("lx-a"), { "M9 07": 0x00, "M9 06": 0x00 });
+    const pending = await buildSignalDeltas(cache, [
+      row(9001, "07", "10"), // S3879 off -> down
+      row(9002, "07", "00"), // S3879 back on; S3870 on (seeded) -> up
+      row(9003, "06", "40"), // S3870 off -> down
+      row(9004, "06", "40"), // restated, unchanged -> nothing sent
+      row(9005, "06", "00"), // both on -> up
+    ]);
+    expect(states(pending)).toEqual([
+      [9001, "I lx-a", "down"],
+      [9002, "I lx-a", "up"],
+      [9003, "I lx-a", "down"],
+      [9005, "I lx-a", "up"],
+    ]);
+    expect(JSON.parse(pending[0]!.message)).toMatchObject({
+      type: "crossing.updated",
+      elementId: "lx-a",
+      tdArea: "M9",
+      address: "07",
+      bit: 4,
+    });
+  });
+
+  it("never claims raised while the other signal is unknown", async () => {
+    // Nothing seeded and nothing seen for byte 06: S3870 is unknown, so S3879 at danger on its
+    // own is not enough for "up".
+    const pending = await buildSignalDeltas(inferredCache(carletonInputs("lx-b")), [
+      row(9101, "07", "00"),
+      row(9102, "06", "00"), // now both known at danger
+    ]);
+    expect(states(pending)).toEqual([
+      [9101, "I lx-b", "blank"],
+      [9102, "I lx-b", "up"],
+    ]);
+  });
+
+  it("uses the byte seeded at reload for an input it hasn't seen live yet", async () => {
+    // After a restart: S3870 is off according to td_s_current_state, so a restated S3879 at danger
+    // still leaves the crossing down rather than waiting ~2h for byte 06's next refresh.
+    const cache = inferredCache(carletonInputs("lx-c"), { "M9 06": 0x40 });
+    const pending = await buildSignalDeltas(cache, [row(9201, "07", "00")]);
+    expect(states(pending)).toEqual([[9201, "I lx-c", "down"]]);
   });
 });

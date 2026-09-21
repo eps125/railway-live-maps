@@ -1,6 +1,6 @@
 # ADR 0014 — Level crossing barrier position from S-Class
 
-- **Status:** accepted
+- **Status:** accepted — amended by [ADR 0015](0015-inferred-crossing-state-and-realistic-default.md) (2026-09-21): decision 1 no longer holds for every crossing (an owner-configured crossing may be inferred from its protecting signals), and the Milestone 58 addendum is superseded (realistic barriers are the default for every crossing).
 - **Date:** 2026-09-20
 - **Milestone:** 55
 - **Extends:** [ADR 0013](0013-s-class-decoding-and-signal-binding.md)
@@ -133,7 +133,9 @@ publishes crossing state before spending time trawling it.
 ## Alternatives rejected
 
 - **Infer barriers from the signals protecting the crossing.** Directly against rule 10, and
-  wrong in practice (a barrier can be down with the protecting signal still on).
+  wrong in practice (a barrier can be down with the protecting signal still on). (Reversed by the
+  owner for areas without LXC coverage — [ADR 0015](0015-inferred-crossing-state-and-realistic-default.md) — with the "wrong in practice"
+  half recorded there as a known, accepted limitation.)
 - **A manual, author-set barrier state.** Would put a static claim about a live, safety-adjacent
   thing on a public map. Grey-when-unbound is honest; a hardcoded "up" is not. (Still rejected —
   the Milestone 58 addendum below adds a fixed _drawing style_, not a settable state, and says why
@@ -142,7 +144,9 @@ publishes crossing state before spending time trawling it.
   would have meant rewriting deployed, working signal code to gain nothing the edge conversion
   does not already give.
 
-## Addendum — realistic barriers (Milestone 58, 2026-09-21)
+## Addendum — realistic barriers (Milestone 58, 2026-09-21) — superseded by ADR 0015
+
+> Superseded the same day by [ADR 0015](0015-inferred-crossing-state-and-realistic-default.md): with a raised pose added, realistic is the default for every crossing, bound or not, and the mutual exclusion below (with its `realistic_barriers_on_bound_crossing` error) was removed. Kept for the record.
 
 **Owner request and approval, 2026-09-21:** an optional "realistic crossing barriers" drawing — red
 and white banded arms lowered across the road, a white picket skirt beneath, an asphalt road with

@@ -600,3 +600,43 @@ describe("compileMapDocument barrier bindings (Milestone 55 / ADR 0014)", () => 
     expect(bundle.sBitBindingActiveMeans).toEqual({ "M9|0B|3": "off" });
   });
 });
+
+describe("compileMapDocument inferred barrier bindings (Milestone 59 / ADR 0015)", () => {
+  it("indexes an inferred crossing's inputs by element, canonical and label-free, apart from every other index", () => {
+    const doc = MapDocumentSchema.parse({
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "m",
+        canvas: { width: 100, height: 100, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l1", name: "Track", order: 0 }],
+      elements: [{ id: "lx-carleton", layerId: "l1", type: "levelCrossing", x: 10, y: 20 }],
+      topology: { nodes: [], edges: [] },
+      bindings: [
+        {
+          id: "i1",
+          elementId: "lx-carleton",
+          type: "tdSBitBarrierInferred",
+          inputs: [
+            { tdArea: "M9", address: "7", bit: 4, activeMeans: "off", label: "S3879" },
+            { tdArea: "M9", address: "06", bit: 6, activeMeans: "off", label: "S3870" },
+          ],
+        },
+      ],
+      editorMetadata: {},
+    });
+
+    const bundle = compileMapDocument(doc);
+    expect(bundle.inferredBarrierBindings).toEqual({
+      "lx-carleton": [
+        { tdArea: "M9", address: "07", bit: 4, activeMeans: "off" },
+        { tdArea: "M9", address: "06", bit: 6, activeMeans: "off" },
+      ],
+    });
+    // The inputs are signals' bits but must not become signal or direct-barrier bindings.
+    expect(bundle.sBitBindingIndex).toEqual({});
+    expect(bundle.barrierBindingIndex).toEqual({});
+  });
+});

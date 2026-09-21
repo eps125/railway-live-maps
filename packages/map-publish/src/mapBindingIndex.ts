@@ -63,4 +63,17 @@ export async function insertMapBindingIndexRows(
       [mapVersionId, elementId, tdArea, address, bit, activeMeans],
     );
   }
+
+  // Milestone 59 / ADR 0015: one row per input signal of an inferred crossing, in the signal's
+  // on/off vocabulary (migration 0040). The live publisher groups them by element_id.
+  for (const [elementId, inputs] of Object.entries(bundle.inferredBarrierBindings ?? {})) {
+    for (const input of inputs) {
+      await client.query(
+        `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, address, bit, active_means)
+         values ($1, $2, 'td_s_bit_barrier_input', $3, $4, $5, $6)
+         on conflict do nothing`,
+        [mapVersionId, elementId, input.tdArea, input.address, input.bit, input.activeMeans],
+      );
+    }
+  }
 }

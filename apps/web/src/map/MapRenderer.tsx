@@ -281,11 +281,12 @@ function renderLevelCrossing(
   const style = MAP_STYLE.levelCrossing;
   const geometry = levelCrossingGeometry(element, barrierState);
   const barrierColor = style.stateColors[barrierState];
-  // Milestone 58: the realistic drawing, only for a crossing with no live barrier state. Validation
-  // already forbids realistic barriers on a bound crossing; the `blank` check is belt and braces,
-  // so a real up/down reading can never be hidden behind a fixed "down" picture (ADR 0014).
-  if (element.realisticBarriers && barrierState === "blank") {
-    return renderRealisticLevelCrossing(element, geometry);
+  // Milestone 59 (owner decision 2026-09-21): realistic is the default for every crossing, and the
+  // position is shown by the arms' pose. `up` raises them; `down` and `blank` both lower them —
+  // the owner chose to draw an unknown (or unbound) crossing lowered, in full colour. The schematic
+  // lines, with their grey-for-unknown, are now the per-crossing opt-out.
+  if (!element.schematicBarriers) {
+    return renderRealisticLevelCrossing(element, geometry, barrierState === "up" ? "up" : "down");
   }
   return (
     <g key={element.id}>
@@ -319,20 +320,20 @@ function renderLevelCrossing(
 }
 
 /**
- * Milestone 58: a level crossing drawn "realistically" — asphalt approaches with a dashed white
- * centreline, and on each side of the railway a red/white banded arm lowered across the road with
- * a white picket skirt beneath it (`realisticLevelCrossingGeometry`, shared with the editor canvas
- * per CLAUDE.md rule 13). Always the down pose: scenery, not a barrier state, and only ever reached
- * for an unbound crossing. The road edges stay the schematic ones, so the crossing keeps the same
- * outline whichever way it is drawn.
+ * Milestone 58/59: a level crossing drawn "realistically" — asphalt approaches with a dashed white
+ * centreline, and on each side of the railway a red/white banded arm with a white picket skirt,
+ * lowered across the road or raised along its edge (`realisticLevelCrossingGeometry`, shared with
+ * the editor canvas per CLAUDE.md rule 13). The road edges stay the schematic ones, so the
+ * crossing keeps the same outline whichever style it is drawn in.
  */
 function renderRealisticLevelCrossing(
   element: LevelCrossingElement,
   geometry: ReturnType<typeof levelCrossingGeometry>,
+  pose: "down" | "up",
 ): JSX.Element {
   const style = MAP_STYLE.levelCrossing;
   const look = style.realistic;
-  const realistic = realisticLevelCrossingGeometry(element);
+  const realistic = realisticLevelCrossingGeometry(element, pose);
   const line = (
     key: string,
     segment: { x1: number; y1: number; x2: number; y2: number },

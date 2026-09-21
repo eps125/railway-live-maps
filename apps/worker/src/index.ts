@@ -27,6 +27,7 @@ import { runSnapshotMapsCommand, runSnapshotMapsDaemon } from "./commands/snapsh
 import { runRepairOpenOccupancies } from "./commands/repairOpenOccupancies.js";
 import { runManageUsers } from "./commands/manageUsers.js";
 import { runReconcileGarnerSchedules } from "./commands/reconcileGarnerSchedules.js";
+import { runBackfillTrustMovementEvents } from "./commands/backfillTrustMovementEvents.js";
 import { runRunLineageDaemon } from "./commands/runLineageDaemon.js";
 import { runServe } from "./serve.js";
 
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
       return runManageUsers(config, argvRest);
     case "reconcile-garner-schedules":
       return runReconcileGarnerSchedules(config);
+    case "backfill-trust-movement-events":
+      return runBackfillTrustMovementEvents(config, argvRest);
     case "ingest-td":
       await runIngestTd(config);
       return;

@@ -3638,6 +3638,32 @@ excluded, and today's not-yet-past C04561 is kept.
 **Tests:** 2 integration tests (the 5Z01 loop shape; a report at the station itself is never
 evidence). The existing 1M11 test is unchanged and still applies.
 
+## Milestone 62 — trust_movement keeps same-minute arrival/departure pairs (2026-09-21)
+
+Found during the Milestone 60 audit. RLM's `trust_movement` idempotency key `(trust_id, created,
+loc_stanox, actual_timestamp)` collapsed genuinely distinct TRUST reports: an arrival and a
+departure at the same location in the same minute differ only in `flags` (event type 341/342).
+The bridge's `on conflict do nothing` dropped one of each pair, about 0.07% of all movements every
+day (10,864 rows since 2026-09-02). On 2026-09-20 garner had 418,918 rows and 418,575 distinct
+old keys, exactly RLM's count; 418,913 are distinct once `flags` is included (the remaining 5 are
+exact repeat reports).
+
+- **Migration 0041**: unique index `trust_movement_event_key` on
+  `(trust_id, created, loc_stanox, actual_timestamp, flags)`, then drop the old constraint.
+  Written idempotently. **Production must not apply it through `migrate`**: a plain build on the
+  ~15M-row / 4.6 GB table blocks writes. Build it with `CREATE UNIQUE INDEX CONCURRENTLY`
+  **before** deploying the bridge change (its `ON CONFLICT` names the new key and fails without
+  it). Then drop the old constraint and record 0041 in `schema_migrations`, as with 0033.
+- **Bridge**: `TRUST_MOVEMENT_CONFLICT` includes `flags`. Movement columns and mapping are shared
+  with the backfill.
+- **Backfill**: one-shot `backfill-trust-movement-events [--since=ISO]`. It re-reads from garner
+  only the rows whose old key has more than one garner row (the only rows it could have
+  dropped), in 6 h windows, and inserts under the new key. Idempotent; never deletes.
+
+**Tests:** integration test for the key (a same-minute arrival and departure are both kept; an
+exact repeat is still deduplicated), plus dispatch. The backfill reads garner (MariaDB), which CI
+does not have, so it was not run in CI.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

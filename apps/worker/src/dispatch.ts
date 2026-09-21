@@ -21,6 +21,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "repair-open-occupancies",
   "manage-users",
   "reconcile-garner-schedules",
+  "backfill-trust-movement-events",
 ] as const;
 export type OneShotCommandName = (typeof ONE_SHOT_COMMAND_NAMES)[number];
 

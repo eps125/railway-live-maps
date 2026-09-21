@@ -960,6 +960,94 @@ interface TrustChangeLocationRow extends CreatedKeyedRow {
   stanox: string;
 }
 
+const TRUST_MOVEMENT_SELECT_COLS = `created, trust_id, platform, loc_stanox, actual_timestamp,
+       gbtt_timestamp, planned_timestamp, timetable_variation, next_report_stanox,
+       next_report_run_time, flags`;
+
+const TRUST_MOVEMENT_COLS = [
+  "trust_id",
+  "created",
+  "platform",
+  "loc_stanox",
+  "actual_timestamp",
+  "gbtt_timestamp",
+  "planned_timestamp",
+  "timetable_variation",
+  "next_report_stanox",
+  "next_report_run_time",
+  "flags",
+];
+
+/** Includes `flags` (arrival/departure/terminate event type): without it, an arrival and a
+ * departure reported at the same location in the same minute collapsed into one row
+ * (Milestone 62, migration 0041). */
+const TRUST_MOVEMENT_CONFLICT =
+  "on conflict (trust_id, created, loc_stanox, actual_timestamp, flags) do nothing";
+
+function mapTrustMovementRow(row: TrustMovementRow): unknown[] {
+  return [
+    row.trust_id,
+    epochToTs(row.created),
+    nonEmpty(row.platform),
+    nonEmpty(row.loc_stanox),
+    epochToTs(row.actual_timestamp),
+    epochToTs(row.gbtt_timestamp),
+    epochToTs(row.planned_timestamp),
+    row.timetable_variation ?? null,
+    nonEmpty(row.next_report_stanox),
+    row.next_report_run_time ?? null,
+    row.flags ?? null,
+  ];
+}
+
+/**
+ * Milestone 62 backfill: re-read from garner only the `trust_movement` rows whose old RLM key
+ * `(trust_id, created, loc_stanox, actual_timestamp)` is shared by more than one garner row — the
+ * only rows the old key could have dropped — and insert them under the new flags-inclusive key
+ * (everything already present conflicts and is skipped). Walks `[fromEpoch, toEpoch)` in
+ * `windowSeconds` windows so each garner group-by stays small. Idempotent; never deletes.
+ */
+export async function backfillCollapsedTrustMovements(
+  garner: MysqlPool,
+  pg: PgPool,
+  fromEpoch: number,
+  toEpoch: number,
+  windowSeconds: number,
+  onWindow: (summary: { from: number; to: number; candidates: number; inserted: number }) => void,
+): Promise<{ candidates: number; inserted: number }> {
+  let candidates = 0;
+  let inserted = 0;
+  for (let from = fromEpoch; from < toEpoch; from += windowSeconds) {
+    const to = Math.min(from + windowSeconds, toEpoch);
+    const [rows] = await garner.query<TrustMovementRow[]>(
+      `select ${TRUST_MOVEMENT_SELECT_COLS}
+       from trust_movement m
+       join (
+         select trust_id as d_trust_id, created as d_created, loc_stanox as d_loc,
+                actual_timestamp as d_actual
+         from trust_movement
+         where created >= ? and created < ?
+         group by trust_id, created, loc_stanox, actual_timestamp
+         having count(*) > 1
+       ) d on d.d_trust_id = m.trust_id and d.d_created = m.created
+          and d.d_loc = m.loc_stanox and d.d_actual = m.actual_timestamp
+       where m.created >= ? and m.created < ?`,
+      [from, to, from, to],
+    );
+    const written = await chunkedInsert(
+      pg,
+      "trust_movement",
+      TRUST_MOVEMENT_COLS,
+      rows.map(mapTrustMovementRow),
+      TRUST_MOVEMENT_CONFLICT,
+    );
+    candidates += rows.length;
+    inserted += written;
+    onWindow({ from, to, candidates: rows.length, inserted: written });
+  }
+  return { candidates, inserted };
+}
+
 async function syncTrustAll(
   garner: MysqlPool,
   pg: PgPool,
@@ -1036,38 +1124,12 @@ async function syncTrustAll(
 
   const movement = await syncTrustTable<TrustMovementRow>(pg, garner, floorEpoch, {
     watermarkName: "garner-trust_movement",
-    selectSql: `select created, trust_id, platform, loc_stanox, actual_timestamp, gbtt_timestamp,
-                       planned_timestamp, timetable_variation, next_report_stanox,
-                       next_report_run_time, flags
+    selectSql: `select ${TRUST_MOVEMENT_SELECT_COLS}
                 from trust_movement where created >= ? order by created asc limit ${TRUST_BATCH}`,
     table: "trust_movement",
-    cols: [
-      "trust_id",
-      "created",
-      "platform",
-      "loc_stanox",
-      "actual_timestamp",
-      "gbtt_timestamp",
-      "planned_timestamp",
-      "timetable_variation",
-      "next_report_stanox",
-      "next_report_run_time",
-      "flags",
-    ],
-    conflictTail: "on conflict (trust_id, created, loc_stanox, actual_timestamp) do nothing",
-    map: (row) => [
-      row.trust_id,
-      epochToTs(row.created),
-      nonEmpty(row.platform),
-      nonEmpty(row.loc_stanox),
-      epochToTs(row.actual_timestamp),
-      epochToTs(row.gbtt_timestamp),
-      epochToTs(row.planned_timestamp),
-      row.timetable_variation ?? null,
-      nonEmpty(row.next_report_stanox),
-      row.next_report_run_time ?? null,
-      row.flags ?? null,
-    ],
+    cols: TRUST_MOVEMENT_COLS,
+    conflictTail: TRUST_MOVEMENT_CONFLICT,
+    map: mapTrustMovementRow,
   });
 
   const cancellation = await syncTrustTable<TrustCancellationRow>(pg, garner, floorEpoch, {

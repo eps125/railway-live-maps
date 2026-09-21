@@ -5,6 +5,7 @@ import {
   levelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
+  realisticLevelCrossingGeometry,
   pointOnPathAtX,
   pointsBounds,
   scaleShapeWidth,
@@ -442,5 +443,100 @@ describe("levelCrossingGeometry barriers (owner design 2026-09-20)", () => {
     const turned = levelCrossingGeometry({ ...crossing, orientation: 90 }, "down");
     // Track now vertical, so a lowered arm lies vertically instead.
     for (const barrier of turned.barriers) expect(barrier.x1).toBeCloseTo(barrier.x2, 6);
+  });
+});
+
+describe("realisticLevelCrossingGeometry (Milestone 58, owner request 2026-09-21)", () => {
+  const crossing = { x: 100, y: 50, orientation: 0, roadLength: 34, roadWidth: 16 };
+  const look = MAP_STYLE.levelCrossing.realistic;
+  const pivot = crossing.roadLength * MAP_STYLE.levelCrossing.barrierDistance;
+
+  function lengthOf(segment: { x1: number; y1: number; x2: number; y2: number }): number {
+    return Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+  }
+
+  it("lowers each arm exactly where the schematic drawing puts a down barrier", () => {
+    // Ticking the box restyles the barrier the author already placed; it never moves it.
+    const schematic = levelCrossingGeometry(
+      { ...crossing, labelPosition: "below", fontSize: 10 },
+      "down",
+    );
+    const { barriers } = realisticLevelCrossingGeometry(crossing);
+    expect(barriers.map((b) => b.arm)).toEqual(schematic.barriers);
+  });
+
+  it("is always the down pose — there is no state input at all", () => {
+    // Scenery, not a barrier position (ADR 0014 addendum): the function takes no state, so a
+    // realistic crossing cannot be drawn up, and cannot be made to look like it reflects one.
+    expect(realisticLevelCrossingGeometry.length).toBe(1);
+    for (const { arm } of realisticLevelCrossingGeometry(crossing).barriers) {
+      expect(arm.y1).toBe(arm.y2);
+    }
+  });
+
+  it("divides each arm into an odd number of bands, so both ends are red as on a real barrier", () => {
+    for (const roadWidth of [8, 16, 23, 40]) {
+      for (const { arm, bandLength } of realisticLevelCrossingGeometry({ ...crossing, roadWidth })
+        .barriers) {
+        const bands = lengthOf(arm) / bandLength;
+        expect(bands).toBeCloseTo(Math.round(bands), 6);
+        expect(Math.round(bands) % 2).toBe(1);
+        expect(Math.round(bands)).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  it("hangs both skirts straight down at the usual orientation, like the reference photos", () => {
+    for (const { arm, pickets, skirtRail } of realisticLevelCrossingGeometry(crossing).barriers) {
+      for (const picket of pickets) {
+        expect(picket.x1).toBeCloseTo(picket.x2, 6);
+        // Starts at the arm's underside, not its centre line, and hangs below it.
+        expect(picket.y1).toBeCloseTo(arm.y1 + look.armWidth / 2, 6);
+        expect(picket.y2).toBeCloseTo(arm.y1 + look.armWidth / 2 + look.skirtDepth, 6);
+      }
+      expect(skirtRail.y1).toBeCloseTo(arm.y1 + look.armWidth / 2 + look.skirtDepth, 6);
+      expect(pickets.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("still gives a vertical arm a real skirt instead of one collapsed onto the arm", () => {
+    // Orientation 90: the track runs vertically and so do the lowered arms. "Down" is then
+    // ambiguous; the skirt must still stand off the arm, not lie along it.
+    for (const { pickets } of realisticLevelCrossingGeometry({ ...crossing, orientation: 90 })
+      .barriers) {
+      for (const picket of pickets) {
+        expect(Math.abs(picket.x2 - picket.x1)).toBeCloseTo(look.skirtDepth, 6);
+        expect(picket.y1).toBeCloseTo(picket.y2, 6);
+      }
+    }
+  });
+
+  it("leaves the railway between the barriers unsurfaced, so the track stays visible", () => {
+    // A crossing paints above the rails; a solid road there would hide the running line.
+    const [a, b] = realisticLevelCrossingGeometry(crossing).surfaces;
+    const nearestToTrack = (poly: Array<{ x: number; y: number }>) =>
+      Math.min(...poly.map((p) => Math.abs(p.y - crossing.y)));
+    expect(nearestToTrack(a)).toBeCloseTo(pivot, 6);
+    expect(nearestToTrack(b)).toBeCloseTo(pivot, 6);
+  });
+
+  it("starts a centreline beyond a skirt that hangs out over its approach", () => {
+    // Otherwise the white line shows between the pickets and reads as a stray picket.
+    const [below, above] = realisticLevelCrossingGeometry(crossing).centreline;
+    const skirtBottom = pivot + look.armWidth / 2 + look.skirtDepth;
+    // Side +1 (below the track at orientation 0): its skirt hangs outward, over the approach.
+    expect(below.y1 - crossing.y).toBeCloseTo(skirtBottom + look.centrelineGap, 6);
+    // Side -1: its skirt hangs back toward the railway, so the line can start at the arm.
+    expect(crossing.y - above.y1).toBeCloseTo(pivot, 6);
+    for (const line of [below, above]) {
+      expect(line.x1).toBe(crossing.x);
+      expect(Math.abs(line.y2 - crossing.y)).toBeCloseTo(crossing.roadLength / 2, 6);
+    }
+  });
+
+  it("rotates with the crossing", () => {
+    const turned = realisticLevelCrossingGeometry({ ...crossing, orientation: 90 });
+    for (const { arm } of turned.barriers) expect(arm.x1).toBeCloseTo(arm.x2, 6);
+    for (const line of turned.centreline) expect(line.y1).toBeCloseTo(line.y2, 6);
   });
 });

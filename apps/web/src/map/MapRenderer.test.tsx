@@ -730,6 +730,77 @@ describe("MapRenderer", () => {
     expect(upBarrier.getAttribute("y1")).not.toBe(upBarrier.getAttribute("y2"));
   });
 
+  describe("realistic crossing barriers (Milestone 58)", () => {
+    const realisticCrossing = {
+      id: "lx-1",
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "levelCrossing" as const,
+      x: 100,
+      y: 50,
+      orientation: 0,
+      roadLength: 34,
+      roadWidth: 16,
+      labelPosition: "below" as const,
+      fontSize: 10,
+      realisticBarriers: true,
+    };
+    const look = MAP_STYLE.levelCrossing.realistic;
+
+    it("draws asphalt, a centreline and banded arms with a picket skirt", () => {
+      const doc = bundle({ elementsById: { "lx-1": realisticCrossing } });
+      const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+
+      // Asphalt on each approach.
+      const surfaces = container.querySelectorAll("polygon");
+      expect(surfaces).toHaveLength(2);
+      for (const surface of surfaces) expect(surface.getAttribute("fill")).toBe(look.surfaceColor);
+
+      const lines = [...container.querySelectorAll("line")];
+      const stroke = (colour: string) => lines.filter((l) => l.getAttribute("stroke") === colour);
+      // A dashed white centreline on each approach.
+      const centreline = stroke(look.centrelineColor);
+      expect(centreline).toHaveLength(2);
+      for (const line of centreline) expect(line.getAttribute("stroke-dasharray")).toBeTruthy();
+      // Each arm is a white bar with red bands dashed over it.
+      expect(stroke(look.armWhite)).toHaveLength(2);
+      const bands = stroke(look.armRed);
+      expect(bands).toHaveLength(2);
+      for (const band of bands) expect(band.getAttribute("stroke-dasharray")).toBeTruthy();
+      // A skirt of pickets plus a bottom rail beneath each arm.
+      expect(stroke(look.skirtColor).length).toBeGreaterThan(4);
+      // None of it uses the live-state colours: red/white is the arm's paint, not "down".
+      for (const colour of Object.values(MAP_STYLE.levelCrossing.stateColors)) {
+        expect(stroke(colour)).toHaveLength(0);
+      }
+    });
+
+    it("never hides a live barrier reading behind the fixed down picture", () => {
+      // Validation forbids realistic barriers on a bound crossing, but if a live state ever
+      // arrives for one, the real position must win (ADR 0014).
+      const doc = bundle({ elementsById: { "lx-1": realisticCrossing } });
+      const { container } = render(
+        <MapRenderer
+          bundle={doc}
+          berths={{}}
+          signals={{}}
+          crossings={{ "lx-1": { state: "up" } }}
+        />,
+      );
+      expect(container.querySelectorAll("polygon")).toHaveLength(0);
+      const barrier = container.querySelectorAll("line")[2]!;
+      expect(barrier.getAttribute("stroke")).toBe(MAP_STYLE.levelCrossing.stateColors.up);
+    });
+
+    it("leaves a crossing without the flag exactly as it was", () => {
+      const { realisticBarriers: _, ...plain } = realisticCrossing;
+      const doc = bundle({ elementsById: { "lx-1": plain } });
+      const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+      expect(container.querySelectorAll("polygon")).toHaveLength(0);
+      expect(container.querySelectorAll("line")).toHaveLength(4);
+    });
+  });
+
   it("renders an unknown crossing as blank rather than assuming the barriers are up", () => {
     // ADR 0014 decision 1: blank means "no information". A crossing absent from `crossings`
     // must never be drawn as up.

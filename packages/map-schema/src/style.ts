@@ -136,6 +136,40 @@ export const MAP_STYLE = {
      * trustworthy.
      */
     stateColors: { blank: "#5f6b7a", up: "#3fb950", down: "#f85149" },
+    /**
+     * Milestone 58 (owner request 2026-09-21): the optional "realistic barriers" look — an
+     * asphalt road with a white centreline, and red/white banded arms lowered across it with a
+     * white picket skirt hanging beneath, drawn as if viewed from a slight angle (owner: "doesn't
+     * need to be full top down"). Only ever offered on a crossing with no S-Class binding
+     * (ADR 0014 addendum): it is scenery in a fixed pose, not a barrier state.
+     *
+     * The red here is the arm's actual paint, not `stateColors.down` — a realistic crossing
+     * carries no state at all.
+     */
+    realistic: {
+      surfaceColor: "#3a4049",
+      centrelineColor: "#f0f3f6",
+      centrelineWidth: 0.8,
+      centrelineDash: [2.2, 1.6],
+      /** Clear road left between a skirt hanging over an approach and where its centreline starts. */
+      centrelineGap: 0.8,
+      armWidth: 2.2,
+      armWhite: "#f5f7fa",
+      armRed: "#d7263d",
+      /** Target length of one red or white band; the actual length is adjusted per arm so the
+       * arm divides into an odd number of bands and both ends are red, as on a real barrier. */
+      bandLength: 2.4,
+      skirtColor: "#e8ecf0",
+      skirtDepth: 3.2,
+      picketWidth: 0.45,
+      picketSpacing: 1.3,
+      skirtRailWidth: 0.6,
+      /** The skirt runs along this fraction of the arm, measured from the post. */
+      skirtStart: 0.08,
+      skirtEnd: 0.96,
+      postColor: "#4a525c",
+      postSize: 2.2,
+    },
   },
   /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
   weldTolerance: 6,

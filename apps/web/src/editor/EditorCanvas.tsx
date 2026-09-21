@@ -6,6 +6,7 @@ import {
   berthRenderRect,
   computeBoundingBox,
   levelCrossingGeometry,
+  realisticLevelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
@@ -1445,6 +1446,19 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
               // public map, never to the drawing surface.
               const geometry = levelCrossingGeometry(element);
               const style = MAP_STYLE.levelCrossing;
+              // Milestone 58: the realistic drawing previews exactly as the public map paints it —
+              // it is authored scenery in a fixed pose, not live data, so unlike a barrier state
+              // it belongs on the drawing surface. Offered only on an unbound crossing.
+              const realistic = element.realisticBarriers
+                ? realisticLevelCrossingGeometry(element)
+                : null;
+              const look = style.realistic;
+              const rel = (segment: { x1: number; y1: number; x2: number; y2: number }) => [
+                segment.x1 - element.x,
+                segment.y1 - element.y,
+                segment.x2 - element.x,
+                segment.y2 - element.y,
+              ];
               return (
                 <Group
                   key={element.id}
@@ -1455,21 +1469,71 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                   onClick={(e) => handleElementClick(e, element.id)}
                   onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
                 >
+                  {realistic?.surfaces.map((surface, index) => (
+                    <Line
+                      key={`surface-${index}`}
+                      points={surface.flatMap((p) => [p.x - element.x, p.y - element.y])}
+                      closed
+                      fill={look.surfaceColor}
+                    />
+                  ))}
                   {geometry.road.map((segment, index) => (
                     <Line
                       key={`road-${index}`}
-                      points={[
-                        segment.x1 - element.x,
-                        segment.y1 - element.y,
-                        segment.x2 - element.x,
-                        segment.y2 - element.y,
-                      ]}
+                      points={rel(segment)}
                       stroke={selected ? "#58a6ff" : style.roadColor}
                       strokeWidth={style.roadStrokeWidth}
                       lineCap="butt"
                     />
                   ))}
-                  {geometry.barriers.map((segment, index) => (
+                  {realistic?.centreline.map((segment, index) => (
+                    <Line
+                      key={`centreline-${index}`}
+                      points={rel(segment)}
+                      stroke={look.centrelineColor}
+                      strokeWidth={look.centrelineWidth}
+                      dash={[...look.centrelineDash]}
+                    />
+                  ))}
+                  {realistic?.barriers.map((barrier, index) => (
+                    <Group key={`realistic-barrier-${index}`}>
+                      {barrier.pickets.map((picket, p) => (
+                        <Line
+                          key={`picket-${p}`}
+                          points={rel(picket)}
+                          stroke={look.skirtColor}
+                          strokeWidth={look.picketWidth}
+                        />
+                      ))}
+                      <Line
+                        points={rel(barrier.skirtRail)}
+                        stroke={look.skirtColor}
+                        strokeWidth={look.skirtRailWidth}
+                        lineCap="round"
+                      />
+                      <Line
+                        points={rel(barrier.arm)}
+                        stroke={look.armWhite}
+                        strokeWidth={look.armWidth}
+                        lineCap="butt"
+                      />
+                      <Line
+                        points={rel(barrier.arm)}
+                        stroke={look.armRed}
+                        strokeWidth={look.armWidth}
+                        lineCap="butt"
+                        dash={[barrier.bandLength, barrier.bandLength]}
+                      />
+                      <Rect
+                        x={barrier.post.x - element.x - look.postSize / 2}
+                        y={barrier.post.y - element.y - look.postSize / 2}
+                        width={look.postSize}
+                        height={look.postSize}
+                        fill={look.postColor}
+                      />
+                    </Group>
+                  ))}
+                  {(realistic ? [] : geometry.barriers).map((segment, index) => (
                     <Line
                       key={`barrier-${index}`}
                       points={[

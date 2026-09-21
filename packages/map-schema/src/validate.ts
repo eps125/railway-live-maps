@@ -242,6 +242,17 @@ export function validateMapDocument(json: unknown): ValidationResult {
         elementId,
       });
     }
+    // Milestone 58 / ADR 0014 addendum: realistic barriers are always drawn down, so on a crossing
+    // whose barriers come from a live S-Class bit they would contradict that bit. The editor won't
+    // offer the combination; this makes it unpublishable rather than trusting the UI alone.
+    const element = elementsById.get(elementId);
+    if (element?.type === "levelCrossing" && element.realisticBarriers) {
+      errors.push({
+        code: "realistic_barriers_on_bound_crossing",
+        message: `Level crossing "${elementId}" has realistic barriers and an S-Class barrier binding — realistic barriers are always drawn down, so they are only allowed on an unbound crossing`,
+        elementId,
+      });
+    }
   }
 
   return { valid: errors.length === 0, errors };

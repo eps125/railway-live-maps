@@ -369,3 +369,154 @@ export function levelCrossingGeometry(
     label: placedLabelAnchor(bounds, element),
   };
 }
+
+export interface RealisticBarrierGeometry {
+  /** The lowered arm, post to tip — the same line `levelCrossingGeometry` gives a `down` arm. */
+  arm: Segment;
+  /** Length of each red or white band. Divides the arm into an odd number of bands, so a renderer
+   * drawing a white arm with red dashes of this length over it gets red at both ends. */
+  bandLength: number;
+  /** The skirt's bottom rail, parallel to the arm. */
+  skirtRail: Segment;
+  /** Vertical pickets from the underside of the arm down to the rail. */
+  pickets: Segment[];
+  /** The barrier's post, at the road edge. */
+  post: { x: number; y: number };
+}
+
+export interface RealisticLevelCrossingGeometry {
+  /** Asphalt on each approach, from the barrier outwards to the road's end. Deliberately **not**
+   * filled between the barriers: that span is the railway, and a crossing paints above the rails
+   * (it sits on the Track layer at zIndex 0), so a solid road there would hide the running line.
+   * Leaving it open keeps every track through the crossing visible, double track included,
+   * without splitting one element across two paint layers. */
+  surfaces: [Array<{ x: number; y: number }>, Array<{ x: number; y: number }>];
+  /** The white centreline on each approach, stopping at the barrier for the same reason. */
+  centreline: [Segment, Segment];
+  barriers: [RealisticBarrierGeometry, RealisticBarrierGeometry];
+}
+
+/**
+ * Milestone 58 (owner request 2026-09-21): the "realistic barriers" drawing of a level crossing —
+ * asphalt approaches with a white centreline, and a red/white banded arm lowered across the road
+ * on each side of the railway with a white picket skirt beneath it. Pure, and shared by the public
+ * SVG renderer and the editor canvas (CLAUDE.md rule 13).
+ *
+ * Always the lowered pose, whatever the crossing's state (owner: "draw them in the down position,
+ * that's fine"). That is only acceptable because this drawing is offered solely on a crossing with
+ * no S-Class binding (ADR 0014 addendum; `validateMapDocument` rejects the combination) — it is a
+ * fixed piece of scenery, never a barrier position, and nothing here reads or implies live state.
+ *
+ * Viewed from a slight angle rather than strictly top down (owner: "happy for crossings to look
+ * like they're viewed from an angle"), which is what lets the skirt read as a fence hanging
+ * *below* the arm. "Below" is the arm's perpendicular on the screen-downward side, so a crossing
+ * at the usual orientation 0 — arms horizontal — shows its skirts hanging straight down, like the
+ * reference photos, and any other orientation still gets a sensible skirt rather than one that
+ * collapses onto its own arm.
+ */
+export function realisticLevelCrossingGeometry(element: {
+  x: number;
+  y: number;
+  orientation: number;
+  roadLength: number;
+  roadWidth: number;
+}): RealisticLevelCrossingGeometry {
+  const style = MAP_STYLE.levelCrossing;
+  const look = style.realistic;
+  const theta = (element.orientation * Math.PI) / 180;
+  const road = { x: Math.sin(theta), y: Math.cos(theta) };
+  const along = { x: Math.cos(theta), y: -Math.sin(theta) };
+  const halfLength = element.roadLength / 2;
+  const halfWidth = element.roadWidth / 2;
+  const pivotDistance = element.roadLength * style.barrierDistance;
+
+  // A point `r` out from the crossing's centre across the track, and `a` along it.
+  const at = (r: number, a: number): { x: number; y: number } => ({
+    x: element.x + road.x * r + along.x * a,
+    y: element.y + road.y * r + along.y * a,
+  });
+
+  const surface = (side: 1 | -1): Array<{ x: number; y: number }> => [
+    at(pivotDistance * side, halfWidth),
+    at(halfLength * side, halfWidth),
+    at(halfLength * side, -halfWidth),
+    at(pivotDistance * side, -halfWidth),
+  ];
+
+  // The way a side's skirt hangs: the arm's perpendicular on the screen-downward side, with a tie
+  // (a vertical arm) broken toward +x. The arm itself runs post to tip, i.e. -along for side +1.
+  const skirtDirection = (side: 1 | -1): { x: number; y: number } => {
+    const dir = { x: -along.x * side, y: -along.y * side };
+    const down = { x: -dir.y, y: dir.x };
+    return down.y < -1e-9 || (Math.abs(down.y) <= 1e-9 && down.x < 0)
+      ? { x: -down.x, y: -down.y }
+      : down;
+  };
+
+  const centreline = (side: 1 | -1): Segment => {
+    // Where this side's skirt hangs out over its own approach, rather than back toward the
+    // railway, start the line beyond it: otherwise the white line shows between the pickets and
+    // reads as a stray, thicker picket.
+    const down = skirtDirection(side);
+    const outward =
+      (down.x * road.x + down.y * road.y) * side * (look.armWidth / 2 + look.skirtDepth);
+    const start = Math.min(
+      halfLength,
+      pivotDistance + (outward > 0 ? outward + look.centrelineGap : 0),
+    );
+    const from = at(start * side, 0);
+    const to = at(halfLength * side, 0);
+    return { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
+  };
+
+  const barrier = (side: 1 | -1): RealisticBarrierGeometry => {
+    // Identical to `levelCrossingGeometry`'s lowered arm, so ticking the box restyles the barrier
+    // the author already placed rather than moving it.
+    const post = at(pivotDistance * side, halfWidth * side);
+    const tip = at(pivotDistance * side, -halfWidth * side);
+    const length = element.roadWidth;
+    const dir = { x: (tip.x - post.x) / length, y: (tip.y - post.y) / length };
+    const down = skirtDirection(side);
+
+    const bands = Math.max(3, 2 * Math.round((length / look.bandLength - 1) / 2) + 1);
+    const pointAt = (t: number): { x: number; y: number } => ({
+      x: post.x + dir.x * length * t,
+      y: post.y + dir.y * length * t,
+    });
+    const start = pointAt(look.skirtStart);
+    const end = pointAt(look.skirtEnd);
+    const top = look.armWidth / 2;
+    const bottom = top + look.skirtDepth;
+    const skirtLength = length * (look.skirtEnd - look.skirtStart);
+    const count = Math.max(2, Math.floor(skirtLength / look.picketSpacing) + 1);
+    const pickets: Segment[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const p = pointAt(look.skirtStart + ((look.skirtEnd - look.skirtStart) * i) / (count - 1));
+      pickets.push({
+        x1: p.x + down.x * top,
+        y1: p.y + down.y * top,
+        x2: p.x + down.x * bottom,
+        y2: p.y + down.y * bottom,
+      });
+    }
+
+    return {
+      arm: { x1: post.x, y1: post.y, x2: tip.x, y2: tip.y },
+      bandLength: length / bands,
+      skirtRail: {
+        x1: start.x + down.x * bottom,
+        y1: start.y + down.y * bottom,
+        x2: end.x + down.x * bottom,
+        y2: end.y + down.y * bottom,
+      },
+      pickets,
+      post,
+    };
+  };
+
+  return {
+    surfaces: [surface(1), surface(-1)],
+    centreline: [centreline(1), centreline(-1)],
+    barriers: [barrier(1), barrier(-1)],
+  };
+}

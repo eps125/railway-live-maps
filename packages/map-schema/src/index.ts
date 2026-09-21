@@ -40,6 +40,7 @@ export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
 export {
   berthRenderRect,
   levelCrossingGeometry,
+  realisticLevelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
   pointOnPathAtX,
@@ -48,6 +49,8 @@ export {
   viaductWidth,
   type BarrierDisplayState,
   type LevelCrossingGeometry,
+  type RealisticBarrierGeometry,
+  type RealisticLevelCrossingGeometry,
   type NeutralSectionGeometry,
   type PlacedLabel,
   type PlacedLabelFields,

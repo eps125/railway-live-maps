@@ -488,12 +488,27 @@ function PlacedLabelFieldset({
  * from train movements, routes or timetables (CLAUDE.md rule 10). An unbound crossing shows grey
  * barriers, which means "no information", not "up".
  */
+/** The crossing's barrier binding, if it has one. */
+function barrierBindingFor(
+  bindings: ReadonlyArray<{ type: string; elementId: string }>,
+  elementId: string,
+): TdSBitBarrierBinding | undefined {
+  return bindings.find(
+    (b): b is TdSBitBarrierBinding => b.type === "tdSBitBarrier" && b.elementId === elementId,
+  );
+}
+
 function BarrierBindingFields({
   elementId,
   binding,
+  realistic,
 }: {
   elementId: string;
   binding: TdSBitBarrierBinding | undefined;
+  /** Milestone 58: realistic barriers are always drawn down, so they and a live binding are
+   * mutually exclusive (ADR 0014 addendum) — while they're on, binding is refused here and by
+   * `validateMapDocument`. Clearing an existing binding stays possible either way. */
+  realistic: boolean;
 }): JSX.Element {
   const dispatch = useEditorDispatch();
   const areas = useSClassAreas();
@@ -566,9 +581,19 @@ function BarrierBindingFields({
           <option value="up">barriers up</option>
         </select>
       </label>
-      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
+      <button
+        type="button"
+        className="btn btn--primary"
+        disabled={!valid || realistic}
+        onClick={apply}
+      >
         {binding ? "Update binding" : "Bind barriers"}
       </button>
+      {realistic ? (
+        <p className="field-hint">
+          Turn off realistic crossing barriers to bind this crossing to an S-Class bit.
+        </p>
+      ) : null}
       {binding ? (
         <button
           type="button"
@@ -1091,13 +1116,34 @@ export function PropertyPanel(): JSX.Element {
             0° is square across a horizontal track. Crossing type (MCB, AHB, UWC …) is a note to
             yourself — it is never rendered and never affects the barrier display.
           </p>
-          <BarrierBindingFields
-            elementId={elementId}
-            binding={doc.bindings.find(
-              (b): b is TdSBitBarrierBinding =>
-                b.type === "tdSBitBarrier" && b.elementId === elementId,
-            )}
-          />
+          {(() => {
+            const barrierBinding = barrierBindingFor(doc.bindings, elementId);
+            return (
+              <>
+                <label className="field field--checkbox">
+                  <input
+                    type="checkbox"
+                    checked={element.realisticBarriers === true}
+                    disabled={barrierBinding !== undefined && !element.realisticBarriers}
+                    onChange={(e) =>
+                      setProp("realisticBarriers", e.target.checked ? true : undefined)
+                    }
+                  />
+                  Realistic crossing barriers
+                </label>
+                <p className="field-hint">
+                  {barrierBinding
+                    ? "Not available while the barriers are bound to an S-Class bit — a bound crossing always shows its live position. Clear the binding to use it."
+                    : "Draws the road with a white centreline and red-and-white barriers lowered across it, with a white fence beneath. Always shown down: it is scenery, not a barrier state, which is why it is only offered on a crossing with no S-Class binding."}
+                </p>
+                <BarrierBindingFields
+                  elementId={elementId}
+                  binding={barrierBinding}
+                  realistic={element.realisticBarriers === true}
+                />
+              </>
+            );
+          })()}
         </>
       )}
 

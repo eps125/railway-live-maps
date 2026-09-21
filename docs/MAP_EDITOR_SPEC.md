@@ -245,6 +245,26 @@ Expect grey barriers when scrubbing playback back beyond an area's decoded S-Cla
 signals, a crossing resolves from decoded `td_s_event` rows, and history predating Milestone 36a
 is undecoded until that area is backfilled. Grey there means "not recorded", not "up".
 
+**Realistic barriers (Milestone 58, owner request 2026-09-21).** An optional
+`realisticBarriers` tickbox ("Realistic crossing barriers") swaps the schematic lines for a drawing
+that looks like the real thing: asphalt on each approach with a dashed white centreline, and on
+each side of the railway a red-and-white banded arm lowered across the road with a white picket
+skirt hanging beneath it. It is drawn as if viewed from a slight angle, not strictly top down
+(owner), which is what lets the skirt read as a fence below the arm; at the usual orientation 0
+both skirts hang straight down. The arms sit exactly where the schematic `down` arms do, so ticking
+the box restyles a crossing without moving anything, and the band count is always odd so both ends
+of an arm are red.
+
+It is **always the down pose** and is **only offered on a crossing with no S-Class binding** —
+a fixed piece of scenery, not a barrier position (see the ADR 0014 addendum). The tickbox is
+disabled on a bound crossing, binding is refused while it is ticked, `validateMapDocument` rejects
+the combination (`realistic_barriers_on_bound_crossing`), and the public renderer falls back to
+the live state if one ever arrives for a realistic crossing. The span between the two barriers is
+left unsurfaced on purpose: a crossing paints above the rails, so a solid road there would hide the
+running line, whereas leaving it open keeps every track through the crossing visible without
+splitting the element across paint layers. Drawn from `realisticLevelCrossingGeometry`, shared by
+the public renderer and the editor canvas (CLAUDE.md rule 13).
+
 ### `label`
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line

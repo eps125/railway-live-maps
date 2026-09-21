@@ -495,6 +495,29 @@ describe("level crossing barrier bindings (Milestone 55 / ADR 0014)", () => {
     expect(result.errors.map((e) => e.code)).toContain("multiple_barrier_bindings");
   });
 
+  // Milestone 58 / ADR 0014 addendum: realistic barriers are always drawn down, so they may only
+  // appear on a crossing with no live barrier state. The editor won't offer the combination; this
+  // makes it unpublishable rather than relying on the UI.
+  it("accepts realistic barriers on an unbound crossing", () => {
+    const result = validateMapDocument(docWith([{ ...crossing, realisticBarriers: true }], []));
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects realistic barriers on a crossing bound to an S-Class bit", () => {
+    const result = validateMapDocument(
+      docWith([{ ...crossing, realisticBarriers: true }], [barrier("b1", 2)]),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((e) => e.code)).toContain("realistic_barriers_on_bound_crossing");
+  });
+
+  it("does not object to a bound crossing that has realistic barriers switched off", () => {
+    const result = validateMapDocument(
+      docWith([{ ...crossing, realisticBarriers: false }], [barrier("b1", 2)]),
+    );
+    expect(result.valid).toBe(true);
+  });
+
   it("rejects a signal binding on a level crossing (the mirror rule)", () => {
     const result = validateMapDocument(
       docWith(

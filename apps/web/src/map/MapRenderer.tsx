@@ -4,6 +4,7 @@ import {
   MAP_STYLE,
   berthRenderRect,
   levelCrossingGeometry,
+  realisticLevelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
   pointOnPathAtX,
@@ -280,6 +281,12 @@ function renderLevelCrossing(
   const style = MAP_STYLE.levelCrossing;
   const geometry = levelCrossingGeometry(element, barrierState);
   const barrierColor = style.stateColors[barrierState];
+  // Milestone 58: the realistic drawing, only for a crossing with no live barrier state. Validation
+  // already forbids realistic barriers on a bound crossing; the `blank` check is belt and braces,
+  // so a real up/down reading can never be hidden behind a fixed "down" picture (ADR 0014).
+  if (element.realisticBarriers && barrierState === "blank") {
+    return renderRealisticLevelCrossing(element, geometry);
+  }
   return (
     <g key={element.id}>
       {geometry.road.map((segment, index) => (
@@ -305,6 +312,89 @@ function renderLevelCrossing(
           strokeWidth={style.barrierStrokeWidth}
           strokeLinecap="round"
         />
+      ))}
+      {placedLabelText(geometry.label, element.label, element.fontSize)}
+    </g>
+  );
+}
+
+/**
+ * Milestone 58: a level crossing drawn "realistically" — asphalt approaches with a dashed white
+ * centreline, and on each side of the railway a red/white banded arm lowered across the road with
+ * a white picket skirt beneath it (`realisticLevelCrossingGeometry`, shared with the editor canvas
+ * per CLAUDE.md rule 13). Always the down pose: scenery, not a barrier state, and only ever reached
+ * for an unbound crossing. The road edges stay the schematic ones, so the crossing keeps the same
+ * outline whichever way it is drawn.
+ */
+function renderRealisticLevelCrossing(
+  element: LevelCrossingElement,
+  geometry: ReturnType<typeof levelCrossingGeometry>,
+): JSX.Element {
+  const style = MAP_STYLE.levelCrossing;
+  const look = style.realistic;
+  const realistic = realisticLevelCrossingGeometry(element);
+  const line = (
+    key: string,
+    segment: { x1: number; y1: number; x2: number; y2: number },
+    stroke: string,
+    strokeWidth: number,
+    extra: Record<string, string | number> = {},
+  ) => (
+    <line
+      key={key}
+      x1={segment.x1}
+      y1={segment.y1}
+      x2={segment.x2}
+      y2={segment.y2}
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      {...extra}
+    />
+  );
+  return (
+    <g key={element.id}>
+      {realistic.surfaces.map((surface, index) => (
+        <polygon
+          key={`surface-${index}`}
+          points={surface.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill={look.surfaceColor}
+        />
+      ))}
+      {geometry.road.map((segment, index) =>
+        line(
+          `road-${index}`,
+          segment,
+          `var(${MAP_CSS_TOKENS.levelCrossingRoad}, ${style.roadColor})`,
+          style.roadStrokeWidth,
+          { strokeLinecap: "butt" },
+        ),
+      )}
+      {realistic.centreline.map((segment, index) =>
+        line(`centreline-${index}`, segment, look.centrelineColor, look.centrelineWidth, {
+          strokeDasharray: look.centrelineDash.join(" "),
+        }),
+      )}
+      {realistic.barriers.map((barrier, index) => (
+        <g key={`barrier-${index}`}>
+          {barrier.pickets.map((picket, p) =>
+            line(`picket-${p}`, picket, look.skirtColor, look.picketWidth),
+          )}
+          {line("rail", barrier.skirtRail, look.skirtColor, look.skirtRailWidth, {
+            strokeLinecap: "round",
+          })}
+          {line("arm", barrier.arm, look.armWhite, look.armWidth, { strokeLinecap: "butt" })}
+          {line("bands", barrier.arm, look.armRed, look.armWidth, {
+            strokeLinecap: "butt",
+            strokeDasharray: `${barrier.bandLength} ${barrier.bandLength}`,
+          })}
+          <rect
+            x={barrier.post.x - look.postSize / 2}
+            y={barrier.post.y - look.postSize / 2}
+            width={look.postSize}
+            height={look.postSize}
+            fill={look.postColor}
+          />
+        </g>
       ))}
       {placedLabelText(geometry.label, element.label, element.fontSize)}
     </g>

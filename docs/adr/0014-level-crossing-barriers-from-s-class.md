@@ -135,7 +135,38 @@ publishes crossing state before spending time trawling it.
 - **Infer barriers from the signals protecting the crossing.** Directly against rule 10, and
   wrong in practice (a barrier can be down with the protecting signal still on).
 - **A manual, author-set barrier state.** Would put a static claim about a live, safety-adjacent
-  thing on a public map. Grey-when-unbound is honest; a hardcoded "up" is not.
+  thing on a public map. Grey-when-unbound is honest; a hardcoded "up" is not. (Still rejected —
+  the Milestone 58 addendum below adds a fixed _drawing style_, not a settable state, and says why
+  the two differ.)
 - **One generic "bit-bound element" abstraction over signals and crossings.** Tempting, but it
   would have meant rewriting deployed, working signal code to gain nothing the edge conversion
   does not already give.
+
+## Addendum — realistic barriers (Milestone 58, 2026-09-21)
+
+**Owner request and approval, 2026-09-21:** an optional "realistic crossing barriers" drawing — red
+and white banded arms lowered across the road, a white picket skirt beneath, an asphalt road with
+a white centreline — offered **only on a crossing with no S-Class binding**, and drawn **always in
+the down position** (owner: "draw them in the down position, that's fine, no issues").
+
+This sits close to the rejected "manual, author-set barrier state" above, so the distinction is
+recorded rather than left implicit:
+
+1. **It is a drawing style, not a state.** There is no up/down choice for an author to make and no
+   state value in the document or the geometry — `realisticLevelCrossingGeometry` takes no state
+   argument at all. The rejected alternative was a settable claim about where the barriers are.
+2. **It can only appear where there is no state to contradict.** Offered only on an unbound
+   crossing; the editor refuses to bind one while the style is on, `validateMapDocument` makes the
+   combination unpublishable (`realistic_barriers_on_bound_crossing`), and the public renderer
+   falls back to the live state if one ever arrives. A bound crossing's display remains exactly
+   decision 1's: its bit, and nothing else.
+3. **The fixed pose errs on the safe side.** The objection recorded above was to a hardcoded "up",
+   which could suggest a road is clear when it is not. A picture of lowered barriers never
+   suggests that. It is also the geometry an unbound crossing already used (grey, track-parallel,
+   owner preference 2026-09-20), so the style changes the paint, not the pose.
+4. **It uses none of the state colours.** The red is the arm's paint (`realistic.armRed`), not
+   `stateColors.down`; the green that means "up" never appears.
+
+What this does _not_ change: grey still means "no information" for a schematic crossing, a bound
+crossing still shows only its bit, and nothing here infers a barrier position from anything
+(rule 10). The site remains labelled non-safety-critical and unofficial (rule 16).

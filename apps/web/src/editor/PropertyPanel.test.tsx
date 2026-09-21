@@ -781,3 +781,102 @@ describe("PropertyPanel S-Class signal binding (Milestone 36c)", () => {
     expect(screen.getByRole("button", { name: "Bind signal" })).toBeEnabled();
   });
 });
+
+describe("PropertyPanel realistic crossing barriers (Milestone 58)", () => {
+  function crossingDoc(options: { bound?: boolean; realistic?: boolean } = {}): MapDocument {
+    const doc = baseDoc();
+    return {
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          id: "lx-1",
+          layerId: "l",
+          zIndex: 0,
+          type: "levelCrossing",
+          x: 100,
+          y: 50,
+          orientation: 0,
+          roadLength: 34,
+          roadWidth: 16,
+          labelPosition: "below",
+          fontSize: 10,
+          ...(options.realistic ? { realisticBarriers: true } : {}),
+        },
+      ],
+      bindings: options.bound
+        ? [
+            ...doc.bindings,
+            {
+              id: "bind-lx",
+              elementId: "lx-1",
+              type: "tdSBitBarrier",
+              tdArea: "M9",
+              address: "03",
+              bit: 2,
+              activeMeans: "down",
+            },
+          ]
+        : doc.bindings,
+    };
+  }
+
+  /** Shows what the crossing's flag is in the document, so a test can assert the commit. */
+  function FlagProbe(): JSX.Element {
+    const { document: doc } = useEditorState();
+    const crossing = doc.elements.find((e) => e.id === "lx-1");
+    const flag = crossing?.type === "levelCrossing" ? crossing.realisticBarriers : "n/a";
+    return <pre data-testid="flag">{String(flag)}</pre>;
+  }
+
+  function renderCrossing(doc: MapDocument) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ areas: [] }))),
+    );
+    return render(
+      <EditorStateProvider initialDocument={doc}>
+        <Select id="lx-1" />
+        <PropertyPanel />
+        <FlagProbe />
+      </EditorStateProvider>,
+    );
+  }
+
+  it("offers the tickbox on an unbound crossing and commits it", async () => {
+    renderCrossing(crossingDoc());
+    const box = await screen.findByLabelText("Realistic crossing barriers");
+    expect(box).not.toBeDisabled();
+    expect(box).not.toBeChecked();
+
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    expect(screen.getByTestId("flag")).toHaveTextContent("true");
+  });
+
+  it("removes the field again when unticked, rather than storing false", async () => {
+    renderCrossing(crossingDoc({ realistic: true }));
+    const box = await screen.findByLabelText("Realistic crossing barriers");
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    expect(screen.getByTestId("flag")).toHaveTextContent("undefined");
+  });
+
+  it("is not available while the barriers are bound to an S-Class bit", async () => {
+    // A bound crossing always shows its live position (ADR 0014 addendum).
+    renderCrossing(crossingDoc({ bound: true }));
+    const box = await screen.findByLabelText("Realistic crossing barriers");
+    expect(box).toBeDisabled();
+    expect(screen.getByText(/Not available while the barriers are bound/)).toBeInTheDocument();
+  });
+
+  it("refuses a new binding while realistic barriers are on", async () => {
+    renderCrossing(crossingDoc({ realistic: true }));
+    expect(await screen.findByRole("button", { name: "Bind barriers" })).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Turn off realistic crossing barriers to bind this crossing to an S-Class bit.",
+      ),
+    ).toBeInTheDocument();
+  });
+});

@@ -3413,6 +3413,61 @@ detail as if it were the one on screen in playback.
 Not done: nothing here changes what playback _renders_ — signals and barriers still go blank
 before an area has been decoded (Milestone 56), which is correct and deliberate.
 
+## Milestone 58 — realistic crossing barriers (2026-09-21)
+
+Owner request: an optional "realistic crossing barriers" tickbox on level crossings, drawn from
+reference photos — red and white banded arms with a white fence beneath, and a road with a white
+centreline. Only for crossings without S-Class data. Owner decisions during the build: draw the
+barriers in the down position ("that's fine, no issues"), and the look need not be strictly top
+down ("happy for crossings to look like they're viewed from an angle").
+
+**Document:** `levelCrossing.realisticBarriers` — optional boolean, so every existing crossing
+parses unchanged and keeps the schematic look. Unticking removes the field rather than storing
+`false`.
+
+**Geometry** (`realisticLevelCrossingGeometry`, `packages/map-schema/src/geometry.ts`), additive —
+`levelCrossingGeometry` and its owner-designed barrier rotation are untouched:
+
+- Each arm is exactly the schematic `down` arm, so ticking the box restyles a crossing without
+  moving it. Bands divide each arm into an odd count, so both ends are red as on a real barrier.
+- The skirt hangs from the arm's underside along its screen-downward perpendicular: straight down
+  at the usual orientation 0 (like the photos), and a vertical arm still gets a real skirt instead
+  of one collapsed onto itself.
+- Asphalt covers each approach from the barrier outwards; **the railway between the barriers is
+  left unsurfaced**. A crossing paints above the rails (Track layer, zIndex 0), so a solid road
+  there would hide the running line; leaving it open keeps every track visible, double track
+  included, without splitting one element across two paint layers.
+- The centreline stops where a skirt hangs out over its approach — found in a rendered preview,
+  where the line showing between the pickets read as a stray, thicker picket.
+- No state argument at all: the function cannot draw the arms up.
+
+**Mutual exclusion with S-Class bindings** (ADR 0014 addendum), enforced at every layer:
+
+- PropertyPanel: the tickbox is disabled, with the reason, on a bound crossing; "Bind barriers" is
+  disabled while it is ticked. Clearing an existing binding stays possible.
+- `validateMapDocument`: new error `realistic_barriers_on_bound_crossing`, beside the existing
+  barrier-binding rules, so the combination is unpublishable rather than merely discouraged.
+- MapRenderer: draws the realistic picture only when the crossing's state is `blank`, so a live
+  up/down reading can never be hidden behind a fixed down drawing.
+
+**Renderers:** the public SVG renderer and the Konva editor canvas both draw from the shared
+geometry (rule 13). Unlike a live barrier state — which the editor canvas deliberately never shows —
+the realistic drawing _is_ previewed on the canvas, because it is authored scenery in a fixed pose,
+not live data. None of it uses `stateColors`: the red is the arm's paint (`realistic.armRed`).
+
+**ADR 0014** gains an addendum reconciling this with its rejected "manual, author-set barrier
+state": a drawing style with no state value, allowed only where no state exists, in the pose that
+never suggests a road is clear.
+
+**Tests:** 8 geometry (arm matches the schematic down arm; always down; odd band count; skirt hangs
+down; vertical-arm skirt; railway left unsurfaced; centreline clears an outward skirt; rotation),
+3 validation, 3 renderer (draws the picture without state colours; live state wins; unflagged
+crossing unchanged), 4 PropertyPanel (commits; unticking removes the field; disabled when bound;
+binding refused while ticked).
+
+Not verified: the Konva editor branch was checked by typecheck and shares its geometry with the
+tested SVG path, but was not rendered in a browser — jsdom can't draw a canvas.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

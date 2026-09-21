@@ -318,6 +318,13 @@ const LevelCrossingElementSchema = BaseElementSchema.extend({
   /** Author's note on the crossing type (MCB, AHB, UWC …). Metadata only — never rendered as a
    * claim about how the crossing is worked, and it does not affect the barrier display. */
   crossingType: z.string().optional(),
+  /** Milestone 58 (owner request 2026-09-21): draw this crossing "realistically" — asphalt road
+   * with a white centreline, red/white banded arms lowered across it, a white picket skirt — in
+   * place of the plain schematic lines (`realisticLevelCrossingGeometry`). Only allowed on a
+   * crossing with no `tdSBitBarrier` binding: the arms are always drawn down, so on a bound
+   * crossing it would contradict the live barrier state (ADR 0014 addendum). Optional so every
+   * crossing authored before it existed parses unchanged, as the schematic look. */
+  realisticBarriers: z.boolean().optional(),
   ...placedLabelFields,
 });
 

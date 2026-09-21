@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   GARNER_NOT_DELETED,
+  dedupeByKey,
   dedupeScheduleRowsById,
   diffScheduleWindow,
   garnerDeletedToTs,
@@ -150,5 +151,29 @@ describe("diffScheduleWindow", () => {
   it("never reports an RLM-only schedule — the mirror does not delete history", () => {
     const diff = diffScheduleWindow([], [live(5)], new Map(), new Map([[5, 4]]));
     expect(diff).toEqual({ scheduleIds: [], locationOnlyIds: [] });
+  });
+});
+
+describe("dedupeByKey", () => {
+  // Production, 2026-09-21: garner's `smart` has 32 keys and `corpus` 20 TIPLOCs that collide on
+  // RLM's conflict key, which failed every reference sync with "cannot affect row a second time".
+  it("keeps the last row per key and warns only about duplicates that disagree", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rows = [
+      { td: "AW", fromberth: "0103", toberth: "GB05", event: "D", stanox: 72252 },
+      { td: "DA", fromberth: "DB07", toberth: "", event: "D", stanox: 73272 },
+      { td: "DA", fromberth: "DB07", toberth: "", event: "D", stanox: 73272 },
+      { td: "AW", fromberth: "0103", toberth: "GB05", event: "D", stanox: 72253 },
+    ];
+    const kept = dedupeByKey("smart", rows, (r) =>
+      [r.td, r.fromberth, r.toberth, r.event].join("|"),
+    );
+    expect(kept).toEqual([
+      { td: "AW", fromberth: "0103", toberth: "GB05", event: "D", stanox: 72253 },
+      { td: "DA", fromberth: "DB07", toberth: "", event: "D", stanox: 73272 },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("1 source rows collide");
+    warn.mockRestore();
   });
 });

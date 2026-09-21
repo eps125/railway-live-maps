@@ -132,9 +132,6 @@ export async function runIngestGarner(config: Config): Promise<void> {
       }
 
       if (tick % REFERENCE_EVERY_N_TICKS === 0) {
-        const reference = await runGarnerReferenceSync(garner, pg);
-        console.log("ingest-garner: reference sync", reference);
-
         // Self-healing diff of the schedule mirror against garner (2026-09-21 incident — see
         // runGarnerScheduleReconcile). Logged every time it repairs anything: a non-zero count
         // means the incremental sync missed rows, which should be rare and worth seeing.
@@ -142,6 +139,10 @@ export async function runIngestGarner(config: Config): Promise<void> {
         if (reconcile.schedulesRepaired > 0 || reconcile.locationSetsRepaired > 0) {
           console.warn("ingest-garner: schedule reconcile repaired divergence", reconcile);
         }
+
+        // After the reconcile, so a reference-sync failure can never block schedule repair.
+        const reference = await runGarnerReferenceSync(garner, pg);
+        console.log("ingest-garner: reference sync", reference);
       }
     },
     onShutdown: async () => {

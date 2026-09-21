@@ -142,6 +142,32 @@ async function chunkedInsert(
   return written;
 }
 
+/**
+ * Collapse rows sharing an RLM conflict key to one (the last), so a single `on conflict do update`
+ * statement never meets the same key twice — Postgres rejects that outright ("cannot affect row
+ * a second time"), which failed every garner reference sync: CORPUS stopped updating on
+ * 2026-09-08 and SMART had never synced from garner at all (found 2026-09-21). Last-wins matches
+ * what the old multi-statement file import already did. Duplicates that *disagree* (e.g. SMART
+ * steps differing only in STANOX, which RLM's natural key cannot hold both of) are logged, never
+ * silently dropped. Exported for tests.
+ */
+export function dedupeByKey<T>(label: string, rows: T[], key: (row: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  let conflicting = 0;
+  for (const row of rows) {
+    const k = key(row);
+    const prior = byKey.get(k);
+    if (prior !== undefined && JSON.stringify(prior) !== JSON.stringify(row)) conflicting += 1;
+    byKey.set(k, row);
+  }
+  if (conflicting > 0) {
+    console.warn(
+      `garner ${label}: ${conflicting} source rows collide on RLM's key with different values; kept the last of each`,
+    );
+  }
+  return [...byKey.values()];
+}
+
 // ---------------------------------------------------------------------------
 // CORPUS / SMART (unchanged: full re-sync)
 // ---------------------------------------------------------------------------
@@ -179,7 +205,7 @@ async function syncCorpus(garner: MysqlPool, pg: PgPool): Promise<number> {
   );
   if (rows.length === 0) return 0;
 
-  const tuples = rows.map((row) => [
+  const tuples = dedupeByKey("corpus", rows, (row) => row.tiploc.trim()).map((row) => [
     row.tiploc.trim(),
     stanoxText(row.stanox),
     nonEmpty(row["3alpha"]),
@@ -210,7 +236,15 @@ async function syncSmart(garner: MysqlPool, pg: PgPool): Promise<number> {
   );
   if (rows.length === 0) return 0;
 
-  const tuples = rows.map((row) => [
+  // Same normalisation as the `smart_berth_step_natural_key_idx` expression index.
+  const tuples = dedupeByKey("smart", rows, (row) =>
+    [
+      row.td.trim(),
+      nonEmpty(row.fromberth) ?? "",
+      nonEmpty(row.toberth) ?? "",
+      nonEmpty(row.event) ?? "",
+    ].join("|"),
+  ).map((row) => [
     row.td.trim(),
     nonEmpty(row.fromberth),
     nonEmpty(row.toberth),

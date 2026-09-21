@@ -3593,6 +3593,23 @@ garner had 418,918 rows and 418,575 distinct RLM keys, exactly RLM's count. Fixi
 primary-key change on a ~14.5M-row table, and is **deferred for owner approval**. The small
 cancellation/change-table differences are likely the same key-collapse class (unconfirmed).
 
+**Backfill run on production (same day):** `reconcile-garner-schedules` repaired 55,774
+schedule headers and 2,758 location sets. That is more than the 34,179 missing ids, because
+~21.6k present rows also had a withdrawal or amendment that never synced. A re-diff afterwards
+found 0 missing schedules and 0 mismatched location counts. 6Z98/R61798 then linked live at PX
+(`trust_activation`, solid). 6X81/B32230 had already left PX by then; the TRUST data as it stood
+at 18:37 UTC shows it would have matched.
+
+**Second pre-existing failure found after deploy:** the garner reference sync hit the same
+duplicate-key error on every run. garner's `corpus` has 20 TIPLOCs and `smart` 32 step keys that
+collide on RLM's conflict key. As a result **CORPUS had not updated since 2026-09-08 and SMART had
+never synced from garner**: `smart_berth_step` was still the 2026-08-10 file import.
+`dedupeByKey` now keeps the last row per key (as the file import already did across statements)
+and warns with a count when the duplicates disagree. The reconcile now runs before the reference
+sync, so one can't block the other. **Follow-up:** some SMART collisions differ only in STANOX
+(e.g. AW 0103→GB05: 72252 vs 72253), and RLM's natural key can hold only one. Widening it is a
+schema change, left for owner approval.
+
 **Tests:** dedupe (the production duplicate), `diffScheduleWindow` (skipped schedule as R61798;
 locationless as B32229/B32230; unseen withdrawal/amendment; RLM-only never reported), and dispatch.
 

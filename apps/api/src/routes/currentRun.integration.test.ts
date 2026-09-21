@@ -1522,6 +1522,49 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     });
 
+    it("drops yesterday's identical run once TRUST reported it terminated, keeping today's train standing at the same terminus (5Z01 S23329 vs S23328)", async () => {
+      // Daily ECS terminating at this berth's station. Yesterday's run is still inside the
+      // docs/adr/0008 [today, yesterday] probe; its "arrival at destination + terminated" report
+      // (flags 595: kind 3, bit 6) proves it finished. Today's run has the very same report while
+      // it stands here, which must NOT exclude it.
+      const area = uniqueArea();
+      const tiploc = `TT${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Terminus", stanox);
+      await seedSmartBerthStep(area, "0035", stanox);
+      await seedOccupiedBerth(area, "0035", "5X35");
+      const today = londonTodayDateString();
+      const yesterday = londonYesterdayDateString();
+
+      const yesterdaysId = await seedScheduleForDateRange("5X35", "N", yesterday, yesterday);
+      await seedScheduleLocation(yesterdaysId, 1, tiploc, "LT", { arrival: "2342" });
+      const yesterdaysTrustId = await seedActivationAt(
+        yesterdaysId,
+        new Date(`${yesterday}T19:00:00Z`),
+      );
+      await seedMovement(yesterdaysTrustId, stanox, 595, 0);
+
+      const todaysId = await seedScheduleForDateRange("5X35", "N", today, today);
+      await seedScheduleLocation(todaysId, 1, tiploc, "LT", { arrival: "2342" });
+      const todaysTrustId = await seedActivation(todaysId, "5X35");
+      await seedMovement(todaysTrustId, stanox, 595, 0);
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0035/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.effective.scheduleId).toBe(String(todaysId));
+      } finally {
+        await app.close();
+      }
+    });
+
     it("never treats a report at this berth's own station as having passed it", async () => {
       // Both candidates have been reported *at* the station (an arrival while standing there);
       // neither has anything beyond it, so neither is excluded and the clash stays visible.

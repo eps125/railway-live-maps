@@ -3631,12 +3631,23 @@ than once, so a report only counts if _every_ schedule position it could mean li
 anchor. Accepted trade-off: a run that terminated here earlier with nothing reported beyond it is
 no longer excluded, so a same-headcode clash then shows `ambiguous` instead of being hidden.
 
+**Refinement, same night (owner-approved).** After deploying, 5Z01 resolved `ambiguous`, not
+`matched`. The ADR 0008 `[today, yesterday]` probe keeps yesterday's identical run in the pool:
+S23329, the Sunday 5Z01, which also terminated at Preston. Under the rule above a run that ended
+here can't be ruled out, and that affects every daily working terminating at a berth's station,
+not the rare case I had estimated. So a candidate resolved to **yesterday** is also excluded once
+TRUST reports it finished: an "arrival at destination" (event kind 3) or "terminated" (bit 6)
+report. It is not applied to today's candidates, because the train standing at its terminus
+carries exactly that report. On production data this excludes S23329 (flags 595 at Preston,
+2026-09-20 22:46 UTC) and keeps S23328. Accepted residual gap: an overnight run that terminated
+just after midnight and is still standing in the berth resolves to yesterday and is excluded.
+
 **Checked on production data before shipping:** 5Z01's S23328 is no longer excluded. For the
 original Milestone 45 1M11 case, the runs TRUST shows past Preston (W33973, C04493) are still
 excluded, and today's not-yet-past C04561 is kept.
 
-**Tests:** 2 integration tests (the 5Z01 loop shape; a report at the station itself is never
-evidence). The existing 1M11 test is unchanged and still applies.
+**Tests:** 3 integration tests (the 5Z01 loop shape; yesterday's terminated run dropped while
+today's at the same terminus is kept; a report at the station itself is never evidence). The existing 1M11 test is unchanged and still applies.
 
 ## Milestone 62 — trust_movement keeps same-minute arrival/departure pairs (2026-09-21)
 

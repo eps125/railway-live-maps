@@ -558,7 +558,18 @@ export async function callingTimeMinutesByScheduleId(
  * every schedule position its STANOX could mean lies after that anchor — so a report at the
  * station itself, or at anywhere visited both before and after it, is never evidence. A run that
  * *terminated* here with nothing reported beyond is therefore no longer excluded; a same-headcode
- * clash then stays `ambiguous` (owner-accepted trade-off, 2026-09-21) — visible, never wrong.
+ * clash then stays `ambiguous` — visible, never wrong.
+ *
+ * Refinement, same night (5Z01 again): that trade-off turned out to bite every daily working
+ * that terminates at this berth's station, because the ADR 0008 `[today, yesterday]` probe keeps
+ * *yesterday's* identical run in the pool (S23329, the Sunday 5Z01, terminated at Preston on the
+ * 20th and tied with S23328 on the 21st). So a candidate resolved to **yesterday**
+ * (`resolvedToYesterday`) is also excluded once TRUST has reported it finished — an "arrival at
+ * destination" (event kind 3) or "terminated here" (bit 6) report, see
+ * `packages/domain/src/trust/garnerMovement.ts`. Deliberately not applied to today's candidates:
+ * the train standing at its own terminus right now has exactly that report too. Owner-accepted
+ * residual gap: an overnight run that terminated just after midnight and is still standing in
+ * the berth resolves to yesterday, so it is excluded too (likely `unmatched` until it moves).
  *
  * Only ever positive evidence: a schedule with no movement
  * rows at all (hasn't started yet, or a data gap in the garner mirror) is never included here —
@@ -568,13 +579,14 @@ export async function callingTimeMinutesByScheduleId(
  */
 export async function findAlreadyPassedScheduleIds(
   pool: Queryable,
-  candidates: ReadonlyArray<{ scheduleId: string; trustId: string }>,
+  candidates: ReadonlyArray<{ scheduleId: string; trustId: string; resolvedToYesterday?: boolean }>,
   tiplocs: string[],
 ): Promise<Set<string>> {
   if (candidates.length === 0 || tiplocs.length === 0) return new Set();
   const result = await pool.query<{ schedule_id: string; passed: boolean }>(
     `with pairs as (
-       select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id
+       select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id,
+              unnest($4::boolean[]) as resolved_to_yesterday
      ),
      berth_seq as (
        select l.cif_schedule_id, max(l.seq_no) as last_berth_seq_no
@@ -600,9 +612,22 @@ export async function findAlreadyPassedScheduleIds(
                   (select bs.last_berth_seq_no from berth_seq bs where bs.cif_schedule_id = p.schedule_id),
                   2147483647
                 )
+            )
+            or (
+              p.resolved_to_yesterday
+              and exists (
+                select 1 from trust_movement m
+                where m.trust_id = p.trust_id
+                  and ((m.flags & 3) = 3 or (m.flags & 64) <> 0)
+              )
             ) as passed
      from pairs p`,
-    [candidates.map((c) => c.scheduleId), candidates.map((c) => c.trustId), tiplocs],
+    [
+      candidates.map((c) => c.scheduleId),
+      candidates.map((c) => c.trustId),
+      tiplocs,
+      candidates.map((c) => c.resolvedToYesterday ?? false),
+    ],
   );
   return new Set(result.rows.filter((row) => row.passed).map((row) => row.schedule_id));
 }
@@ -741,9 +766,21 @@ export async function resolveFreshRunMatch(
         latestTrustIdByScheduleId.set(row.cif_schedule_id, row.trust_id);
       }
     }
+    // Each candidate's own resolved traffic day (docs/adr/0008) — a yesterday-resolved one may be
+    // excluded as finished; see findAlreadyPassedScheduleIds.
+    const resolvedDateByScheduleId = new Map(
+      candidatesRunningOnAny(matchCandidates, serviceDates).map(({ candidate, serviceDate }) => [
+        candidate.scheduleId,
+        serviceDate,
+      ]),
+    );
     alreadyPassedScheduleIds = await findAlreadyPassedScheduleIds(
       pool,
-      [...latestTrustIdByScheduleId].map(([scheduleId, trustId]) => ({ scheduleId, trustId })),
+      [...latestTrustIdByScheduleId].map(([scheduleId, trustId]) => ({
+        scheduleId,
+        trustId,
+        resolvedToYesterday: resolvedDateByScheduleId.get(scheduleId) === yesterday,
+      })),
       tiplocs,
     );
   }

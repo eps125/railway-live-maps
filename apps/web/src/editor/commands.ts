@@ -17,6 +17,9 @@ export type EditorCommand =
   | { type: "moveElements"; elementIds: string[]; dx: number; dy: number }
   | { type: "resizeElement"; elementId: string; width: number; height: number }
   | { type: "setProperty"; elementId: string; property: string; value: unknown }
+  /** Milestone 64: several properties of one element in one undo step — a route re-trace changes
+   * its points, traced tracks and exit signal together. A value of `undefined` removes the key. */
+  | { type: "patchElement"; elementId: string; patch: Record<string, unknown> }
   | { type: "renameElement"; elementId: string; newId: string }
   | { type: "setBinding"; elementId: string; binding: MapBinding | null }
   /** Owner request 2026-09-17: a combined berth — up to 4 `tdBerth` bindings sharing one
@@ -71,6 +74,12 @@ function applyAddElement(
 
 function applyDeleteElements(doc: MapDocument, elementIds: string[]): ApplyCommandResult {
   const idSet = new Set(elementIds);
+  // Milestone 64 / ADR 0016: a route belongs to its entry signal, so deleting the signal deletes
+  // its routes (and their bindings) too, in the same undoable step, rather than leaving routes that
+  // start nowhere and would block publication.
+  for (const element of doc.elements) {
+    if (element.type === "route" && idSet.has(element.entrySignalId)) idSet.add(element.id);
+  }
   const removedElements = doc.elements.filter((element) => idSet.has(element.id));
   const removedBindings = doc.bindings.filter((binding) => idSet.has(binding.elementId));
 
@@ -153,6 +162,32 @@ function applySetProperty(
   };
 }
 
+function applyPatchElement(
+  doc: MapDocument,
+  elementId: string,
+  patch: Record<string, unknown>,
+): ApplyCommandResult {
+  const target = doc.elements.find((element) => element.id === elementId);
+  if (!target) {
+    throw new Error(`patchElement: element "${elementId}" not found`);
+  }
+  const current = target as unknown as Record<string, unknown>;
+  const previous: Record<string, unknown> = {};
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    previous[key] = current[key];
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  const elements = doc.elements.map((element) =>
+    element.id === elementId ? (next as unknown as MapElement) : element,
+  );
+  return {
+    doc: { ...doc, elements },
+    inverse: { type: "patchElement", elementId, patch: previous },
+  };
+}
+
 /** Element IDs are referenced from three other places in the document: `bindings.elementId`,
  * `trackElementId` on berth/signal elements and topology edges (an optional pointer to a
  * trackPath), and the element's own `id`. Renaming has to update all of them atomically or a
@@ -173,10 +208,19 @@ function applyRenameElement(
     throw new Error(`renameElement: an element with id "${newId}" already exists`);
   }
 
-  const elements = doc.elements.map((element) => {
+  const elements = doc.elements.map((element): MapElement => {
     const withNewId = element.id === elementId ? { ...element, id: newId } : element;
     if ("trackElementId" in withNewId && withNewId.trackElementId === elementId) {
       return { ...withNewId, trackElementId: newId };
+    }
+    // Milestone 64: a route names its entry/exit signals and the tracks it was traced along.
+    if (withNewId.type === "route") {
+      return {
+        ...withNewId,
+        entrySignalId: withNewId.entrySignalId === elementId ? newId : withNewId.entrySignalId,
+        ...(withNewId.exitSignalId === elementId ? { exitSignalId: newId } : {}),
+        trackIds: withNewId.trackIds.map((id) => (id === elementId ? newId : id)),
+      };
     }
     return withNewId;
   });
@@ -316,6 +360,8 @@ export function applyCommand(doc: MapDocument, command: EditorCommand): ApplyCom
       return applyResizeElement(doc, command.elementId, command.width, command.height);
     case "setProperty":
       return applySetProperty(doc, command.elementId, command.property, command.value);
+    case "patchElement":
+      return applyPatchElement(doc, command.elementId, command.patch);
     case "renameElement":
       return applyRenameElement(doc, command.elementId, command.newId);
     case "setBinding":

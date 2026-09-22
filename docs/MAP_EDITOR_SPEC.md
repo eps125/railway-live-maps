@@ -307,6 +307,34 @@ needs no element: it is two `trackPath`s drawn crossing, as before.
 - Display only: no binding, no live state, not part of `topology`, never welded, and it never shows
   or implies which way the blades lie (CLAUDE.md rules 9/10).
 
+### `route`
+
+**Milestone 64 / ADR 0016.** A signalling route from its entry signal to its exit signal, drawn on
+the public map only while its bound route bit says it is set.
+
+- Fields: `entrySignalId` (required; the route belongs to this signal), `exitSignalId` (optional;
+  omitted for a route to a boundary or buffer stop), `label` (the route's name, e.g. `R3879A(M)`),
+  `points` (the traced line, which is what renders), and `trackIds` (the tracks it was traced
+  along, kept as provenance).
+- Binding: one `tdSBitRoute` (`tdArea`, `address`, `bit`, `activeMeans: "set" | "unset"`). The
+  route's state comes only from that bit (rule 10). `validateMapDocument` rejects a route bit on
+  anything but a route (`invalid_route_binding`), two bits on one route (`multiple_route_bindings`),
+  and a route whose entry or exit is not a signal (`route_entry_not_signal`,
+  `route_exit_not_signal`).
+- Warnings (`routeWarnings`): `route_off_track` (track edits have left the line off the track),
+  `route_track_missing` (a traced track was deleted), `route_unbound` (no bit, so never shown).
+- Authoring: select a signal, then **Add route** under "Routes from this signal". Click along the
+  track in the direction the route runs; each click adds a waypoint snapped onto the track. Click the
+  exit signal to finish, or **Finish here** (Enter) for a route with no exit signal. Backspace removes
+  the last point and Escape cancels. The trace follows the drawn track: an endpoint lying on another
+  track joins them, two tracks merely crossing (a diamond) do not, and it never reverses through a
+  turnout. **Re-trace** on a selected route redoes it in place as one undo step.
+- Canvas: routes are drawn only while the route or its entry signal is selected, in the same dashed
+  look as the public map. They are left out of rubber-band selection.
+- Deleting a signal deletes the routes it is the entry of, in the same undo step. Renaming a signal
+  or track updates the routes that name it. Paste keeps a route only if its entry signal was copied
+  with it.
+
 ### `label`
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line

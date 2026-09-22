@@ -50,7 +50,7 @@ export function Toolbar({
   function pasteClipboard(): void {
     if (!clipboard) return;
     const idMap = new Map<string, string>();
-    const newElements = clipboard.elements.map((el) => {
+    const pastedElements = clipboard.elements.map((el) => {
       const copy = cloneWithNewId(el);
       idMap.set(el.id, copy.id);
       if ("x" in copy) {
@@ -61,11 +61,29 @@ export function Toolbar({
       }
       return copy;
     });
-    const newBindings = clipboard.bindings.map((binding) => {
-      const copy = cloneWithNewId(binding);
-      copy.elementId = idMap.get(binding.elementId) ?? binding.elementId;
-      return copy;
-    });
+    // Milestone 64: a route belongs to its entry signal. Pasted with its signal, it follows the
+    // copies of that signal and of any tracks it runs along; pasted without it, it would start
+    // from the original signal off the pasted track, so it is left out.
+    const newElements = pastedElements
+      .filter((copy) => copy.type !== "route" || idMap.has(copy.entrySignalId))
+      .map((copy): MapElement => {
+        if (copy.type !== "route") return copy;
+        const remap = (id: string): string => idMap.get(id) ?? id;
+        return {
+          ...copy,
+          entrySignalId: remap(copy.entrySignalId),
+          ...(copy.exitSignalId !== undefined ? { exitSignalId: remap(copy.exitSignalId) } : {}),
+          trackIds: copy.trackIds.map(remap),
+        };
+      });
+    const keptIds = new Set(newElements.map((el) => el.id));
+    const newBindings = clipboard.bindings
+      .filter((binding) => keptIds.has(idMap.get(binding.elementId) ?? binding.elementId))
+      .map((binding) => {
+        const copy = cloneWithNewId(binding);
+        copy.elementId = idMap.get(binding.elementId) ?? binding.elementId;
+        return copy;
+      });
     for (const element of newElements) {
       if ("bindingId" in element && element.bindingId) {
         const newBindingId = newBindings.find((b) => b.elementId === element.id)?.id;
@@ -95,6 +113,10 @@ export function Toolbar({
       ) {
         return;
       }
+
+      // Milestone 64: while a route is being traced the trace bar owns the keyboard — Backspace
+      // there removes a trace point, and must never delete the selected signal and its routes.
+      if (state.routeTrace) return;
 
       if ((e.key === "Delete" || e.key === "Backspace") && state.selection.length > 0) {
         e.preventDefault();
@@ -126,7 +148,7 @@ export function Toolbar({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [state.selection, clipboard, state.document]);
+  }, [state.selection, clipboard, state.document, state.routeTrace]);
 
   function exportJson(): void {
     const blob = new Blob([JSON.stringify(state.document, null, 2)], { type: "application/json" });

@@ -15,6 +15,7 @@ export {
   type LabelElement,
   type LevelCrossingElement,
   type SwitchedDiamondElement,
+  type RouteElement,
   type NeutralSectionElement,
   type TunnelElement,
   type ViaductElement,
@@ -25,11 +26,28 @@ export {
   type TdSBitBinding,
   type TdSBitBarrierBinding,
   type TdSBitBarrierInferredBinding,
+  type TdSBitRouteBinding,
   type InferredBarrierInputDoc,
   type TopologyNode,
   type TopologyEdge,
 } from "./document.js";
-export { validateMapDocument, type ValidationIssue, type ValidationResult } from "./validate.js";
+export {
+  routeWarnings,
+  validateMapDocument,
+  type ValidationIssue,
+  type ValidationResult,
+} from "./validate.js";
+export {
+  DEFAULT_JOIN_TOLERANCE,
+  nearestPositionOnTrack,
+  routePointsOffTrack,
+  snapToTrack,
+  traceRoute,
+  type GraphPoint,
+  type TracedRoute,
+  type TrackLike,
+  type TrackPosition,
+} from "./trackGraph.js";
 export {
   canonicalSAddress,
   compileMapDocument,

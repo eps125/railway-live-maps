@@ -7,9 +7,12 @@ import {
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
+  routeWarnings,
   scaleShapeWidth,
   viaductWidth,
   type MapDocument,
+  type RouteElement,
+  type TdSBitRouteBinding,
   type TdBerthBinding,
   type TdSBitBarrierBinding,
   type TdSBitBarrierInferredBinding,
@@ -22,6 +25,7 @@ import {
   useSClassAreas,
   useSClassDefinitions,
 } from "./useBindingAutocomplete.js";
+import { routeDisplayName } from "./routeTrace.js";
 
 const MAX_COMBINED_BERTH_MEMBERS = 4;
 
@@ -988,6 +992,266 @@ function SignalBindingFields({
   );
 }
 
+/**
+ * Milestone 64 / ADR 0016 decision 3: the routes that start at this signal, authored from here.
+ * "Add route" starts a trace on the canvas from this signal.
+ */
+function SignalRoutesFieldset({ signalId }: { signalId: string }): JSX.Element {
+  const { document: doc } = useEditorState();
+  const dispatch = useEditorDispatch();
+  const routes = doc.elements.filter(
+    (element): element is RouteElement =>
+      element.type === "route" && element.entrySignalId === signalId,
+  );
+  const boundIds = new Set(
+    doc.bindings.filter((b) => b.type === "tdSBitRoute").map((b) => b.elementId),
+  );
+  return (
+    <fieldset>
+      <legend>Routes from this signal</legend>
+      {routes.length === 0 ? (
+        <p className="field-hint">No routes yet.</p>
+      ) : (
+        <ul className="route-list">
+          {routes.map((route) => (
+            <li key={route.id}>
+              <button
+                type="button"
+                className="btn btn--link"
+                onClick={() => dispatch({ type: "setSelection", ids: [route.id] })}
+              >
+                {routeDisplayName(doc, route)}
+              </button>
+              {boundIds.has(route.id) ? null : <span className="badge badge--warning">no bit</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        className="btn"
+        onClick={() => dispatch({ type: "startRouteTrace", signalId })}
+      >
+        Add route
+      </button>
+      <p className="field-hint">
+        Routes from this signal are drawn on the canvas while it is selected. Add route, then click
+        along the track in the direction the route runs and click the exit signal.
+      </p>
+    </fieldset>
+  );
+}
+
+/** Milestone 64 / ADR 0016 decision 1: the one S-Class bit that says whether this route is set,
+ * with the author's statement of what a set bit means. Same shape as a signal's binding, in the
+ * route's own set/unset vocabulary; the TD area defaults to the entry signal's. */
+function RouteBindingFields({
+  route,
+  binding,
+  defaultArea,
+}: {
+  route: RouteElement;
+  binding: TdSBitRouteBinding | undefined;
+  defaultArea: string;
+}): JSX.Element {
+  const dispatch = useEditorDispatch();
+  const areas = useSClassAreas();
+  const [area, setArea] = useState(binding?.tdArea ?? defaultArea);
+  const [address, setAddress] = useState(binding?.address ?? "");
+  const [bit, setBit] = useState(binding ? String(binding.bit) : "");
+  const [activeMeans, setActiveMeans] = useState<"set" | "unset">(binding?.activeMeans ?? "set");
+  useEffect(() => {
+    setArea(binding?.tdArea ?? defaultArea);
+    setAddress(binding?.address ?? "");
+    setBit(binding ? String(binding.bit) : "");
+    setActiveMeans(binding?.activeMeans ?? "set");
+  }, [route.id, binding, defaultArea]);
+
+  const areaCode = area.trim().toUpperCase();
+  const definitions = useSClassDefinitions(/^[A-Z0-9]{2}$/.test(areaCode) ? areaCode : null);
+  const routeDefinitions = definitions.filter((d) => d.kind === "route" && d.label);
+  const canonical = /^[0-9A-Fa-f]{1,2}$/.test(address.trim())
+    ? canonicalSAddress(address.trim())
+    : null;
+  const bitNumber = /^[0-7]$/.test(bit.trim()) ? Number(bit.trim()) : null;
+  const matchedDefinition = definitions.find((d) => d.address === canonical && d.bit === bitNumber);
+  const valid = /^[A-Z0-9]{2}$/.test(areaCode) && canonical !== null && bitNumber !== null;
+
+  function apply(): void {
+    if (!valid || canonical === null || bitNumber === null) return;
+    const next: TdSBitRouteBinding = {
+      id: binding?.id ?? `bind-${route.id}-r-${Date.now()}`,
+      elementId: route.id,
+      type: "tdSBitRoute",
+      tdArea: areaCode,
+      address: canonical,
+      bit: bitNumber,
+      activeMeans,
+    };
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setBinding", elementId: route.id, binding: next },
+    });
+  }
+
+  return (
+    <fieldset>
+      <legend>Route bit</legend>
+      <label className="field">
+        TD area
+        <input
+          list="s-class-route-areas"
+          value={area}
+          onChange={(e) => setArea(e.target.value.toUpperCase())}
+        />
+        <datalist id="s-class-route-areas">
+          {areas.map((a) => (
+            <option key={a} value={a} />
+          ))}
+        </datalist>
+      </label>
+      {routeDefinitions.length > 0 ? (
+        <label className="field">
+          Defined route
+          <select
+            value={matchedDefinition ? `${matchedDefinition.address}:${matchedDefinition.bit}` : ""}
+            onChange={(e) => {
+              const [a, b] = e.target.value.split(":");
+              if (a && b) {
+                setAddress(a);
+                setBit(b);
+              }
+            }}
+          >
+            <option value="">— choose —</option>
+            {routeDefinitions.map((d) => (
+              <option key={`${d.address}:${d.bit}`} value={`${d.address}:${d.bit}`}>
+                {d.label}
+                {d.destination ? ` to ${d.destination}` : ""} ({d.address}:{d.bit})
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <label className="field">
+        Address (hex)
+        <input value={address} onChange={(e) => setAddress(e.target.value)} />
+      </label>
+      <label className="field">
+        Bit (0-7)
+        <input value={bit} onChange={(e) => setBit(e.target.value)} />
+      </label>
+      <label className="field">
+        A set bit means
+        <select
+          value={activeMeans}
+          onChange={(e) => setActiveMeans(e.target.value === "unset" ? "unset" : "set")}
+        >
+          <option value="set">the route is set — usual for route bits</option>
+          <option value="unset">the route is not set</option>
+        </select>
+      </label>
+      {matchedDefinition?.label ? (
+        <p className="field-hint">
+          Defined as {matchedDefinition.label}
+          {matchedDefinition.destination ? ` to ${matchedDefinition.destination}` : ""}
+        </p>
+      ) : null}
+      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
+        {binding ? "Update binding" : "Bind route"}
+      </button>
+      {binding ? (
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            dispatch({
+              type: "dispatchCommand",
+              command: { type: "setBinding", elementId: route.id, binding: null },
+            })
+          }
+        >
+          Clear binding
+        </button>
+      ) : null}
+      <p className="field-hint">
+        The route is drawn on the public map only while this bit says it is set — never worked out
+        from the signal, train movements or the timetable. Check the bit in the S-Class explorer
+        before binding it.
+      </p>
+    </fieldset>
+  );
+}
+
+/** Milestone 64: a selected route — its name, ends, where it was traced, and its bit. */
+function RouteFields({ route }: { route: RouteElement }): JSX.Element {
+  const { document: doc } = useEditorState();
+  const dispatch = useEditorDispatch();
+  const signalName = (id: string | undefined): string => {
+    if (id === undefined) return "none (ends at a boundary or buffer stop)";
+    const signal = doc.elements.find((element) => element.id === id);
+    return signal?.type === "signal" && signal.label ? `${signal.label} (${id})` : id;
+  };
+  const warnings = routeWarnings(doc).filter(
+    (warning) => warning.elementId === route.id && warning.code !== "route_unbound",
+  );
+  const entryBinding = doc.bindings.find(
+    (b): b is TdSBitBinding => b.type === "tdSBit" && b.elementId === route.entrySignalId,
+  );
+  return (
+    <>
+      <TextField
+        label="Name (e.g. R3879A)"
+        value={route.label ?? ""}
+        onCommit={(v) =>
+          dispatch({
+            type: "dispatchCommand",
+            command: {
+              type: "setProperty",
+              elementId: route.id,
+              property: "label",
+              value: v || undefined,
+            },
+          })
+        }
+      />
+      <p className="field-hint">
+        From signal{" "}
+        <button
+          type="button"
+          className="btn btn--link"
+          onClick={() => dispatch({ type: "setSelection", ids: [route.entrySignalId] })}
+        >
+          {signalName(route.entrySignalId)}
+        </button>{" "}
+        to {signalName(route.exitSignalId)}. Traced along {route.trackIds.length} track
+        {route.trackIds.length === 1 ? "" : "s"}.
+      </p>
+      {warnings.map((warning) => (
+        <p key={warning.code} className="badge badge--warning">
+          {warning.message}
+        </p>
+      ))}
+      <button
+        type="button"
+        className="btn"
+        onClick={() =>
+          dispatch({ type: "startRouteTrace", signalId: route.entrySignalId, routeId: route.id })
+        }
+      >
+        Re-trace
+      </button>
+      <RouteBindingFields
+        route={route}
+        binding={doc.bindings.find(
+          (b): b is TdSBitRouteBinding => b.type === "tdSBitRoute" && b.elementId === route.id,
+        )}
+        defaultArea={entryBinding?.tdArea ?? ""}
+      />
+    </>
+  );
+}
+
 /** docs/MAP_EDITOR_SPEC.md §6: "Right properties/binding/validation panel." Shows editable
  * fields for exactly one selected element. Multi-selection gets one bulk action — reassign every
  * selected element to a single layer — added specifically to recover from the real production
@@ -1464,8 +1728,11 @@ export function PropertyPanel(): JSX.Element {
             currentLabel={element.label}
             onUseLabel={(label) => setProp("label", label)}
           />
+          <SignalRoutesFieldset signalId={elementId} />
         </>
       )}
+
+      {element.type === "route" && <RouteFields route={element} />}
 
       {element.type === "label" && (
         <>

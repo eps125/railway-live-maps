@@ -1,4 +1,5 @@
-import { MapDocumentSchema } from "./document.js";
+import { MapDocumentSchema, type MapDocument, type TrackPathElement } from "./document.js";
+import { routePointsOffTrack } from "./trackGraph.js";
 
 export interface ValidationIssue {
   code: string;
@@ -246,5 +247,95 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  // Milestone 64 / ADR 0016: a route belongs to its entry signal, so that must be a real signal
+  // (and so must the exit signal when one is given); a route binding only means something on a
+  // route; and a route shows exactly one bit.
+  for (const element of doc.elements) {
+    if (element.type !== "route") continue;
+    const ends: Array<["entry" | "exit", string | undefined]> = [
+      ["entry", element.entrySignalId],
+      ["exit", element.exitSignalId],
+    ];
+    for (const [end, signalId] of ends) {
+      if (signalId === undefined) continue;
+      if (elementsById.get(signalId)?.type !== "signal") {
+        errors.push({
+          code: `route_${end}_not_signal`,
+          message: `Route "${element.id}" has ${end} signal "${signalId}", which is not a signal on this map`,
+          elementId: element.id,
+        });
+      }
+    }
+  }
+  const routeCountByElement = new Map<string, number>();
+  for (const binding of doc.bindings) {
+    if (binding.type !== "tdSBitRoute") continue;
+    const element = elementsById.get(binding.elementId);
+    if (element && element.type !== "route") {
+      errors.push({
+        code: "invalid_route_binding",
+        message: `Route binding "${binding.id}" is on ${element.type} element "${element.id}" — only routes can have one`,
+        elementId: element.id,
+        bindingId: binding.id,
+      });
+    }
+    routeCountByElement.set(
+      binding.elementId,
+      (routeCountByElement.get(binding.elementId) ?? 0) + 1,
+    );
+  }
+  for (const [elementId, count] of routeCountByElement) {
+    if (count > 1) {
+      errors.push({
+        code: "multiple_route_bindings",
+        message: `Route "${elementId}" has ${count} S-Class bindings — a route is shown from exactly one bit`,
+        elementId,
+      });
+    }
+  }
+
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Milestone 64 / ADR 0016: non-blocking checks on routes, for the editor's warnings tier. A route
+ * that has drifted off the track still renders exactly where it was traced, so this is a prompt to
+ * re-trace it, not an error.
+ */
+export function routeWarnings(doc: MapDocument): ValidationIssue[] {
+  const warnings: ValidationIssue[] = [];
+  const tracks = doc.elements.filter(
+    (element): element is TrackPathElement => element.type === "trackPath",
+  );
+  const trackIds = new Set(tracks.map((track) => track.id));
+  const boundRoutes = new Set(
+    doc.bindings.filter((binding) => binding.type === "tdSBitRoute").map((b) => b.elementId),
+  );
+  for (const element of doc.elements) {
+    if (element.type !== "route") continue;
+    const name = element.label ? `Route "${element.label}"` : `Route "${element.id}"`;
+    const missing = element.trackIds.filter((id) => !trackIds.has(id));
+    if (missing.length > 0) {
+      warnings.push({
+        code: "route_track_missing",
+        message: `${name} was traced along track that no longer exists (${missing.join(", ")}) — re-trace it`,
+        elementId: element.id,
+      });
+    }
+    if (routePointsOffTrack(element.points, tracks).length > 0) {
+      warnings.push({
+        code: "route_off_track",
+        message: `${name} no longer lies on the track — re-trace it`,
+        elementId: element.id,
+      });
+    }
+    if (!boundRoutes.has(element.id)) {
+      warnings.push({
+        code: "route_unbound",
+        message: `${name} has no route bit bound, so it will never be shown`,
+        elementId: element.id,
+      });
+    }
+  }
+  return warnings;
 }

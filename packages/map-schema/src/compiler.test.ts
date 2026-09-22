@@ -640,3 +640,60 @@ describe("compileMapDocument inferred barrier bindings (Milestone 59 / ADR 0015)
     expect(bundle.barrierBindingIndex).toEqual({});
   });
 });
+
+describe("compileMapDocument route bindings (Milestone 64 / ADR 0016)", () => {
+  it("indexes a route bit apart from signal and barrier bits, with a canonical address", () => {
+    const doc = MapDocumentSchema.parse({
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "m",
+        canvas: { width: 100, height: 100, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l1", name: "Track", order: 0 }],
+      elements: [
+        { id: "sig-1", layerId: "l1", type: "signal", x: 10, y: 20 },
+        {
+          id: "r-1",
+          layerId: "l1",
+          type: "route",
+          entrySignalId: "sig-1",
+          points: [
+            { x: 10, y: 20 },
+            { x: 90, y: 20 },
+          ],
+        },
+      ],
+      topology: { nodes: [], edges: [] },
+      bindings: [
+        {
+          id: "b1",
+          elementId: "r-1",
+          type: "tdSBitRoute",
+          tdArea: "M9",
+          address: "c",
+          bit: 4,
+          activeMeans: "set",
+        },
+        {
+          id: "b2",
+          elementId: "sig-1",
+          type: "tdSBit",
+          tdArea: "M9",
+          address: "0B",
+          bit: 3,
+          activeMeans: "off",
+        },
+      ],
+      editorMetadata: {},
+    });
+
+    const bundle = compileMapDocument(doc);
+    expect(bundle.routeBindingIndex).toEqual({ "M9|0C|4": "r-1" });
+    expect(bundle.routeBindingActiveMeans).toEqual({ "M9|0C|4": "set" });
+    // A route bit must never be read as a signal aspect (ADR 0016 decision 2).
+    expect(bundle.sBitBindingIndex).toEqual({ "M9|0B|3": "sig-1" });
+    expect(bundle.elementsById["r-1"]).toMatchObject({ type: "route", trackIds: [] });
+  });
+});

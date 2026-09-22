@@ -3716,6 +3716,59 @@ because the editor needs the API and database and neither runs locally. The Tran
 rotate-only; size is typed. The fill is the fixed canvas colour `#0d1117`, which both renderers
 currently hardcode as the map background.
 
+## Milestone 64 — set routes from S-Class route bits (ADR 0016) `[in progress — 2026-09-22]`
+
+Owner request 2026-09-22: show set routes where an area publishes route bits, visually like
+Traksy. Owner decisions:
+
+- **Trace, then store** (approach 4 of the four offered): the author traces over existing track;
+  the resulting polyline is stored and rendered, with the traced track ids kept as provenance so
+  a route that drifts off edited track is flagged and can be re-traced.
+- **Routes belong to their entry signal**, authored from the signal's own panel.
+- No partial release (ADR 0016 decision 6).
+- First authored and tested on Blackpool (`mroc-blackpool`, M9). No published M9 route list exists,
+  so bits come from the explorer. Partial lists exist for some other areas and can be imported
+  later through the existing definitions import.
+
+Sub-milestones, each committed and deployable on its own:
+
+- **64a — schema and authoring graph.** `[done — 2026-09-22]` `route` element (`entrySignalId`, `exitSignalId?`,
+  `label?`, `points`, `trackIds`), `tdSBitRoute` binding, validation (`route_entry_not_signal`,
+  `route_off_track` warning, one route binding per route, route binding only on a route), compiler
+  `routeBindingIndex`. A pure track-graph builder over existing `trackPath`s (shared endpoints,
+  endpoints lying on another track's interior, crossings) and a tracer that finds the track path
+  between clicked points on it.
+- **64b — editor.** `[done — 2026-09-22]` "Routes from this signal" on the signal panel (add, re-trace, delete, bind bit);
+  a trace mode that starts at the signal and follows track clicks; a map-wide routes list showing
+  binding and on-track status; routes drawn faintly on the canvas at all times.
+- **64c — live state and public map.** Migration `0042` (binding checks), publish, worker live deltas
+  (`route.updated`), live snapshot, `/state?at=`, playback, and the Traksy-style dashed overlay in
+  both renderers.
+- **64d — explorer route-bit discovery, per signal.** "Which bit sets before this signal clears",
+  ranked by lead time and hit rate, with the next berth step used to suggest the exit signal. Also
+  measures when each route bit drops relative to the train entering the route, recorded against
+  ADR 0016 decision 6.
+- **64e — Blackpool.** Owner authors and binds M9's routes and publishes. Playwright check of the
+  overlay.
+
+## Milestone 38 — revised direction proposal: derive the structural model, don't redraw
+
+Owner question 2026-09-22: can Milestone 38 be done without redrawing every map? Proposal, for owner
+decision before Milestone 38 starts:
+
+- Keep every existing `trackPath` as the drawing. The structural model is **derived** from it: the
+  64a track graph (joined endpoints, an endpoint on another track's interior = a turnout, two
+  interiors crossing = a diamond, switched where a `switchedDiamond` marks it) becomes the
+  proposed `topology`.
+- The editor gets a topology overlay that shows the derived nodes and edges and highlights the
+  exceptions: near-misses that look joined but aren't, and crossings that are really a flyover. The
+  author fixes only those, then accepts. Nothing is redrawn and all existing geometry, berths,
+  signals and bindings stay as they are.
+- Berths keep their boxes. The "berth = span on a track" model is derived from each berth's existing
+  `trackElementId` or nearest track, and reviewed rather than re-placed.
+- Old published versions stay immutable. A map gains structure only when its next version is
+  published after review.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

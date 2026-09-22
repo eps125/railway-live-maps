@@ -10,6 +10,7 @@ import {
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
+  snapToTrack,
   switchedDiamondGeometry,
   viaductWidth,
   sortElementsForPaint,
@@ -18,6 +19,13 @@ import {
 } from "@railway/map-schema";
 import { useEditorState, useEditorDispatch, type ToolMode } from "./EditorState.js";
 import { snapSegmentAngle, weldToEndpoint } from "./geometrySnap.js";
+import {
+  WAYPOINT_TRACK_SNAP,
+  computeRouteTrace,
+  drawnTracks,
+  routeFromTrace,
+} from "./routeTrace.js";
+import { RouteTraceBar } from "./RouteTraceBar.js";
 
 /** Perpendicular distance from a point to a line segment — picks which segment of a polyline a
  * double-click lands on for vertex insertion (ADR 0005 E2). */
@@ -493,7 +501,7 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     return () => observer.disconnect();
   }, []);
 
-  const { document: doc, selection, toolMode, viewport } = state;
+  const { document: doc, selection, toolMode, viewport, routeTrace } = state;
   const gridSize = doc.map.canvas.gridSize;
 
   // Fit the initial view to the document's content, once, the same way the public renderer
@@ -601,6 +609,9 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     const withinLockedLayer = new Set(doc.layers.filter((l) => l.locked).map((l) => l.id));
     const hit = doc.elements
       .filter((el) => !withinLockedLayer.has(el.layerId))
+      // Milestone 64: routes are hidden on the canvas unless their signal is selected, so a
+      // rubber band never picks up the invisible routes lying along every track it crosses.
+      .filter((el) => el.type !== "route")
       .filter((el) => {
         const bounds = elementBounds(el);
         return bounds !== null && boundsIntersect(box, bounds);
@@ -613,10 +624,57 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     dispatch({ type: "setToolMode", mode: "select" });
   }
 
+  /** Milestone 64: while tracing a route, a click on or near a track adds a waypoint there; a click
+   * well away from any track is ignored rather than silently dropped into the trace. */
+  function addTraceWaypoint(stage: Konva.Stage): void {
+    const point = toWorldPoint(stage);
+    if (snapToTrack(drawnTracks(doc), point, WAYPOINT_TRACK_SNAP)) {
+      dispatch({ type: "addRouteWaypoint", point });
+    }
+  }
+
+  /** Milestone 64: commit the trace, ending at `exitSignalId` or, without one, at the last
+   * waypoint (a route to a boundary or buffer stop). Leaves the trace open if it can't be traced,
+   * so the author can add a waypoint to steer it. */
+  function finishRouteTrace(exitSignalId: string | undefined): void {
+    if (!routeTrace) return;
+    const result = computeRouteTrace(doc, routeTrace, exitSignalId);
+    if (result.status !== "traced") return;
+    const layerId = defaultLayerIdForTool("trackPath", doc.layers);
+    if (!layerId) return;
+    const change = routeFromTrace(
+      doc,
+      routeTrace,
+      result.route,
+      exitSignalId,
+      layerId,
+      nextElementId(),
+    );
+    if (change.kind === "add") {
+      dispatch({
+        type: "dispatchCommand",
+        command: { type: "addElement", elements: [change.element] },
+      });
+      dispatch({ type: "setSelection", ids: [change.element.id] });
+    } else {
+      dispatch({
+        type: "dispatchCommand",
+        command: { type: "patchElement", elementId: change.elementId, patch: change.patch },
+      });
+      dispatch({ type: "setSelection", ids: [change.elementId] });
+    }
+    dispatch({ type: "endRouteTrace" });
+  }
+
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>): void {
     const stage = e.target.getStage();
     if (!stage) return;
     const clickedOnEmpty = e.target === stage;
+
+    if (routeTrace) {
+      addTraceWaypoint(stage);
+      return;
+    }
 
     if (toolMode === "select") {
       if (clickedOnEmpty) dispatch({ type: "setSelection", ids: [] });
@@ -641,6 +699,18 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
 
   function handleElementClick(e: Konva.KonvaEventObject<MouseEvent>, elementId: string): void {
     e.cancelBubble = true;
+    if (routeTrace) {
+      // Clicking another signal ends the route there; clicking anything else (usually the track
+      // itself, which is an element and so never reaches the stage handler) adds a waypoint.
+      const clicked = doc.elements.find((element) => element.id === elementId);
+      if (clicked?.type === "signal" && clicked.id !== routeTrace.signalId) {
+        finishRouteTrace(clicked.id);
+      } else {
+        const stage = e.target.getStage();
+        if (stage) addTraceWaypoint(stage);
+      }
+      return;
+    }
     if (toolMode !== "select") return;
     if (e.evt.shiftKey) {
       const already = selection.includes(elementId);
@@ -1020,6 +1090,7 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     }
     return new Set([...counts].filter(([, count]) => count > 1).map(([elementId]) => elementId));
   })();
+  const traceResult = routeTrace ? computeRouteTrace(doc, routeTrace) : null;
   const paintOrderedElements = sortElementsForPaint(
     doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
     doc.layers,
@@ -1056,7 +1127,8 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
           {paintOrderedElements.map((element) => {
             const layer = layersById.get(element.layerId)!;
             const selected = selection.includes(element.id);
-            const draggable = toolMode === "select" && !layer.locked;
+            // Milestone 64: nothing drags while tracing a route, so a click on the track can't move it.
+            const draggable = toolMode === "select" && !layer.locked && !routeTrace;
             /** Milestone 55: the caption on a points-based scenery shape, at the same anchor the
              * public renderer uses. Only a *detached* label is independently draggable; an
              * attached one is part of the shape. */
@@ -1503,6 +1575,49 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                 </Group>
               );
             }
+            if (element.type === "route") {
+              // Milestone 64 / ADR 0016: a map has a route for nearly every signal, so drawing
+              // them all would bury the track. A route shows on the canvas only when it, or the
+              // signal it starts from, is selected — and not while it is being re-traced, when
+              // the trace preview replaces it. Same look as the public map's set route (rule 13).
+              const shown =
+                (selected || selection.includes(element.entrySignalId)) &&
+                routeTrace?.routeId !== element.id;
+              if (!shown) return null;
+              const flat = element.points.flatMap((p) => [p.x, p.y]);
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                >
+                  {selected ? (
+                    <Line
+                      points={flat}
+                      stroke="#58a6ff"
+                      strokeWidth={MAP_STYLE.track.strokeWidth + 4}
+                      opacity={0.5}
+                      lineJoin="round"
+                    />
+                  ) : null}
+                  <Line
+                    points={flat}
+                    stroke={MAP_STYLE.route.color}
+                    strokeWidth={MAP_STYLE.track.strokeWidth}
+                    lineJoin="round"
+                    hitStrokeWidth={10}
+                  />
+                  <Line
+                    points={flat}
+                    stroke={MAP_STYLE.route.dashColor}
+                    strokeWidth={MAP_STYLE.track.strokeWidth}
+                    dash={[...MAP_STYLE.route.dash]}
+                    lineJoin="round"
+                    listening={false}
+                  />
+                </Group>
+              );
+            }
             if (element.type === "switchedDiamond") {
               // Same rhombus as the public renderer (rule 13), drawn unrotated about a Group at
               // the centre and turned by the Group's `rotation`, so the Transformer's rotate
@@ -1690,6 +1805,7 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
               </Group>
             );
           })}
+          {traceResult ? renderTracePreview(traceResult, routeTrace?.waypoints ?? []) : null}
           {selectedBerthId ? (
             <Transformer
               ref={transformerRef}
@@ -1731,6 +1847,54 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
           ) : null}
         </Layer>
       </Stage>
+      {routeTrace && traceResult ? (
+        <RouteTraceBar
+          trace={routeTrace}
+          result={traceResult}
+          onFinishHere={() => finishRouteTrace(undefined)}
+          onUndoPoint={() => dispatch({ type: "removeRouteWaypoint" })}
+          onCancel={() => dispatch({ type: "endRouteTrace" })}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/** Milestone 64: the route so far while tracing, in an amber so it can't be mistaken for a
+ * committed route, with a dot where it starts and at each clicked waypoint. */
+function renderTracePreview(
+  result: ReturnType<typeof computeRouteTrace>,
+  waypoints: ReadonlyArray<{ x: number; y: number }>,
+): JSX.Element | null {
+  const start =
+    result.status === "started" || result.status === "noPath"
+      ? result.start
+      : result.status === "traced"
+        ? result.route.points[0]
+        : undefined;
+  return (
+    <Group listening={false}>
+      {result.status === "traced" ? (
+        <Line
+          points={result.route.points.flatMap((p) => [p.x, p.y])}
+          stroke="#d29922"
+          strokeWidth={MAP_STYLE.track.strokeWidth + 1}
+          lineJoin="round"
+          opacity={0.9}
+        />
+      ) : null}
+      {start ? <Circle x={start.x} y={start.y} radius={5} fill="#d29922" /> : null}
+      {waypoints.map((point, index) => (
+        <Circle
+          key={index}
+          x={point.x}
+          y={point.y}
+          radius={4}
+          stroke="#d29922"
+          strokeWidth={2}
+          fill="#0d1117"
+        />
+      ))}
+    </Group>
   );
 }

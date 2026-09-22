@@ -176,8 +176,10 @@ No automated deletion job is enabled until a retention policy and backup have be
 ## 10. Explicit MVP exclusions
 
 - Actual signal aspects.
-- Inferred signals, points, routes or track circuits.
-- Automatic route setting visualization.
+- Inferred signals, points, routes or track circuits. (A route shown from its own bound S-Class
+  route bit is not inferred and is in scope since ADR 0016, 2026-09-22; one worked out from signals,
+  berth steps or timetables remains excluded.)
+- Automatic route setting (ARS) logic or visualization, and partial (sectional) route release.
 - Train position interpolation between berths.
 - Nationwide public map coverage in the first release. Nationwide data capture is included.
 - Native mobile applications.

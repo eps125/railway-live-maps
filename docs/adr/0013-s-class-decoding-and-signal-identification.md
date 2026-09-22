@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed — 2026-09-19.** Design decisions taken by the owner during Milestone 36 planning;
+**Proposed — 2026-09-19.** Decision 5 amended by [ADR 0016](0016-set-routes-from-s-class.md) (2026-09-22): routes are now rendered from their own bound bits. Design decisions taken by the owner during Milestone 36 planning;
 implementation tracked in `docs/IMPLEMENTATION_PLAN.md` Milestone 36 (36a-36d).
 
 ## Context

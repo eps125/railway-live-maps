@@ -354,6 +354,28 @@ const SwitchedDiamondElementSchema = BaseElementSchema.extend({
   width: z.number().positive().default(MAP_STYLE.switchedDiamond.width),
 });
 
+/**
+ * Milestone 64 / ADR 0016: a signalling route, from its entry signal to its exit signal, drawn
+ * over the track and shown only while its bound `tdSBitRoute` bit says it is set.
+ *
+ * Owned by its entry signal (ADR 0016 decision 3): authored from that signal's panel.
+ * `exitSignalId` is optional because a route can end at a boundary or buffer stop.
+ *
+ * `points` is the traced line and is what renders (decision 4): the public map does no
+ * path-finding. `trackIds` records the `trackPath`s the trace ran along, as provenance only, so
+ * validation can flag a route that later track edits have left off the track, and the editor can
+ * re-trace it. A route is never read as topology and never welded.
+ */
+const RouteElementSchema = BaseElementSchema.extend({
+  type: z.literal("route"),
+  entrySignalId: z.string().min(1),
+  exitSignalId: z.string().min(1).optional(),
+  /** The route's name as the signaller knows it, e.g. "R3879A(M)". Shown in the editor only. */
+  label: z.string().optional(),
+  points: z.array(PointSchema).min(2),
+  trackIds: z.array(z.string()).default([]),
+});
+
 export const MapElementSchema = z.discriminatedUnion("type", [
   TrackPathElementSchema,
   BerthElementSchema,
@@ -368,6 +390,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   WaterElementSchema,
   LevelCrossingElementSchema,
   SwitchedDiamondElementSchema,
+  RouteElementSchema,
   BoundaryElementSchema,
 ]);
 
@@ -468,11 +491,29 @@ const TdSBitBarrierInferredBindingSchema = z.object({
   inputs: z.array(InferredBarrierInputSchema).min(1).max(6),
 });
 
+/**
+ * Milestone 64 / ADR 0016: whether a route is set, from one S-Class route bit. Same shape as
+ * `tdSBit` with the route's own vocabulary, and a separate type so a route bit can never be read
+ * as a signal aspect. `activeMeans` is stated and verified per binding, never assumed; the route is
+ * shown always and only from this bit (rule 10).
+ */
+const TdSBitRouteBindingSchema = z.object({
+  id: z.string().min(1),
+  elementId: z.string().min(1),
+  type: z.literal("tdSBitRoute"),
+  tdArea: z.string().min(1),
+  address: z.string().regex(/^[0-9A-Fa-f]{1,2}$/, "address must be 1-2 hex digits"),
+  bit: z.number().int().min(0).max(7),
+  /** What a set bit means for this route. */
+  activeMeans: z.enum(["set", "unset"]),
+});
+
 export const MapBindingSchema = z.discriminatedUnion("type", [
   TdBerthBindingSchema,
   TdSBitBindingSchema,
   TdSBitBarrierBindingSchema,
   TdSBitBarrierInferredBindingSchema,
+  TdSBitRouteBindingSchema,
 ]);
 
 export const MapDocumentSchema = z.object({
@@ -502,6 +543,8 @@ export type ViaductElement = z.infer<typeof ViaductElementSchema>;
 export type WaterElement = z.infer<typeof WaterElementSchema>;
 export type LevelCrossingElement = z.infer<typeof LevelCrossingElementSchema>;
 export type SwitchedDiamondElement = z.infer<typeof SwitchedDiamondElementSchema>;
+export type RouteElement = z.infer<typeof RouteElementSchema>;
+export type TdSBitRouteBinding = z.infer<typeof TdSBitRouteBindingSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;

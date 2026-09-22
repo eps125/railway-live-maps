@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateMapDocument } from "./validate.js";
+import { MapDocumentSchema } from "./document.js";
+import { routeWarnings, validateMapDocument } from "./validate.js";
 
 function baseDoc(overrides: Record<string, unknown> = {}) {
   return {
@@ -568,5 +569,121 @@ describe("level crossing barrier bindings (Milestone 55 / ADR 0014)", () => {
     );
     expect(result.valid).toBe(false);
     expect(result.errors.map((e) => e.code)).toContain("invalid_signal_binding");
+  });
+});
+
+describe("routes (Milestone 64 / ADR 0016)", () => {
+  function docWith(elements: unknown[], bindings: unknown[] = []): unknown {
+    return {
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "m",
+        canvas: { width: 400, height: 100, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l1", name: "Track", order: 0 }],
+      elements,
+      topology: { nodes: [], edges: [] },
+      bindings,
+      editorMetadata: {},
+    };
+  }
+
+  const track = {
+    id: "t1",
+    layerId: "l1",
+    type: "trackPath",
+    points: [
+      { x: 0, y: 50 },
+      { x: 400, y: 50 },
+    ],
+  };
+  const entry = { id: "s1", layerId: "l1", type: "signal", x: 20, y: 50 };
+  const exit = { id: "s2", layerId: "l1", type: "signal", x: 300, y: 50 };
+  const route = {
+    id: "r1",
+    layerId: "l1",
+    type: "route",
+    entrySignalId: "s1",
+    exitSignalId: "s2",
+    label: "R1A",
+    points: [
+      { x: 20, y: 50 },
+      { x: 300, y: 50 },
+    ],
+    trackIds: ["t1"],
+  };
+  const routeBit = (id: string, elementId = "r1") => ({
+    id,
+    elementId,
+    type: "tdSBitRoute",
+    tdArea: "M9",
+    address: "0C",
+    bit: 4,
+    activeMeans: "set",
+  });
+
+  it("accepts a route between two signals with one route bit", () => {
+    const result = validateMapDocument(docWith([track, entry, exit, route], [routeBit("b1")]));
+    expect(result).toEqual({ valid: true, errors: [] });
+  });
+
+  it("rejects a route whose entry or exit is not a signal", () => {
+    const result = validateMapDocument(
+      docWith([track, entry, { ...route, entrySignalId: "t1", exitSignalId: "gone" }]),
+    );
+    expect(result.errors.map((e) => e.code)).toEqual([
+      "route_entry_not_signal",
+      "route_exit_not_signal",
+    ]);
+  });
+
+  it("accepts a route with no exit signal, ending at a boundary or buffer stop", () => {
+    const { exitSignalId: _, ...toBoundary } = route;
+    expect(validateMapDocument(docWith([track, entry, toBoundary])).valid).toBe(true);
+  });
+
+  it("rejects a route bit on anything but a route, and two bits on one route", () => {
+    const onSignal = validateMapDocument(
+      docWith([track, entry, exit, route], [routeBit("b1", "s1")]),
+    );
+    expect(onSignal.errors.map((e) => e.code)).toContain("invalid_route_binding");
+    const twice = validateMapDocument(
+      docWith([track, entry, exit, route], [routeBit("b1"), { ...routeBit("b2"), bit: 5 }]),
+    );
+    expect(twice.errors.map((e) => e.code)).toContain("multiple_route_bindings");
+  });
+
+  it("rejects a route bit that states a signal's vocabulary instead of set/unset", () => {
+    const result = validateMapDocument(
+      docWith([track, entry, exit, route], [{ ...routeBit("b1"), activeMeans: "off" }]),
+    );
+    expect(result.valid).toBe(false);
+  });
+
+  describe("routeWarnings", () => {
+    const parse = (elements: unknown[], bindings: unknown[] = []) =>
+      MapDocumentSchema.parse(docWith(elements, bindings));
+
+    it("is quiet for a bound route that lies on the track it was traced along", () => {
+      expect(routeWarnings(parse([track, entry, exit, route], [routeBit("b1")]))).toEqual([]);
+    });
+
+    it("warns when the track has moved away from the route, or was deleted", () => {
+      const moved = { ...track, points: track.points.map((p) => ({ x: p.x, y: p.y + 30 })) };
+      expect(
+        routeWarnings(parse([moved, entry, exit, route], [routeBit("b1")])).map((w) => w.code),
+      ).toEqual(["route_off_track"]);
+      expect(
+        routeWarnings(parse([entry, exit, route], [routeBit("b1")])).map((w) => w.code),
+      ).toEqual(["route_track_missing", "route_off_track"]);
+    });
+
+    it("warns about a route with no bit, which would never be shown", () => {
+      expect(routeWarnings(parse([track, entry, exit, route])).map((w) => w.code)).toEqual([
+        "route_unbound",
+      ]);
+    });
   });
 });

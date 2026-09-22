@@ -925,6 +925,32 @@ legend {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  /* Milestone 64: anchors the route-trace bar over the canvas. */
+  position: relative;
+}
+
+/* Milestone 64: the bar shown over the canvas while a route is being traced. */
+.route-trace-bar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-warning);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+  z-index: 2;
+}
+
+.route-trace-bar__message--error {
+  color: var(--color-danger);
 }
 
 .editor-panels {
@@ -1492,4 +1518,33 @@ legend {
   font-size: 0.62rem;
   color: var(--color-text-faint);
   min-height: 0.8rem;
+}
+
+/* Milestone 64: a signal's routes in the property panel. */
+.route-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.route-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn--link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--color-accent-hover);
+  cursor: pointer;
+  text-align: left;
+}
+
+.btn--link:hover {
+  text-decoration: underline;
 }

@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
+  routeWarnings,
   validateMapDocument,
   type MapDocument,
   type ValidationIssue,
@@ -7,6 +8,7 @@ import {
   type LabelElement,
   type TdBerthBinding,
   type TdSBitBinding,
+  type TdSBitRouteBinding,
   canonicalSAddress,
 } from "@railway/map-schema";
 import { TD_S_STATE_PROJECTION_VERSION } from "@railway/domain";
@@ -103,7 +105,8 @@ export async function validateDraftInContext(
 ): Promise<ValidationTierResult> {
   const structural = validateMapDocument(doc);
   const errors: ValidationIssue[] = [...structural.errors];
-  const warnings: ValidationIssue[] = [];
+  // Milestone 64 / ADR 0016: routes off the track, traced along deleted track, or unbound.
+  const warnings: ValidationIssue[] = routeWarnings(doc);
 
   // Milestone 32, folded into `label` 2026-09-13: a boundary link is now authored as a label
   // carrying `adjacentMapSlug` — still checking the legacy standalone `boundary` type too, since
@@ -168,8 +171,10 @@ export async function validateDraftInContext(
   // Milestone 36c: S-Class signal bindings — has each bound bit been seen changing recently?
   // One `(td_area, address, event_at desc)` index seek per binding (first-sight rows, with no
   // previous value, don't count as a change).
+  // Milestone 64: a route bit is checked the same way — one that never changes is a wrong bit.
   const sBitBindings = doc.bindings.filter(
-    (binding): binding is TdSBitBinding => binding.type === "tdSBit",
+    (binding): binding is TdSBitBinding | TdSBitRouteBinding =>
+      binding.type === "tdSBit" || binding.type === "tdSBitRoute",
   );
   if (sBitBindings.length > 0) {
     const rows = await bestEffortQuery<{ td_area: string; address: string; bit: number }>(

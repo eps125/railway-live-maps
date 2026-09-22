@@ -184,6 +184,16 @@ export const MAP_STYLE = {
     fill: "#0d1117",
     strokeWidth: 2,
   },
+  /**
+   * Milestone 64 / ADR 0016 decision 5: a set route, after Traksy's look — a solid pale green line
+   * the width of the track with a dark dash over it, so it reads as green-and-black dashes laid on
+   * the rail. The dash is the map canvas colour, which on this dark theme is the "black".
+   */
+  route: {
+    color: "#77aa77",
+    dashColor: "#0d1117",
+    dash: [10, 10],
+  },
   /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
   weldTolerance: 6,
 } as const;

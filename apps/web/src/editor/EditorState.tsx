@@ -25,6 +25,18 @@ export interface Viewport {
   scale: number;
 }
 
+/**
+ * Milestone 64 / ADR 0016: a route being traced from a signal. `waypoints` are the raw points the
+ * author clicked on the track, in world coordinates; the route itself is recomputed from them and
+ * the entry signal on every render (`computeRouteTrace`), so moving along never accumulates error.
+ * `routeId` is set when re-tracing an existing route rather than adding a new one.
+ */
+export interface RouteTrace {
+  signalId: string;
+  routeId: string | null;
+  waypoints: Array<{ x: number; y: number }>;
+}
+
 export interface EditorState {
   document: MapDocument;
   selection: string[];
@@ -37,6 +49,9 @@ export interface EditorState {
   /** True whenever `document` has changed since the last `markSynced` — drives `useDraftSync`'s
    * autosave and the "unsaved changes" indicator. */
   dirty: boolean;
+  /** Milestone 64: the route trace in progress, or null. While set, canvas clicks add waypoints
+   * and clicking a signal finishes the route there. */
+  routeTrace: RouteTrace | null;
 }
 
 export type EditorAction =
@@ -63,7 +78,11 @@ export type EditorAction =
    * "plain state update, no undo entry" treatment as `setMapName`; `point: null` clears it back
    * to the plain bounding-box centre. */
   | { type: "setMapHomePoint"; point: { x: number; y: number } | null }
-  | { type: "markSynced" };
+  | { type: "markSynced" }
+  | { type: "startRouteTrace"; signalId: string; routeId?: string }
+  | { type: "addRouteWaypoint"; point: { x: number; y: number } }
+  | { type: "removeRouteWaypoint" }
+  | { type: "endRouteTrace" };
 
 function reducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
@@ -140,6 +159,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
     case "setDocument":
       return {
         ...state,
+        routeTrace: null,
         document: action.document,
         past: [],
         future: [],
@@ -148,6 +168,29 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       };
     case "markSynced":
       return { ...state, dirty: false };
+    case "startRouteTrace":
+      return {
+        ...state,
+        toolMode: "select",
+        routeTrace: { signalId: action.signalId, routeId: action.routeId ?? null, waypoints: [] },
+      };
+    case "addRouteWaypoint":
+      if (!state.routeTrace) return state;
+      return {
+        ...state,
+        routeTrace: {
+          ...state.routeTrace,
+          waypoints: [...state.routeTrace.waypoints, action.point],
+        },
+      };
+    case "removeRouteWaypoint":
+      if (!state.routeTrace) return state;
+      return {
+        ...state,
+        routeTrace: { ...state.routeTrace, waypoints: state.routeTrace.waypoints.slice(0, -1) },
+      };
+    case "endRouteTrace":
+      return { ...state, routeTrace: null };
   }
 }
 
@@ -160,6 +203,7 @@ function initialState(document: MapDocument): EditorState {
     toolMode: "select",
     viewport: { x: 0, y: 0, scale: 1 },
     dirty: false,
+    routeTrace: null,
   };
 }
 

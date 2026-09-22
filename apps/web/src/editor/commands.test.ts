@@ -394,3 +394,116 @@ describe("moveElements on points-based scenery (Milestone 55)", () => {
     );
   });
 });
+
+describe("routes follow their signals (Milestone 64 / ADR 0016)", () => {
+  function docWithRoute(): MapDocument {
+    const doc = baseDoc();
+    return {
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          id: "sig-1",
+          layerId: "l1",
+          zIndex: 0,
+          type: "signal",
+          x: 10,
+          y: 0,
+          orientation: 0,
+          symbolStyle: "signal-blank",
+        },
+        {
+          id: "sig-2",
+          layerId: "l1",
+          zIndex: 0,
+          type: "signal",
+          x: 90,
+          y: 0,
+          orientation: 0,
+          symbolStyle: "signal-blank",
+        },
+        {
+          id: "route-1",
+          layerId: "l1",
+          zIndex: 2,
+          type: "route",
+          entrySignalId: "sig-1",
+          exitSignalId: "sig-2",
+          points: [
+            { x: 10, y: 0 },
+            { x: 90, y: 0 },
+          ],
+          trackIds: ["track-1"],
+        },
+      ],
+      bindings: [
+        ...doc.bindings,
+        {
+          id: "route-bit",
+          elementId: "route-1",
+          type: "tdSBitRoute",
+          tdArea: "M9",
+          address: "0C",
+          bit: 4,
+          activeMeans: "set",
+        },
+      ],
+    } as MapDocument;
+  }
+
+  it("deleting a signal deletes the routes it is the entry of, and undo restores them", () => {
+    const applied = expectRoundTrip(docWithRoute(), {
+      type: "deleteElements",
+      elementIds: ["sig-1"],
+    });
+    expect(applied.elements.map((e) => e.id)).not.toContain("route-1");
+    expect(applied.bindings.map((b) => b.id)).not.toContain("route-bit");
+  });
+
+  it("deleting a route's exit signal leaves the route, for the author to re-trace", () => {
+    const { doc } = applyCommand(docWithRoute(), { type: "deleteElements", elementIds: ["sig-2"] });
+    expect(doc.elements.map((e) => e.id)).toContain("route-1");
+  });
+
+  it("renaming a signal or a track updates the routes that name it", () => {
+    const renamed = expectRoundTrip(docWithRoute(), {
+      type: "renameElement",
+      elementId: "sig-1",
+      newId: "S3879",
+    });
+    const trackRenamed = applyCommand(renamed, {
+      type: "renameElement",
+      elementId: "track-1",
+      newId: "up-main",
+    }).doc;
+    expect(trackRenamed.elements.find((e) => e.id === "route-1")).toMatchObject({
+      entrySignalId: "S3879",
+      exitSignalId: "sig-2",
+      trackIds: ["up-main"],
+    });
+  });
+});
+
+describe("patchElement (Milestone 64)", () => {
+  it("changes several properties in one step, removing a key set to undefined, and undoes exactly", () => {
+    const doc = baseDoc();
+    const applied = expectRoundTrip(doc, {
+      type: "patchElement",
+      elementId: "track-1",
+      patch: {
+        points: [
+          { x: 0, y: 0 },
+          { x: 50, y: 0 },
+        ],
+        line: "Up Main",
+      },
+    });
+    expect(applied.elements.find((e) => e.id === "track-1")).toMatchObject({ line: "Up Main" });
+    const cleared = applyCommand(applied, {
+      type: "patchElement",
+      elementId: "track-1",
+      patch: { line: undefined },
+    }).doc;
+    expect("line" in cleared.elements.find((e) => e.id === "track-1")!).toBe(false);
+  });
+});

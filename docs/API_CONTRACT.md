@@ -610,7 +610,9 @@ hits, ofClears, ofTransitions, medianLeadSeconds, medianHeldSeconds, definition 
 bit, previousValue, newValue, eventAt }], truncated, definitions }`. `at` defaults to now; each byte
   is its latest decoded statement at or before `at` within 6 h (null = unknown); `changes` are the
   bit changes in `(at - windowSeconds, at]`, newest first, at most 300. `windowSeconds` 1-3600,
-  default 120.
+  default 120. Live (no `at`): also folds in raw S-Class rows newer than the history projector's
+  checkpoint, so it is as current as the live map; `overlayTruncated` is true if the projector is too
+  far behind to catch up on a request.
 - `GET /api/v1/admin/s-class/areas/{tdArea}/correlated-bits?fromBerth=&toBerth=&from=&to=` —
   suggestion, the other way round: bits that change within ±10 s of that step.
 - `GET .../definitions`; `PUT .../definitions/{address}/{bit}` (`{ kind, label, destination,

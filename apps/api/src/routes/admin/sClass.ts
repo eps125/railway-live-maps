@@ -4,12 +4,13 @@ import type { Pool, PoolClient } from "pg";
 import {
   S_CLASS_DEFINITION_KINDS,
   TD_S_STATE_PROJECTION_VERSION,
+  decodeSClassPayload,
   formatSAddress,
   parseSClassDefinitionTable,
   type SClassByteRadix,
   type SClassDefinitionKind,
 } from "@railway/domain";
-import { fetchSByteFactsAt } from "@railway/database";
+import { fetchLiveSOverlay, fetchSByteFactsAt, type RawSOverlayRow } from "@railway/database";
 import { apiError, parseLimit } from "../../lib/queryRange.js";
 
 /**
@@ -49,6 +50,62 @@ const SNAPSHOT_CHANGE_LIMIT = 300;
 /** How far back a byte's last statement may be and still count as its value at `at`. Matches the
  * signal state lookback, so the panel and the map agree about what is known. */
 const SNAPSHOT_LOOKBACK_MS = 6 * 3_600_000;
+/** Live snapshots also read raw rows the history projector hasn't reached yet — the same bounds
+ * the live map uses for its own overlay. */
+const SNAPSHOT_OVERLAY_MAX_ROWS = 5_000;
+const SNAPSHOT_OVERLAY_MAX_BACKLOG_ROWS = 20_000;
+
+export interface SnapshotChange {
+  address: string;
+  bit: number;
+  previousValue: boolean;
+  newValue: boolean;
+  eventAt: string;
+}
+
+/**
+ * Milestone 65: bring a live snapshot fully up to date. `bytes` are the stored values (up to the
+ * history projector's checkpoint); `rows` are the raw S-Class messages after it, oldest first.
+ * Each row's bytes replace the values they state, and every bit that differs from a known
+ * previous value is a change — the same rule the projector applies when it writes
+ * `td_s_bit_transition`, so these join the stored changes seamlessly. A byte first stated here
+ * becomes known but yields no change (nothing to compare it with). Rows that don't decode, or are
+ * for another area, are skipped. Pure. Returns the changes newest first.
+ */
+export function applySnapshotOverlay(
+  tdArea: string,
+  bytes: Map<string, number | null>,
+  rows: ReadonlyArray<
+    Pick<RawSOverlayRow, "tdArea" | "eventType" | "address" | "data" | "eventAt">
+  >,
+): SnapshotChange[] {
+  const changes: SnapshotChange[] = [];
+  for (const row of rows) {
+    if (row.tdArea !== tdArea) continue;
+    const decoded = decodeSClassPayload(row.eventType, row.address, row.data);
+    if (!decoded.ok) continue;
+    for (const byte of decoded.bytes) {
+      const previous = bytes.get(byte.address);
+      bytes.set(byte.address, byte.value);
+      if (previous === null || previous === undefined || previous === byte.value) continue;
+      for (let bit = 0; bit < 8; bit++) {
+        const was = ((previous >> bit) & 1) === 1;
+        const now = ((byte.value >> bit) & 1) === 1;
+        if (was !== now) {
+          changes.push({
+            address: byte.address,
+            bit,
+            previousValue: was,
+            newValue: now,
+            eventAt: row.eventAt.toISOString(),
+          });
+        }
+      }
+    }
+  }
+  return changes.reverse();
+}
+
 /** The bit grid's activity window (`?windowHours=`), bounded by the same retention. */
 const GRID_DEFAULT_WINDOW_HOURS = 24;
 const GRID_MAX_WINDOW_HOURS = CORRELATION_MAX_HOURS;
@@ -334,6 +391,25 @@ export async function registerSClassAdminRoutes(
         at,
         SNAPSHOT_LOOKBACK_MS,
       );
+      // Live (no `at`): the stored facts stop at the history projector's checkpoint, a moment
+      // behind the feed. The raw rows after it are folded in, so the panel is as current as the
+      // live map rather than trailing it.
+      const live = request.query.at === undefined;
+      const byteValues = new Map<string, number | null>(
+        addresses.rows.map((row) => [
+          row.address,
+          facts.get(`${tdArea}|${row.address}`)?.value ?? null,
+        ]),
+      );
+      const overlay = live
+        ? await fetchLiveSOverlay(
+            pool,
+            [tdArea],
+            SNAPSHOT_OVERLAY_MAX_ROWS,
+            SNAPSHOT_OVERLAY_MAX_BACKLOG_ROWS,
+          )
+        : { rows: [], truncated: false };
+      const liveChanges = applySnapshotOverlay(tdArea, byteValues, overlay.rows);
       const from = new Date(at.getTime() - windowSeconds * 1000);
       const changes = await pool.query<{
         address: string;
@@ -358,18 +434,23 @@ export async function registerSClassAdminRoutes(
         tdArea,
         at: at.toISOString(),
         windowSeconds,
-        bytes: addresses.rows.map((row) => ({
-          address: row.address,
-          value: facts.get(`${tdArea}|${row.address}`)?.value ?? null,
-        })),
-        changes: changes.rows.map((row) => ({
-          address: row.address,
-          bit: row.bit_index,
-          previousValue: row.previous_value,
-          newValue: row.new_value,
-          eventAt: row.event_at.toISOString(),
-        })),
-        truncated: changes.rows.length === SNAPSHOT_CHANGE_LIMIT,
+        bytes: [...byteValues]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([address, value]) => ({ address, value })),
+        changes: [
+          ...liveChanges,
+          ...changes.rows.map((row) => ({
+            address: row.address,
+            bit: row.bit_index,
+            previousValue: row.previous_value,
+            newValue: row.new_value,
+            eventAt: row.event_at.toISOString(),
+          })),
+        ].slice(0, SNAPSHOT_CHANGE_LIMIT),
+        truncated: changes.rows.length + liveChanges.length >= SNAPSHOT_CHANGE_LIMIT,
+        /** Live only: the projector was too far behind to catch up here; the newest changes may
+         * be missing until it does. */
+        overlayTruncated: overlay.truncated,
         definitions: definitions.rows.map(definitionResponse),
       };
     },

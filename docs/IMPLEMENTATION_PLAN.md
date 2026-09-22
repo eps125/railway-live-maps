@@ -3811,8 +3811,15 @@ layer, playback boundary URL, live URL unchanged); map view (button for admins o
 playback from a carried position); route-name default (named from the definition, author's name
 kept).
 
-Known limitations: the panel shows bits as projected by the history projector, a few seconds behind
-the live map. Highlights mark bound elements only. A bit bound to nothing on this map still shows in
+**Live means live** (owner, same day: a panel trailing the map would make working out bits a
+nightmare). Without `at`, the snapshot also reads the raw S-Class messages the history projector
+hasn't reached yet: the same `fetchLiveSOverlay` the live map uses, now also carrying each row's
+time. It decodes them and diffs them against the stored bytes (`applySnapshotOverlay`, the
+projector's own change rule), so the newest changes appear as soon as they are received. The panel
+polls every second live. If the projector is far behind, the panel says so rather than showing
+stale bits as current.
+
+Known limitations: Highlights mark bound elements only. A bit bound to nothing on this map still shows in
 the grid, with nothing to highlight.
 
 ## Milestone 38 — revised direction proposal: derive the structural model, don't redraw

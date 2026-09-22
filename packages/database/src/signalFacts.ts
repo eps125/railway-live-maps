@@ -98,6 +98,8 @@ export interface RawSOverlayRow {
   address: unknown;
   data: unknown;
   ingestionSequence: string;
+  /** The message's own (normalized) time — Milestone 65's mini explorer shows it per change. */
+  eventAt: Date;
 }
 
 export interface LiveSOverlay {
@@ -170,9 +172,10 @@ export async function fetchLiveSOverlay(
     parse_status: string;
     raw_event_json: Record<string, unknown>;
     ingestion_sequence: string;
+    normalized_event_at_utc: Date;
   }>(
     `select r.td_area, r.event_type, r.message_class, r.parse_status, r.raw_event_json,
-            r.ingestion_sequence::text as ingestion_sequence
+            r.ingestion_sequence::text as ingestion_sequence, r.normalized_event_at_utc
        from raw_feed_event r
       where r.feed_name = 'TD' and r.ingestion_sequence > $1
       order by r.ingestion_sequence
@@ -198,6 +201,7 @@ export async function fetchLiveSOverlay(
       address: p.address,
       data: p.data,
       ingestionSequence: row.ingestion_sequence,
+      eventAt: row.normalized_event_at_utc,
     };
   });
   return { rows, truncated };

@@ -30,10 +30,12 @@ interface Snapshot {
   bytes: Array<{ address: string; value: number | null }>;
   changes: SnapshotChange[];
   truncated: boolean;
+  overlayTruncated?: boolean;
   definitions: SnapshotDefinition[];
 }
 
-const LIVE_POLL_MS = 3000;
+/** Live: once a second, so a bit change shows while the train that caused it is still moving. */
+const LIVE_POLL_MS = 1000;
 /** In playback the clock ticks constantly; ask at most this often, and never overlap requests. */
 const PLAYBACK_MIN_INTERVAL_MS = 2000;
 /** A bound element counts as "just changed" (and is highlighted, if chosen) for this long. */
@@ -272,6 +274,11 @@ export function SClassMiniPanel({
         </label>
       </div>
       {error ? <p className="s-class-mini__error">{error}</p> : null}
+      {snapshot?.overlayTruncated ? (
+        <p className="s-class-mini__error">
+          The recorder is catching up, so the newest changes may be missing for a moment.
+        </p>
+      ) : null}
       {areas.length === 0 ? <p className="field-hint">This map has no TD areas bound.</p> : null}
 
       <table className="s-class-mini__grid" aria-label={`${area} bits`}>

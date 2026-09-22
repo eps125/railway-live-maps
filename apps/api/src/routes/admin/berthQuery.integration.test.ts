@@ -153,6 +153,12 @@ describe("admin berth query route (integration)", () => {
     ]) {
       expect((await app.inject({ method: "GET", url })).statusCode).toBe(400);
     }
+    // An unrecognised look-back falls back to the default rather than failing.
+    const fallback = await app.inject({
+      method: "GET",
+      url: "/api/v1/admin/berths/steps?tdArea=PX&fromBerth=0001&toBerth=0002&days=9999",
+    });
+    expect(fallback.json().days).toBe(7);
     await app.close();
   });
 });

@@ -3858,6 +3858,8 @@ results. 0.2 s for 24 h and 0.7 s for 14 days. The reverse search ("which bit is
 berths", `correlated-bits`) had the same range join between two materialized CTEs and got the same
 treatment: 0.18 s and 0.63 s.
 
+**Berth steps tool (revised the same evening).** The owner hit a minutes-long search for M9 3894 -> 9878. That pair has **no** steps at all in 90 days, which is the worst case: with no index on the berth pair, a pair that never steps has to read every step of the area in the window (M9, 90 days: ~160k steps, over a gigabyte of heap, minutes on a cold cache). A pair that does step stops at 50 matches, which is why the first measurements looked fine. The look-back is now the author's choice (24 h, 7 days, 30 days, 90 days; default 7) and the query gives up after 15 s with a plain message rather than holding a connection. **Offered to the owner, not yet built:** an index on (td_area, from_berth, to_berth, event_at) where message_type = CA would make any pair instant, at roughly 1.5 GB per monthly partition (the table holds ~45M rows/month; 579 GB free).
+
 **Berth steps tool.** Under Berths: give a TD area and a from/to berth, and it lists the newest 50
 steps (CA) from one to the other within the last 90 days, newest first, with each train's
 description, in UK time. `GET /api/v1/admin/berths/steps`: an `event_at`-ordered read on the

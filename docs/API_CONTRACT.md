@@ -573,10 +573,13 @@ is this same API.
 CA/CB/CC/CT step log, not the `berth_occupancy` projection) by TD area(s) + headcode + time range —
 the web-app replacement for a one-off manual SQL query.
 
-- `GET /api/v1/admin/berths/steps?tdArea=&fromBerth=&toBerth=&limit=` (2026-09-22) — the newest
-  berth steps (CA) from `fromBerth` to `toBerth` in one two-character TD area, newest first, within
-  the last 90 days: `{ tdArea, fromBerth, toBerth, since, steps: [{ eventAt, description }] }`.
-  `limit` defaults to 50, at most 200.
+- `GET /api/v1/admin/berths/steps?tdArea=&fromBerth=&toBerth=&limit=&days=` (2026-09-22) — the
+  newest berth steps (CA) from `fromBerth` to `toBerth` in one two-character TD area, newest first:
+  `{ tdArea, fromBerth, toBerth, days, since, steps: [{ eventAt, description }] }`. `limit` defaults
+  to 50, at most 200. `days` is 1, 7, 30 or 90 (default 7; anything else falls back to it) — there
+  is no index on the berth pair, so the look-back is what bounds the work and a pair that never
+  steps reads every step of the area in it. The query gives up after 15 s with `504
+SEARCH_TOO_SLOW`.
 - `GET /api/v1/admin/berths/query?tdAreas=&headcode=&from=&to=&after=&limit=` — `tdAreas` is a
   required comma-separated list (at least one); `headcode` (matched against `description`) is
   required. `from`/`to` follow the same bounded-range rules as §6 (max 7 days, defaults to the

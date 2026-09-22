@@ -54,11 +54,23 @@ interface QueryQuerystring {
  * planner has no reason to prefer anything else.
  */
 /** Owner request 2026-09-22 ("Berth steps"): how many of the newest steps between a pair of
- * berths, and how far back to look for them. Bounded so a pair that never occurs can't read an
- * area's whole history — measured on production (M9): 0.4-0.9 s even for a pair with no steps. */
+ * berths to return. */
 const PAIR_STEPS_DEFAULT_LIMIT = 50;
 const PAIR_STEPS_MAX_LIMIT = 200;
-const PAIR_STEPS_LOOKBACK_DAYS = 90;
+/** How far back the search may look, in days — the author picks one of these.
+ *
+ * There is no index on the berth pair (only `(td_area, event_at)`), so the lookback is what bounds
+ * the work: a pair that *does* step stops at `limit` matches, but a rare or never-stepping pair
+ * reads every step of the area in the window. Measured on production 2026-09-22 for M9: 24 h is
+ * ~5k steps (instant), while the original 90-day default read ~160k steps and over a gigabyte of
+ * heap — minutes on a cold cache, which is what the owner hit ("3894 -> 9878", a pair with no
+ * steps at all). Kept as a choice, with a timeout, rather than silently allowing a query that can
+ * run for minutes. An index on (td_area, from_berth, to_berth, event_at) would remove the limit
+ * entirely — roughly 1.5 GB per monthly partition, so it needs the owner's decision. */
+const PAIR_STEPS_LOOKBACK_CHOICES = [1, 7, 30, 90];
+const PAIR_STEPS_DEFAULT_DAYS = 7;
+/** A berth-pair search is a diagnostic: give up rather than hold a connection for minutes. */
+const PAIR_STEPS_TIMEOUT_MS = 15_000;
 
 export async function registerBerthQueryRoutes(
   app: FastifyInstance,
@@ -116,7 +128,13 @@ export async function registerBerthQueryRoutes(
    * `td_berth_event` newest first on the `(td_area, event_at)` index, within the last 90 days.
    */
   app.get<{
-    Querystring: { tdArea?: string; fromBerth?: string; toBerth?: string; limit?: string };
+    Querystring: {
+      tdArea?: string;
+      fromBerth?: string;
+      toBerth?: string;
+      limit?: string;
+      days?: string;
+    };
   }>("/api/v1/admin/berths/steps", async (request, reply) => {
     const tdArea = (request.query.tdArea ?? "").trim().toUpperCase();
     const fromBerth = (request.query.fromBerth ?? "").trim().toUpperCase();
@@ -133,25 +151,52 @@ export async function registerBerthQueryRoutes(
       Number.isInteger(requested) && requested > 0
         ? Math.min(requested, PAIR_STEPS_MAX_LIMIT)
         : PAIR_STEPS_DEFAULT_LIMIT;
-    const since = new Date(Date.now() - PAIR_STEPS_LOOKBACK_DAYS * 86_400_000);
-    const result = await pool.query<{ event_at: Date; description: string | null }>(
-      `select event_at, description
-         from td_berth_event
-        where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
-          and event_at >= $4::timestamptz
-        order by event_at desc, id desc
-        limit $5`,
-      [tdArea, fromBerth, toBerth, since, limit],
-    );
-    return {
-      tdArea,
-      fromBerth,
-      toBerth,
-      since: since.toISOString(),
-      steps: result.rows.map((row) => ({
-        eventAt: row.event_at.toISOString(),
-        description: row.description,
-      })),
-    };
+    const requestedDays = Number(request.query.days ?? PAIR_STEPS_DEFAULT_DAYS);
+    const days = PAIR_STEPS_LOOKBACK_CHOICES.includes(requestedDays)
+      ? requestedDays
+      : PAIR_STEPS_DEFAULT_DAYS;
+    const since = new Date(Date.now() - days * 86_400_000);
+
+    // Its own connection, so the timeout applies to this query alone and can't leak to a pooled
+    // session someone else picks up.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(`set local statement_timeout = ${PAIR_STEPS_TIMEOUT_MS}`);
+      const result = await client.query<{ event_at: Date; description: string | null }>(
+        `select event_at, description
+           from td_berth_event
+          where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
+            and event_at >= $4::timestamptz
+          order by event_at desc, id desc
+          limit $5`,
+        [tdArea, fromBerth, toBerth, since, limit],
+      );
+      await client.query("commit");
+      return {
+        tdArea,
+        fromBerth,
+        toBerth,
+        days,
+        since: since.toISOString(),
+        steps: result.rows.map((row) => ({
+          eventAt: row.event_at.toISOString(),
+          description: row.description,
+        })),
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      // 57014 = query_canceled, i.e. the statement timeout above.
+      if ((error as { code?: string }).code === "57014") {
+        reply.code(504);
+        return apiError(
+          "SEARCH_TOO_SLOW",
+          `Searching ${days} days took too long — try a shorter period. A pair that never steps is the slowest case, because every step in the period has to be checked.`,
+        );
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   });
 }

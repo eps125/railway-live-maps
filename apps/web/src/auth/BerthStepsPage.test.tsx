@@ -30,6 +30,7 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
           tdArea: "M9",
           fromBerth: "3879",
           toBerth: "3881",
+          days: 7,
           since: "2026-06-24T12:00:00.000Z",
           steps: [
             { eventAt: "2026-09-22T17:05:09.000Z", description: "2F19" },
@@ -44,7 +45,7 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
 
     const table = await screen.findByRole("table", { name: "3879 to 3881" });
     expect(String(fetchMock.mock.calls[0]![0])).toBe(
-      "/api/v1/admin/berths/steps?tdArea=M9&fromBerth=3879&toBerth=3881&limit=50",
+      "/api/v1/admin/berths/steps?tdArea=M9&fromBerth=3879&toBerth=3881&limit=50&days=7",
     );
     // 17:05:09 UTC is 18:05:09 in the UK in September (BST); January is GMT.
     expect(table).toHaveTextContent("18:05:09");
@@ -61,6 +62,7 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
             tdArea: "M9",
             fromBerth: "ZZZZ",
             toBerth: "YYYY",
+            days: 7,
             since: "",
             steps: [],
           }),
@@ -69,7 +71,9 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
     );
     render(<BerthStepsPage />);
     fill("M9", "ZZZZ", "YYYY");
-    expect(await screen.findByText(/No steps from ZZZZ to YYYY in M9/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/No steps from ZZZZ to YYYY in M9 in the last 7 days/),
+    ).toBeInTheDocument();
 
     vi.stubGlobal(
       "fetch",
@@ -79,5 +83,17 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
     );
     fill("M99", "A", "B");
     expect(await screen.findByRole("alert")).toHaveTextContent("tdArea (two characters)");
+  });
+
+  it("passes the chosen look-back, and shows the API's too-slow message", async () => {
+    const fetchMock = vi.fn((_url: string) =>
+      Promise.resolve(jsonResponse({ error: { message: "Searching 90 days took too long" } }, 504)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BerthStepsPage />);
+    fireEvent.change(screen.getByLabelText("Look back"), { target: { value: "90" } });
+    fill("M9", "3894", "9878");
+    expect(await screen.findByRole("alert")).toHaveTextContent("took too long");
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("days=90");
   });
 });

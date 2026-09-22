@@ -11,9 +11,18 @@ interface PairStepsResponse {
   tdArea: string;
   fromBerth: string;
   toBerth: string;
+  days: number;
   since: string;
   steps: PairStep[];
 }
+
+/** Matches the API's own choices; longer is slower, so the default is a week. */
+const LOOKBACKS = [
+  { days: 1, label: "24 hours" },
+  { days: 7, label: "7 days" },
+  { days: 30, label: "30 days" },
+  { days: 90, label: "90 days" },
+];
 
 /** Europe/London, as every user-facing time in this app (CLAUDE.md rule 4). */
 function londonDateTime(iso: string): string {
@@ -39,6 +48,7 @@ export function BerthStepsPage(): JSX.Element {
   const [tdArea, setTdArea] = useState("");
   const [fromBerth, setFromBerth] = useState("");
   const [toBerth, setToBerth] = useState("");
+  const [days, setDays] = useState(7);
   const [result, setResult] = useState<PairStepsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
@@ -53,6 +63,7 @@ export function BerthStepsPage(): JSX.Element {
         fromBerth: fromBerth.trim().toUpperCase(),
         toBerth: toBerth.trim().toUpperCase(),
         limit: "50",
+        days: String(days),
       });
       const response = await fetch(`/api/v1/admin/berths/steps?${params.toString()}`);
       if (!response.ok) {
@@ -86,8 +97,9 @@ export function BerthStepsPage(): JSX.Element {
         &gt; Berth steps
       </p>
       <p className="field-hint">
-        The last 50 steps from one berth to another, newest first, within the last 90 days. Times
-        are UK time.
+        The last 50 steps from one berth to another, newest first. Times are UK time. A longer
+        period takes longer to search, and a pair that never steps is the slowest case of all,
+        because every step in the period has to be checked.
       </p>
 
       <form className="panel-card" onSubmit={(e) => void search(e)}>
@@ -121,6 +133,16 @@ export function BerthStepsPage(): JSX.Element {
             required
           />
         </label>
+        <label className="field">
+          Look back
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            {LOOKBACKS.map((l) => (
+              <option key={l.days} value={l.days}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </label>
         {error ? (
           <p role="alert" className="login-form__error">
             {error}
@@ -133,8 +155,8 @@ export function BerthStepsPage(): JSX.Element {
 
       {result && result.steps.length === 0 ? (
         <p className="panel-card panel-card--empty">
-          No steps from {result.fromBerth} to {result.toBerth} in {result.tdArea} in the last 90
-          days.
+          No steps from {result.fromBerth} to {result.toBerth} in {result.tdArea} in the last{" "}
+          {LOOKBACKS.find((l) => l.days === result.days)?.label ?? `${result.days} days`}.
         </p>
       ) : null}
 

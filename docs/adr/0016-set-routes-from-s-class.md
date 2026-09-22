@@ -60,7 +60,8 @@ re-trace it. The authoring graph is derived from geometry only and is not writte
 
 **5. Display.** A set route paints over its track in a Traksy-style dash: a solid pale green line
 with a dark dash on top, the same width as the track. `unset` and `blank` draw nothing on the public
-map. The editor always shows every route faintly while authoring, and shows live state in Test mode.
+map. The editor draws a route, in the same style, while it or its entry signal is selected, and
+whenever its bound bit is live-set, so a wrong bit is obvious while authoring.
 Routes paint above the rails and switched diamonds, and below signals and berths.
 
 **6. No partial release.** Control-centre displays drop a route section by section behind the train.
@@ -88,3 +89,20 @@ does not add them.
   routes shown from their own bits.
 - Milestone 38's structural track model is not a dependency. The authoring graph from decision 4
   is the natural seed for it: see the revised Milestone 38 direction in `IMPLEMENTATION_PLAN.md`.
+
+## Measurement (2026-09-22): when an M9 route bit drops
+
+Run with the Milestone 64d `route-candidates` query, read-only against production, over 14 days
+of M9 for S3879 (`07:4`, a set bit means off; 1,004 clears):
+
+- `0C:4` ranks first: 965 of its 1,006 changes to set are followed by S3879 clearing within 3
+  minutes while it is still set. Median lead is 44 s, matching Milestone 56's hand-measured 46 s.
+- It drops a **median 98 s after the signal clears**. The route is not held until the train
+  reaches the exit signal; it is released while the train is passing through, the way train-
+  operated route release works.
+
+So the display decision 6 settled on (the route drawn whole while its bit is set) already disappears
+about as the train takes the route, without inferring anything. Several bits in byte `06` also
+score around 90%, since they too change with every train through the area, but they are held for
+11-12 minutes after the clear, which sets them apart. The explorer shows both numbers for this
+reason. The query takes about 2 s over the full 14 days.

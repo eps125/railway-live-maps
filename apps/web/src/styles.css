@@ -1548,3 +1548,132 @@ legend {
 .btn--link:hover {
   text-decoration: underline;
 }
+
+/* Milestone 65: the admin S-Class mini explorer, floating bottom-right over the map (clear of the
+   toolbar and playback controls at the top) so the map stays visible as a reference. */
+.s-class-mini {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 5;
+  width: 380px;
+  max-width: calc(100% - 24px);
+  max-height: 60%;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: rgba(21, 27, 35, 0.94);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.s-class-mini__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.s-class-mini__header .btn {
+  margin-left: auto;
+  padding: 0 8px;
+}
+
+.s-class-mini__mode {
+  color: var(--color-text-muted);
+}
+
+.s-class-mini__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.s-class-mini__error {
+  color: var(--color-danger);
+}
+
+.s-class-mini__grid {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.s-class-mini__grid th {
+  color: var(--color-text-faint);
+  font-weight: normal;
+  padding: 1px 2px;
+}
+
+.s-class-mini__grid td {
+  padding: 1px;
+}
+
+.s-class-mini__bit {
+  width: 100%;
+  min-width: 34px;
+  padding: 2px 1px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 3px;
+  background: var(--color-bg-inset);
+  color: var(--color-text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.s-class-mini__bit--set {
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+}
+
+.s-class-mini__bit--changed {
+  border-color: var(--color-warning);
+}
+
+.s-class-mini__bit--just-changed {
+  border-color: #f0b429;
+  background: rgba(240, 180, 41, 0.3);
+  color: var(--color-text);
+}
+
+.s-class-mini__bit--selected {
+  outline: 2px solid var(--color-accent-hover);
+}
+
+.s-class-mini__label {
+  display: block;
+  overflow: hidden;
+  font-size: 9px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 40px;
+  margin: 0 auto;
+}
+
+.s-class-mini__heading {
+  margin: 8px 0 4px;
+  font-size: 12px;
+}
+
+.s-class-mini__changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.s-class-mini__changes li {
+  padding: 1px 0;
+}
+
+@media (max-width: 600px) {
+  .s-class-mini {
+    left: 12px;
+    width: auto;
+    max-height: 55%;
+  }
+}

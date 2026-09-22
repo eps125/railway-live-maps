@@ -9,6 +9,7 @@ import {
   type SClassByteRadix,
   type SClassDefinitionKind,
 } from "@railway/domain";
+import { fetchSByteFactsAt } from "@railway/database";
 import { apiError, parseLimit } from "../../lib/queryRange.js";
 
 /**
@@ -40,6 +41,14 @@ const CORRELATION_MAX_HOURS = 14 * 24;
 const ROUTE_LEAD_MAX_SECONDS = 180;
 /** How long after the clear to look for the route bit being released. */
 const ROUTE_HOLD_MAX_SECONDS = 30 * 60;
+/** The mini explorer's change window: default 2 minutes, at most 1 hour either way. */
+const SNAPSHOT_DEFAULT_WINDOW_SECONDS = 120;
+const SNAPSHOT_MAX_WINDOW_SECONDS = 3600;
+/** The newest changes returned in one snapshot. */
+const SNAPSHOT_CHANGE_LIMIT = 300;
+/** How far back a byte's last statement may be and still count as its value at `at`. Matches the
+ * signal state lookback, so the panel and the map agree about what is known. */
+const SNAPSHOT_LOOKBACK_MS = 6 * 3_600_000;
 /** The bit grid's activity window (`?windowHours=`), bounded by the same retention. */
 const GRID_DEFAULT_WINDOW_HOURS = 24;
 const GRID_MAX_WINDOW_HOURS = CORRELATION_MAX_HOURS;
@@ -276,6 +285,95 @@ export async function registerSClassAdminRoutes(
       })),
     };
   });
+
+  /**
+   * Milestone 65 (owner request 2026-09-22): the map viewer's admin S-Class mini explorer — one
+   * area's bits **as they were at `at`** (default now), and every bit change in the
+   * `windowSeconds` before it, newest first. The same endpoint serves live (at = now, polled) and
+   * playback (at = the playback clock).
+   *
+   * A byte's value is its most recent decoded statement at or before `at` within 6 hours
+   * (`fetchSByteFactsAt`, the lookup signal state uses), so the panel shows the same facts the map
+   * resolves from. Null means nothing decoded in that time, never a guess. Admin-only diagnostics:
+   * nothing here feeds a displayed state.
+   */
+  app.get<{ Params: { tdArea: string }; Querystring: { at?: string; windowSeconds?: string } }>(
+    "/api/v1/admin/s-class/areas/:tdArea/snapshot",
+    async (request, reply) => {
+      const { tdArea } = request.params;
+      if (!isTdArea(tdArea)) {
+        reply.code(400);
+        return apiError("INVALID_TD_AREA", "tdArea must be a two-character TD area code");
+      }
+      const at = request.query.at ? new Date(request.query.at) : new Date();
+      const windowSeconds =
+        request.query.windowSeconds === undefined
+          ? SNAPSHOT_DEFAULT_WINDOW_SECONDS
+          : Number(request.query.windowSeconds);
+      if (
+        Number.isNaN(at.getTime()) ||
+        !Number.isFinite(windowSeconds) ||
+        windowSeconds <= 0 ||
+        windowSeconds > SNAPSHOT_MAX_WINDOW_SECONDS
+      ) {
+        reply.code(400);
+        return apiError(
+          "INVALID_SNAPSHOT",
+          `at must be an ISO timestamp and windowSeconds between 1 and ${SNAPSHOT_MAX_WINDOW_SECONDS}`,
+        );
+      }
+      const addresses = await pool.query<{ address: string }>(
+        `select address from td_s_current_state
+          where projection_version = $1 and td_area = $2
+          order by address`,
+        [TD_S_STATE_PROJECTION_VERSION, tdArea],
+      );
+      const facts = await fetchSByteFactsAt(
+        pool,
+        addresses.rows.map((row) => ({ tdArea, address: row.address })),
+        at,
+        SNAPSHOT_LOOKBACK_MS,
+      );
+      const from = new Date(at.getTime() - windowSeconds * 1000);
+      const changes = await pool.query<{
+        address: string;
+        bit_index: number;
+        previous_value: boolean;
+        new_value: boolean;
+        event_at: Date;
+      }>(
+        `select address, bit_index, previous_value, new_value, event_at
+           from td_s_bit_transition
+          where projection_version = $1 and td_area = $2 and previous_value is not null
+            and event_at > $3::timestamptz and event_at <= $4::timestamptz
+          order by event_at desc, address, bit_index
+          limit $5`,
+        [TD_S_STATE_PROJECTION_VERSION, tdArea, from, at, SNAPSHOT_CHANGE_LIMIT],
+      );
+      const definitions = await pool.query<DefinitionRow>(
+        `select * from s_class_definition where td_area = $1 order by address, bit`,
+        [tdArea],
+      );
+      return {
+        tdArea,
+        at: at.toISOString(),
+        windowSeconds,
+        bytes: addresses.rows.map((row) => ({
+          address: row.address,
+          value: facts.get(`${tdArea}|${row.address}`)?.value ?? null,
+        })),
+        changes: changes.rows.map((row) => ({
+          address: row.address,
+          bit: row.bit_index,
+          previousValue: row.previous_value,
+          newValue: row.new_value,
+          eventAt: row.event_at.toISOString(),
+        })),
+        truncated: changes.rows.length === SNAPSHOT_CHANGE_LIMIT,
+        definitions: definitions.rows.map(definitionResponse),
+      };
+    },
+  );
 
   /** The live bit grid for one area: every byte's current value, and per bit its last change
    * within `?windowHours=` (default 24 h, max the retained 14 days), change count in that window

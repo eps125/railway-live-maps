@@ -1167,6 +1167,19 @@ function RouteBindingFields({
       type: "dispatchCommand",
       command: { type: "setBinding", elementId: route.id, binding: next },
     });
+    // Owner request 2026-09-22: an unnamed route takes the bit's label from the S-Class
+    // definitions (e.g. "R111AM") as its name. A name the author already gave is never replaced.
+    if (!route.label && matchedDefinition?.label) {
+      dispatch({
+        type: "dispatchCommand",
+        command: {
+          type: "setProperty",
+          elementId: route.id,
+          property: "label",
+          value: matchedDefinition.label,
+        },
+      });
+    }
   }
 
   return (

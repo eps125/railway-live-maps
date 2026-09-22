@@ -605,6 +605,12 @@ definition }] }] }` (changes counted over the last 24 h; first sightings are not
   in that state when it does. `{ clears, leadWindowSeconds, candidates: [{ address, bit, direction,
 hits, ofClears, ofTransitions, medianLeadSeconds, medianHeldSeconds, definition }] }`, ranked by
   `hits / ofTransitions` then `hits`. Never applied or bound automatically.
+- `GET .../areas/{tdArea}/snapshot?at=&windowSeconds=` (Milestone 65) — the map viewer's mini
+  explorer: `{ tdArea, at, windowSeconds, bytes: [{ address, value | null }], changes: [{ address,
+bit, previousValue, newValue, eventAt }], truncated, definitions }`. `at` defaults to now; each byte
+  is its latest decoded statement at or before `at` within 6 h (null = unknown); `changes` are the
+  bit changes in `(at - windowSeconds, at]`, newest first, at most 300. `windowSeconds` 1-3600,
+  default 120.
 - `GET /api/v1/admin/s-class/areas/{tdArea}/correlated-bits?fromBerth=&toBerth=&from=&to=` —
   suggestion, the other way round: bits that change within ±10 s of that step.
 - `GET .../definitions`; `PUT .../definitions/{address}/{bit}` (`{ kind, label, destination,

@@ -55,6 +55,13 @@ export interface MapRendererProps {
    * to `RunPopup`, which asks the API about the berth's occupancy *then* rather than now — the
    * whole reason a click on the playback map used to do nothing. `null`/omitted means live. */
   atIso?: string | null;
+  /** Milestone 65: elements to mark on the map for the admin S-Class mini explorer — an amber
+   * ring round a signal, crossing or other point element, an amber band under a route. A visual
+   * reference only; it never changes any element's state. */
+  highlightElementIds?: ReadonlyArray<string>;
+  /** Milestone 65: in playback, the position a boundary link carries to the adjacent map so it
+   * opens in playback at the same moment, instead of going back to live. Null or absent: live. */
+  playbackLink?: { atIso: string; speed: number; playing: boolean } | null;
 }
 
 export interface ViewBox {
@@ -78,14 +85,30 @@ function boundaryClickHandler(
   adjacentMapSlug: string | undefined,
   adjacentBoundaryName: string | undefined,
   ownName: string,
+  playbackLink: MapRendererProps["playbackLink"] = null,
 ): (() => void) | undefined {
   if (!adjacentMapSlug) return undefined;
   return () => {
-    const boundaryName = adjacentBoundaryName ?? ownName;
-    navigate(
-      `/map/${encodeURIComponent(adjacentMapSlug)}?boundary=${encodeURIComponent(boundaryName)}`,
-    );
+    navigate(boundaryLinkUrl(adjacentMapSlug, adjacentBoundaryName ?? ownName, playbackLink));
   };
+}
+
+/** Milestone 65 (owner request 2026-09-22): the adjacent map's URL for a boundary link. In
+ * playback it carries the clock (`at`), `speed` and whether it was playing, so the adjacent map
+ * opens in playback at the same moment rather than dropping back to live. */
+export function boundaryLinkUrl(
+  adjacentMapSlug: string,
+  boundaryName: string,
+  playbackLink: MapRendererProps["playbackLink"] = null,
+): string {
+  // Built by hand rather than with URLSearchParams, which would write spaces as "+": existing
+  // links (and bookmarks of them) use %20.
+  let url = `/map/${encodeURIComponent(adjacentMapSlug)}?boundary=${encodeURIComponent(boundaryName)}`;
+  if (playbackLink) {
+    url += `&at=${encodeURIComponent(playbackLink.atIso)}&speed=${playbackLink.speed}`;
+    if (playbackLink.playing) url += "&play=1";
+  }
+  return url;
 }
 
 /** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
@@ -674,6 +697,8 @@ export function MapRenderer({
   showEmptyBerths = true,
   centerElementId,
   atIso = null,
+  highlightElementIds = [],
+  playbackLink = null,
 }: MapRendererProps): JSX.Element {
   // `useRef`'s initial value is only ever evaluated on the first render, which is exactly "look
   // at this once, at mount" — a later change to `centerElementId` (or the visitor panning away)
@@ -1011,6 +1036,7 @@ export function MapRenderer({
               element.adjacentMapSlug,
               element.adjacentBoundaryName,
               element.text,
+              playbackLink,
             );
             return (
               <text
@@ -1067,6 +1093,7 @@ export function MapRenderer({
               element.adjacentMapSlug,
               element.adjacentBoundaryName,
               element.name,
+              playbackLink,
             );
             return (
               <g
@@ -1083,6 +1110,38 @@ export function MapRenderer({
           }
           return null;
         })}
+        {highlightElementIds.length > 0 ? (
+          <g className="map-highlight" data-testid="map-highlight" pointerEvents="none">
+            {highlightElementIds.map((id) => {
+              const element = bundle.elementsById[id];
+              if (!element) return null;
+              if ("points" in element) {
+                return (
+                  <polyline
+                    key={id}
+                    points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+                    fill="none"
+                    stroke="#f0b429"
+                    strokeWidth={MAP_STYLE.track.strokeWidth + 6}
+                    strokeOpacity={0.55}
+                    strokeLinejoin="round"
+                  />
+                );
+              }
+              return (
+                <circle
+                  key={id}
+                  cx={element.x}
+                  cy={element.y}
+                  r={14}
+                  fill="none"
+                  stroke="#f0b429"
+                  strokeWidth={2.5}
+                />
+              );
+            })}
+          </g>
+        ) : null}
       </svg>
 
       <button

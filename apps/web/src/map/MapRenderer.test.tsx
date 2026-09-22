@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAP_STYLE, type CompiledMapBundle } from "@railway/map-schema";
 import {
   MapRenderer,
+  boundaryLinkUrl,
   elementCenterPoint,
   viewBoxAfterPinch,
   MIN_ZOOM_WIDTH,
@@ -1127,6 +1128,94 @@ describe("MapRenderer", () => {
 
     expect(window.location.pathname).toBe("/map/carlisle");
     expect(window.location.search).toBe("?boundary=Carlisle%20PSB");
+  });
+
+  it("in playback, a boundary link carries the clock, speed and play state (Milestone 65)", () => {
+    window.history.pushState(null, "", "/map/preston");
+    const doc = bundle({
+      elementsById: {
+        "boundary-1": {
+          id: "boundary-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "boundary",
+          x: 5,
+          y: 5,
+          name: "Preston PSB",
+          adjacentMapSlug: "carlisle",
+          adjacentBoundaryName: "Carlisle PSB",
+        },
+      },
+    });
+    render(
+      <MapRenderer
+        bundle={doc}
+        berths={{}}
+        signals={{}}
+        atIso="2026-09-20T10:00:00.000Z"
+        playbackLink={{ atIso: "2026-09-20T10:00:00.000Z", speed: 5, playing: true }}
+      />,
+    );
+    fireEvent.click(screen.getByText("Preston PSB"));
+    const params = new URLSearchParams(window.location.search);
+    expect(window.location.pathname).toBe("/map/carlisle");
+    expect(params.get("boundary")).toBe("Carlisle PSB");
+    expect(params.get("at")).toBe("2026-09-20T10:00:00.000Z");
+    expect(params.get("speed")).toBe("5");
+    expect(params.get("play")).toBe("1");
+  });
+
+  it("builds a live boundary link with no playback position (Milestone 65)", () => {
+    expect(boundaryLinkUrl("carlisle", "Carlisle PSB")).toBe(
+      "/map/carlisle?boundary=Carlisle%20PSB",
+    );
+    expect(
+      boundaryLinkUrl("carlisle", "X", {
+        atIso: "2026-09-20T10:00:00.000Z",
+        speed: 1,
+        playing: false,
+      }),
+    ).toBe("/map/carlisle?boundary=X&at=2026-09-20T10%3A00%3A00.000Z&speed=1");
+  });
+
+  it("draws the S-Class highlight round a point element and along a route (Milestone 65)", () => {
+    const doc = bundle({
+      elementsById: {
+        "sig-1": {
+          id: "sig-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "signal",
+          x: 40,
+          y: 50,
+          orientation: 0,
+          symbolStyle: "signal-blank",
+        },
+        "route-1": {
+          id: "route-1",
+          layerId: "layer-visible",
+          zIndex: 2,
+          type: "route",
+          entrySignalId: "sig-1",
+          points: [
+            { x: 40, y: 50 },
+            { x: 150, y: 50 },
+          ],
+          trackIds: [],
+        },
+      },
+    });
+    const { getByTestId } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{}}
+        signals={{}}
+        highlightElementIds={["sig-1", "route-1", "missing"]}
+      />,
+    );
+    const layer = getByTestId("map-highlight");
+    expect(layer.querySelector("circle")!.getAttribute("cx")).toBe("40");
+    expect(layer.querySelector("polyline")!.getAttribute("points")).toBe("40,50 150,50");
   });
 
   it("falls back to the boundary's own name when adjacentBoundaryName is unset", () => {

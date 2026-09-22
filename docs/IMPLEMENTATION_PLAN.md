@@ -3770,6 +3770,51 @@ Sub-milestones, each committed and deployable on its own:
 - **64e — Blackpool.** Owner authors and binds M9's routes and publishes. Playwright check of the
   overlay.
 
+## Milestone 65 — S-Class mini explorer on the map, and boundary links that keep playback (2026-09-22)
+
+Owner requests, 2026-09-22:
+
+- "a S class mini explorer pop up to the live viewer and on playback for admins … see what bits
+  changed … with a map as visual reference"
+- "when clicking a boundary link for the playback to remain at the same position instead of …
+  putting you back live"
+- when a route bit with an S-Class label (e.g. `R111AM`) is bound, the route defaults to that name.
+
+**Mini explorer.** Admins get an **S-Class** button on the map, live and in playback. It opens a
+floating panel (bottom-right, so the map stays visible) for one of the map's TD areas. The panel
+shows every byte's bits as they were at the displayed time: live, or at the playback clock. It
+outlines bits that changed within the chosen window (30 s to 30 min) and fills those changed in
+the last 10 s, and lists the changes newest first with their definitions. Picking a bit, or a change,
+highlights the map elements bound to it: signals, crossings (including inferred ones) and routes, as
+an amber ring or band. "Highlight changes on map" also marks elements whose bits changed in the last
+10 s. It reads the new admin-only `GET /api/v1/admin/s-class/areas/{area}/snapshot?at=&windowSeconds=`.
+That endpoint gets byte values from `fetchSByteFactsAt`, the same lookup signal state resolves
+from, so the panel and the map agree, and an unknown byte shows "?". Changes come from
+`td_s_bit_transition`. Checked on production against M9 (24 bytes): 14 ms and 38 ms live, 1.5 s for
+a cold read 3 days back. So playback asks at most every 2 s, never overlaps requests, and always
+fetches the final position after a pause or jump. Diagnostics only: nothing here changes what the
+map displays.
+
+**Boundary links in playback.** A boundary link followed in playback now carries
+`at`/`speed`/`play` (`boundaryLinkUrl`). The adjacent map opens in playback at the same moment
+and speed, resuming if it was playing, and centred on the matching boundary as before. Live links
+are unchanged (still `?boundary=` only, with the same `%20` encoding). "Return to live" drops the
+playback parameters from the URL, so a refresh stays live. The map view is now keyed per map and
+arrival, so the adjacent map never inherits the previous map's state.
+
+**Route names.** Binding a route bit that has an S-Class definition with a label names an unnamed
+route after it. A name the author already gave is never replaced.
+
+Tests: snapshot endpoint integration (bytes at a time, an unknown byte, the change window, 400s);
+panel (areas, bound-element lookup, live and playback requests, highlighting); renderer (highlight
+layer, playback boundary URL, live URL unchanged); map view (button for admins only, opening in
+playback from a carried position); route-name default (named from the definition, author's name
+kept).
+
+Known limitations: the panel shows bits as projected by the history projector, a few seconds behind
+the live map. Highlights mark bound elements only. A bit bound to nothing on this map still shows in
+the grid, with nothing to highlight.
+
 ## Milestone 38 — revised direction proposal: derive the structural model, don't redraw
 
 Owner question 2026-09-22: can Milestone 38 be done without redrawing every map? Proposal, for owner

@@ -85,11 +85,26 @@ export function App(): JSX.Element {
     const searchParams = new URLSearchParams(window.location.search);
     const centerElementId = searchParams.get("center");
     const centerBoundaryName = searchParams.get("boundary");
+    // Milestone 65: a boundary link followed in playback carries the clock, so the adjacent map
+    // opens in playback at the same moment. An unparseable `at` is ignored (opens live).
+    const atMs = Date.parse(searchParams.get("at") ?? "");
+    const initialPlayback = Number.isNaN(atMs)
+      ? null
+      : {
+          atMs,
+          speed: Number(searchParams.get("speed") ?? "1") || 1,
+          playing: searchParams.get("play") === "1",
+        };
     main = (
       <MapView
+        // Remount per map and per arrival, so a boundary link starts the new map's own state
+        // (including its playback position) rather than inheriting the previous map's.
+        key={`${route.slug}|${searchParams.get("at") ?? ""}`}
         slug={route.slug}
         centerElementId={centerElementId}
         centerBoundaryName={centerBoundaryName}
+        initialPlayback={initialPlayback}
+        isAdmin={isAdmin}
       />
     );
   } else {

@@ -997,3 +997,103 @@ describe("switched diamond fields (Milestone 63, revised)", () => {
     expect(JSON.parse(screen.getByTestId("diamond").textContent!).style).toBe("ticks");
   });
 });
+
+describe("route bit binding (Milestone 64)", () => {
+  function routeDoc(label?: string): MapDocument {
+    const doc = baseDoc();
+    return {
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          id: "sig-1",
+          layerId: "l",
+          zIndex: 0,
+          type: "signal",
+          x: 10,
+          y: 50,
+          orientation: 0,
+          symbolStyle: "signal-blank",
+        },
+        {
+          id: "route-1",
+          layerId: "l",
+          zIndex: 2,
+          type: "route",
+          entrySignalId: "sig-1",
+          ...(label ? { label } : {}),
+          points: [
+            { x: 10, y: 50 },
+            { x: 90, y: 50 },
+          ],
+          trackIds: [],
+        },
+      ],
+    };
+  }
+
+  function Probe(): JSX.Element {
+    const { document: doc } = useEditorState();
+    const route = doc.elements.find((e) => e.id === "route-1");
+    return (
+      <pre data-testid="route">
+        {route?.type === "route"
+          ? JSON.stringify({
+              label: route.label ?? null,
+              bits: doc.bindings.filter((b) => b.elementId === "route-1"),
+            })
+          : "n/a"}
+      </pre>
+    );
+  }
+
+  function renderRoute(doc: MapDocument) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve(
+          jsonResponse(
+            url.includes("/definitions")
+              ? {
+                  definitions: [
+                    { address: "0C", bit: 4, kind: "route", label: "R111AM", destination: "P2" },
+                  ],
+                }
+              : { areas: ["M9"] },
+          ),
+        ),
+      ),
+    );
+    render(
+      <EditorStateProvider initialDocument={doc}>
+        <Select id="route-1" />
+        <PropertyPanel />
+        <Probe />
+      </EditorStateProvider>,
+    );
+  }
+
+  async function bindDefinedRoute(): Promise<void> {
+    fireEvent.change(screen.getAllByLabelText("TD area").at(-1)!, { target: { value: "M9" } });
+    const defined = await screen.findByLabelText("Defined route");
+    fireEvent.change(defined, { target: { value: "0C:4" } });
+    fireEvent.click(screen.getByRole("button", { name: "Bind route" }));
+  }
+  const committed = () => JSON.parse(screen.getByTestId("route").textContent!);
+
+  it("names an unnamed route after the S-Class definition's label when its bit is bound", async () => {
+    renderRoute(routeDoc());
+    await bindDefinedRoute();
+    expect(committed().label).toBe("R111AM");
+    expect(committed().bits).toEqual([
+      expect.objectContaining({ type: "tdSBitRoute", address: "0C", bit: 4, activeMeans: "set" }),
+    ]);
+  });
+
+  it("never replaces a name the author already gave the route", async () => {
+    renderRoute(routeDoc("Up Main to P3"));
+    await bindDefinedRoute();
+    expect(committed().label).toBe("Up Main to P3");
+    expect(committed().bits).toHaveLength(1);
+  });
+});

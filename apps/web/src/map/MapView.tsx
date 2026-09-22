@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { useMapData } from "./useMapData.js";
 import { MapRenderer } from "./MapRenderer.js";
 import { LiveStatusBanner } from "./LiveStatusBanner.js";
 import { PlaybackControls } from "./PlaybackControls.js";
-import { usePlayback } from "./usePlayback.js";
+import { PLAYBACK_SPEEDS, usePlayback } from "./usePlayback.js";
+import { SClassMiniPanel } from "./SClassMiniPanel.js";
 
 export interface MapViewProps {
   slug: string;
@@ -16,6 +17,42 @@ export interface MapViewProps {
    * as `centerElementId`. Unresolved (stale/renamed boundary, or no match) falls back to the
    * remembered/default view — never a hard error. */
   centerBoundaryName?: string | null;
+  /** Milestone 65: arrived by a boundary link from a map in playback — open in playback at the
+   * same moment (`?at=&speed=&play=1`) rather than live. */
+  initialPlayback?: { atMs: number; speed: number; playing: boolean } | null;
+  /** Milestone 65: an admin gets the S-Class mini explorer button. */
+  isAdmin?: boolean;
+}
+
+const S_CLASS_PANEL_KEY = "rlm.sClassPanelOpen";
+
+/** The mini explorer stays open across maps within a tab (a boundary link remounts the view). */
+function readPanelOpen(): boolean {
+  try {
+    return window.sessionStorage.getItem(S_CLASS_PANEL_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writePanelOpen(open: boolean): void {
+  try {
+    window.sessionStorage.setItem(S_CLASS_PANEL_KEY, String(open));
+  } catch {
+    /* ignore — the panel still works for this page */
+  }
+}
+
+/** Drop the playback position from the URL, so a refresh after returning to live stays live. */
+function clearPlaybackParams(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!["at", "speed", "play"].some((key) => url.searchParams.has(key))) return;
+    for (const key of ["at", "speed", "play"]) url.searchParams.delete(key);
+    window.history.replaceState(window.history.state, "", url.toString());
+  } catch {
+    /* ignore */
+  }
 }
 
 const EMPTY_BERTHS_KEY = "rlm.showEmptyBerths";
@@ -46,9 +83,21 @@ export function MapView({
   slug,
   centerElementId = null,
   centerBoundaryName = null,
+  initialPlayback = null,
+  isAdmin = false,
 }: MapViewProps): JSX.Element {
   const { definition, state, error, loading, connectionStatus } = useMapData(slug);
-  const [playbackFrom, setPlaybackFrom] = useState<number | null>(null);
+  const [playbackFrom, setPlaybackFrom] = useState<number | null>(initialPlayback?.atMs ?? null);
+  const [sClassOpen, setSClassOpen] = useState<boolean>(() => isAdmin && readPanelOpen());
+  const [highlight, setHighlight] = useState<string[]>([]);
+  const onHighlight = useCallback((ids: string[]) => setHighlight(ids), []);
+
+  function toggleSClass(): void {
+    setSClassOpen((prev) => {
+      writePanelOpen(!prev);
+      return !prev;
+    });
+  }
   const [showEmptyBerths, setShowEmptyBerths] = useState<boolean>(readShowEmptyBerths);
 
   function toggleEmptyBerths(): void {
@@ -108,6 +157,16 @@ export function MapView({
           <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
           Show empty berths
         </label>
+        {isAdmin ? (
+          <button
+            type="button"
+            className="map-page__mode-btn"
+            aria-pressed={sClassOpen}
+            onClick={toggleSClass}
+          >
+            S-Class
+          </button>
+        ) : null}
       </div>
 
       {playbackFrom === null ? (
@@ -129,16 +188,44 @@ export function MapView({
           routes={state?.routes ?? {}}
           showEmptyBerths={showEmptyBerths}
           centerElementId={resolvedCenterElementId}
+          highlightElementIds={highlight}
         />
       ) : (
         <PlaybackView
           slug={slug}
           fromMs={playbackFrom}
+          initialSpeed={initialPlayback?.speed ?? 1}
+          initialPlaying={initialPlayback?.playing ?? false}
           bundle={definition.definition}
           showEmptyBerths={showEmptyBerths}
-          onReturnToLive={() => setPlaybackFrom(null)}
+          centerElementId={resolvedCenterElementId}
+          highlight={highlight}
+          sClassPanel={
+            isAdmin && sClassOpen
+              ? (atIso) => (
+                  <SClassMiniPanel
+                    bundle={definition.definition}
+                    atIso={atIso}
+                    onHighlight={onHighlight}
+                    onClose={toggleSClass}
+                  />
+                )
+              : null
+          }
+          onReturnToLive={() => {
+            clearPlaybackParams();
+            setPlaybackFrom(null);
+          }}
         />
       )}
+      {playbackFrom === null && isAdmin && sClassOpen ? (
+        <SClassMiniPanel
+          bundle={definition.definition}
+          atIso={null}
+          onHighlight={onHighlight}
+          onClose={toggleSClass}
+        />
+      ) : null}
     </section>
   );
 }
@@ -146,19 +233,32 @@ export function MapView({
 interface PlaybackViewProps {
   slug: string;
   fromMs: number;
+  initialSpeed: number;
+  initialPlaying: boolean;
   bundle: CompiledMapBundle;
   showEmptyBerths: boolean;
+  centerElementId: string | null;
+  highlight: string[];
+  /** The admin S-Class mini explorer, given the playback clock — or null when closed. */
+  sClassPanel: ((atIso: string) => JSX.Element) | null;
   onReturnToLive: () => void;
 }
 
 function PlaybackView({
   slug,
   fromMs,
+  initialSpeed,
+  initialPlaying,
   bundle,
   showEmptyBerths,
+  centerElementId,
+  highlight,
+  sClassPanel,
   onReturnToLive,
 }: PlaybackViewProps): JSX.Element {
-  const pb = usePlayback(slug, fromMs);
+  // A speed carried in a URL is only honoured if it's one the controls offer.
+  const speed = (PLAYBACK_SPEEDS as readonly number[]).includes(initialSpeed) ? initialSpeed : 1;
+  const pb = usePlayback(slug, fromMs, { speed, playing: initialPlaying });
   return (
     <>
       <PlaybackControls
@@ -189,7 +289,11 @@ function PlaybackView({
         routes={pb.routes}
         showEmptyBerths={showEmptyBerths}
         atIso={pb.atIso}
+        centerElementId={centerElementId}
+        highlightElementIds={highlight}
+        playbackLink={{ atIso: pb.atIso, speed: pb.speed, playing: pb.playing }}
       />
+      {sClassPanel ? sClassPanel(pb.atIso) : null}
     </>
   );
 }

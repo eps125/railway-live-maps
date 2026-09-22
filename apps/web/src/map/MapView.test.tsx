@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MapView } from "./MapView.js";
 import type { MapDefinitionResponse, MapStateResponse } from "./types.js";
@@ -287,5 +287,59 @@ describe("MapView", () => {
       expect(x! + width! / 2).toBeCloseTo(40);
       expect(y! + height! / 2).toBeCloseTo(320);
     });
+  });
+});
+
+describe("MapView — admin S-Class panel and boundary playback (Milestone 65)", () => {
+  function stubFetch(): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/definition")) return Promise.resolve(jsonResponse(definition));
+      if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
+      if (url.includes("/events")) {
+        return Promise.resolve(jsonResponse({ events: [], nextCursor: null }));
+      }
+      if (url.includes("/snapshot")) {
+        return Promise.resolve(
+          jsonResponse({
+            at: new Date().toISOString(),
+            bytes: [],
+            changes: [],
+            truncated: false,
+            definitions: [],
+          }),
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("offers the S-Class button to an admin only", async () => {
+    stubFetch();
+    const { unmount } = render(<MapView slug="lancaster" />);
+    await screen.findByText("2A16");
+    expect(screen.queryByRole("button", { name: "S-Class" })).toBeNull();
+    unmount();
+
+    render(<MapView slug="lancaster" isAdmin />);
+    fireEvent.click(await screen.findByRole("button", { name: "S-Class" }));
+    expect(
+      await screen.findByRole("complementary", { name: "S-Class mini explorer" }),
+    ).toBeVisible();
+  });
+
+  it("opens in playback at the position a boundary link carried, instead of live", async () => {
+    const fetchMock = stubFetch();
+    const atMs = Date.parse("2026-09-20T10:00:00.000Z");
+    render(<MapView slug="lancaster" initialPlayback={{ atMs, speed: 2, playing: false }} />);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes(`/state?at=${encodeURIComponent(new Date(atMs).toISOString())}`),
+        ),
+      ).toBe(true),
+    );
+    expect(screen.queryByText("Live")).toBeNull();
   });
 });

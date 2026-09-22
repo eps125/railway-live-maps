@@ -113,10 +113,17 @@ export interface UsePlaybackResult {
  * `eventAt`, refill the buffer before it runs out. Any `jumpTo`/`step` re-seeds at the target
  * (cheap — two small requests) rather than trying to unwind applied deltas.
  */
-export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResult {
+export function usePlayback(
+  slug: string,
+  initialAtMs: number,
+  /** Milestone 65: where a boundary link left off on the previous map — its speed, and whether it
+   * was playing (it resumes once the first state has loaded). */
+  initial: { speed?: number; playing?: boolean } = {},
+): UsePlaybackResult {
   const [clock, setClock] = useState(initialAtMs);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeedState] = useState(1);
+  const [speed, setSpeedState] = useState(initial.speed ?? 1);
+  const resumeRef = useRef(initial.playing === true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [berths, setBerths] = useState<Berths>({});
@@ -181,6 +188,10 @@ export function usePlayback(slug: string, initialAtMs: number): UsePlaybackResul
         bufferIdxRef.current = 0;
         cursorRef.current = events.nextCursor;
         setClock(atMs);
+        if (resumeRef.current) {
+          resumeRef.current = false;
+          setPlaying(true);
+        }
       } catch (err) {
         if (seekId === seekIdRef.current) {
           setError(err instanceof Error ? err.message : "Failed to load playback state");

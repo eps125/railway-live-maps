@@ -551,20 +551,22 @@ export async function registerSClassAdminRoutes(
         release_times: Date[];
       }>(
         `with timeline as materialized (
+           -- ($6/$7 are cast where they first appear: "$6 - interval" alone lets Postgres infer $6
+           -- as an interval and reject the query.)
            -- Every other bit's changes in the area (from the lead window before the range to the
            -- hold window after it), and this signal's clears, as one time-ordered stream.
            select address, bit_index, new_value, event_at, false as is_clear
              from td_s_bit_transition
             where projection_version = $1 and td_area = $2 and previous_value is not null
               and not (address = $3 and bit_index = $4)
-              and event_at >= $6 - make_interval(secs => $8)
-              and event_at < $7 + make_interval(secs => $9)
+              and event_at >= $6::timestamptz - make_interval(secs => $8)
+              and event_at < $7::timestamptz + make_interval(secs => $9)
            union all
            select null, null, null, event_at, true
              from td_s_bit_transition
             where projection_version = $1 and td_area = $2 and address = $3 and bit_index = $4
               and previous_value is not null and new_value = $5
-              and event_at >= $6 and event_at < $7
+              and event_at >= $6::timestamptz and event_at < $7::timestamptz
          ),
          -- For each change: when that bit next changes back, and the first clear at or after it.
          -- The clear is a running min over the stream read newest-first — a fixed frame start,
@@ -592,7 +594,7 @@ export async function registerSClassAdminRoutes(
          )
          select address, bit_index, new_value,
                 count(*) filter (where hit)::int as hits,
-                count(*) filter (where event_at >= $6 and event_at < $7)::int as transitions,
+                count(*) filter (where event_at >= $6::timestamptz and event_at < $7::timestamptz)::int as transitions,
                 percentile_cont(0.5) within group (
                   order by extract(epoch from next_clear_at - event_at)
                 ) filter (where hit) as median_lead_seconds,
@@ -606,7 +608,7 @@ export async function registerSClassAdminRoutes(
           group by address, bit_index, new_value
          having count(*) filter (where hit) >= 2
           order by count(*) filter (where hit)::float
-                     / greatest(count(*) filter (where event_at >= $6 and event_at < $7), 1) desc,
+                     / greatest(count(*) filter (where event_at >= $6::timestamptz and event_at < $7::timestamptz), 1) desc,
                    count(*) filter (where hit) desc
           limit 20`,
         [

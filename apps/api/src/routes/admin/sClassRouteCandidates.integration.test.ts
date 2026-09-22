@@ -78,8 +78,11 @@ async function bitChange(
   );
 }
 
+// One fixed "now" for every fixture row: reading the clock per insert let the time the inserts
+// themselves take leak into the measured lead and hold times.
+const NOW = Date.now();
 const minutesAgo = (m: number, plusSeconds = 0): Date =>
-  new Date(Date.now() - m * 60_000 + plusSeconds * 1000);
+  new Date(NOW - m * 60_000 + plusSeconds * 1000);
 
 // Signal 03:2 (a set bit means off) clears five times. Route A (0C:4) is set 60 s before each of
 // the first three clears and released 90 s after, as a train steps 0100 -> 0102; route B (0C:5)

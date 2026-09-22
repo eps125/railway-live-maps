@@ -1167,19 +1167,6 @@ function RouteBindingFields({
       type: "dispatchCommand",
       command: { type: "setBinding", elementId: route.id, binding: next },
     });
-    // Owner request 2026-09-22: an unnamed route takes the bit's label from the S-Class
-    // definitions (e.g. "R111AM") as its name. A name the author already gave is never replaced.
-    if (!route.label && matchedDefinition?.label) {
-      dispatch({
-        type: "dispatchCommand",
-        command: {
-          type: "setProperty",
-          elementId: route.id,
-          property: "label",
-          value: matchedDefinition.label,
-        },
-      });
-    }
   }
 
   return (
@@ -1286,6 +1273,26 @@ function RouteFields({ route }: { route: RouteElement }): JSX.Element {
   const entryBinding = doc.bindings.find(
     (b): b is TdSBitBinding => b.type === "tdSBit" && b.elementId === route.entrySignalId,
   );
+  const routeBit = doc.bindings.find(
+    (b): b is TdSBitRouteBinding => b.type === "tdSBitRoute" && b.elementId === route.id,
+  );
+  // Owner request 2026-09-22: a route's default name is its bound bit's S-Class label (e.g.
+  // "R111AM"). Applied whenever an unnamed, bound route is open here, so it doesn't matter
+  // whether the bit was bound or labelled first. A name the author typed is never replaced;
+  // clearing it brings the default back.
+  const definitions = useSClassDefinitions(routeBit?.tdArea ?? null);
+  const defaultName = routeBit
+    ? definitions.find(
+        (d) => d.address === canonicalSAddress(routeBit.address) && d.bit === routeBit.bit,
+      )?.label
+    : undefined;
+  useEffect(() => {
+    if (route.label || !defaultName) return;
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setProperty", elementId: route.id, property: "label", value: defaultName },
+    });
+  }, [route.id, route.label, defaultName, dispatch]);
   return (
     <>
       <TextField

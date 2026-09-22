@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MapBinding, MapDocument } from "@railway/map-schema";
 import { EditorStateProvider, useEditorDispatch, useEditorState } from "./EditorState.js";
@@ -1084,10 +1084,32 @@ describe("route bit binding (Milestone 64)", () => {
   it("names an unnamed route after the S-Class definition's label when its bit is bound", async () => {
     renderRoute(routeDoc());
     await bindDefinedRoute();
-    expect(committed().label).toBe("R111AM");
+    await waitFor(() => expect(committed().label).toBe("R111AM"));
     expect(committed().bits).toEqual([
       expect.objectContaining({ type: "tdSBitRoute", address: "0C", bit: 4, activeMeans: "set" }),
     ]);
+  });
+
+  it("names an already-bound, unnamed route from its bit's label when it's opened", async () => {
+    // Bound first, labelled in the explorer later: the default still applies.
+    const doc = routeDoc();
+    renderRoute({
+      ...doc,
+      bindings: [
+        ...doc.bindings,
+        {
+          id: "bind-route",
+          elementId: "route-1",
+          type: "tdSBitRoute",
+          tdArea: "M9",
+          address: "0C",
+          bit: 4,
+          activeMeans: "set",
+        },
+      ],
+    });
+    await waitFor(() => expect(committed().label).toBe("R111AM"));
+    expect(screen.getByLabelText("Name (e.g. R3879A)")).toHaveValue("R111AM");
   });
 
   it("never replaces a name the author already gave the route", async () => {

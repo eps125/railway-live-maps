@@ -327,8 +327,8 @@ the public map only while its bound route bit says it is set.
   anything but a route (`invalid_route_binding`), two bits on one route (`multiple_route_bindings`),
   and a route whose entry or exit is not a signal (`route_entry_not_signal`,
   `route_exit_not_signal`).
-- Name: binding a route bit that has an S-Class definition with a label (e.g. `R111AM`) names an
-  unnamed route after it; a name already given is kept.
+- Name: a route with no name takes its bound bit's S-Class label (e.g. `R111AM`) when it is open in
+  the panel, whichever of binding and labelling came first; a typed name is kept.
 - Warnings (`routeWarnings`): `route_off_track` (track edits have left the line off the track),
   `route_track_missing` (a traced track was deleted), `route_unbound` (no bit, so never shown).
 - Authoring: select a signal, then **Add route** under "Routes from this signal". Click along the

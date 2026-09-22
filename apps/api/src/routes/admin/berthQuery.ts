@@ -53,6 +53,13 @@ interface QueryQuerystring {
  * table; ordering here is by `event_at` (part of that index), not a global sequence column, so the
  * planner has no reason to prefer anything else.
  */
+/** Owner request 2026-09-22 ("Berth steps"): how many of the newest steps between a pair of
+ * berths, and how far back to look for them. Bounded so a pair that never occurs can't read an
+ * area's whole history — measured on production (M9): 0.4-0.9 s even for a pair with no steps. */
+const PAIR_STEPS_DEFAULT_LIMIT = 50;
+const PAIR_STEPS_MAX_LIMIT = 200;
+const PAIR_STEPS_LOOKBACK_DAYS = 90;
+
 export async function registerBerthQueryRoutes(
   app: FastifyInstance,
   deps: BerthQueryRoutesDeps,
@@ -102,4 +109,49 @@ export async function registerBerthQueryRoutes(
       reply.send({ events, nextCursor: result.rows.length === limit && last ? last.id : null });
     },
   );
+
+  /**
+   * Owner request 2026-09-22: the newest berth steps (CA) from one berth to another in one TD
+   * area — when trains last stepped between a pair of berths, and with what description. Reads
+   * `td_berth_event` newest first on the `(td_area, event_at)` index, within the last 90 days.
+   */
+  app.get<{
+    Querystring: { tdArea?: string; fromBerth?: string; toBerth?: string; limit?: string };
+  }>("/api/v1/admin/berths/steps", async (request, reply) => {
+    const tdArea = (request.query.tdArea ?? "").trim().toUpperCase();
+    const fromBerth = (request.query.fromBerth ?? "").trim().toUpperCase();
+    const toBerth = (request.query.toBerth ?? "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{2}$/.test(tdArea) || fromBerth === "" || toBerth === "") {
+      reply.code(400);
+      return apiError(
+        "VALIDATION_ERROR",
+        "tdArea (two characters), fromBerth and toBerth are required",
+      );
+    }
+    const requested = Number(request.query.limit ?? PAIR_STEPS_DEFAULT_LIMIT);
+    const limit =
+      Number.isInteger(requested) && requested > 0
+        ? Math.min(requested, PAIR_STEPS_MAX_LIMIT)
+        : PAIR_STEPS_DEFAULT_LIMIT;
+    const since = new Date(Date.now() - PAIR_STEPS_LOOKBACK_DAYS * 86_400_000);
+    const result = await pool.query<{ event_at: Date; description: string | null }>(
+      `select event_at, description
+         from td_berth_event
+        where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
+          and event_at >= $4::timestamptz
+        order by event_at desc, id desc
+        limit $5`,
+      [tdArea, fromBerth, toBerth, since, limit],
+    );
+    return {
+      tdArea,
+      fromBerth,
+      toBerth,
+      since: since.toISOString(),
+      steps: result.rows.map((row) => ({
+        eventAt: row.event_at.toISOString(),
+        description: row.description,
+      })),
+    };
+  });
 }

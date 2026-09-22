@@ -9,6 +9,7 @@ import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
 import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
 import { BerthQueryPage } from "./auth/BerthQueryPage.js";
+import { BerthStepsPage } from "./auth/BerthStepsPage.js";
 import { SClassExplorerPage } from "./auth/SClassExplorerPage.js";
 
 export function App(): JSX.Element {
@@ -72,6 +73,9 @@ export function App(): JSX.Element {
   } else if (route.name === "adminBerthQuery") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthQueryPage />;
+  } else if (route.name === "adminBerthSteps") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthStepsPage />;
   } else if (route.name === "adminSClass") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <SClassExplorerPage />;

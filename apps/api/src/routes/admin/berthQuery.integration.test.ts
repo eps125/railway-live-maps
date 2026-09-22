@@ -116,4 +116,43 @@ describe("admin berth query route (integration)", () => {
     expect(response.json().error.code).toBe("INVALID_TIME_RANGE");
     await app.close();
   });
+
+  it("lists the newest steps between a pair of berths, newest first (owner request 2026-09-22)", async () => {
+    const app = await buildApp();
+    // A real-looking two-character area; the berth codes are unique, so nothing else matches.
+    const code = randomUUID().replace(/-/g, "").slice(0, 3).toUpperCase();
+    const from = `F${code}`;
+    const to = `T${code}`;
+    await recordObservedBerthEvent(pool, "WZ", from, to, "1A01");
+    await recordObservedBerthEvent(pool, "WZ", to, from, "1A02"); // the other way: excluded
+    await recordObservedBerthEvent(pool, "WZ", from, to, "1A03");
+    await recordObservedBerthEvent(pool, "WZ", null, to, "1A04"); // an interpose: excluded
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=wz&fromBerth=${from.toLowerCase()}&toBerth=${to}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toMatchObject({ tdArea: "WZ", fromBerth: from, toBerth: to });
+    expect(body.steps.map((s: { description: string }) => s.description)).toEqual(["1A03", "1A01"]);
+
+    const limited = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=WZ&fromBerth=${from}&toBerth=${to}&limit=1`,
+    });
+    expect(limited.json().steps).toHaveLength(1);
+    await app.close();
+  });
+
+  it("rejects a berth-pair search without a two-character area or both berths", async () => {
+    const app = await buildApp();
+    for (const url of [
+      "/api/v1/admin/berths/steps?tdArea=PXX&fromBerth=0001&toBerth=0002",
+      "/api/v1/admin/berths/steps?tdArea=PX&fromBerth=0001",
+    ]) {
+      expect((await app.inject({ method: "GET", url })).statusCode).toBe(400);
+    }
+    await app.close();
+  });
 });

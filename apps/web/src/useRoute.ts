@@ -11,6 +11,7 @@ export type Route =
   | { name: "adminTdBoundaries" }
   | { name: "adminBerths" }
   | { name: "adminBerthQuery" }
+  | { name: "adminBerthSteps" }
   | { name: "adminSClass" };
 
 /** Minimal hand-rolled router for the small set of route shapes this app needs (`/` the Milestone
@@ -33,6 +34,7 @@ export function useRoute(): Route {
   if (pathname.startsWith("/admin/users")) return { name: "adminUsers" };
   if (pathname.startsWith("/admin/td-boundaries")) return { name: "adminTdBoundaries" };
   if (pathname.startsWith("/admin/berths/query")) return { name: "adminBerthQuery" };
+  if (pathname.startsWith("/admin/berths/steps")) return { name: "adminBerthSteps" };
   // Milestone 36c: the S-Class explorer, under the same admin "Berths" hub.
   if (pathname.startsWith("/admin/berths/s-class")) return { name: "adminSClass" };
   if (pathname.startsWith("/admin/berths")) return { name: "adminBerths" };

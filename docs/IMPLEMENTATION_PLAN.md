@@ -3840,6 +3840,34 @@ decision before Milestone 38 starts:
 - Old published versions stay immutable. A map gains structure only when its next version is
   published after review.
 
+## Milestone 66 — S-Class step suggestions fixed (504); a "Berth steps" tool (2026-09-22)
+
+Owner report: "clicking suggest berth steps still a long way" and a 504 from the explorer. Owner
+request: "a tool in berths … give a pair of berths and the tool gives me the date and time of the
+last 50 steps between those berths".
+
+**The 504.** "Suggest berth steps" (`correlated-steps`) joined a bit's changes to
+`td_berth_event` with no overall time bound. So it read every M9 berth step in every monthly
+partition (159k rows) and compared each against every change: 18 s for 24 h on production, and
+past Cloudflare's timeout over 14 days. The same fault as the route suggester's "released on"
+column earlier in the day. A per-change lookup (`LATERAL`) didn't help, because the planner
+flattened it back into the same join (measured: 11.6 s and 36 s). Fix: bound the steps to the
+window, then match on window-sized time buckets (each change against its own and both
+neighbouring buckets), an equality join that hashes, checking the exact ±10 s afterwards. Same
+results. 0.2 s for 24 h and 0.7 s for 14 days. The reverse search ("which bit is between two
+berths", `correlated-bits`) had the same range join between two materialized CTEs and got the same
+treatment: 0.18 s and 0.63 s.
+
+**Berth steps tool.** Under Berths: give a TD area and a from/to berth, and it lists the newest 50
+steps (CA) from one to the other within the last 90 days, newest first, with each train's
+description, in UK time. `GET /api/v1/admin/berths/steps`: an `event_at`-ordered read on the
+`(td_area, event_at)` index. Measured on production (M9): about 0.5-0.9 s warm, including for a pair
+that never occurs; about 4 s on a cold cache.
+
+Tests: berth-steps endpoint (pair only, direction respected, interposes excluded, newest first,
+limit, 400s) and page (request, UK time across BST/GMT, empty and error states). The correlation
+endpoints' existing integration tests cover the rewritten queries.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

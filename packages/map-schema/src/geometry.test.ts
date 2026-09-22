@@ -598,50 +598,93 @@ describe("realisticLevelCrossingGeometry (Milestone 58, owner request 2026-09-21
   });
 });
 
-describe("switchedDiamondGeometry", () => {
-  const diamond = { x: 100, y: 50, orientation: 0, length: 20, width: 10 };
+describe("switchedDiamondGeometry (Milestone 63, revised)", () => {
+  // A horizontal line crossed by a 45° diagonal rising to the right, at (100, 50) — the owner's
+  // Carlisle crossing shape.
+  const horizontal = {
+    points: [
+      { x: 0, y: 50 },
+      { x: 200, y: 50 },
+    ],
+  };
+  const diagonal = {
+    points: [
+      { x: 50, y: 100 },
+      { x: 150, y: 0 },
+    ],
+  };
+  const tracks = [horizontal, diagonal];
+  const L = MAP_STYLE.switchedDiamond.knuckleLength;
+  const s = Math.SQRT1_2;
 
-  it("puts the long axis horizontal at orientation 0, centred on x/y", () => {
-    const { points, bounds } = switchedDiamondGeometry(diamond);
-    expect(points).toEqual([
-      { x: 110, y: 50 },
-      { x: 100, y: 55 },
-      { x: 90, y: 50 },
-      { x: 100, y: 45 },
+  it("finds the crossing from the drawn tracks, even from a marker placed a few units off", () => {
+    const g = switchedDiamondGeometry({ x: 103, y: 47 }, tracks)!;
+    expect(g.crossing.x).toBeCloseTo(100, 6);
+    expect(g.crossing.y).toBeCloseTo(50, 6);
+  });
+
+  it("names the upward-opening obtuse corner a and the opposite one b", () => {
+    const g = switchedDiamondGeometry({ x: 100, y: 50 }, tracks)!;
+    // Upper-left: between the rail running left and the diagonal running up-right (135°).
+    const [a1, a2] = g.corners.a;
+    expect(a1.x * a2.x + a1.y * a2.y).toBeLessThan(0);
+    expect(a1.y + a2.y).toBeLessThan(0);
+    const [b1, b2] = g.corners.b;
+    expect(b1.y + b2.y).toBeGreaterThan(0);
+  });
+
+  it("draws a filled knuckle in each switched corner by default", () => {
+    const both = switchedDiamondGeometry({ x: 100, y: 50 }, tracks)!;
+    expect(both.knuckles).toHaveLength(2);
+    expect(both.ticks).toEqual([]);
+    const oneSide = switchedDiamondGeometry({ x: 100, y: 50, corners: ["a"] }, tracks)!;
+    expect(oneSide.knuckles).toHaveLength(1);
+    const [c, p, q] = oneSide.knuckles[0]!;
+    expect(c).toEqual({ x: 100, y: 50 });
+    const tips = [p!, q!].map((t) => [Math.round(t.x * 100) / 100, Math.round(t.y * 100) / 100]);
+    expect(tips).toContainEqual([100 - L, 50]);
+    expect(tips).toContainEqual([
+      Math.round((100 + L * s) * 100) / 100,
+      Math.round((50 - L * s) * 100) / 100,
     ]);
-    expect(bounds).toEqual({ x: 90, y: 45, width: 20, height: 10 });
   });
 
-  it("rotates about its centre, so turning it never moves it off the crossing", () => {
-    const { points } = switchedDiamondGeometry({ ...diamond, orientation: 90 });
-    expect(points[0]!.x).toBeCloseTo(100, 6);
-    expect(points[0]!.y).toBeCloseTo(60, 6);
-    expect(points[1]!.x).toBeCloseTo(95, 6);
-    expect(points[1]!.y).toBeCloseTo(50, 6);
-    const cx = points.reduce((sum, p) => sum + p.x, 0) / 4;
-    const cy = points.reduce((sum, p) => sum + p.y, 0) / 4;
-    expect(cx).toBeCloseTo(100, 6);
-    expect(cy).toBeCloseTo(50, 6);
+  it("draws two blade ticks per switched corner, beside each rail and inside the corner", () => {
+    const g = switchedDiamondGeometry({ x: 100, y: 50, corners: ["b"], style: "ticks" }, tracks)!;
+    expect(g.knuckles).toEqual([]);
+    expect(g.ticks).toHaveLength(2);
+    // Corner b is lower-right; the blade beside the horizontal rail runs along y = 50 + offset.
+    const beside = g.ticks.find((t) => Math.abs(t.y1 - t.y2) < 1e-9)!;
+    expect(beside.y1).toBeCloseTo(50 + MAP_STYLE.switchedDiamond.tickOffset, 6);
+    expect(Math.min(beside.x1, beside.x2)).toBeCloseTo(100 + MAP_STYLE.switchedDiamond.tickFrom, 6);
   });
 
-  it("lines the long axis up with a 1:2 diagonal track", () => {
-    const angle = (Math.atan(MAP_STYLE.diagonalSlope) * 180) / Math.PI;
-    const { points } = switchedDiamondGeometry({ ...diamond, orientation: angle });
-    const tip = points[0]!;
-    expect((tip.y - diamond.y) / (tip.x - diamond.x)).toBeCloseTo(MAP_STYLE.diagonalSlope, 6);
+  it("fits any angle, taken from the tracks rather than set by hand", () => {
+    const shallow = {
+      points: [
+        { x: 0, y: 100 },
+        { x: 200, y: 0 },
+      ],
+    };
+    const g = switchedDiamondGeometry({ x: 100, y: 50 }, [horizontal, shallow])!;
+    const [u, v] = g.corners.a;
+    const angle = (Math.acos(u.x * v.x + u.y * v.y) * 180) / Math.PI;
+    expect(angle).toBeCloseTo(180 - (Math.atan(MAP_STYLE.diagonalSlope) * 180) / Math.PI, 6);
   });
 
-  it("keeps the unrotated local tips for a renderer that rotates a group instead", () => {
-    const { localPoints } = switchedDiamondGeometry({ ...diamond, orientation: 33 });
-    expect(localPoints).toEqual([
-      { x: 10, y: 0 },
-      { x: 0, y: 5 },
-      { x: -10, y: 0 },
-      { x: 0, y: -5 },
-    ]);
+  it("draws nothing when not on a crossing, and never treats a bend in one track as one", () => {
+    expect(switchedDiamondGeometry({ x: 20, y: 50 }, tracks)).toBeNull();
+    const bend = {
+      points: [
+        { x: 0, y: 0 },
+        { x: 100, y: 0 },
+        { x: 160, y: 30 },
+      ],
+    };
+    expect(switchedDiamondGeometry({ x: 100, y: 0 }, [bend])).toBeNull();
   });
 
-  it("parses with defaults, so a marker needs only a position", () => {
+  it("parses a first-version rhombus as a knuckle on both corners", () => {
     const doc = MapDocumentSchema.parse({
       schemaVersion: 1,
       map: {
@@ -651,17 +694,22 @@ describe("switchedDiamondGeometry", () => {
         timezone: "Europe/London",
       },
       layers: [{ id: "l", name: "Track", order: 0 }],
-      elements: [{ id: "d", layerId: "l", type: "switchedDiamond", x: 1, y: 2 }],
+      elements: [
+        {
+          id: "d",
+          layerId: "l",
+          type: "switchedDiamond",
+          x: 1,
+          y: 2,
+          orientation: 45,
+          length: 20,
+          width: 10,
+        },
+      ],
       topology: { nodes: [], edges: [] },
       bindings: [],
       editorMetadata: {},
     });
-    const element = doc.elements[0] as MapElement;
-    expect(element).toMatchObject({
-      type: "switchedDiamond",
-      orientation: 0,
-      length: MAP_STYLE.switchedDiamond.length,
-      width: MAP_STYLE.switchedDiamond.width,
-    });
+    expect(doc.elements[0]).toMatchObject({ corners: ["a", "b"], style: "knuckle" });
   });
 });

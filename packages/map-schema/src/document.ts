@@ -329,15 +329,16 @@ const LevelCrossingElementSchema = BaseElementSchema.extend({
 });
 
 /**
- * Milestone 63 (owner request 2026-09-22): marks a diamond crossing as a **switched** diamond — one
- * with movable blades, as opposed to a plain fixed diamond. A plain diamond stays what it always
- * was, two `trackPath`s drawn crossing, and needs no element; this marker is placed on the
- * crossing point to say "switched".
+ * Milestone 63 (owner request 2026-09-22, revised the same day): marks a diamond crossing as
+ * **switched** — movable blades in one or both of its obtuse corners — as opposed to a plain fixed
+ * diamond, which stays two `trackPath`s drawn crossing and needs no element.
  *
- * Drawn as an open rhombus (`switchedDiamondGeometry`) filled with the map background, so it
- * masks the crossing beneath it. `x`/`y` is the rhombus's **centre**; `orientation` is the angle
- * of its long axis in degrees (0 = horizontal), freely rotatable so the author can line it up with
- * whatever angles the two tracks actually cross at.
+ * The marker has no shape of its own to fit. `x`/`y` is placed on the crossing, and
+ * `switchedDiamondGeometry` finds where the drawn tracks actually cross there and takes both
+ * angles from them, so the mark always matches the crossing and follows a track that is later
+ * moved. `corners` says which obtuse corner(s) are switched: `a` is the one opening upwards
+ * (leftwards for a vertical bisector), `b` the one opposite. `style` picks the drawing: a filled
+ * `knuckle` wedge in the corner, or blade `ticks` lying beside each rail.
  *
  * Display only: no binding, no live state, and no claim about which way the blades lie (CLAUDE.md
  * rules 9/10). Not part of `topology` and never welded.
@@ -346,12 +347,16 @@ const SwitchedDiamondElementSchema = BaseElementSchema.extend({
   type: z.literal("switchedDiamond"),
   x: z.number(),
   y: z.number(),
-  /** Degrees; the long axis's angle. 0 = long axis horizontal. */
-  orientation: z.number().default(0),
-  /** Tip-to-tip along the long axis, in map units. */
-  length: z.number().positive().default(MAP_STYLE.switchedDiamond.length),
-  /** Tip-to-tip across the short axis, in map units. */
-  width: z.number().positive().default(MAP_STYLE.switchedDiamond.width),
+  corners: z
+    .array(z.enum(["a", "b"]))
+    .min(1)
+    .default(["a", "b"]),
+  style: z.enum(["knuckle", "ticks"]).default("knuckle"),
+  /** The first (rhombus) version's fields. Still parsed so a draft saved with them loads; they
+   * no longer affect the drawing, which comes from the tracks themselves. */
+  orientation: z.number().optional(),
+  length: z.number().optional(),
+  width: z.number().optional(),
 });
 
 /**

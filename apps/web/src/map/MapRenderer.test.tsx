@@ -566,48 +566,66 @@ describe("MapRenderer", () => {
     expect(container.querySelector("text")?.textContent).toBe("Carnforth NS");
   });
 
-  it("draws a switched diamond as a background-filled rhombus over its track (Milestone 63)", () => {
-    const doc = bundle({
-      elementsById: {
-        track: {
-          id: "track",
-          layerId: "layer-visible",
-          zIndex: 0,
-          type: "trackPath",
-          points: [
-            { x: 0, y: 50 },
-            { x: 200, y: 50 },
-          ],
-        },
-        "sd-1": {
-          id: "sd-1",
-          layerId: "layer-visible",
-          zIndex: 1,
-          type: "switchedDiamond",
-          x: 100,
-          y: 50,
-          orientation: 90,
-          length: 20,
-          width: 10,
-        },
+  it("draws a switched diamond's marks fitted to the crossing, per corner and style (Milestone 63)", () => {
+    const tracks = {
+      horizontal: {
+        id: "horizontal",
+        layerId: "layer-visible",
+        zIndex: 0,
+        type: "trackPath" as const,
+        points: [
+          { x: 0, y: 50 },
+          { x: 200, y: 50 },
+        ],
       },
-    });
+      diagonal: {
+        id: "diagonal",
+        layerId: "layer-visible",
+        zIndex: 0,
+        type: "trackPath" as const,
+        points: [
+          { x: 50, y: 100 },
+          { x: 150, y: 0 },
+        ],
+      },
+    };
+    const diamond = (corners: Array<"a" | "b">, style: "knuckle" | "ticks", x = 100) =>
+      bundle({
+        elementsById: {
+          ...tracks,
+          "sd-1": {
+            id: "sd-1",
+            layerId: "layer-visible",
+            zIndex: 1,
+            type: "switchedDiamond",
+            x,
+            y: 50,
+            corners,
+            style,
+          },
+        },
+      });
 
-    const { container, getByTestId } = render(
-      <MapRenderer bundle={doc} berths={{}} signals={{}} />,
+    const knuckles = render(
+      <MapRenderer bundle={diamond(["a", "b"], "knuckle")} berths={{}} signals={{}} />,
     );
-    const diamond = getByTestId("switched-diamond-sd-1");
-    expect(diamond.getAttribute("fill")).toBe(MAP_STYLE.switchedDiamond.fill);
-    // Rotated 90°: the long axis now runs vertically through the centre.
-    const [first] = diamond.getAttribute("points")!.split(" ");
-    const [x, y] = first!.split(",").map(Number);
-    expect(x).toBeCloseTo(100, 6);
-    expect(y).toBeCloseTo(60, 6);
-    // Paints after (above) the track it masks.
-    const shapes = [...container.querySelectorAll("polyline, polygon")];
-    expect(shapes.indexOf(diamond)).toBeGreaterThan(
-      shapes.findIndex((el) => el.tagName === "polyline"),
+    const both = knuckles.getByTestId("switched-diamond-sd-1");
+    expect(both.querySelectorAll("polygon")).toHaveLength(2);
+    expect(both.querySelector("polygon")!.getAttribute("fill")).toBe(MAP_STYLE.track.color);
+    knuckles.unmount();
+
+    const ticks = render(<MapRenderer bundle={diamond(["b"], "ticks")} berths={{}} signals={{}} />);
+    const oneSide = ticks.getByTestId("switched-diamond-sd-1");
+    expect(oneSide.querySelectorAll("polygon")).toHaveLength(0);
+    expect(oneSide.querySelectorAll("line")).toHaveLength(2);
+    ticks.unmount();
+
+    // Off any crossing: nothing is drawn rather than a mark at a guessed angle.
+    const off = render(
+      <MapRenderer bundle={diamond(["a"], "knuckle", 20)} berths={{}} signals={{}} />,
     );
+    expect(off.queryByTestId("switched-diamond-sd-1")).toBeNull();
+    off.unmount();
   });
 
   it("draws a route only while it is set, as a green line under a dark dash (Milestone 64)", () => {

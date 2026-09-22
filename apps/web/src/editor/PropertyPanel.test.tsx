@@ -934,3 +934,66 @@ describe("PropertyPanel crossing style and barrier source (Milestone 59)", () =>
     expect(screen.getByText(/will show raised for part of each cycle/)).toBeInTheDocument();
   });
 });
+
+describe("switched diamond fields (Milestone 63, revised)", () => {
+  // Saved by the first (rhombus) version: no corners, no style. Drafts reach the editor as
+  // stored, so this is what the owner's existing Carlisle diamond looks like on load.
+  function legacyDoc(): MapDocument {
+    const doc = baseDoc();
+    return {
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          id: "sd-1",
+          layerId: "l",
+          zIndex: 1,
+          type: "switchedDiamond",
+          x: 100,
+          y: 50,
+          orientation: 45,
+          length: 20,
+          width: 10,
+        } as unknown as MapDocument["elements"][number],
+      ],
+    };
+  }
+
+  function Probe(): JSX.Element {
+    const { document: doc } = useEditorState();
+    const diamond = doc.elements.find((e) => e.id === "sd-1");
+    return (
+      <pre data-testid="diamond">
+        {diamond?.type === "switchedDiamond"
+          ? JSON.stringify({ corners: diamond.corners, style: diamond.style })
+          : "n/a"}
+      </pre>
+    );
+  }
+
+  it("reads a first-version diamond as a knuckle on both corners, and edits corners and style", () => {
+    render(
+      <EditorStateProvider initialDocument={legacyDoc()}>
+        <Select id="sd-1" />
+        <PropertyPanel />
+        <Probe />
+      </EditorStateProvider>,
+    );
+    const upper = screen.getByLabelText("Upper corner");
+    const lower = screen.getByLabelText("Lower corner");
+    expect(upper).toBeChecked();
+    expect(lower).toBeChecked();
+    expect(screen.getByLabelText("Style")).toHaveValue("knuckle");
+    // Not on a crossing in this document (no tracks), and it says so.
+    expect(screen.getByText(/Not on a crossing of two tracks/)).toBeInTheDocument();
+
+    fireEvent.click(lower);
+    expect(JSON.parse(screen.getByTestId("diamond").textContent!).corners).toEqual(["a"]);
+    // The last switched corner can't be unticked: with none it would just be a plain diamond.
+    fireEvent.click(screen.getByLabelText("Upper corner"));
+    expect(JSON.parse(screen.getByTestId("diamond").textContent!).corners).toEqual(["a"]);
+
+    fireEvent.change(screen.getByLabelText("Style"), { target: { value: "ticks" } });
+    expect(JSON.parse(screen.getByTestId("diamond").textContent!).style).toBe("ticks");
+  });
+});

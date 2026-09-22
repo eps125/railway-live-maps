@@ -10,6 +10,7 @@ import {
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
+  findTrackCrossing,
   snapToTrack,
   switchedDiamondGeometry,
   viaductWidth,
@@ -85,21 +86,6 @@ const HALF_GRID_TYPES = new Set([
   "switchedDiamond",
 ]);
 
-/** Milestone 63: rotate-handle snap angles for a switched diamond — every angle a track is drawn
- * at (0°, ±26.57° for the 1:2 diagonal, 90°), and the half-way bisectors between them, which is
- * where a rhombus sits when it straddles a horizontal and a diagonal symmetrically. */
-const DIAGONAL_DEGREES = (Math.atan(MAP_STYLE.diagonalSlope) * 180) / Math.PI;
-const DIAMOND_ROTATION_SNAPS = [
-  0,
-  DIAGONAL_DEGREES / 2,
-  DIAGONAL_DEGREES,
-  90 - DIAGONAL_DEGREES,
-  90,
-  90 + DIAGONAL_DEGREES,
-  180 - DIAGONAL_DEGREES,
-  180 - DIAGONAL_DEGREES / 2,
-].flatMap((angle) => [angle, angle + 180]);
-
 export function snapStep(type: string | undefined, gridSize: number): number {
   return type !== undefined && HALF_GRID_TYPES.has(type) ? Math.max(1, gridSize / 2) : gridSize;
 }
@@ -163,11 +149,19 @@ export function elementBounds(element: MapElement): Bounds | null {
       maxY: element.y + element.height,
     };
   }
-  if (element.type === "levelCrossing" || element.type === "switchedDiamond") {
-    const { bounds } =
-      element.type === "levelCrossing"
-        ? levelCrossingGeometry(element)
-        : switchedDiamondGeometry(element);
+  // Milestone 63: a switched diamond's marks come from the tracks it sits on, which this
+  // single-element function doesn't have; the marks never reach further than this from x/y.
+  if (element.type === "switchedDiamond") {
+    const reach = MAP_STYLE.switchedDiamond.knuckleLength + MAP_STYLE.switchedDiamond.tickOffset;
+    return {
+      minX: element.x - reach,
+      minY: element.y - reach,
+      maxX: element.x + reach,
+      maxY: element.y + reach,
+    };
+  }
+  if (element.type === "levelCrossing") {
+    const { bounds } = levelCrossingGeometry(element);
     return {
       minX: bounds.x,
       minY: bounds.y,
@@ -387,9 +381,8 @@ function defaultElementForTool(
         type: "switchedDiamond",
         x: point.x,
         y: point.y,
-        orientation: 0,
-        length: MAP_STYLE.switchedDiamond.length,
-        width: MAP_STYLE.switchedDiamond.width,
+        corners: ["a", "b"],
+        style: "knuckle",
       };
     case "trackPath":
       return {
@@ -687,6 +680,10 @@ export function EditorCanvas({
       if (clickedOnEmpty) dispatch({ type: "setSelection", ids: [] });
       return;
     }
+    if (toolMode === "switchedDiamond") {
+      placeSwitchedDiamond(stage);
+      return;
+    }
     if (!clickedOnEmpty) return;
 
     const point = toWorldPoint(stage);
@@ -716,6 +713,13 @@ export function EditorCanvas({
         const stage = e.target.getStage();
         if (stage) addTraceWaypoint(stage);
       }
+      return;
+    }
+    // Milestone 63: a crossing is on track, so the click that places a diamond lands on a track
+    // element rather than on the empty stage.
+    if (toolMode === "switchedDiamond") {
+      const stage = e.target.getStage();
+      if (stage) placeSwitchedDiamond(stage);
       return;
     }
     if (toolMode !== "select") return;
@@ -1008,32 +1012,51 @@ export function EditorCanvas({
     });
   }
 
-  /**
-   * Milestone 63: the Transformer's rotate handle on a switched diamond. The Group rotates about
-   * its own origin — the rhombus centre — so only `orientation` changes; position is restored in
-   * case Konva nudged it. Stored normalised to [0, 360) and to 0.01°, which keeps the snapped
-   * track angles (26.57° for a 1:2 diagonal) exact enough to read back in the property panel.
-   */
-  function handleRotateEnd(elementId: string): void {
-    const node = nodeRefs.current.get(elementId);
+  /** Milestone 63 (revised): a switched diamond belongs on a crossing, so dragging one snaps it
+   * onto the nearest crossing of two tracks within reach — exactly onto it, off the grid. With
+   * none in reach it stays where it was dropped (on the grid), and shows as off-crossing. */
+  function handleDiamondDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
     const element = doc.elements.find((el) => el.id === elementId);
-    if (!node || element?.type !== "switchedDiamond") return;
-    const orientation = Math.round((((node.rotation() % 360) + 360) % 360) * 100) / 100;
-    node.position({ x: element.x, y: element.y });
-    node.scaleX(1);
-    node.scaleY(1);
-    if (orientation === element.orientation) return;
+    if (element?.type !== "switchedDiamond") return;
+    const dropped = { x: e.target.x(), y: e.target.y() };
+    const crossing = findTrackCrossing(
+      drawnTracks(doc),
+      dropped,
+      MAP_STYLE.switchedDiamond.snapDistance,
+    );
+    const step = snapStep(element.type, gridSize);
+    const target = crossing?.point ?? { x: snap(dropped.x, step), y: snap(dropped.y, step) };
+    e.target.position({ x: element.x, y: element.y });
+    const dx = target.x - element.x;
+    const dy = target.y - element.y;
+    if (dx === 0 && dy === 0) return;
     dispatch({
       type: "dispatchCommand",
-      command: { type: "setProperty", elementId, property: "orientation", value: orientation },
+      command: { type: "moveElements", elementIds: [elementId], dx, dy },
     });
   }
 
-  const selectedDiamondId =
-    selection.length === 1 &&
-    doc.elements.find((el) => el.id === selection[0])?.type === "switchedDiamond"
-      ? selection[0]
-      : null;
+  /** Milestone 63 (revised): place a switched diamond on the crossing nearest the click. */
+  function placeSwitchedDiamond(stage: Konva.Stage): void {
+    const layerId = defaultLayerIdForTool("switchedDiamond", doc.layers);
+    if (!layerId) return;
+    const clicked = toWorldPoint(stage);
+    const crossing = findTrackCrossing(
+      drawnTracks(doc),
+      clicked,
+      MAP_STYLE.switchedDiamond.snapDistance,
+    );
+    const step = snapStep("switchedDiamond", gridSize);
+    const element = defaultElementForTool(
+      "switchedDiamond",
+      layerId,
+      crossing?.point ?? { x: snap(clicked.x, step), y: snap(clicked.y, step) },
+    );
+    if (!element) return;
+    dispatch({ type: "dispatchCommand", command: { type: "addElement", elements: [element] } });
+    dispatch({ type: "setSelection", ids: [element.id] });
+    dispatch({ type: "setToolMode", mode: "select" });
+  }
 
   const selectedBerthId =
     selection.length === 1 && doc.elements.find((el) => el.id === selection[0])?.type === "berth"
@@ -1098,6 +1121,7 @@ export function EditorCanvas({
     return new Set([...counts].filter(([, count]) => count > 1).map(([elementId]) => elementId));
   })();
   const traceResult = routeTrace ? computeRouteTrace(doc, routeTrace) : null;
+  const drawnTrackList = drawnTracks(doc);
   const paintOrderedElements = sortElementsForPaint(
     doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
     doc.layers,
@@ -1628,30 +1652,55 @@ export function EditorCanvas({
               );
             }
             if (element.type === "switchedDiamond") {
-              // Same rhombus as the public renderer (rule 13), drawn unrotated about a Group at
-              // the centre and turned by the Group's `rotation`, so the Transformer's rotate
-              // handle (below) edits `orientation` directly.
-              const { localPoints } = switchedDiamondGeometry(element);
+              // Same marks as the public renderer (rule 13), fitted to the crossing from the
+              // drawn tracks. Drawn relative to a Group at x/y so dragging works as for any
+              // point element; a near-invisible disc gives it something to grab.
+              const geometry = switchedDiamondGeometry(element, drawnTrackList);
+              const rel = (p: { x: number; y: number }): number[] => [
+                p.x - element.x,
+                p.y - element.y,
+              ];
               return (
                 <Group
                   key={element.id}
                   ref={setRef}
                   x={element.x}
                   y={element.y}
-                  rotation={element.orientation}
                   draggable={draggable}
                   onClick={(e) => handleElementClick(e, element.id)}
-                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
-                  onTransformEnd={() => handleRotateEnd(element.id)}
+                  onDragEnd={(e) => handleDiamondDragEnd(e, element.id)}
                 >
-                  <Line
-                    points={localPoints.flatMap((p) => [p.x, p.y])}
-                    closed
-                    fill={MAP_STYLE.switchedDiamond.fill}
-                    stroke={selected ? "#58a6ff" : MAP_STYLE.track.color}
-                    strokeWidth={MAP_STYLE.switchedDiamond.strokeWidth}
-                    lineJoin="miter"
-                  />
+                  <Circle radius={10} fill="rgba(0,0,0,0.01)" />
+                  {geometry?.knuckles.map((knuckle, index) => (
+                    <Line
+                      key={"k-" + index}
+                      points={knuckle.flatMap(rel)}
+                      closed
+                      fill={MAP_STYLE.track.color}
+                      listening={false}
+                    />
+                  ))}
+                  {geometry?.ticks.map((tick, index) => (
+                    <Line
+                      key={"t-" + index}
+                      points={[
+                        tick.x1 - element.x,
+                        tick.y1 - element.y,
+                        tick.x2 - element.x,
+                        tick.y2 - element.y,
+                      ]}
+                      stroke={MAP_STYLE.track.color}
+                      strokeWidth={MAP_STYLE.switchedDiamond.tickWidth}
+                      listening={false}
+                    />
+                  ))}
+                  {geometry === null ? (
+                    // Editor-only: not on a crossing, so the map would draw nothing here.
+                    <Circle radius={7} stroke="#d29922" strokeWidth={1.5} dash={[3, 2]} />
+                  ) : null}
+                  {selected ? (
+                    <Circle radius={12} stroke="#58a6ff" strokeWidth={1.5} listening={false} />
+                  ) : null}
                 </Group>
               );
             }
@@ -1824,22 +1873,6 @@ export function EditorCanvas({
                   : []
               }
               rotateEnabled={false}
-            />
-          ) : null}
-          {selectedDiamondId ? (
-            // Rotate-only: size is set numerically in the property panel. Snaps to the angles
-            // track is actually drawn at — horizontal, the 1:2 diagonal both ways, and vertical —
-            // so a diamond lines up with its crossing without typing degrees.
-            <Transformer
-              nodes={
-                nodeRefs.current.has(selectedDiamondId)
-                  ? [nodeRefs.current.get(selectedDiamondId)!]
-                  : []
-              }
-              resizeEnabled={false}
-              rotateEnabled
-              rotationSnaps={DIAMOND_ROTATION_SNAPS}
-              rotationSnapTolerance={4}
             />
           ) : null}
           {marquee ? (

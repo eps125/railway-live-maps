@@ -3716,6 +3716,25 @@ because the editor needs the API and database and neither runs locally. The Tran
 rotate-only; size is typed. The fill is the fixed canvas colour `#0d1117`, which both renderers
 currently hardcode as the map background.
 
+### Addendum (2026-09-22): the rhombus replaced by per-corner marks fitted to the crossing
+
+The owner tried the rhombus on `carlisle-psb` and rejected it. It didn't fit the crossing visually,
+and a diamond can be switched on one side only. Four per-corner glyphs were mocked up at the owner's
+own 45° crossing. The owner chose the **filled knuckle**, with **blade ticks** as a per-diamond
+alternative, so one can later be dropped and every diamond converted.
+
+The element no longer has a shape of its own. `switchedDiamondGeometry(element, tracks)` finds the
+crossing of two drawn tracks at x/y and takes both angles from them, and draws only the switched
+corners (`corners: ["a" | "b"]`). The tool and dragging snap onto the crossing; the rotate handle
+and the Orientation/Length/Width fields are gone. The first version's fields still parse, and an
+existing diamond reads as a knuckle on both corners. Tested on the owner's Carlisle shape: corner
+naming, both styles, one side only, any angle, off-crossing (nothing drawn), a bend in one track (not
+a crossing), and a legacy element in the panel.
+
+Known limitations: corners are chosen by tickbox, not by clicking the corner on the canvas. Placing
+a diamond where two tracks meet at a turnout, rather than cross, draws a mark at the junction.
+Nothing currently flags that.
+
 ## Milestone 64 — set routes from S-Class route bits (ADR 0016) `[in progress — 2026-09-22]`
 
 Owner request 2026-09-22: show set routes where an area publishes route bits, visually like

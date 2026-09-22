@@ -23,6 +23,7 @@ import {
   type RouteElement,
   type SignalElement,
   type SwitchedDiamondElement,
+  type TrackPathElement,
   type TunnelElement,
   type ViaductElement,
   type WaterElement,
@@ -446,24 +447,41 @@ function renderNeutralSection(element: NeutralSectionElement): JSX.Element {
 }
 
 /**
- * Milestone 63: a switched diamond — an open rhombus over the crossing, filled with the map
- * background so the rails beneath it are hidden (`switchedDiamondGeometry`, shared with the
- * editor). Static: it says the diamond has movable blades, never which way they lie.
+ * Milestone 63 (revised): a switched diamond's marks — a filled knuckle or blade ticks in each
+ * switched obtuse corner — fitted to the crossing from the drawn tracks (`switchedDiamondGeometry`,
+ * shared with the editor). Not on a crossing: nothing. Static: it says the diamond has movable
+ * blades, never which way they lie.
  */
-function renderSwitchedDiamond(element: SwitchedDiamondElement): JSX.Element {
-  const style = MAP_STYLE.switchedDiamond;
-  const { points } = switchedDiamondGeometry(element);
+function renderSwitchedDiamond(
+  element: SwitchedDiamondElement,
+  tracks: ReadonlyArray<{ points: ReadonlyArray<{ x: number; y: number }> }>,
+): JSX.Element | null {
+  const geometry = switchedDiamondGeometry(element, tracks);
+  if (!geometry) return null;
+  const color = MAP_STYLE.track.color;
   return (
-    <polygon
-      key={element.id}
-      data-testid={`switched-diamond-${element.id}`}
-      points={points.map((p) => `${p.x},${p.y}`).join(" ")}
-      fill={style.fill}
-      stroke={MAP_STYLE.track.color}
-      strokeWidth={style.strokeWidth}
-      strokeLinejoin="miter"
-      shapeRendering="geometricPrecision"
-    />
+    <g key={element.id} data-testid={`switched-diamond-${element.id}`}>
+      {geometry.knuckles.map((knuckle, index) => (
+        <polygon
+          key={index}
+          points={knuckle.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill={color}
+          shapeRendering="geometricPrecision"
+        />
+      ))}
+      {geometry.ticks.map((tick, index) => (
+        <line
+          key={index}
+          x1={tick.x1}
+          y1={tick.y1}
+          x2={tick.x2}
+          y2={tick.y2}
+          stroke={color}
+          strokeWidth={MAP_STYLE.switchedDiamond.tickWidth}
+          strokeLinecap="butt"
+        />
+      ))}
+    </g>
   );
 }
 
@@ -733,6 +751,14 @@ export function MapRenderer({
         bundle.layers,
       ),
     [bundle, layersById],
+  );
+  // Milestone 63: switched diamonds fit themselves to the crossing of the drawn tracks.
+  const trackPaths = useMemo(
+    () =>
+      Object.values(bundle.elementsById).filter(
+        (element): element is TrackPathElement => element.type === "trackPath",
+      ),
+    [bundle],
   );
 
   function centredDefaultView(): ViewBox {
@@ -1027,7 +1053,7 @@ export function MapRenderer({
             return renderLevelCrossing(element, crossings[element.id]?.state ?? "blank");
           }
           if (element.type === "switchedDiamond") {
-            return renderSwitchedDiamond(element);
+            return renderSwitchedDiamond(element, trackPaths);
           }
           if (element.type === "route") {
             // Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and

@@ -292,18 +292,24 @@ Applying either form replaces whatever source the crossing had; choosing "Not dr
 
 ### `switchedDiamond`
 
-**Milestone 63.** Marks a diamond crossing as _switched_ (movable blades). A plain fixed diamond
-needs no element: it is two `trackPath`s drawn crossing, as before.
+**Milestone 63 (revised 2026-09-22).** Marks a diamond crossing as _switched_: movable blades in one
+or both of its obtuse corners. A plain fixed diamond needs no element; it is two `trackPath`s drawn
+crossing, as before.
 
-- Fields: `x`/`y` (the rhombus **centre**, placed on the crossing point), `orientation` (degrees,
-  the long axis's angle; 0 = horizontal), `length` (long axis, default 20) and `width` (short axis,
-  default 10).
-- Drawn by both renderers from `switchedDiamondGeometry` as an open rhombus outlined in the track
-  colour and filled with the map background, so the rails beneath it are hidden. It defaults to the
-  Track layer at `zIndex: 1`, above the rails.
-- Editor: places and drags on half-grid steps. When selected it gets a rotate handle, which snaps to
-  0°, ±26.57° (the 1:2 diagonal), 90° and the bisectors between them. Orientation, length and
-  width can also be typed in the property panel.
+- Fields: `x`/`y` (on the crossing), `corners` (`a` and/or `b`; default both) and `style`
+  (`knuckle` or `ticks`; default `knuckle`). Corner `a` is the obtuse corner opening upwards
+  (leftwards if it opens exactly sideways); `b` is the one opposite. The first version's
+  `orientation`/`length`/`width` are still parsed but ignored, and such a diamond reads as a
+  knuckle on both corners.
+- Geometry comes from the drawing, not the element: `switchedDiamondGeometry` finds where two
+  tracks cross within 8 units of x/y (`findTrackCrossing`; a bend in one track doesn't count) and
+  takes both angles from them. So the mark always fits the crossing and follows a moved track.
+  Nothing is drawn if x/y is not on a crossing; the editor shows a dashed amber ring there instead.
+- Styles, both in `track.color`: `knuckle` is a filled wedge 12 units along each rail of the
+  corner; `ticks` is a blade beside each rail, 3.5 units into the corner, from 5 to 16 units out.
+- Editor: the tool, and dragging, snap onto the nearest crossing within 20 units, off the grid.
+  The panel has Style and the two corner tickboxes. At least one corner stays switched; with none
+  it would just be a plain diamond.
 - Display only: no binding, no live state, not part of `topology`, never welded, and it never shows
   or implies which way the blades lie (CLAUDE.md rules 9/10).
 

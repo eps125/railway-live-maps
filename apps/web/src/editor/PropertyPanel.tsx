@@ -9,6 +9,7 @@ import {
   pointsBounds,
   routeWarnings,
   scaleShapeWidth,
+  switchedDiamondGeometry,
   viaductWidth,
   type MapDocument,
   type RouteElement,
@@ -993,6 +994,80 @@ function SignalBindingFields({
 }
 
 /**
+ * Milestone 63 (revised 2026-09-22): a switched diamond's mark and which corners are switched. The
+ * angle comes from the tracks it sits on, so there is nothing to rotate or size.
+ */
+function SwitchedDiamondFields({
+  x,
+  y,
+  corners,
+  markStyle,
+  setProp,
+}: {
+  x: number;
+  y: number;
+  corners: Array<"a" | "b">;
+  markStyle: "knuckle" | "ticks";
+  setProp: (property: string, value: unknown) => void;
+}): JSX.Element {
+  const { document: doc } = useEditorState();
+  const onCrossing =
+    switchedDiamondGeometry(
+      { x, y, corners, style: markStyle },
+      doc.elements.filter((element) => element.type === "trackPath"),
+    ) !== null;
+  const toggle = (corner: "a" | "b", on: boolean): void => {
+    const next = on ? [...new Set([...corners, corner])] : corners.filter((c) => c !== corner);
+    // At least one corner is switched, or it would just be a plain diamond with no marker.
+    if (next.length > 0) setProp("corners", next.sort());
+  };
+  return (
+    <>
+      {onCrossing ? null : (
+        <p className="badge badge--warning">
+          Not on a crossing of two tracks, so nothing is drawn. Drag it onto the crossing — it snaps
+          there.
+        </p>
+      )}
+      <label className="field">
+        Style
+        <select
+          value={markStyle}
+          onChange={(e) => setProp("style", e.target.value === "ticks" ? "ticks" : "knuckle")}
+        >
+          <option value="knuckle">Filled knuckle</option>
+          <option value="ticks">Blade ticks</option>
+        </select>
+      </label>
+      <fieldset>
+        <legend>Switched corners</legend>
+        <label className="field field--checkbox">
+          <input
+            type="checkbox"
+            checked={corners.includes("a")}
+            onChange={(e) => toggle("a", e.target.checked)}
+          />
+          Upper corner
+        </label>
+        <label className="field field--checkbox">
+          <input
+            type="checkbox"
+            checked={corners.includes("b")}
+            onChange={(e) => toggle("b", e.target.checked)}
+          />
+          Lower corner
+        </label>
+      </fieldset>
+      <p className="field-hint">
+        The blades sit in the crossing's two obtuse corners; tick the one(s) that are switched. The
+        mark takes its angle from the tracks, so it follows them if they move. Display only: no
+        binding, and it says nothing about which way the blades lie.
+      </p>
+    </>
+  );
+}
+
+/**
  * Milestone 64 / ADR 0016 decision 3: the routes that start at this signal, authored from here.
  * "Add route" starts a trace on the canvas from this signal.
  */
@@ -1555,34 +1630,15 @@ export function PropertyPanel(): JSX.Element {
       )}
 
       {element.type === "switchedDiamond" && (
-        <>
-          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
-          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
-          <NumberField
-            label="Orientation (degrees)"
-            value={element.orientation}
-            onCommit={(v) => setProp("orientation", v)}
-          />
-          <NumberField
-            label="Length (long axis)"
-            value={element.length}
-            min={1}
-            onCommit={(v) => setProp("length", v)}
-          />
-          <NumberField
-            label="Width (short axis)"
-            value={element.width}
-            min={1}
-            onCommit={(v) => setProp("width", v)}
-          />
-          <p className="field-hint">
-            Marks a diamond crossing as switched. Place it on the crossing point — X/Y is its centre
-            — and turn it with the rotate handle on the canvas, which snaps to horizontal, the track
-            diagonals and the angles half-way between them; or type an orientation. Display only: it
-            carries no binding and says nothing about which way the blades lie. A plain diamond
-            needs no marker.
-          </p>
-        </>
+        <SwitchedDiamondFields
+          x={element.x}
+          y={element.y}
+          // A diamond saved by the first (rhombus) version reaches here as stored, without
+          // these; it reads as a knuckle on both corners, as the schema would default it.
+          corners={element.corners ?? ["a", "b"]}
+          markStyle={element.style ?? "knuckle"}
+          setProp={setProp}
+        />
       )}
 
       {element.type === "levelCrossing" && (

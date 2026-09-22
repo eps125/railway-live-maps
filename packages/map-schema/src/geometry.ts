@@ -241,45 +241,164 @@ export function neutralSectionGeometry(element: {
 /** A viaduct's deck width: the author's value, or the default derived from the track stroke for
  * one authored before `width` existed (CLAUDE.md rule 11 — published versions are immutable, so
  * old documents must keep rendering unchanged). */
+/** Milestone 63: where two drawn tracks cross, with the direction of each there. */
+export interface TrackCrossing {
+  point: { x: number; y: number };
+  /** Unit vectors along each of the two crossing tracks. */
+  directions: [{ x: number; y: number }, { x: number; y: number }];
+}
+
+/**
+ * Milestone 63: the crossing of two drawn track segments nearest `near`, within `tolerance`.
+ * Consecutive segments of one track (a bend) are not a crossing, and nor are two segments running
+ * (nearly) parallel. Null when there is none.
+ */
+export function findTrackCrossing(
+  tracks: ReadonlyArray<{ id?: string; points: ReadonlyArray<{ x: number; y: number }> }>,
+  near: { x: number; y: number },
+  tolerance: number,
+): TrackCrossing | null {
+  const segments: Array<{ track: number; index: number; a: Point; b: Point }> = [];
+  tracks.forEach((track, trackIndex) => {
+    for (let i = 0; i + 1 < track.points.length; i++) {
+      const a = track.points[i]!;
+      const b = track.points[i + 1]!;
+      if (distanceToSegment(near, a, b) <= tolerance) {
+        segments.push({ track: trackIndex, index: i, a, b });
+      }
+    }
+  });
+  let best: (TrackCrossing & { distance: number }) | null = null;
+  for (let i = 0; i < segments.length; i++) {
+    for (let j = i + 1; j < segments.length; j++) {
+      const s1 = segments[i]!;
+      const s2 = segments[j]!;
+      if (s1.track === s2.track && Math.abs(s1.index - s2.index) <= 1) continue;
+      const d1 = { x: s1.b.x - s1.a.x, y: s1.b.y - s1.a.y };
+      const d2 = { x: s2.b.x - s2.a.x, y: s2.b.y - s2.a.y };
+      const l1 = Math.hypot(d1.x, d1.y);
+      const l2 = Math.hypot(d2.x, d2.y);
+      if (l1 === 0 || l2 === 0) continue;
+      const cross = d1.x * d2.y - d1.y * d2.x;
+      if (Math.abs(cross) / (l1 * l2) < 0.05) continue;
+      const t = ((s2.a.x - s1.a.x) * d2.y - (s2.a.y - s1.a.y) * d2.x) / cross;
+      const u = ((s2.a.x - s1.a.x) * d1.y - (s2.a.y - s1.a.y) * d1.x) / cross;
+      const eps = 1e-6;
+      if (t < -eps || t > 1 + eps || u < -eps || u > 1 + eps) continue;
+      const point = { x: s1.a.x + t * d1.x, y: s1.a.y + t * d1.y };
+      const distance = Math.hypot(point.x - near.x, point.y - near.y);
+      if (distance > tolerance || (best && distance >= best.distance)) continue;
+      best = {
+        point,
+        directions: [
+          { x: d1.x / l1, y: d1.y / l1 },
+          { x: d2.x / l2, y: d2.y / l2 },
+        ],
+        distance,
+      };
+    }
+  }
+  return best ? { point: best.point, directions: best.directions } : null;
+}
+
+type Point = { x: number; y: number };
+
+function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t =
+    lengthSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq));
+  return Math.hypot(a.x + t * dx - p.x, a.y + t * dy - p.y);
+}
+
+export type SwitchedDiamondCorner = "a" | "b";
+
 export interface SwitchedDiamondGeometry {
-  /** The four tips in map coordinates, rotated: long-axis end, short-axis end, long-axis end,
-   * short-axis end — i.e. in drawing order round the rhombus. */
-  points: Array<{ x: number; y: number }>;
-  /** The same four tips relative to the centre and **unrotated**, for a renderer that rotates a
-   * group about the centre instead (the editor, so Konva's rotate handle drives `orientation`). */
-  localPoints: Array<{ x: number; y: number }>;
-  /** Axis-aligned bounds of the rotated rhombus. */
+  crossing: Point;
+  /** The two obtuse corners, each as its two rail directions out from the crossing. */
+  corners: Record<SwitchedDiamondCorner, [Point, Point]>;
+  /** Filled wedges, one per switched corner (`style: "knuckle"`). */
+  knuckles: Point[][];
+  /** Blade lines, two per switched corner (`style: "ticks"`). */
+  ticks: Segment[];
   bounds: Rect;
 }
 
 /**
- * Milestone 63: the rhombus a `switchedDiamond` marker draws. `x`/`y` is its centre and
- * `orientation` (degrees) the angle of the long axis, so rotating or resizing it keeps it on the
- * crossing point it was placed on. Shared by the public renderer and the editor (rule 13).
+ * Milestone 63 (revised 2026-09-22): the switched-diamond mark, fitted to the crossing it sits on.
+ *
+ * The two tracks' directions at the crossing come from the drawing itself (`findTrackCrossing`),
+ * so the mark always matches the real angle and follows a track that is moved. Of the four corners
+ * a crossing makes, the two obtuse ones hold the switch blades; corner `a` is the one opening
+ * upwards (leftwards if exactly sideways), `b` the one opposite. Only the element's switched
+ * corners are drawn, as a filled knuckle or as two blade ticks. Null when x/y is not on a crossing
+ * of two tracks, so nothing is drawn rather than a mark guessed at the wrong angle.
+ *
+ * Shared by the public renderer and the editor (rule 13).
  */
-export function switchedDiamondGeometry(element: {
-  x: number;
-  y: number;
-  orientation: number;
-  length: number;
-  width: number;
-}): SwitchedDiamondGeometry {
-  const halfLength = element.length / 2;
-  const halfWidth = element.width / 2;
-  const localPoints = [
-    { x: halfLength, y: 0 },
-    { x: 0, y: halfWidth },
-    { x: -halfLength, y: 0 },
-    { x: 0, y: -halfWidth },
-  ];
-  const radians = (element.orientation * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  const points = localPoints.map((p) => ({
-    x: element.x + p.x * cos - p.y * sin,
-    y: element.y + p.x * sin + p.y * cos,
-  }));
-  return { points, localPoints, bounds: pointsBounds(points) };
+export function switchedDiamondGeometry(
+  element: {
+    x: number;
+    y: number;
+    corners?: ReadonlyArray<SwitchedDiamondCorner> | undefined;
+    style?: "knuckle" | "ticks" | undefined;
+  },
+  tracks: ReadonlyArray<{ points: ReadonlyArray<Point> }>,
+): SwitchedDiamondGeometry | null {
+  const style = MAP_STYLE.switchedDiamond;
+  const crossing = findTrackCrossing(tracks, element, style.crossingTolerance);
+  if (!crossing) return null;
+  const c = crossing.point;
+  const [d1, d2] = crossing.directions;
+  // The obtuse pair: the two legs pointing apart (negative dot product). At exactly 90° any
+  // pair qualifies, and the first is used.
+  const dot = d1.x * d2.x + d1.y * d2.y;
+  const u = d1;
+  const v = dot <= 0 ? d2 : { x: -d2.x, y: -d2.y };
+  const minus = (p: Point): Point => ({ x: -p.x, y: -p.y });
+  const bisector = { x: u.x + v.x, y: u.y + v.y };
+  const opensUp = bisector.y < -1e-9 || (Math.abs(bisector.y) <= 1e-9 && bisector.x < 0);
+  const corners: Record<SwitchedDiamondCorner, [Point, Point]> = opensUp
+    ? { a: [u, v], b: [minus(u), minus(v)] }
+    : { a: [minus(u), minus(v)], b: [u, v] };
+
+  const switched = new Set(element.corners ?? ["a", "b"]);
+  const at = (leg: Point, distance: number, offset?: Point, by = 0): Point => ({
+    x: c.x + leg.x * distance + (offset?.x ?? 0) * by,
+    y: c.y + leg.y * distance + (offset?.y ?? 0) * by,
+  });
+  const knuckles: Point[][] = [];
+  const ticks: Segment[] = [];
+  for (const id of ["a", "b"] as const) {
+    if (!switched.has(id)) continue;
+    const [p, q] = corners[id];
+    if ((element.style ?? "knuckle") === "knuckle") {
+      knuckles.push([c, at(p, style.knuckleLength), at(q, style.knuckleLength)]);
+      continue;
+    }
+    // Each blade lies beside one rail, pushed into the corner (towards the other rail).
+    for (const [leg, other] of [
+      [p, q],
+      [q, p],
+    ] as const) {
+      const along = leg.x * other.x + leg.y * other.y;
+      const inward = { x: other.x - along * leg.x, y: other.y - along * leg.y };
+      const length = Math.hypot(inward.x, inward.y) || 1;
+      const n = { x: inward.x / length, y: inward.y / length };
+      const from = at(leg, style.tickFrom, n, style.tickOffset);
+      const to = at(leg, style.tickTo, n, style.tickOffset);
+      ticks.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y });
+    }
+  }
+  const reach = Math.max(style.knuckleLength, style.tickTo) + style.tickOffset;
+  return {
+    crossing: c,
+    corners,
+    knuckles,
+    ticks,
+    bounds: { x: c.x - reach, y: c.y - reach, width: reach * 2, height: reach * 2 },
+  };
 }
 
 export function viaductWidth(element: { width?: number | undefined }): number {

@@ -172,17 +172,21 @@ export const MAP_STYLE = {
     },
   },
   /**
-   * Milestone 63: the switched-diamond marker, an open rhombus over the crossing point. Filled
-   * with the map background so the two tracks disappear under it, outlined in `track.color`.
-   * The default 20x10 is one grid square wide; both are per-element and the author rotates it
-   * to suit the crossing.
+   * Milestone 63 (revised): the switched-diamond mark, drawn in each switched obtuse corner of a
+   * crossing in `track.color`. `knuckle`: a filled wedge running `knuckleLength` along both
+   * rails. `ticks`: a short blade beside each rail, `tickOffset` into the corner, from
+   * `tickFrom` to `tickTo` along it.
    */
   switchedDiamond: {
-    length: 20,
-    width: 10,
-    /** The map canvas colour (both renderers paint `#0d1117` behind the map). */
-    fill: "#0d1117",
-    strokeWidth: 2,
+    knuckleLength: 12,
+    tickOffset: 3.5,
+    tickFrom: 5,
+    tickTo: 16,
+    tickWidth: 2,
+    /** How far from its x/y the marker looks for the crossing it belongs to. */
+    crossingTolerance: 8,
+    /** How far from a click or drag the editor looks for a crossing to snap to. */
+    snapDistance: 20,
   },
   /**
    * Milestone 64 / ADR 0016 decision 5: a set route, after Traksy's look — a solid pale green line

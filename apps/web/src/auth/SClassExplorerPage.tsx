@@ -73,7 +73,6 @@ interface RouteCandidate {
   ofTransitions: number;
   medianLeadSeconds: number;
   medianHeldSeconds: number | null;
-  releaseSteps: Array<{ fromBerth: string | null; toBerth: string | null; hits: number }>;
   definition: { label: string | null; destination: string | null } | null;
 }
 
@@ -576,8 +575,8 @@ function BitPanel({
 /**
  * Milestone 64 / ADR 0016: treat the selected bit as a signal and suggest the route bits from it —
  * bits set shortly before the signal clears and still set when it does. Shows how far ahead each
- * is set, how long it stays set after the clear, and the berth step it is usually released on
- * (which hints at where the route goes). A suggestion to check and define, never a binding.
+ * is set and how long it stays set after the clear. A suggestion to check and define, never a
+ * binding.
  */
 function RouteSuggestSection({
   tdArea,
@@ -663,7 +662,6 @@ function RouteSuggestSection({
                 <th>Of clears</th>
                 <th>Set ahead</th>
                 <th>Held after</th>
-                <th>Released on</th>
                 <th>Defined as</th>
               </tr>
             </thead>
@@ -693,11 +691,6 @@ function RouteSuggestSection({
                   <td>{c.medianLeadSeconds.toFixed(0)} s</td>
                   <td>
                     {c.medianHeldSeconds === null ? "—" : `${c.medianHeldSeconds.toFixed(0)} s`}
-                  </td>
-                  <td className="mono">
-                    {c.releaseSteps[0]
-                      ? `${c.releaseSteps[0].fromBerth} → ${c.releaseSteps[0].toBerth} (${c.releaseSteps[0].hits})`
-                      : ""}
                   </td>
                   <td>
                     {c.definition?.label ?? ""}

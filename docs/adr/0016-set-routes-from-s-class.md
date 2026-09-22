@@ -58,7 +58,7 @@ path-finding. The `trackIds` it passed through are recorded so validation can wa
 (`route_off_track`) when later track edits leave the route off the track, and the editor can
 re-trace it. The authoring graph is derived from geometry only and is not written to `topology`.
 
-**5. Display.** A set route paints over its track in a Traksy-style dash: a solid pale green line
+**5. Display.** A set route paints over its track in a Traksy-style dash: a solid off-white line (pale green until the owner chose off-white, 2026-09-22)
 with a dark dash on top, the same width as the track. `unset` and `blank` draw nothing on the public
 map. The editor draws a route, in the same style, while it or its entry signal is selected, and
 whenever its bound bit is live-set, so a wrong bit is obvious while authoring.

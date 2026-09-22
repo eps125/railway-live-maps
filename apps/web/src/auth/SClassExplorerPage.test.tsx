@@ -81,7 +81,6 @@ function stubApi(): ReturnType<typeof vi.fn> {
               ofTransitions: 3,
               medianLeadSeconds: 60,
               medianHeldSeconds: 90,
-              releaseSteps: [{ fromBerth: "0100", toBerth: "0102", hits: 3 }],
               definition: null,
             },
           ],
@@ -161,7 +160,6 @@ describe("SClassExplorerPage (Milestone 36c)", () => {
         ),
       ),
     ).toBe(true);
-    expect(screen.getByText("0100 → 0102 (3)")).toBeInTheDocument();
     expect(screen.getByText("60 s")).toBeInTheDocument();
 
     fireEvent.click(bitButton);

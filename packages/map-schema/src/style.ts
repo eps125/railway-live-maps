@@ -189,12 +189,14 @@ export const MAP_STYLE = {
     snapDistance: 20,
   },
   /**
-   * Milestone 64 / ADR 0016 decision 5: a set route, after Traksy's look — a solid pale green line
+   * Milestone 64 / ADR 0016 decision 5: a set route, after Traksy's look — a solid light line
    * the width of the track with a dark dash over it, so it reads as green-and-black dashes laid on
    * the rail. The dash is the map canvas colour, which on this dark theme is the "black".
    */
   route: {
-    color: "#77aa77",
+    // Owner choice 2026-09-22: off-white rather than Traksy's pale green, previously:
+    // color: "#77aa77",
+    color: "#e8e6df",
     dashColor: "#0d1117",
     dash: [10, 10],
   },

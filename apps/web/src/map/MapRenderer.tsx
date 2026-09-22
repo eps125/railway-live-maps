@@ -486,7 +486,7 @@ function renderSwitchedDiamond(
 }
 
 /**
- * Milestone 64 / ADR 0016 decision 5: a set route, laid over its track as a solid pale green line
+ * Milestone 64 / ADR 0016 decision 5: a set route, laid over its track as a solid off-white line
  * with a dark dash on top, the width of the track — green-and-black dashes along the rail. Pure
  * display of the traced line; the renderer does no path-finding.
  */

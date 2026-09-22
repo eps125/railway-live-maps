@@ -123,7 +123,7 @@ async function buildApp() {
 }
 
 describe("route bits for a signal (integration)", () => {
-  it("ranks the bits set before the signal clears, with lead, hold and release step", async () => {
+  it("ranks the bits set before the signal clears, with lead and hold times", async () => {
     const app = await buildApp();
     try {
       const response = await app.inject({
@@ -139,7 +139,6 @@ describe("route bits for a signal (integration)", () => {
         hits: 3,
         ofClears: 5,
         ofTransitions: 3,
-        releaseSteps: [{ fromBerth: "0100", toBerth: "0102", hits: 3 }],
       });
       expect(body.candidates[0].medianLeadSeconds).toBeCloseTo(60, 0);
       expect(body.candidates[0].medianHeldSeconds).toBeCloseTo(90, 0);

@@ -40,8 +40,6 @@ const CORRELATION_MAX_HOURS = 14 * 24;
 const ROUTE_LEAD_MAX_SECONDS = 180;
 /** How long after the clear to look for the route bit being released. */
 const ROUTE_HOLD_MAX_SECONDS = 30 * 60;
-/** Release steps are looked up for this many of the strongest candidates. */
-const ROUTE_RELEASE_STEP_CANDIDATES = 8;
 /** The bit grid's activity window (`?windowHours=`), bounded by the same retention. */
 const GRID_DEFAULT_WINDOW_HOURS = 24;
 const GRID_MAX_WINDOW_HOURS = CORRELATION_MAX_HOURS;
@@ -497,9 +495,10 @@ export async function registerSClassAdminRoutes(
    * `ofTransitions`), covering a share of the signal's clears — several routes from one signal
    * split them between them.
    *
-   * For each candidate it also reports how long the bit then stays that way after the clear, and
-   * the berth step it most often goes back on — how, and where, the route is released. That is
-   * the measurement ADR 0016 decision 6 asked for, and the release step hints at the exit.
+   * For each candidate it also reports how long the bit then stays that way after the clear — how
+   * the route is released, the measurement ADR 0016 decision 6 asked for. (A "berth step at the
+   * release" column was tried and removed on 2026-09-22: in a busy area the step nearest the
+   * release is usually another train's, so it was noise, and the query behind it took 45 s.)
    *
    * Authoring aid only (ADR 0013 decision 4): nothing is bound or defined automatically, and it
    * never feeds a displayed route.
@@ -548,7 +547,6 @@ export async function registerSClassAdminRoutes(
         transitions: number;
         median_lead_seconds: number;
         median_held_seconds: number | null;
-        release_times: Date[];
       }>(
         `with timeline as materialized (
            -- ($6/$7 are cast where they first appear: "$6 - interval" alone lets Postgres infer $6
@@ -600,10 +598,7 @@ export async function registerSClassAdminRoutes(
                 ) filter (where hit) as median_lead_seconds,
                 percentile_cont(0.5) within group (
                   order by extract(epoch from next_change_at - next_clear_at)
-                ) filter (where hit) as median_held_seconds,
-                array_remove(
-                  array_agg(next_change_at order by event_at) filter (where hit), null
-                ) as release_times
+                ) filter (where hit) as median_held_seconds
            from judged
           group by address, bit_index, new_value
          having count(*) filter (where hit) >= 2
@@ -623,55 +618,6 @@ export async function registerSClassAdminRoutes(
           ROUTE_HOLD_MAX_SECONDS,
         ],
       );
-
-      // Where each of the strongest candidates is released: the CA step most often within ±10 s
-      // of it changing back. One query for the lot, over the release instants already found.
-      const top = candidates.rows.slice(0, ROUTE_RELEASE_STEP_CANDIDATES);
-      const releaseKeys: string[] = [];
-      const releaseTimes: Date[] = [];
-      for (const row of top) {
-        for (const at of row.release_times) {
-          releaseKeys.push(`${row.address}:${row.bit_index}:${row.new_value}`);
-          releaseTimes.push(at);
-        }
-      }
-      const releaseSteps =
-        releaseTimes.length === 0
-          ? { rows: [] }
-          : await pool.query<{
-              key: string;
-              from_berth: string | null;
-              to_berth: string | null;
-              hits: number;
-            }>(
-              `with releases as materialized (
-                 select * from unnest($2::text[], $3::timestamptz[]) as r(key, released_at)
-               ),
-               matches as (
-                 select distinct r.key, r.released_at, be.from_berth, be.to_berth
-                   from releases r
-                   join td_berth_event be
-                     on be.td_area = $1 and be.message_type = 'CA'
-                    and be.event_at between r.released_at - make_interval(secs => $4)
-                                        and r.released_at + make_interval(secs => $4)
-               )
-               select key, from_berth, to_berth, count(distinct released_at)::int as hits
-                 from matches
-                group by key, from_berth, to_berth
-                order by key, hits desc`,
-              [tdArea, releaseKeys, releaseTimes, CORRELATION_WINDOW_SECONDS],
-            );
-      const stepsByKey = new Map<
-        string,
-        Array<{ fromBerth: string | null; toBerth: string | null; hits: number }>
-      >();
-      for (const row of releaseSteps.rows) {
-        const list = stepsByKey.get(row.key) ?? [];
-        if (list.length < 3) {
-          list.push({ fromBerth: row.from_berth, toBerth: row.to_berth, hits: row.hits });
-        }
-        stepsByKey.set(row.key, list);
-      }
 
       const definitions = await pool.query<DefinitionRow>(
         `select * from s_class_definition where td_area = $1`,
@@ -703,7 +649,6 @@ export async function registerSClassAdminRoutes(
             medianLeadSeconds: Number(row.median_lead_seconds),
             medianHeldSeconds:
               row.median_held_seconds === null ? null : Number(row.median_held_seconds),
-            releaseSteps: stepsByKey.get(`${row.address}:${row.bit_index}:${row.new_value}`) ?? [],
             definition: def ? definitionResponse(def) : null,
           };
         }),

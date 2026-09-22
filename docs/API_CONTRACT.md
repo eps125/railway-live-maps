@@ -603,10 +603,8 @@ definition }] }] }` (changes counted over the last 24 h; first sightings are not
   ADR 0016) — suggestion: treating this bit as a signal (`activeMeans`: what a set bit means for it,
   default `off`), the other bits in the area that change up to 180 s before it clears and are still
   in that state when it does. `{ clears, leadWindowSeconds, candidates: [{ address, bit, direction,
-hits, ofClears, ofTransitions, medianLeadSeconds, medianHeldSeconds, releaseSteps: [{ fromBerth,
-toBerth, hits }], definition }] }`, ranked by `hits / ofTransitions` then `hits`. `releaseSteps` are
-  the CA steps within ±10 s of the bit changing back (top candidates only). Never applied or bound
-  automatically.
+hits, ofClears, ofTransitions, medianLeadSeconds, medianHeldSeconds, definition }] }`, ranked by
+  `hits / ofTransitions` then `hits`. Never applied or bound automatically.
 - `GET /api/v1/admin/s-class/areas/{tdArea}/correlated-bits?fromBerth=&toBerth=&from=&to=` —
   suggestion, the other way round: bits that change within ±10 s of that step.
 - `GET .../definitions`; `PUT .../definitions/{address}/{bit}` (`{ kind, label, destination,

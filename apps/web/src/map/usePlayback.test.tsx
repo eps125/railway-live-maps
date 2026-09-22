@@ -1,6 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPlaybackDelta, applyPlaybackSignalDelta, usePlayback } from "./usePlayback.js";
+import {
+  applyPlaybackDelta,
+  applyPlaybackRouteDelta,
+  applyPlaybackSignalDelta,
+  usePlayback,
+} from "./usePlayback.js";
 import type { PlaybackDelta } from "./types.js";
 
 afterEach(() => {
@@ -271,5 +276,28 @@ describe("usePlayback", () => {
     for (let i = 0; i < 20; i += 1) await vi.advanceTimersByTimeAsync(200);
 
     expect(eventsCallCount).toBeGreaterThan(1);
+  });
+});
+
+describe("applyPlaybackRouteDelta (Milestone 64 / ADR 0016)", () => {
+  const route = (state: "blank" | "set" | "unset"): PlaybackDelta => ({
+    type: "route.updated",
+    sequence: 1,
+    eventAt: "2026-09-22T12:00:00Z",
+    elementId: "route-1",
+    state,
+    tdArea: "M9",
+    address: "0C",
+    bit: 4,
+  });
+
+  it("applies a route's absolute state, idempotently, and leaves berths and signals alone", () => {
+    const set = applyPlaybackRouteDelta({}, route("set"));
+    expect(set).toEqual({ "route-1": { state: "set" } });
+    expect(applyPlaybackRouteDelta(set, route("set"))).toEqual(set);
+    expect(applyPlaybackRouteDelta(set, route("blank"))).toEqual({ "route-1": { state: "blank" } });
+    const berths = { b: { description: "1A23", enteredAt: "2026-09-22T11:59:00Z" } };
+    expect(applyPlaybackDelta(berths, route("set"))).toBe(berths);
+    expect(applyPlaybackSignalDelta({}, route("set"))).toEqual({});
   });
 });

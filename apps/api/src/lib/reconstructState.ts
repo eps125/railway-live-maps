@@ -40,6 +40,7 @@ export async function reconstructStateAt(
     berths,
     signals: sClass.signals,
     crossings: sClass.crossings,
+    routes: sClass.routes,
     quality: { status: coversAt ? "stale" : "ok", gaps },
   };
 }

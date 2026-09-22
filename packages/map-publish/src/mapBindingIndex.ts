@@ -64,6 +64,19 @@ export async function insertMapBindingIndexRows(
     );
   }
 
+  // Milestone 64 / ADR 0016: a route's bit, in its own binding_type and set/unset vocabulary
+  // (migration 0042), so a route bit can never be read as a signal or barrier bit.
+  for (const [key, elementId] of Object.entries(bundle.routeBindingIndex ?? {})) {
+    const [tdArea, address, bit] = key.split("|");
+    const activeMeans = bundle.routeBindingActiveMeans?.[key] ?? null;
+    await client.query(
+      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, address, bit, active_means)
+       values ($1, $2, 'td_s_bit_route', $3, $4, $5, $6)
+       on conflict do nothing`,
+      [mapVersionId, elementId, tdArea, address, bit, activeMeans],
+    );
+  }
+
   // Milestone 59 / ADR 0015: one row per input signal of an inferred crossing, in the signal's
   // on/off vocabulary (migration 0040). The live publisher groups them by element_id.
   for (const [elementId, inputs] of Object.entries(bundle.inferredBarrierBindings ?? {})) {

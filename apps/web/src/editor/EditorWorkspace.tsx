@@ -9,7 +9,7 @@ import { useTestModePanel } from "./TestModePanel.js";
 import { ReviewPanel } from "./ReviewPanel.js";
 import { useDraftSync } from "./useDraftSync.js";
 import { useEditorState } from "./EditorState.js";
-import { useLiveSignalStates } from "./useLiveSignalStates.js";
+import { useLiveSClassStates } from "./useLiveSignalStates.js";
 
 export interface EditorWorkspaceProps {
   slug: string;
@@ -36,7 +36,7 @@ export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps)
   const draftSync = useDraftSync(slug, initialRevision);
   const testMode = useTestModePanel(slug);
   const { document: currentDocument } = useEditorState();
-  const liveSignalStates = useLiveSignalStates(slug, currentDocument);
+  const liveStates = useLiveSClassStates(slug, currentDocument);
 
   const syncModifier =
     draftSync.status === "conflict" || draftSync.status === "error"
@@ -97,7 +97,8 @@ export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps)
         <div className="editor-canvas-frame">
           <EditorCanvas
             previewState={viewMode === "test" ? testMode.previewState : undefined}
-            signalStates={liveSignalStates}
+            signalStates={liveStates.signals}
+            routeStates={liveStates.routes}
           />
         </div>
         <div className="editor-panels">

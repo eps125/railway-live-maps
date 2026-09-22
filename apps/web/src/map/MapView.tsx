@@ -126,6 +126,7 @@ export function MapView({
           berths={state?.berths ?? {}}
           signals={state?.signals ?? {}}
           crossings={state?.crossings ?? {}}
+          routes={state?.routes ?? {}}
           showEmptyBerths={showEmptyBerths}
           centerElementId={resolvedCenterElementId}
         />
@@ -185,6 +186,7 @@ function PlaybackView({
         berths={pb.berths}
         signals={pb.signals}
         crossings={pb.crossings}
+        routes={pb.routes}
         showEmptyBerths={showEmptyBerths}
         atIso={pb.atIso}
       />

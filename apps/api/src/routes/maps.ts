@@ -132,7 +132,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         );
       }
 
-      const { sourceSequence, berths, signals, crossings, quality } = historical
+      const { sourceSequence, berths, signals, crossings, routes, quality } = historical
         ? await reconstructStateAt(pool, version.compiled_runtime_bundle, at)
         : await computeLiveState(pool, version.compiled_runtime_bundle, now);
 
@@ -146,6 +146,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         berths,
         signals,
         crossings,
+        routes,
       };
     },
   );

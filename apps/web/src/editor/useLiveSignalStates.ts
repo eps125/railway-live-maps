@@ -2,32 +2,41 @@ import { useEffect, useState } from "react";
 import type { MapDocument } from "@railway/map-schema";
 
 export type LiveSignalState = "blank" | "on" | "off";
+export type LiveRouteState = "blank" | "set" | "unset";
+
+export interface LiveSClassStates {
+  signals: Record<string, LiveSignalState>;
+  /** Milestone 64: each bound route's live state, so a wrong route bit is obvious while
+   * authoring, as a wrong signal bit already is. */
+  routes: Record<string, LiveRouteState>;
+}
 
 const POLL_INTERVAL_MS = 3000;
+const EMPTY: LiveSClassStates = { signals: {}, routes: {} };
 
 /**
- * Milestone 36c (owner request): bound signals show their live state in the editor — in the
- * normal edit view as well as Test mode — so a wrong address/bit is obvious while authoring.
+ * Milestone 36c (owner request): bound signals — and since Milestone 64 bound routes — show their
+ * live state in the editor, in the normal edit view as well as Test mode.
  *
  * Polls `GET /api/v1/editor/state/{slug}`, which computes live state for the saved draft's own
- * bindings with the same `computeLiveState` the public map uses (CLAUDE.md rule 13): a signal's
- * state is only ever its bound S-Class bit. Only polls while the draft has at least one `tdSBit`
- * binding; returns state for bound signals only (unbound ones keep their static `symbolStyle`).
+ * bindings with the same `computeLiveState` the public map uses (CLAUDE.md rule 13): a signal's or
+ * route's state is only ever its bound S-Class bit. Polls only while the draft has at least one
+ * signal or route binding, and returns state for bound elements only.
  */
-export function useLiveSignalStates(
+export function useLiveSClassStates(
   slug: string,
   doc: Pick<MapDocument, "bindings">,
-): Record<string, LiveSignalState> {
+): LiveSClassStates {
   const boundIds = doc.bindings
-    .filter((binding) => binding.type === "tdSBit")
+    .filter((binding) => binding.type === "tdSBit" || binding.type === "tdSBitRoute")
     .map((binding) => binding.elementId)
     .sort()
     .join(",");
-  const [states, setStates] = useState<Record<string, LiveSignalState>>({});
+  const [states, setStates] = useState<LiveSClassStates>(EMPTY);
 
   useEffect(() => {
     if (boundIds === "") {
-      setStates({});
+      setStates(EMPTY);
       return;
     }
     const bound = new Set(boundIds.split(","));
@@ -38,10 +47,14 @@ export function useLiveSignalStates(
         if (!response.ok || cancelled) return;
         const body = (await response.json()) as {
           signals?: Record<string, { state: LiveSignalState }>;
+          routes?: Record<string, { state: LiveRouteState }>;
         };
-        const next: Record<string, LiveSignalState> = {};
+        const next: LiveSClassStates = { signals: {}, routes: {} };
         for (const [elementId, signal] of Object.entries(body.signals ?? {})) {
-          if (bound.has(elementId)) next[elementId] = signal.state;
+          if (bound.has(elementId)) next.signals[elementId] = signal.state;
+        }
+        for (const [elementId, route] of Object.entries(body.routes ?? {})) {
+          if (bound.has(elementId)) next.routes[elementId] = route.state;
         }
         if (!cancelled) setStates(next);
       } catch {
@@ -57,4 +70,12 @@ export function useLiveSignalStates(
   }, [slug, boundIds]);
 
   return states;
+}
+
+/** The signal half of `useLiveSClassStates`. */
+export function useLiveSignalStates(
+  slug: string,
+  doc: Pick<MapDocument, "bindings">,
+): Record<string, LiveSignalState> {
+  return useLiveSClassStates(slug, doc).signals;
 }

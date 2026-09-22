@@ -7,8 +7,11 @@ import {
   inferredCrossingStates,
   inferredInputBindings,
   joinCombinedBerthState,
+  routeBindingsFromIndex,
+  routeStateFromSignalState,
   signalBindingsFromIndex,
   type BarrierDisplayState,
+  type RouteDisplayState,
   type SignalDisplayState,
 } from "@railway/domain";
 import { createSignalFactsPort } from "@railway/database";
@@ -42,6 +45,9 @@ export interface LiveState {
    * crossings; a crossing with no binding is present and `blank`, exactly like an unbound
    * signal. */
   crossings: Record<string, { state: BarrierDisplayState }>;
+  /** Milestone 64 / ADR 0016: each route's state, from its bound route bit only. An unbound
+   * route is present and `blank`; the public map draws a route only when it is `set`. */
+  routes: Record<string, { state: RouteDisplayState }>;
   quality: QualityState;
 }
 
@@ -115,7 +121,7 @@ export async function computeLiveState(
     berths[elementId] = joinCombinedBerthState(members);
   }
 
-  const { signals, crossings } = await sClassStatesForBundle(pool, bundle, now, true);
+  const { signals, crossings, routes } = await sClassStatesForBundle(pool, bundle, now, true);
 
   const areas = tdAreasFromBundle(bundle);
   const [status, { gaps }] = await Promise.all([
@@ -124,7 +130,7 @@ export async function computeLiveState(
   ]);
   const quality: QualityState = { status, gaps };
 
-  return { sourceSequence, berths, signals, crossings, quality };
+  return { sourceSequence, berths, signals, crossings, routes, quality };
 }
 
 /**
@@ -148,6 +154,7 @@ export async function sClassStatesForBundle(
 ): Promise<{
   signals: Record<string, SignalState>;
   crossings: Record<string, { state: BarrierDisplayState }>;
+  routes: Record<string, { state: RouteDisplayState }>;
 }> {
   const elements = Object.values(bundle.elementsById);
   const signalElementIds = elements
@@ -156,15 +163,25 @@ export async function sClassStatesForBundle(
   const crossingElementIds = elements
     .filter((element) => element.type === "levelCrossing")
     .map((element) => element.id);
+  // Milestone 64 / ADR 0016: routes resolve in the same call, against the same facts and `at`.
+  const routeElementIds = elements
+    .filter((element) => element.type === "route")
+    .map((element) => element.id);
 
   const inputElementIds = inferredInputBindings(bundle.inferredBarrierBindings).map(
     (binding) => binding.elementId,
   );
   const resolved = await computeSignalStates(createSignalFactsPort(pool), {
-    signalElementIds: [...signalElementIds, ...crossingElementIds, ...inputElementIds],
+    signalElementIds: [
+      ...signalElementIds,
+      ...crossingElementIds,
+      ...routeElementIds,
+      ...inputElementIds,
+    ],
     bindings: [
       ...signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans),
       ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans),
+      ...routeBindingsFromIndex(bundle.routeBindingIndex, bundle.routeBindingActiveMeans),
       // Milestone 59 / ADR 0015: each inferred crossing's input signals, resolved under synthetic
       // element ids by the very same machinery (trust, lookback, live overlay) as a real signal.
       ...inferredInputBindings(bundle.inferredBarrierBindings),
@@ -182,5 +199,9 @@ export async function sClassStatesForBundle(
       state: inferred[id] ?? barrierStateFromSignalState(resolved[id]?.state ?? "blank"),
     };
   }
-  return { signals, crossings };
+  const routes: Record<string, { state: RouteDisplayState }> = {};
+  for (const id of routeElementIds) {
+    routes[id] = { state: routeStateFromSignalState(resolved[id]?.state ?? "blank") };
+  }
+  return { signals, crossings, routes };
 }

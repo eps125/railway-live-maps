@@ -33,6 +33,13 @@ export const BarrierStateSchema = z.object({
   state: z.enum(["blank", "up", "down"]),
 });
 
+/** Milestone 64 / ADR 0016: whether a route is set. Comes only from the route's bound S-Class bit
+ * (rule 10); `blank` means nothing trustworthy is known, and the public map draws a route only
+ * when it is `set`. */
+export const RouteStateSchema = z.object({
+  state: z.enum(["blank", "set", "unset"]),
+});
+
 /** Same shape as the `state` body of `GET /api/v1/maps/{slug}/state` (docs/API_CONTRACT.md §1),
  * minus the envelope fields (`mapSlug`/`mapVersion`/`asOf`) which are implicit in the socket
  * connection itself. */
@@ -45,6 +52,9 @@ export const LiveSnapshotStateSchema = z.object({
    * client built before crossings existed, or a server that hasn't been upgraded yet, keeps
    * working; a missing record reads as "no crossings", never as "barriers up". */
   crossings: z.record(z.string(), BarrierStateSchema).optional(),
+  /** Milestone 64 / ADR 0016: each route's state. Optional for the same reason as `crossings`;
+   * a missing record reads as "no routes set". */
+  routes: z.record(z.string(), RouteStateSchema).optional(),
 });
 export type LiveSnapshotState = z.infer<typeof LiveSnapshotStateSchema>;
 
@@ -111,6 +121,20 @@ export const CrossingUpdatedMessageSchema = z.object({
 });
 export type CrossingUpdatedMessage = z.infer<typeof CrossingUpdatedMessageSchema>;
 
+/** Milestone 64 / ADR 0016: a bound route was set or unset. Absolute state, like
+ * `signal.updated`, so a duplicate or replayed delta is harmless. */
+export const RouteUpdatedMessageSchema = z.object({
+  type: z.literal("route.updated"),
+  sequence: z.number().int().nonnegative(),
+  eventAt: z.string(),
+  elementId: z.string(),
+  state: z.enum(["blank", "set", "unset"]),
+  tdArea: z.string(),
+  address: z.string(),
+  bit: z.number().int().min(0).max(7),
+});
+export type RouteUpdatedMessage = z.infer<typeof RouteUpdatedMessageSchema>;
+
 export const QualityUpdatedMessageSchema = z.object({
   type: z.literal("quality.updated"),
   sequence: z.number().int().nonnegative(),
@@ -148,6 +172,7 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   BerthClearedMessageSchema,
   SignalUpdatedMessageSchema,
   CrossingUpdatedMessageSchema,
+  RouteUpdatedMessageSchema,
   QualityUpdatedMessageSchema,
   HeartbeatMessageSchema,
   ResyncRequiredMessageSchema,
@@ -163,6 +188,7 @@ export type LiveDeltaMessage =
   | BerthClearedMessage
   | SignalUpdatedMessage
   | CrossingUpdatedMessage
+  | RouteUpdatedMessage
   | QualityUpdatedMessage;
 
 /** Everything a `LiveDeltaSource` can hand the WS route: sequenced deltas, plus the

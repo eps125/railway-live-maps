@@ -38,6 +38,13 @@ and the live WS emit the same absolute states as `crossing.updated`; for an infe
 message's `tdArea`/`address`/`bit` name the input that triggered it. How `blank` is _drawn_ is a
 renderer concern (the default realistic style draws it lowered — see MAP_EDITOR_SPEC).
 
+`routes` (Milestone 64, ADR 0016): each route's `state` is `set` | `unset` | `blank`, only ever its
+bound `tdSBitRoute` bit read through the binding's `activeMeans`, with the same trust, lookback and
+live-overlay rules as a signal. Never worked out from the entry signal, berth steps or timetables.
+An unbound route is `blank`. Playback `/events` and the live WS emit the same absolute states as
+`route.updated` (`elementId`, `state`, `tdArea`, `address`, `bit`). Optional on the wire: a missing
+record means no routes are set. The public map draws a route only while it is `set`.
+
 Response outline:
 
 ```json

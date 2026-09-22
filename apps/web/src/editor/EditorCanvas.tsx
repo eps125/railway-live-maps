@@ -461,9 +461,16 @@ export interface EditorCanvasProps {
    * state with the public renderer's colours (rule 13) and a dashed ring marking it as live;
    * unbound signals keep their static `symbolStyle` preview. */
   signalStates?: Record<string, "blank" | "on" | "off"> | undefined;
+  /** Milestone 64: live state of each bound route. A route that is live-set is drawn whether or
+   * not its signal is selected, exactly as the public map would show it right now. */
+  routeStates?: Record<string, "blank" | "set" | "unset"> | undefined;
 }
 
-export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps = {}): JSX.Element {
+export function EditorCanvas({
+  previewState,
+  signalStates,
+  routeStates,
+}: EditorCanvasProps = {}): JSX.Element {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
   const transformerRef = useRef<Konva.Transformer>(null);
@@ -1581,7 +1588,9 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
               // signal it starts from, is selected — and not while it is being re-traced, when
               // the trace preview replaces it. Same look as the public map's set route (rule 13).
               const shown =
-                (selected || selection.includes(element.entrySignalId)) &&
+                (selected ||
+                  selection.includes(element.entrySignalId) ||
+                  routeStates?.[element.id] === "set") &&
                 routeTrace?.routeId !== element.id;
               if (!shown) return null;
               const flat = element.points.flatMap((p) => [p.x, p.y]);

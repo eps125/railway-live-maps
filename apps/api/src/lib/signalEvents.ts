@@ -8,6 +8,8 @@ import {
   inferredBarrierState,
   inferredInputBindings,
   inferredInputElementId,
+  routeBindingsFromIndex,
+  routeStateFromSignalState,
   signalBindingsFromIndex,
   signalStateForBit,
   type BarrierDisplayState,
@@ -50,7 +52,30 @@ export interface EventSource {
  * from the same bytes by the same rules, so they are paged together as one stream and only the
  * emitted message type differs — keeping barrier playback in exact step with signal playback
  * (including the blank-on-silence rule below) rather than as a second, drifting implementation. */
-type PlaybackBinding = SignalBinding & { kind: "signal" | "barrier" | "input" };
+type PlaybackBinding = SignalBinding & { kind: "signal" | "barrier" | "route" | "input" };
+
+/** The absolute-state message for one signal, crossing or route (Milestone 64 added routes, in
+ * the same stream so a route set/unset stays in exact step with its signal in playback). */
+function stateMessage(
+  kind: "signal" | "barrier" | "route",
+  resolved: SignalDisplayState,
+  fields: {
+    sequence: number;
+    eventAt: string;
+    elementId: string;
+    tdArea: string;
+    address: string;
+    bit: number;
+  },
+): LiveDeltaMessage {
+  if (kind === "barrier") {
+    return { type: "crossing.updated", ...fields, state: barrierStateFromSignalState(resolved) };
+  }
+  if (kind === "route") {
+    return { type: "route.updated", ...fields, state: routeStateFromSignalState(resolved) };
+  }
+  return { type: "signal.updated", ...fields, state: resolved };
+}
 
 function bindingsByByte(bindings: PlaybackBinding[]): Map<string, PlaybackBinding[]> {
   const byByte = new Map<string, PlaybackBinding[]>();
@@ -84,6 +109,9 @@ export async function fetchSignalPlaybackEvents(
     ),
     ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans).map(
       (binding) => ({ ...binding, kind: "barrier" as const }),
+    ),
+    ...routeBindingsFromIndex(bundle.routeBindingIndex, bundle.routeBindingActiveMeans).map(
+      (binding) => ({ ...binding, kind: "route" as const }),
     ),
     ...inputBindings.map((binding) => ({ ...binding, kind: "input" as const })),
   ];
@@ -185,27 +213,14 @@ export async function fetchSignalPlaybackEvents(
           continue;
         }
         messages.push(
-          binding.kind === "barrier"
-            ? {
-                type: "crossing.updated",
-                sequence,
-                eventAt: row.event_at.toISOString(),
-                elementId: binding.elementId,
-                state: barrierStateFromSignalState(resolved),
-                tdArea: row.td_area,
-                address,
-                bit: binding.bit,
-              }
-            : {
-                type: "signal.updated",
-                sequence,
-                eventAt: row.event_at.toISOString(),
-                elementId: binding.elementId,
-                state: resolved,
-                tdArea: row.td_area,
-                address,
-                bit: binding.bit,
-              },
+          stateMessage(binding.kind, resolved, {
+            sequence,
+            eventAt: row.event_at.toISOString(),
+            elementId: binding.elementId,
+            tdArea: row.td_area,
+            address,
+            bit: binding.bit,
+          }),
         );
       }
     }
@@ -241,18 +256,20 @@ export async function fetchSignalPlaybackEvents(
       sequence: BigInt(silence.affected_sequence_start),
       order: 1,
       messages: [
-        ...bindings
-          .filter((binding) => binding.kind !== "input")
-          .map((binding): LiveDeltaMessage => ({
-            type: binding.kind === "barrier" ? "crossing.updated" : "signal.updated",
-            sequence,
-            eventAt,
-            elementId: binding.elementId,
-            state: "blank",
-            tdArea: binding.tdArea,
-            address: binding.address,
-            bit: binding.bit,
-          })),
+        ...bindings.flatMap((binding): LiveDeltaMessage[] =>
+          binding.kind === "input"
+            ? []
+            : [
+                stateMessage(binding.kind, "blank", {
+                  sequence,
+                  eventAt,
+                  elementId: binding.elementId,
+                  tdArea: binding.tdArea,
+                  address: binding.address,
+                  bit: binding.bit,
+                }),
+              ],
+        ),
         // Every input unknown, so every inferred crossing is too.
         ...Object.entries(inferredIndex).flatMap(([crossingId, inputs]): LiveDeltaMessage[] => {
           const first = inputs[0];

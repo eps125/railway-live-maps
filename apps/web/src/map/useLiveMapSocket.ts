@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveWsMessage } from "@railway/protocol";
-import type { BerthState, CrossingState, SignalState } from "./types.js";
+import type { BerthState, CrossingState, RouteState, SignalState } from "./types.js";
 
 export type LiveConnectionStatus = "connecting" | "live" | "stale" | "reconnecting";
 
@@ -10,6 +10,7 @@ export interface UseLiveMapSocketResult {
   berths: Record<string, BerthState> | null;
   signals: Record<string, SignalState> | null;
   crossings: Record<string, CrossingState> | null;
+  routes: Record<string, RouteState> | null;
   quality: { status: "ok" | "stale" | "unknown"; gaps: string[] } | null;
 }
 
@@ -41,6 +42,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
   const [berths, setBerths] = useState<Record<string, BerthState> | null>(null);
   const [signals, setSignals] = useState<Record<string, SignalState> | null>(null);
   const [crossings, setCrossings] = useState<Record<string, CrossingState> | null>(null);
+  const [routes, setRoutes] = useState<Record<string, RouteState> | null>(null);
   const [quality, setQuality] = useState<{
     status: "ok" | "stale" | "unknown";
     gaps: string[];
@@ -92,6 +94,8 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         // A server that predates crossings sends no record at all; treat that as "none", never
         // as stale state carried over from a previous snapshot.
         setCrossings(message.state.crossings ?? {});
+        // Likewise routes (Milestone 64): none recorded means none set.
+        setRoutes(message.state.routes ?? {});
         setQuality(message.state.quality);
         setConnectionStatus("live");
         return;
@@ -110,6 +114,13 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         setBerths((prev) => ({
           ...prev,
           [message.elementId]: { description: null, enteredAt: null },
+        }));
+        return;
+      }
+      if (message.type === "route.updated") {
+        setRoutes((current) => ({
+          ...(current ?? {}),
+          [message.elementId]: { state: message.state },
         }));
         return;
       }
@@ -159,5 +170,5 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     };
   }, [slug]);
 
-  return { connectionStatus, sequence, berths, signals, crossings, quality };
+  return { connectionStatus, sequence, berths, signals, crossings, routes, quality };
 }

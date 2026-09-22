@@ -14,6 +14,9 @@ import {
   barrierActiveMeansAsSignal,
   barrierBindingsFromIndex,
   barrierStateFromSignalState,
+  routeActiveMeansAsSignal,
+  routeBindingsFromIndex,
+  routeStateFromSignalState,
 } from "./signalState.js";
 
 const t = (iso: string): Date => new Date(`2026-09-19T${iso}Z`);
@@ -281,5 +284,33 @@ describe("inferred crossing state (Milestone 59 / ADR 0015)", () => {
         // b's only input has no resolved state at all.
       }),
     ).toEqual({ a: "up", b: "blank" });
+  });
+});
+
+describe("route vocabulary (Milestone 64 / ADR 0016)", () => {
+  it("round-trips a bound route bit into set/unset, keeping blank as blank", () => {
+    const value = 0b0001_0000;
+    expect(
+      routeStateFromSignalState(signalStateForBit(value, 4, routeActiveMeansAsSignal("set"))),
+    ).toBe("set");
+    expect(
+      routeStateFromSignalState(signalStateForBit(value, 5, routeActiveMeansAsSignal("set"))),
+    ).toBe("unset");
+    // An inverted-polarity route bit, stated by the author.
+    expect(
+      routeStateFromSignalState(signalStateForBit(value, 4, routeActiveMeansAsSignal("unset"))),
+    ).toBe("unset");
+    // blank means no information and must never become "unset" (or "set").
+    expect(routeStateFromSignalState("blank")).toBe("blank");
+  });
+
+  it("reads a bundle's route index, and a bundle without one as empty", () => {
+    expect(routeBindingsFromIndex({ "M9|0C|4": "r-1" }, { "M9|0C|4": "set" })).toEqual([
+      { elementId: "r-1", tdArea: "M9", address: "0C", bit: 4, activeMeans: "off" },
+    ]);
+    expect(routeBindingsFromIndex(undefined, undefined)).toEqual([]);
+    expect(routeBindingsFromIndex({ "M9|0C|4": "r-1" }, undefined)).toEqual([
+      { elementId: "r-1", tdArea: "M9", address: "0C", bit: 4 },
+    ]);
   });
 });

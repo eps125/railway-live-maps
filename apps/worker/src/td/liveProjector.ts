@@ -14,14 +14,18 @@ import {
   detectReceiveSilences,
   barrierActiveMeansAsSignal,
   barrierStateFromSignalState,
+  routeActiveMeansAsSignal,
+  routeStateFromSignalState,
   signalStateForBit,
   type BarrierDisplayState,
+  type RouteDisplayState,
   type ReceivedRow,
   type SignalDisplayState,
 } from "@railway/domain";
 import type {
   CrossingUpdatedMessage,
   ResyncRequiredMessage,
+  RouteUpdatedMessage,
   SignalUpdatedMessage,
 } from "@railway/protocol";
 import {
@@ -163,6 +167,15 @@ export interface CachedBarrierBinding {
   activeMeans: "up" | "down" | null;
 }
 
+/** A `td_s_bit_route` map binding (Milestone 64 / ADR 0016), keyed the same way, with the route's
+ * own set/unset vocabulary. */
+export interface CachedRouteBinding {
+  mapSlug: string;
+  elementId: string;
+  bit: number;
+  activeMeans: "set" | "unset" | null;
+}
+
 /** Milestone 59 / ADR 0015: one input signal of an inferred crossing (a
  * `td_s_bit_barrier_input` row). `elementId` is the crossing; `activeMeans` is in the signal's
  * vocabulary. A crossing's full input list is every row sharing its `mapSlug` + `elementId`. */
@@ -181,6 +194,7 @@ export class BindingsCache {
   private byKey = new Map<string, CachedMapBinding[]>();
   private signalsByKey = new Map<string, CachedSignalBinding[]>();
   private barriersByKey = new Map<string, CachedBarrierBinding[]>();
+  private routesByKey = new Map<string, CachedRouteBinding[]>();
   private inputsByKey = new Map<string, CachedInferredInput[]>();
   private inputsByCrossing = new Map<string, CachedInferredInput[]>();
   /** Each inferred input byte's value from `td_s_current_state` at the last reload — the fallback
@@ -216,6 +230,14 @@ export class BindingsCache {
       await this.reload();
     }
     return this.barriersByKey.get(`${tdArea} ${address}`) ?? [];
+  }
+
+  /** Route bindings on the S-Class byte `(tdArea, address)` across every open map version. */
+  async getRoutes(tdArea: string, address: string): Promise<CachedRouteBinding[]> {
+    if (Date.now() - this.loadedAt > this.ttlMs) {
+      await this.reload();
+    }
+    return this.routesByKey.get(`${tdArea} ${address}`) ?? [];
   }
 
   /** Inferred-crossing inputs on the S-Class byte `(tdArea, address)` across every open map. */
@@ -273,8 +295,8 @@ export class BindingsCache {
       address: string;
       /** `map_binding_index.bit` is a text column (migration 0010) — coerced where it is read. */
       bit: string;
-      active_means: "on" | "off" | "up" | "down" | null;
-      binding_type: "td_s_bit" | "td_s_bit_barrier" | "td_s_bit_barrier_input";
+      active_means: "on" | "off" | "up" | "down" | "set" | "unset" | null;
+      binding_type: "td_s_bit" | "td_s_bit_barrier" | "td_s_bit_barrier_input" | "td_s_bit_route";
       mapSlug: string;
       elementId: string;
     }>(
@@ -283,11 +305,13 @@ export class BindingsCache {
        from map_binding_index mbi
        join map_version mv on mv.id = mbi.map_version_id
        join map m on m.id = mv.map_id
-       where mbi.binding_type in ('td_s_bit', 'td_s_bit_barrier', 'td_s_bit_barrier_input')
+       where mbi.binding_type in
+               ('td_s_bit', 'td_s_bit_barrier', 'td_s_bit_barrier_input', 'td_s_bit_route')
          and mv.effective_to is null`,
     );
     const nextSignals = new Map<string, CachedSignalBinding[]>();
     const nextBarriers = new Map<string, CachedBarrierBinding[]>();
+    const nextRoutes = new Map<string, CachedRouteBinding[]>();
     const nextInputs = new Map<string, CachedInferredInput[]>();
     const nextInputsByCrossing = new Map<string, CachedInferredInput[]>();
     const slugs = new Set<string>();
@@ -324,6 +348,16 @@ export class BindingsCache {
             row.active_means === "up" || row.active_means === "down" ? row.active_means : null,
         });
         nextBarriers.set(key, list);
+      } else if (row.binding_type === "td_s_bit_route") {
+        const list = nextRoutes.get(key) ?? [];
+        list.push({
+          mapSlug: row.mapSlug,
+          elementId: row.elementId,
+          bit: Number(row.bit),
+          activeMeans:
+            row.active_means === "set" || row.active_means === "unset" ? row.active_means : null,
+        });
+        nextRoutes.set(key, list);
       } else {
         const list = nextSignals.get(key) ?? [];
         list.push({
@@ -339,6 +373,7 @@ export class BindingsCache {
     }
     this.signalsByKey = nextSignals;
     this.barriersByKey = nextBarriers;
+    this.routesByKey = nextRoutes;
     this.inputsByKey = nextInputs;
     this.inputsByCrossing = nextInputsByCrossing;
 
@@ -385,6 +420,9 @@ const lastSignalState = new Map<string, SignalDisplayState>();
 /** The same per-process de-duplication for barrier positions (Milestone 55 / ADR 0014), shared
  * by direct and inferred crossings — a crossing has one source, so its key never collides. */
 const lastBarrierState = new Map<string, BarrierDisplayState>();
+
+/** The same per-process de-duplication for route state (Milestone 64 / ADR 0016). */
+const lastRouteState = new Map<string, RouteDisplayState>();
 
 /** Milestone 59 / ADR 0015: each inferred input's last state seen live by this process, keyed
  * per crossing and bit. An input missing here falls back to the byte seeded at cache reload. */
@@ -473,6 +511,38 @@ export async function buildSignalDeltas(
         pending.push({
           mapSlug: binding.mapSlug,
           key: `B ${row.td_area} ${byte.address} ${binding.bit}`,
+          sequence,
+          message: JSON.stringify(message),
+        });
+      }
+
+      // Milestone 64 / ADR 0016: the same bit read as a route's set/unset, for any route bound
+      // to it. Its own delta key prefix ("R"), so a route never collides with a signal or crossing
+      // bound to the same byte.
+      for (const binding of await bindings.getRoutes(row.td_area, byte.address)) {
+        const state = routeStateFromSignalState(
+          signalStateForBit(
+            byte.value,
+            binding.bit,
+            binding.activeMeans ? routeActiveMeansAsSignal(binding.activeMeans) : undefined,
+          ),
+        );
+        const memoryKey = `${binding.mapSlug}|${binding.elementId}`;
+        if (lastRouteState.get(memoryKey) === state) continue;
+        lastRouteState.set(memoryKey, state);
+        const message: RouteUpdatedMessage = {
+          type: "route.updated",
+          sequence,
+          eventAt: row.normalized_event_at_utc.toISOString(),
+          elementId: binding.elementId,
+          state,
+          tdArea: row.td_area,
+          address: byte.address,
+          bit: binding.bit,
+        };
+        pending.push({
+          mapSlug: binding.mapSlug,
+          key: `R ${row.td_area} ${byte.address} ${binding.bit}`,
           sequence,
           message: JSON.stringify(message),
         });

@@ -3741,7 +3741,7 @@ Sub-milestones, each committed and deployable on its own:
 - **64b — editor.** `[done — 2026-09-22]` "Routes from this signal" on the signal panel (add, re-trace, delete, bind bit);
   a trace mode that starts at the signal and follows track clicks; a map-wide routes list showing
   binding and on-track status; routes drawn faintly on the canvas at all times.
-- **64c — live state and public map.** Migration `0042` (binding checks), publish, worker live deltas
+- **64c — live state and public map.** `[done — 2026-09-22]` **Migration `0042_route_bindings.sql` must be applied on production before a map with a route binding is published** (the publish otherwise fails the `map_binding_index` checks). It only widens three check constraints on a small table and adds two partial indexes, as 0039/0040 did. The editor also previews live route state, so a route whose bound bit is set draws on the canvas whether or not its signal is selected. Migration `0042` (binding checks), publish, worker live deltas
   (`route.updated`), live snapshot, `/state?at=`, playback, and the Traksy-style dashed overlay in
   both renderers.
 - **64d — explorer route-bit discovery, per signal.** "Which bit sets before this signal clears",

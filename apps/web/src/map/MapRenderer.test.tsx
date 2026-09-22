@@ -610,6 +610,48 @@ describe("MapRenderer", () => {
     );
   });
 
+  it("draws a route only while it is set, as a green line under a dark dash (Milestone 64)", () => {
+    const doc = bundle({
+      elementsById: {
+        "route-1": {
+          id: "route-1",
+          layerId: "layer-visible",
+          zIndex: 2,
+          type: "route",
+          entrySignalId: "sig-1",
+          points: [
+            { x: 10, y: 50 },
+            { x: 190, y: 50 },
+          ],
+          trackIds: [],
+        },
+      },
+    });
+    const draw = (state?: "blank" | "set" | "unset") =>
+      render(
+        <MapRenderer
+          bundle={doc}
+          berths={{}}
+          signals={{}}
+          routes={state ? { "route-1": { state } } : {}}
+        />,
+      );
+
+    const set = draw("set");
+    const lines = set.getByTestId("route-route-1").querySelectorAll("polyline");
+    expect(lines[0]!.getAttribute("stroke")).toBe(MAP_STYLE.route.color);
+    expect(lines[1]!.getAttribute("stroke-dasharray")).toBe(MAP_STYLE.route.dash.join(" "));
+    expect(lines[0]!.getAttribute("points")).toBe("10,50 190,50");
+    set.unmount();
+
+    // Unset, unknown (blank) and missing all draw nothing: never a guessed route.
+    for (const state of ["unset", "blank", undefined] as const) {
+      const view = draw(state);
+      expect(view.queryByTestId("route-route-1")).toBeNull();
+      view.unmount();
+    }
+  });
+
   it("draws a detached neutral section label at its offset from the board centre", () => {
     const doc = bundle({
       elementsById: {

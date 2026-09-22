@@ -192,6 +192,8 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
           // snapshot always states the record, so a client never has to distinguish "no
           // crossings" from "this server doesn't know about crossings".
           crossings: {},
+          // Milestone 64 / ADR 0016: likewise for routes.
+          routes: {},
         },
       });
 

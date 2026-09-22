@@ -297,6 +297,11 @@ lose history. Definitions never compute state — they make signals bindable by 
 
 The system stores bit facts only. Signal meaning comes from an explicit versioned map binding. No aspect, route or signal inference is permitted.
 
+Since Milestone 64 (ADR 0016) a route can be bound too: `map_binding_index.binding_type =
+'td_s_bit_route'` with `active_means` `set` | `unset` (migration `0042` pairs the two in a check
+constraint, as `0039` does for barriers). Route state is derived from `td_s_event` on demand like
+signal state; it has no table of its own.
+
 ## 6. Schedule and reference data
 
 > **ADR 0002 (2026-09-01):** RLM no longer runs its own SCHEDULE/VSTP importer. `schedule` /

@@ -20,6 +20,7 @@ import {
   type PlacedLabel,
   type PlatformElement,
   type PlatformNumberElement,
+  type RouteElement,
   type SignalElement,
   type SwitchedDiamondElement,
   type TunnelElement,
@@ -37,6 +38,9 @@ export interface MapRendererProps {
   /** Milestone 55 / ADR 0014: each bound level crossing's barrier position. A crossing missing
    * from this record renders `blank` — exactly like an unbound signal, and never a guess. */
   crossings?: Record<string, { state: BarrierDisplayState }>;
+  /** Milestone 64 / ADR 0016: each route's state. Only a route that is `set` is drawn; a route
+   * missing from this record draws nothing. */
+  routes?: Record<string, { state: "blank" | "set" | "unset" }>;
   /** ADR 0004 D5: when false, vacant berths draw nothing (berthmaps behaviour); occupied
    * berths are unaffected. Defaults to true — parity with the pre-ADR renderer. */
   showEmptyBerths?: boolean;
@@ -463,6 +467,37 @@ function renderSwitchedDiamond(element: SwitchedDiamondElement): JSX.Element {
   );
 }
 
+/**
+ * Milestone 64 / ADR 0016 decision 5: a set route, laid over its track as a solid pale green line
+ * with a dark dash on top, the width of the track — green-and-black dashes along the rail. Pure
+ * display of the traced line; the renderer does no path-finding.
+ */
+function renderSetRoute(element: RouteElement): JSX.Element {
+  const points = element.points.map((p) => `${p.x},${p.y}`).join(" ");
+  const style = MAP_STYLE.route;
+  return (
+    <g key={element.id} data-testid={`route-${element.id}`}>
+      <polyline
+        points={points}
+        fill="none"
+        stroke={style.color}
+        strokeWidth={MAP_STYLE.track.strokeWidth}
+        strokeLinejoin="round"
+        strokeLinecap="butt"
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={style.dashColor}
+        strokeWidth={MAP_STYLE.track.strokeWidth}
+        strokeDasharray={style.dash.join(" ")}
+        strokeLinejoin="round"
+        strokeLinecap="butt"
+      />
+    </g>
+  );
+}
+
 /** ADR 0005 E4: a signal is either `inline` (head on the track at x,y — today's look) or
  * `offset` (a short stem out to a head set off the track, OTT-inspired but not identical:
  * shorter stem, solid aspect-colour head with a thin outline, label centred below). Side of
@@ -617,6 +652,7 @@ export function MapRenderer({
   berths,
   signals,
   crossings = {},
+  routes = {},
   showEmptyBerths = true,
   centerElementId,
   atIso = null,
@@ -992,6 +1028,11 @@ export function MapRenderer({
           }
           if (element.type === "switchedDiamond") {
             return renderSwitchedDiamond(element);
+          }
+          if (element.type === "route") {
+            // Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and
+            // unset draw nothing — the plain track underneath is the "no route" picture.
+            return routes[element.id]?.state === "set" ? renderSetRoute(element) : null;
           }
           if (element.type === "boundary") {
             // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);

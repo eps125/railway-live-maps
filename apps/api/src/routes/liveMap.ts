@@ -84,11 +84,8 @@ export async function registerLiveMapRoutes(
         forward(message);
       });
 
-      const { sourceSequence, berths, signals, crossings, quality } = await computeLiveState(
-        pool,
-        version.compiled_runtime_bundle,
-        now,
-      );
+      const { sourceSequence, berths, signals, crossings, routes, quality } =
+        await computeLiveState(pool, version.compiled_runtime_bundle, now);
       lastSentSequence = sourceSequence;
       const tdAreas = tdAreasFromBundle(version.compiled_runtime_bundle);
       let lastSentQuality = quality;
@@ -97,7 +94,7 @@ export async function registerLiveMapRoutes(
         type: "snapshot",
         protocolVersion: LIVE_PROTOCOL_VERSION,
         sequence: sourceSequence,
-        state: { mode: "live", quality, berths, signals, crossings },
+        state: { mode: "live", quality, berths, signals, crossings, routes },
       };
       socket.send(JSON.stringify(snapshot));
 

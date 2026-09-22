@@ -104,12 +104,23 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
       string,
       Array<{ mapSlug: string; elementId: string; bit: number; activeMeans: "up" | "down" | null }>
     > = {},
+    routes: Record<
+      string,
+      Array<{
+        mapSlug: string;
+        elementId: string;
+        bit: number;
+        activeMeans: "set" | "unset" | null;
+      }>
+    > = {},
   ): BindingsCache {
     return {
       getSignals: async (tdArea: string, address: string) => signals[`${tdArea} ${address}`] ?? [],
       // Milestone 55 / ADR 0014: the delta builder reads barrier bindings off the same cache.
       getBarriers: async (tdArea: string, address: string) =>
         barriers[`${tdArea} ${address}`] ?? [],
+      // Milestone 64 / ADR 0016: and route bindings.
+      getRoutes: async (tdArea: string, address: string) => routes[`${tdArea} ${address}`] ?? [],
       // Milestone 59: no inferred crossings in these tests.
       getInferredInputs: async () => [],
       inferredCrossingInputs: () => [],
@@ -157,6 +168,32 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
     ]);
     expect(pending.map((p) => JSON.parse(p.message).state)).toEqual(["blank"]);
   });
+
+  it("reads a route bit as set/unset, under its own delta key (Milestone 64 / ADR 0016)", async () => {
+    // A signal and a route bound to bits of the same byte never collide: "S" vs "R" keys.
+    const cache = cacheWith(
+      { "Q1 0C": [{ mapSlug: "bpool", elementId: "sig-r", bit: 2, activeMeans: "off" }] },
+      {},
+      { "Q1 0C": [{ mapSlug: "bpool", elementId: "route-r", bit: 4, activeMeans: "set" }] },
+    );
+    const pending = await buildSignalDeltas(cache, [
+      sRow(300, "SF_MSG", "0C", "10"), // bit 4 set → route set; bit 2 clear → signal on
+      sRow(301, "SF_MSG", "0C", "14"), // bit 2 set → signal off; route unchanged, not re-sent
+      sRow(302, "SF_MSG", "0C", "04"), // bit 4 clear → route unset
+    ]);
+    expect(pending.map((p) => [p.sequence, p.key, JSON.parse(p.message).state])).toEqual([
+      [300, "S Q1 0C 2", "on"],
+      [300, "R Q1 0C 4", "set"],
+      [301, "S Q1 0C 2", "off"],
+      [302, "R Q1 0C 4", "unset"],
+    ]);
+    expect(JSON.parse(pending[1]!.message)).toMatchObject({
+      type: "route.updated",
+      elementId: "route-r",
+      address: "0C",
+      bit: 4,
+    });
+  });
 });
 
 describe("buildSignalDeltas — inferred crossings (Milestone 59 / ADR 0015)", () => {
@@ -175,6 +212,7 @@ describe("buildSignalDeltas — inferred crossings (Milestone 59 / ADR 0015)", (
     return {
       getSignals: async () => [],
       getBarriers: async () => [],
+      getRoutes: async () => [],
       getInferredInputs: async (tdArea: string, address: string) =>
         inputs.filter((i) => i.tdArea === tdArea && i.address === address),
       inferredCrossingInputs: (mapSlug: string, elementId: string) =>

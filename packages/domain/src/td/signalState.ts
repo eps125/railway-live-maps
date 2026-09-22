@@ -293,6 +293,16 @@ export function barrierBindingsFromIndex(
   index: Record<string, string> | undefined,
   activeMeans: Record<string, "up" | "down"> | undefined,
 ): SignalBinding[] {
+  return bindingsFromIndex(index, activeMeans, barrierActiveMeansAsSignal);
+}
+
+/** One `${tdArea}|${address}|${bit}` -> elementId index, with its own `activeMeans` vocabulary,
+ * as binding records for the shared machinery. A missing index reads as an empty one. */
+function bindingsFromIndex<Means extends string>(
+  index: Record<string, string> | undefined,
+  activeMeans: Record<string, Means> | undefined,
+  asSignal: (means: Means) => "on" | "off",
+): SignalBinding[] {
   const bindings: SignalBinding[] = [];
   for (const [key, elementId] of Object.entries(index ?? {})) {
     const [tdArea, address, bit] = key.split("|");
@@ -303,10 +313,37 @@ export function barrierBindingsFromIndex(
       tdArea,
       address,
       bit: Number(bit),
-      ...(means ? { activeMeans: barrierActiveMeansAsSignal(means) } : {}),
+      ...(means ? { activeMeans: asSignal(means) } : {}),
     });
   }
   return bindings;
+}
+
+/**
+ * Milestone 64 / ADR 0016: whether a route is set, from one bound S-Class route bit — the same
+ * "one bit, two states or blank" shape as a barrier, so it resolves through the same machinery
+ * and converts vocabulary only here. `set` maps to `off` (the route is set, the way is made) and
+ * `unset` to `on`; the mapping is a bookkeeping convention with no aspect meaning. A route is
+ * never worked out from its signal, train movements or the timetable (rule 10).
+ */
+export type RouteDisplayState = "blank" | "set" | "unset";
+
+export function routeActiveMeansAsSignal(activeMeans: "set" | "unset"): "on" | "off" {
+  return activeMeans === "set" ? "off" : "on";
+}
+
+export function routeStateFromSignalState(state: SignalDisplayState): RouteDisplayState {
+  if (state === "blank") return "blank";
+  return state === "off" ? "set" : "unset";
+}
+
+/** A compiled bundle's `routeBindingIndex` (+ `routeBindingActiveMeans`) as binding records. A
+ * bundle published before routes existed has neither key, which reads exactly like an empty one. */
+export function routeBindingsFromIndex(
+  index: Record<string, string> | undefined,
+  activeMeans: Record<string, "set" | "unset"> | undefined,
+): SignalBinding[] {
+  return bindingsFromIndex(index, activeMeans, routeActiveMeansAsSignal);
 }
 
 /**

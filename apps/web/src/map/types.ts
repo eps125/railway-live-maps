@@ -19,6 +19,12 @@ export interface CrossingState {
   state: "blank" | "up" | "down";
 }
 
+/** Milestone 64 / ADR 0016: whether a route is set, from its bound route bit only. The map draws
+ * a route only when `set`; `blank` (unbound, unknown or a feed gap) and `unset` draw nothing. */
+export interface RouteState {
+  state: "blank" | "set" | "unset";
+}
+
 export interface MapStateResponse {
   mapSlug: string;
   mapVersion: number;
@@ -30,12 +36,27 @@ export interface MapStateResponse {
   signals: Record<string, SignalState>;
   /** Absent from a response produced before crossings existed; read as "no crossings". */
   crossings?: Record<string, CrossingState>;
+  /** Absent from a response produced before routes existed; read as "no routes set". */
+  routes?: Record<string, RouteState>;
 }
 
 /** One compact playback event from `GET /api/v1/maps/{slug}/events` — the same wire shape as a
  * live WS `berth.updated` / `berth.cleared` / `signal.updated` delta, so playback applies them
  * with the same semantics as the live socket. */
-export type PlaybackDelta = BerthPlaybackDelta | SignalPlaybackDelta | CrossingPlaybackDelta;
+export type PlaybackDelta =
+  BerthPlaybackDelta | SignalPlaybackDelta | CrossingPlaybackDelta | RoutePlaybackDelta;
+
+/** Milestone 64: a bound route's absolute state, same contract as `signal.updated`. */
+export interface RoutePlaybackDelta {
+  type: "route.updated";
+  sequence: number;
+  eventAt: string;
+  elementId: string;
+  state: RouteState["state"];
+  tdArea: string;
+  address: string;
+  bit: number;
+}
 
 /** Milestone 55: a bound level crossing's absolute barrier position (only ever from its bound
  * S-Class bit). Same absolute-state contract as `signal.updated`, so a replayed or duplicated

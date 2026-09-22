@@ -67,6 +67,27 @@ function stubApi(): ReturnType<typeof vi.fn> {
       );
     }
     if (url.includes("/history")) return Promise.resolve(jsonResponse({ transitions: [] }));
+    if (url.includes("/route-candidates?")) {
+      return Promise.resolve(
+        jsonResponse({
+          clears: 5,
+          candidates: [
+            {
+              address: "04",
+              bit: 4,
+              direction: "set",
+              hits: 3,
+              ofClears: 5,
+              ofTransitions: 3,
+              medianLeadSeconds: 60,
+              medianHeldSeconds: 90,
+              releaseSteps: [{ fromBerth: "0100", toBerth: "0102", hits: 3 }],
+              definition: null,
+            },
+          ],
+        }),
+      );
+    }
     throw new Error(`unexpected fetch: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -121,5 +142,29 @@ describe("SClassExplorerPage (Milestone 36c)", () => {
     expect(preview).toBeDisabled();
     fireEvent.click(screen.getByLabelText("Hex (e.g. 03:0, 1A:3)"));
     expect(preview).toBeEnabled();
+  });
+
+  it("suggests route bits for the selected signal, and opens one on click (Milestone 64)", async () => {
+    const fetchMock = stubApi();
+    render(<SClassExplorerPage />);
+    fireEvent.change(await screen.findByLabelText("TD area"), { target: { value: "M9" } });
+    const grid = await screen.findByRole("table", { name: "M9 S-Class bits" });
+    fireEvent.click(within(grid).getByTitle(/^03:2 = 1/));
+    await screen.findByRole("heading", { name: "M9 03:2 — currently 1" });
+
+    fireEvent.click(screen.getByRole("button", { name: /Suggest route bits/ }));
+    const bitButton = await screen.findByRole("button", { name: "04:4" });
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).startsWith(
+          "/api/v1/admin/s-class/areas/M9/bits/03/2/route-candidates?activeMeans=off",
+        ),
+      ),
+    ).toBe(true);
+    expect(screen.getByText("0100 → 0102 (3)")).toBeInTheDocument();
+    expect(screen.getByText("60 s")).toBeInTheDocument();
+
+    fireEvent.click(bitButton);
+    expect(await screen.findByRole("heading", { name: "M9 04:4 — currently 0" })).toBeVisible();
   });
 });

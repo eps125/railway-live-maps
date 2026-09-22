@@ -35,6 +35,13 @@ const CORRELATION_DEFAULT_HOURS = 24;
  * explorer's ranges reach that far too. Raising this alone would only widen empty windows — the
  * backfill is what makes the extra days hold anything. */
 const CORRELATION_MAX_HOURS = 14 * 24;
+/** Milestone 64: how far before a signal clears a route bit may have been set. M9 measured a 46-83 s
+ * lead (the crossing's lowering and proving time); 3 minutes leaves room for slower interlockings. */
+const ROUTE_LEAD_MAX_SECONDS = 180;
+/** How long after the clear to look for the route bit being released. */
+const ROUTE_HOLD_MAX_SECONDS = 30 * 60;
+/** Release steps are looked up for this many of the strongest candidates. */
+const ROUTE_RELEASE_STEP_CANDIDATES = 8;
 /** The bit grid's activity window (`?windowHours=`), bounded by the same retention. */
 const GRID_DEFAULT_WINDOW_HOURS = 24;
 const GRID_MAX_WINDOW_HOURS = CORRELATION_MAX_HOURS;
@@ -88,7 +95,7 @@ function isTdArea(raw: string): boolean {
   return /^[A-Z0-9]{2}$/.test(raw);
 }
 
-/** `from`/`to` (ISO) for the correlation endpoints — default the last 24 h, max 7 days. */
+/** `from`/`to` (ISO) for the correlation endpoints — default the last 24 h, max 14 days. */
 function correlationRange(query: {
   from?: string;
   to?: string;
@@ -476,6 +483,228 @@ export async function registerSClassAdminRoutes(
           ofTransitions: totalByDirection.get(row.new_value) ?? 0,
           medianOffsetSeconds: Number(row.median_offset_seconds),
         })),
+      };
+    },
+  );
+
+  /**
+   * Milestone 64 / ADR 0016: suggest the **route bits** for a signal, given the signal's own bit.
+   *
+   * A route is set before its entry signal clears: M9 measured 46-83 s of lead, the crossing's
+   * lowering and proving time. So for every change of every other bit in the area, ask whether this
+   * signal cleared within `ROUTE_LEAD_MAX_SECONDS` *while that bit was still in its new state*.
+   * A route bit is one whose changes are nearly all followed like that (`hits` close to
+   * `ofTransitions`), covering a share of the signal's clears — several routes from one signal
+   * split them between them.
+   *
+   * For each candidate it also reports how long the bit then stays that way after the clear, and
+   * the berth step it most often goes back on — how, and where, the route is released. That is
+   * the measurement ADR 0016 decision 6 asked for, and the release step hints at the exit.
+   *
+   * Authoring aid only (ADR 0013 decision 4): nothing is bound or defined automatically, and it
+   * never feeds a displayed route.
+   */
+  app.get<{
+    Params: { tdArea: string; address: string; bit: string };
+    Querystring: { from?: string; to?: string; activeMeans?: string };
+  }>(
+    "/api/v1/admin/s-class/areas/:tdArea/bits/:address/:bit/route-candidates",
+    async (request, reply) => {
+      const { tdArea } = request.params;
+      const address = canonicalAddress(request.params.address);
+      const bit = parseBit(request.params.bit);
+      if (!isTdArea(tdArea) || address === null || bit === null) {
+        reply.code(400);
+        return apiError("INVALID_BIT", "Expected a TD area, a hex address and a bit 0-7");
+      }
+      const activeMeans = request.query.activeMeans ?? "off";
+      if (activeMeans !== "on" && activeMeans !== "off") {
+        reply.code(400);
+        return apiError(
+          "INVALID_ACTIVE_MEANS",
+          "activeMeans is what a set bit means for the signal: on or off",
+        );
+      }
+      const range = correlationRange(request.query);
+      if (!range.ok) {
+        reply.code(400);
+        return apiError("INVALID_TIME_RANGE", range.message);
+      }
+      // The signal clears when its bit takes the value that means "off".
+      const clearValue = activeMeans === "off";
+      const clears = await pool.query<{ clears: number }>(
+        `select count(*)::int as clears
+           from td_s_bit_transition
+          where projection_version = $1 and td_area = $2 and address = $3 and bit_index = $4
+            and previous_value is not null and new_value = $5
+            and event_at >= $6 and event_at < $7`,
+        [TD_S_STATE_PROJECTION_VERSION, tdArea, address, bit, clearValue, range.from, range.to],
+      );
+      const candidates = await pool.query<{
+        address: string;
+        bit_index: number;
+        new_value: boolean;
+        hits: number;
+        transitions: number;
+        median_lead_seconds: number;
+        median_held_seconds: number | null;
+        release_times: Date[];
+      }>(
+        `with timeline as materialized (
+           -- Every other bit's changes in the area (from the lead window before the range to the
+           -- hold window after it), and this signal's clears, as one time-ordered stream.
+           select address, bit_index, new_value, event_at, false as is_clear
+             from td_s_bit_transition
+            where projection_version = $1 and td_area = $2 and previous_value is not null
+              and not (address = $3 and bit_index = $4)
+              and event_at >= $6 - make_interval(secs => $8)
+              and event_at < $7 + make_interval(secs => $9)
+           union all
+           select null, null, null, event_at, true
+             from td_s_bit_transition
+            where projection_version = $1 and td_area = $2 and address = $3 and bit_index = $4
+              and previous_value is not null and new_value = $5
+              and event_at >= $6 and event_at < $7
+         ),
+         -- For each change: when that bit next changes back, and the first clear at or after it.
+         -- The clear is a running min over the stream read newest-first — a fixed frame start,
+         -- so it stays linear; a "following rows" frame would recompute min for every row.
+         ordered as (
+           select address, bit_index, new_value, event_at, is_clear,
+                  lead(event_at) over (
+                    partition by is_clear, address, bit_index order by event_at
+                  ) as next_change_at,
+                  min(case when is_clear then event_at end) over (
+                    order by event_at desc, is_clear desc
+                    rows between unbounded preceding and current row
+                  ) as next_clear_at
+             from timeline
+         ),
+         -- A hit: the bit changed, and the signal cleared within the lead window while the bit
+         -- was still in that state.
+         judged as (
+           select address, bit_index, new_value, event_at, next_change_at, next_clear_at,
+                  (next_clear_at is not null
+                   and next_clear_at - event_at <= make_interval(secs => $8)
+                   and (next_change_at is null or next_change_at > next_clear_at)) as hit
+             from ordered
+            where not is_clear
+         )
+         select address, bit_index, new_value,
+                count(*) filter (where hit)::int as hits,
+                count(*) filter (where event_at >= $6 and event_at < $7)::int as transitions,
+                percentile_cont(0.5) within group (
+                  order by extract(epoch from next_clear_at - event_at)
+                ) filter (where hit) as median_lead_seconds,
+                percentile_cont(0.5) within group (
+                  order by extract(epoch from next_change_at - next_clear_at)
+                ) filter (where hit) as median_held_seconds,
+                array_remove(
+                  array_agg(next_change_at order by event_at) filter (where hit), null
+                ) as release_times
+           from judged
+          group by address, bit_index, new_value
+         having count(*) filter (where hit) >= 2
+          order by count(*) filter (where hit)::float
+                     / greatest(count(*) filter (where event_at >= $6 and event_at < $7), 1) desc,
+                   count(*) filter (where hit) desc
+          limit 20`,
+        [
+          TD_S_STATE_PROJECTION_VERSION,
+          tdArea,
+          address,
+          bit,
+          clearValue,
+          range.from,
+          range.to,
+          ROUTE_LEAD_MAX_SECONDS,
+          ROUTE_HOLD_MAX_SECONDS,
+        ],
+      );
+
+      // Where each of the strongest candidates is released: the CA step most often within ±10 s
+      // of it changing back. One query for the lot, over the release instants already found.
+      const top = candidates.rows.slice(0, ROUTE_RELEASE_STEP_CANDIDATES);
+      const releaseKeys: string[] = [];
+      const releaseTimes: Date[] = [];
+      for (const row of top) {
+        for (const at of row.release_times) {
+          releaseKeys.push(`${row.address}:${row.bit_index}:${row.new_value}`);
+          releaseTimes.push(at);
+        }
+      }
+      const releaseSteps =
+        releaseTimes.length === 0
+          ? { rows: [] }
+          : await pool.query<{
+              key: string;
+              from_berth: string | null;
+              to_berth: string | null;
+              hits: number;
+            }>(
+              `with releases as materialized (
+                 select * from unnest($2::text[], $3::timestamptz[]) as r(key, released_at)
+               ),
+               matches as (
+                 select distinct r.key, r.released_at, be.from_berth, be.to_berth
+                   from releases r
+                   join td_berth_event be
+                     on be.td_area = $1 and be.message_type = 'CA'
+                    and be.event_at between r.released_at - make_interval(secs => $4)
+                                        and r.released_at + make_interval(secs => $4)
+               )
+               select key, from_berth, to_berth, count(distinct released_at)::int as hits
+                 from matches
+                group by key, from_berth, to_berth
+                order by key, hits desc`,
+              [tdArea, releaseKeys, releaseTimes, CORRELATION_WINDOW_SECONDS],
+            );
+      const stepsByKey = new Map<
+        string,
+        Array<{ fromBerth: string | null; toBerth: string | null; hits: number }>
+      >();
+      for (const row of releaseSteps.rows) {
+        const list = stepsByKey.get(row.key) ?? [];
+        if (list.length < 3) {
+          list.push({ fromBerth: row.from_berth, toBerth: row.to_berth, hits: row.hits });
+        }
+        stepsByKey.set(row.key, list);
+      }
+
+      const definitions = await pool.query<DefinitionRow>(
+        `select * from s_class_definition where td_area = $1`,
+        [tdArea],
+      );
+      const definitionByBit = new Map(
+        definitions.rows.map((row) => [`${row.address}:${row.bit}`, row]),
+      );
+      const clearCount = clears.rows[0]?.clears ?? 0;
+      return {
+        tdArea,
+        address,
+        bit,
+        activeMeans,
+        from: range.from.toISOString(),
+        to: range.to.toISOString(),
+        leadWindowSeconds: ROUTE_LEAD_MAX_SECONDS,
+        clears: clearCount,
+        candidates: candidates.rows.map((row) => {
+          const def = definitionByBit.get(`${row.address}:${row.bit_index}`);
+          return {
+            address: row.address,
+            bit: row.bit_index,
+            // A bit that goes 0 -> 1 before the clear is a route bit whose set bit means "set".
+            direction: row.new_value ? "set" : "cleared",
+            hits: row.hits,
+            ofClears: clearCount,
+            ofTransitions: row.transitions,
+            medianLeadSeconds: Number(row.median_lead_seconds),
+            medianHeldSeconds:
+              row.median_held_seconds === null ? null : Number(row.median_held_seconds),
+            releaseSteps: stepsByKey.get(`${row.address}:${row.bit_index}:${row.new_value}`) ?? [],
+            definition: def ? definitionResponse(def) : null,
+          };
+        }),
       };
     },
   );

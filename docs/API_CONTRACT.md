@@ -598,7 +598,15 @@ definition }] }] }` (changes counted over the last 24 h; first sightings are not
 - `GET .../bits/{address}/{bit}/history?before=&limit=` — transitions newest first.
 - `GET .../bits/{address}/{bit}/correlated-steps?from=&to=` — suggestion: the CA berth steps
   within ±10 s of this bit's changes, per change direction, with hit counts and median offset
-  (default last 24 h, max 7 days).
+  (default last 24 h, max 14 days).
+- `GET .../bits/{address}/{bit}/route-candidates?activeMeans=on|off&from=&to=` (Milestone 64,
+  ADR 0016) — suggestion: treating this bit as a signal (`activeMeans`: what a set bit means for it,
+  default `off`), the other bits in the area that change up to 180 s before it clears and are still
+  in that state when it does. `{ clears, leadWindowSeconds, candidates: [{ address, bit, direction,
+hits, ofClears, ofTransitions, medianLeadSeconds, medianHeldSeconds, releaseSteps: [{ fromBerth,
+toBerth, hits }], definition }] }`, ranked by `hits / ofTransitions` then `hits`. `releaseSteps` are
+  the CA steps within ±10 s of the bit changing back (top candidates only). Never applied or bound
+  automatically.
 - `GET /api/v1/admin/s-class/areas/{tdArea}/correlated-bits?fromBerth=&toBerth=&from=&to=` —
   suggestion, the other way round: bits that change within ±10 s of that step.
 - `GET .../definitions`; `PUT .../definitions/{address}/{bit}` (`{ kind, label, destination,

@@ -63,6 +63,20 @@ interface CorrelatedStep {
   medianOffsetSeconds: number;
 }
 
+/** Milestone 64 / ADR 0016: a bit suggested as a route from the selected signal. */
+interface RouteCandidate {
+  address: string;
+  bit: number;
+  direction: "set" | "cleared";
+  hits: number;
+  ofClears: number;
+  ofTransitions: number;
+  medianLeadSeconds: number;
+  medianHeldSeconds: number | null;
+  releaseSteps: Array<{ fromBerth: string | null; toBerth: string | null; hits: number }>;
+  definition: { label: string | null; destination: string | null } | null;
+}
+
 interface CorrelatedBit {
   address: string;
   bit: number;
@@ -327,6 +341,9 @@ export function SClassExplorerPage(): JSX.Element {
               <BitPanel
                 windowHours={windowHours}
                 key={`${area}:${selected.address}:${selected.bit}`}
+                onPick={(pickedAddress, pickedBit) =>
+                  setSelected({ address: pickedAddress, bit: pickedBit })
+                }
                 tdArea={area}
                 address={selected.address}
                 bit={selected.bit}
@@ -356,6 +373,7 @@ function BitPanel({
   cell,
   windowHours,
   onSaved,
+  onPick,
 }: {
   tdArea: string;
   address: string;
@@ -363,6 +381,7 @@ function BitPanel({
   cell: BitCell;
   windowHours: number;
   onSaved: () => void;
+  onPick?: (address: string, bit: number) => void;
 }): JSX.Element {
   const def = cell.definition;
   const [kind, setKind] = useState(def?.kind ?? "signal");
@@ -514,6 +533,14 @@ function BitPanel({
         )
       ) : null}
 
+      <RouteSuggestSection
+        tdArea={tdArea}
+        address={address}
+        bit={bit}
+        windowHours={windowHours}
+        {...(onPick ? { onPick } : {})}
+      />
+
       <h4>Recent changes</h4>
       {history === null ? (
         <p className="field-hint">Loading…</p>
@@ -543,6 +570,146 @@ function BitPanel({
         </table>
       )}
     </section>
+  );
+}
+
+/**
+ * Milestone 64 / ADR 0016: treat the selected bit as a signal and suggest the route bits from it —
+ * bits set shortly before the signal clears and still set when it does. Shows how far ahead each
+ * is set, how long it stays set after the clear, and the berth step it is usually released on
+ * (which hints at where the route goes). A suggestion to check and define, never a binding.
+ */
+function RouteSuggestSection({
+  tdArea,
+  address,
+  bit,
+  windowHours,
+  onPick,
+}: {
+  tdArea: string;
+  address: string;
+  bit: number;
+  windowHours: number;
+  onPick?: (address: string, bit: number) => void;
+}): JSX.Element {
+  const [activeMeans, setActiveMeans] = useState<"off" | "on">("off");
+  const [result, setResult] = useState<{ clears: number; candidates: RouteCandidate[] } | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function suggest(): Promise<void> {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({ activeMeans, from: windowFromIso(windowHours) });
+      const response = await fetch(
+        `/api/v1/admin/s-class/areas/${tdArea}/bits/${address}/${bit}/route-candidates?${params.toString()}`,
+      );
+      if (!response.ok) throw new Error(await errorMessage(response, "Suggestion failed"));
+      setResult(await readApiJson(response));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Suggestion failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <h4>Route bits from this signal (authoring aid)</h4>
+      <p className="field-hint">
+        If this bit is a signal, a route from it is set shortly before it clears. Ranks the bits set
+        up to 3 minutes before each clear and still set when it happens. A real route bit is nearly
+        always followed by this signal clearing, so &quot;of its changes&quot; is close to all of
+        them. Several routes from one signal share its clears between them.
+      </p>
+      <label className="field">
+        For this signal, a set bit means
+        <select
+          value={activeMeans}
+          onChange={(e) => setActiveMeans(e.target.value === "on" ? "on" : "off")}
+        >
+          <option value="off">off (green) — usual</option>
+          <option value="on">on (red)</option>
+        </select>
+      </label>
+      <button type="button" className="btn" disabled={loading} onClick={() => void suggest()}>
+        {loading ? "Working…" : `Suggest route bits (${windowLabel(windowHours).toLowerCase()})`}
+      </button>
+      {error ? (
+        <p role="alert" className="login-form__error">
+          {error}
+        </p>
+      ) : null}
+      {result ? (
+        result.clears === 0 ? (
+          <p className="field-hint">
+            This bit never cleared in the last {windowLabel(windowHours).toLowerCase()} — check the
+            polarity above, or widen the window.
+          </p>
+        ) : result.candidates.length === 0 ? (
+          <p className="field-hint">
+            No bit was set before at least two of its {result.clears} clears.
+          </p>
+        ) : (
+          <table className="users-table">
+            <thead>
+              <tr>
+                <th>Bit</th>
+                <th>Went</th>
+                <th>Of its changes</th>
+                <th>Of clears</th>
+                <th>Set ahead</th>
+                <th>Held after</th>
+                <th>Released on</th>
+                <th>Defined as</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.candidates.map((c) => (
+                <tr key={`${c.address}:${c.bit}:${c.direction}`}>
+                  <td>
+                    {onPick ? (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => onPick(c.address, c.bit)}
+                      >
+                        {c.address}:{c.bit}
+                      </button>
+                    ) : (
+                      `${c.address}:${c.bit}`
+                    )}
+                  </td>
+                  <td>{c.direction === "set" ? "0 → 1" : "1 → 0"}</td>
+                  <td>
+                    {c.hits}/{c.ofTransitions}
+                  </td>
+                  <td>
+                    {c.hits}/{c.ofClears}
+                  </td>
+                  <td>{c.medianLeadSeconds.toFixed(0)} s</td>
+                  <td>
+                    {c.medianHeldSeconds === null ? "—" : `${c.medianHeldSeconds.toFixed(0)} s`}
+                  </td>
+                  <td className="mono">
+                    {c.releaseSteps[0]
+                      ? `${c.releaseSteps[0].fromBerth} → ${c.releaseSteps[0].toBerth} (${c.releaseSteps[0].hits})`
+                      : ""}
+                  </td>
+                  <td>
+                    {c.definition?.label ?? ""}
+                    {c.definition?.destination ? ` to ${c.definition.destination}` : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      ) : null}
+    </>
   );
 }
 

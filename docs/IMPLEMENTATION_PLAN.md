@@ -3744,7 +3744,7 @@ Sub-milestones, each committed and deployable on its own:
 - **64c — live state and public map.** `[done — 2026-09-22]` **Migration `0042_route_bindings.sql` must be applied on production before a map with a route binding is published** (the publish otherwise fails the `map_binding_index` checks). It only widens three check constraints on a small table and adds two partial indexes, as 0039/0040 did. The editor also previews live route state, so a route whose bound bit is set draws on the canvas whether or not its signal is selected. Migration `0042` (binding checks), publish, worker live deltas
   (`route.updated`), live snapshot, `/state?at=`, playback, and the Traksy-style dashed overlay in
   both renderers.
-- **64d — explorer route-bit discovery, per signal.** "Which bit sets before this signal clears",
+- **64d — explorer route-bit discovery, per signal.** `[done — 2026-09-22]` Built as "Route bits from this signal" in the explorer's bit panel (`route-candidates` endpoint). It ranks bits by how reliably their change is followed by the signal clearing. It reports lead time and hold time, and the berth step each is released on, which is the release-timing measurement and the exit hint in one. The query is one time-ordered stream with window functions, not a range join, so a 14-day window stays linear. The exit is shown as a release step rather than an exit signal: berths are not yet linked to signals. "Which bit sets before this signal clears",
   ranked by lead time and hit rate, with the next berth step used to suggest the exit signal. Also
   measures when each route bit drops relative to the train entering the route, recorded against
   ADR 0016 decision 6.

@@ -241,6 +241,47 @@ export function neutralSectionGeometry(element: {
 /** A viaduct's deck width: the author's value, or the default derived from the track stroke for
  * one authored before `width` existed (CLAUDE.md rule 11 — published versions are immutable, so
  * old documents must keep rendering unchanged). */
+export interface SwitchedDiamondGeometry {
+  /** The four tips in map coordinates, rotated: long-axis end, short-axis end, long-axis end,
+   * short-axis end — i.e. in drawing order round the rhombus. */
+  points: Array<{ x: number; y: number }>;
+  /** The same four tips relative to the centre and **unrotated**, for a renderer that rotates a
+   * group about the centre instead (the editor, so Konva's rotate handle drives `orientation`). */
+  localPoints: Array<{ x: number; y: number }>;
+  /** Axis-aligned bounds of the rotated rhombus. */
+  bounds: Rect;
+}
+
+/**
+ * Milestone 63: the rhombus a `switchedDiamond` marker draws. `x`/`y` is its centre and
+ * `orientation` (degrees) the angle of the long axis, so rotating or resizing it keeps it on the
+ * crossing point it was placed on. Shared by the public renderer and the editor (rule 13).
+ */
+export function switchedDiamondGeometry(element: {
+  x: number;
+  y: number;
+  orientation: number;
+  length: number;
+  width: number;
+}): SwitchedDiamondGeometry {
+  const halfLength = element.length / 2;
+  const halfWidth = element.width / 2;
+  const localPoints = [
+    { x: halfLength, y: 0 },
+    { x: 0, y: halfWidth },
+    { x: -halfLength, y: 0 },
+    { x: 0, y: -halfWidth },
+  ];
+  const radians = (element.orientation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const points = localPoints.map((p) => ({
+    x: element.x + p.x * cos - p.y * sin,
+    y: element.y + p.x * sin + p.y * cos,
+  }));
+  return { points, localPoints, bounds: pointsBounds(points) };
+}
+
 export function viaductWidth(element: { width?: number | undefined }): number {
   return element.width ?? MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth;
 }

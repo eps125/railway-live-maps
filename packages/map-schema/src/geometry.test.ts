@@ -9,6 +9,7 @@ import {
   pointOnPathAtX,
   pointsBounds,
   scaleShapeWidth,
+  switchedDiamondGeometry,
   viaductWidth,
 } from "./geometry.js";
 import { MapDocumentSchema, type BerthElement, type MapElement } from "./document.js";
@@ -594,5 +595,73 @@ describe("realisticLevelCrossingGeometry (Milestone 58, owner request 2026-09-21
     const turned = realisticLevelCrossingGeometry({ ...crossing, orientation: 90 });
     for (const { arm } of turned.barriers) expect(arm.x1).toBeCloseTo(arm.x2, 6);
     for (const line of turned.centreline) expect(line.y1).toBeCloseTo(line.y2, 6);
+  });
+});
+
+describe("switchedDiamondGeometry", () => {
+  const diamond = { x: 100, y: 50, orientation: 0, length: 20, width: 10 };
+
+  it("puts the long axis horizontal at orientation 0, centred on x/y", () => {
+    const { points, bounds } = switchedDiamondGeometry(diamond);
+    expect(points).toEqual([
+      { x: 110, y: 50 },
+      { x: 100, y: 55 },
+      { x: 90, y: 50 },
+      { x: 100, y: 45 },
+    ]);
+    expect(bounds).toEqual({ x: 90, y: 45, width: 20, height: 10 });
+  });
+
+  it("rotates about its centre, so turning it never moves it off the crossing", () => {
+    const { points } = switchedDiamondGeometry({ ...diamond, orientation: 90 });
+    expect(points[0]!.x).toBeCloseTo(100, 6);
+    expect(points[0]!.y).toBeCloseTo(60, 6);
+    expect(points[1]!.x).toBeCloseTo(95, 6);
+    expect(points[1]!.y).toBeCloseTo(50, 6);
+    const cx = points.reduce((sum, p) => sum + p.x, 0) / 4;
+    const cy = points.reduce((sum, p) => sum + p.y, 0) / 4;
+    expect(cx).toBeCloseTo(100, 6);
+    expect(cy).toBeCloseTo(50, 6);
+  });
+
+  it("lines the long axis up with a 1:2 diagonal track", () => {
+    const angle = (Math.atan(MAP_STYLE.diagonalSlope) * 180) / Math.PI;
+    const { points } = switchedDiamondGeometry({ ...diamond, orientation: angle });
+    const tip = points[0]!;
+    expect((tip.y - diamond.y) / (tip.x - diamond.x)).toBeCloseTo(MAP_STYLE.diagonalSlope, 6);
+  });
+
+  it("keeps the unrotated local tips for a renderer that rotates a group instead", () => {
+    const { localPoints } = switchedDiamondGeometry({ ...diamond, orientation: 33 });
+    expect(localPoints).toEqual([
+      { x: 10, y: 0 },
+      { x: 0, y: 5 },
+      { x: -10, y: 0 },
+      { x: 0, y: -5 },
+    ]);
+  });
+
+  it("parses with defaults, so a marker needs only a position", () => {
+    const doc = MapDocumentSchema.parse({
+      schemaVersion: 1,
+      map: {
+        id: "m",
+        name: "M",
+        canvas: { width: 500, height: 200, gridSize: 10 },
+        timezone: "Europe/London",
+      },
+      layers: [{ id: "l", name: "Track", order: 0 }],
+      elements: [{ id: "d", layerId: "l", type: "switchedDiamond", x: 1, y: 2 }],
+      topology: { nodes: [], edges: [] },
+      bindings: [],
+      editorMetadata: {},
+    });
+    const element = doc.elements[0] as MapElement;
+    expect(element).toMatchObject({
+      type: "switchedDiamond",
+      orientation: 0,
+      length: MAP_STYLE.switchedDiamond.length,
+      width: MAP_STYLE.switchedDiamond.width,
+    });
   });
 });

@@ -50,6 +50,8 @@ describe("defaultLayerIdForTool", () => {
     expect(defaultLayerIdForTool("tunnel", withScenery)).toBe("layer-scenery");
     expect(defaultLayerIdForTool("water", withScenery)).toBe("layer-scenery");
     expect(defaultLayerIdForTool("viaduct", withScenery)).toBe("layer-track");
+    // Milestone 63: a switched diamond masks the rails, so it belongs with the track too.
+    expect(defaultLayerIdForTool("switchedDiamond", withScenery)).toBe("layer-track");
   });
 
   it("falls back to the first layer when no name match exists", () => {
@@ -110,6 +112,8 @@ describe("snapStep", () => {
     expect(snapStep("tunnel", 10)).toBe(5);
     expect(snapStep("viaduct", 10)).toBe(5);
     expect(snapStep("water", 10)).toBe(5);
+    // Milestone 63: a 1:2 diagonal crosses a horizontal between grid lines.
+    expect(snapStep("switchedDiamond", 10)).toBe(5);
   });
 
   it("leaves everything else on the full grid step", () => {
@@ -163,6 +167,26 @@ describe("elementBounds", () => {
       fontSize: 10,
     };
     expect(elementBounds(sign)).toEqual({ minX: 90, minY: 40, maxX: 110, maxY: 60 });
+  });
+
+  it("uses the rotated rhombus for a switched diamond, so rubber-band select finds it (Milestone 63)", () => {
+    const diamond: MapElement = {
+      id: "sd-1",
+      layerId: "l",
+      zIndex: 1,
+      type: "switchedDiamond",
+      x: 100,
+      y: 50,
+      orientation: 90,
+      length: 20,
+      width: 10,
+    };
+    const bounds = elementBounds(diamond)!;
+    // Turned upright: 10 wide, 20 tall, still centred on x/y.
+    expect(bounds.minX).toBeCloseTo(95, 6);
+    expect(bounds.maxX).toBeCloseTo(105, 6);
+    expect(bounds.minY).toBeCloseTo(40, 6);
+    expect(bounds.maxY).toBeCloseTo(60, 6);
   });
 
   it("returns null for a points-based element with no points", () => {

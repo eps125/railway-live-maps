@@ -3675,6 +3675,47 @@ exact repeat reports).
 exact repeat is still deduplicated), plus dispatch. The backfill reads garner (MariaDB), which CI
 does not have, so it was not run in CI.
 
+## Milestone 63 — switched diamond marker (2026-09-22)
+
+Owner request: a way to show that a junction is a switched diamond rather than a plain one. Of
+three glyphs mocked up (a blade gap, an open rhombus, a node dot) the owner chose the **open
+rhombus, rotatable**.
+
+A new `switchedDiamond` element (see `docs/MAP_EDITOR_SPEC.md`). A plain diamond is still just
+two crossing `trackPath`s. There is no junction element to hang a flag on, so the marker is its own
+element placed on the crossing point. It is drawn from one shared `switchedDiamondGeometry`, filled
+with the map background to mask the rails, and rotated either by a Konva Transformer rotate handle
+(snapping to the angles track is drawn at) or a typed orientation. Display only, with no binding
+and no state.
+
+Files changed:
+
+- `packages/map-schema/src/` — `document.ts` (element + type), `style.ts`
+  (`MAP_STYLE.switchedDiamond`), `geometry.ts` (`switchedDiamondGeometry`), `index.ts`,
+  `geometry.test.ts`.
+- `apps/web/src/editor/` — `EditorState.tsx` (tool mode), `ToolPalette.tsx`, `EditorCanvas.tsx`
+  (half-grid snap, bounds, Track layer hint, default element, render, rotate Transformer,
+  `handleRotateEnd`), `PropertyPanel.tsx`, `EditorCanvas.test.ts`.
+- `apps/web/src/map/MapRenderer.tsx` (+ test).
+- `docs/MAP_EDITOR_SPEC.md`.
+
+Acceptance criteria: the Sw. diamond tool places a rhombus on the Track layer above the rails; it
+drags on half-grid steps, rotates with the canvas handle or the Orientation field, and resizes by
+length/width; rubber-band select finds it by its rotated outline; the public map draws the same
+rhombus in the same place. No existing element type, binding or state path changes.
+
+Tests: geometry (centre, rotation about the centre, alignment with a 1:2 diagonal, schema
+defaults), editor (rotated bounds, half-grid snap, layer hint) and renderer (rotated polygon,
+background fill, painted above the track).
+
+Migrations/configuration: none. The new element is an additive, optional type under
+`schemaVersion: 1`, like Milestone 55's.
+
+Known limitations: the rotate handle was not exercised in a browser in the implementing session,
+because the editor needs the API and database and neither runs locally. The Transformer is
+rotate-only; size is typed. The fill is the fixed canvas colour `#0d1117`, which both renderers
+currently hardcode as the map background.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

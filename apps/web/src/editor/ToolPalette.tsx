@@ -21,6 +21,8 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "viaduct", label: "Viaduct" },
   { mode: "water", label: "Water" },
   { mode: "levelCrossing", label: "Level xing" },
+  // Milestone 63: marks a diamond crossing as switched (a plain diamond is just crossing track).
+  { mode: "switchedDiamond", label: "Sw. diamond" },
 ];
 
 /** docs/MAP_EDITOR_SPEC.md §6: "Left symbol/tool palette." Clicking a tool arms it; the next

@@ -16,7 +16,8 @@ export type ToolMode =
   | "tunnel"
   | "viaduct"
   | "water"
-  | "levelCrossing";
+  | "levelCrossing"
+  | "switchedDiamond";
 
 export interface Viewport {
   x: number;

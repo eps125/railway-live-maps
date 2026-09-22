@@ -1290,6 +1290,37 @@ export function PropertyPanel(): JSX.Element {
         </>
       )}
 
+      {element.type === "switchedDiamond" && (
+        <>
+          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
+          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <NumberField
+            label="Orientation (degrees)"
+            value={element.orientation}
+            onCommit={(v) => setProp("orientation", v)}
+          />
+          <NumberField
+            label="Length (long axis)"
+            value={element.length}
+            min={1}
+            onCommit={(v) => setProp("length", v)}
+          />
+          <NumberField
+            label="Width (short axis)"
+            value={element.width}
+            min={1}
+            onCommit={(v) => setProp("width", v)}
+          />
+          <p className="field-hint">
+            Marks a diamond crossing as switched. Place it on the crossing point — X/Y is its centre
+            — and turn it with the rotate handle on the canvas, which snaps to horizontal, the track
+            diagonals and the angles half-way between them; or type an orientation. Display only: it
+            carries no binding and says nothing about which way the blades lie. A plain diamond
+            needs no marker.
+          </p>
+        </>
+      )}
+
       {element.type === "levelCrossing" && (
         <>
           <PlacedLabelFieldset

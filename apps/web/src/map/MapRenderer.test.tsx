@@ -566,6 +566,50 @@ describe("MapRenderer", () => {
     expect(container.querySelector("text")?.textContent).toBe("Carnforth NS");
   });
 
+  it("draws a switched diamond as a background-filled rhombus over its track (Milestone 63)", () => {
+    const doc = bundle({
+      elementsById: {
+        track: {
+          id: "track",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "trackPath",
+          points: [
+            { x: 0, y: 50 },
+            { x: 200, y: 50 },
+          ],
+        },
+        "sd-1": {
+          id: "sd-1",
+          layerId: "layer-visible",
+          zIndex: 1,
+          type: "switchedDiamond",
+          x: 100,
+          y: 50,
+          orientation: 90,
+          length: 20,
+          width: 10,
+        },
+      },
+    });
+
+    const { container, getByTestId } = render(
+      <MapRenderer bundle={doc} berths={{}} signals={{}} />,
+    );
+    const diamond = getByTestId("switched-diamond-sd-1");
+    expect(diamond.getAttribute("fill")).toBe(MAP_STYLE.switchedDiamond.fill);
+    // Rotated 90°: the long axis now runs vertically through the centre.
+    const [first] = diamond.getAttribute("points")!.split(" ");
+    const [x, y] = first!.split(",").map(Number);
+    expect(x).toBeCloseTo(100, 6);
+    expect(y).toBeCloseTo(60, 6);
+    // Paints after (above) the track it masks.
+    const shapes = [...container.querySelectorAll("polyline, polygon")];
+    expect(shapes.indexOf(diamond)).toBeGreaterThan(
+      shapes.findIndex((el) => el.tagName === "polyline"),
+    );
+  });
+
   it("draws a detached neutral section label at its offset from the board centre", () => {
     const doc = bundle({
       elementsById: {

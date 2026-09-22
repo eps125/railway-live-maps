@@ -9,6 +9,7 @@ import {
   placedLabelAnchor,
   pointOnPathAtX,
   pointsBounds,
+  switchedDiamondGeometry,
   viaductWidth,
   sortElementsForPaint,
   type CompiledMapBundle,
@@ -20,6 +21,7 @@ import {
   type PlatformElement,
   type PlatformNumberElement,
   type SignalElement,
+  type SwitchedDiamondElement,
   type TunnelElement,
   type ViaductElement,
   type WaterElement,
@@ -436,6 +438,28 @@ function renderNeutralSection(element: NeutralSectionElement): JSX.Element {
       ))}
       {placedLabelText(geometry.label, element.label, element.fontSize)}
     </g>
+  );
+}
+
+/**
+ * Milestone 63: a switched diamond — an open rhombus over the crossing, filled with the map
+ * background so the rails beneath it are hidden (`switchedDiamondGeometry`, shared with the
+ * editor). Static: it says the diamond has movable blades, never which way they lie.
+ */
+function renderSwitchedDiamond(element: SwitchedDiamondElement): JSX.Element {
+  const style = MAP_STYLE.switchedDiamond;
+  const { points } = switchedDiamondGeometry(element);
+  return (
+    <polygon
+      key={element.id}
+      data-testid={`switched-diamond-${element.id}`}
+      points={points.map((p) => `${p.x},${p.y}`).join(" ")}
+      fill={style.fill}
+      stroke={MAP_STYLE.track.color}
+      strokeWidth={style.strokeWidth}
+      strokeLinejoin="miter"
+      shapeRendering="geometricPrecision"
+    />
   );
 }
 
@@ -965,6 +989,9 @@ export function MapRenderer({
           }
           if (element.type === "levelCrossing") {
             return renderLevelCrossing(element, crossings[element.id]?.state ?? "blank");
+          }
+          if (element.type === "switchedDiamond") {
+            return renderSwitchedDiamond(element);
           }
           if (element.type === "boundary") {
             // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);

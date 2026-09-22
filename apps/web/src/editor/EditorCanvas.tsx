@@ -10,6 +10,7 @@ import {
   neutralSectionGeometry,
   placedLabelAnchor,
   pointsBounds,
+  switchedDiamondGeometry,
   viaductWidth,
   sortElementsForPaint,
   type Layer as MapLayer,
@@ -71,7 +72,25 @@ const HALF_GRID_TYPES = new Set([
   "viaduct",
   "water",
   "levelCrossing",
+  // Milestone 63: a diamond sits wherever two tracks cross, which on a 1:2 diagonal is often
+  // between grid lines.
+  "switchedDiamond",
 ]);
+
+/** Milestone 63: rotate-handle snap angles for a switched diamond — every angle a track is drawn
+ * at (0°, ±26.57° for the 1:2 diagonal, 90°), and the half-way bisectors between them, which is
+ * where a rhombus sits when it straddles a horizontal and a diagonal symmetrically. */
+const DIAGONAL_DEGREES = (Math.atan(MAP_STYLE.diagonalSlope) * 180) / Math.PI;
+const DIAMOND_ROTATION_SNAPS = [
+  0,
+  DIAGONAL_DEGREES / 2,
+  DIAGONAL_DEGREES,
+  90 - DIAGONAL_DEGREES,
+  90,
+  90 + DIAGONAL_DEGREES,
+  180 - DIAGONAL_DEGREES,
+  180 - DIAGONAL_DEGREES / 2,
+].flatMap((angle) => [angle, angle + 180]);
 
 export function snapStep(type: string | undefined, gridSize: number): number {
   return type !== undefined && HALF_GRID_TYPES.has(type) ? Math.max(1, gridSize / 2) : gridSize;
@@ -136,8 +155,11 @@ export function elementBounds(element: MapElement): Bounds | null {
       maxY: element.y + element.height,
     };
   }
-  if (element.type === "levelCrossing") {
-    const { bounds } = levelCrossingGeometry(element);
+  if (element.type === "levelCrossing" || element.type === "switchedDiamond") {
+    const { bounds } =
+      element.type === "levelCrossing"
+        ? levelCrossingGeometry(element)
+        : switchedDiamondGeometry(element);
     return {
       minX: bounds.x,
       minY: bounds.y,
@@ -207,6 +229,8 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   // A crossing sits on the railway it crosses, so it belongs with the track rather than in
   // scenery; it paints above the rails (default zIndex 0) because the road crosses over them.
   levelCrossing: /track/i,
+  // Milestone 63: with the track it marks, painting above the rails (zIndex 1) so it masks them.
+  switchedDiamond: /track/i,
 };
 
 export function defaultLayerIdForTool(tool: ToolMode, layers: MapLayer[]): string | undefined {
@@ -345,6 +369,19 @@ function defaultElementForTool(
         roadWidth: MAP_STYLE.levelCrossing.roadWidth,
         labelPosition: "below",
         fontSize: MAP_STYLE.placedLabel.fontSize,
+      };
+    case "switchedDiamond":
+      // zIndex 1: above the rails in the Track layer, so its background fill hides the crossing.
+      return {
+        id,
+        layerId,
+        zIndex: 1,
+        type: "switchedDiamond",
+        x: point.x,
+        y: point.y,
+        orientation: 0,
+        length: MAP_STYLE.switchedDiamond.length,
+        width: MAP_STYLE.switchedDiamond.width,
       };
     case "trackPath":
       return {
@@ -894,6 +931,33 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
     });
   }
 
+  /**
+   * Milestone 63: the Transformer's rotate handle on a switched diamond. The Group rotates about
+   * its own origin — the rhombus centre — so only `orientation` changes; position is restored in
+   * case Konva nudged it. Stored normalised to [0, 360) and to 0.01°, which keeps the snapped
+   * track angles (26.57° for a 1:2 diagonal) exact enough to read back in the property panel.
+   */
+  function handleRotateEnd(elementId: string): void {
+    const node = nodeRefs.current.get(elementId);
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!node || element?.type !== "switchedDiamond") return;
+    const orientation = Math.round((((node.rotation() % 360) + 360) % 360) * 100) / 100;
+    node.position({ x: element.x, y: element.y });
+    node.scaleX(1);
+    node.scaleY(1);
+    if (orientation === element.orientation) return;
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "setProperty", elementId, property: "orientation", value: orientation },
+    });
+  }
+
+  const selectedDiamondId =
+    selection.length === 1 &&
+    doc.elements.find((el) => el.id === selection[0])?.type === "switchedDiamond"
+      ? selection[0]
+      : null;
+
   const selectedBerthId =
     selection.length === 1 && doc.elements.find((el) => el.id === selection[0])?.type === "berth"
       ? selection[0]
@@ -1439,6 +1503,34 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                 </Group>
               );
             }
+            if (element.type === "switchedDiamond") {
+              // Same rhombus as the public renderer (rule 13), drawn unrotated about a Group at
+              // the centre and turned by the Group's `rotation`, so the Transformer's rotate
+              // handle (below) edits `orientation` directly.
+              const { localPoints } = switchedDiamondGeometry(element);
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  rotation={element.orientation}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                  onTransformEnd={() => handleRotateEnd(element.id)}
+                >
+                  <Line
+                    points={localPoints.flatMap((p) => [p.x, p.y])}
+                    closed
+                    fill={MAP_STYLE.switchedDiamond.fill}
+                    stroke={selected ? "#58a6ff" : MAP_STYLE.track.color}
+                    strokeWidth={MAP_STYLE.switchedDiamond.strokeWidth}
+                    lineJoin="miter"
+                  />
+                </Group>
+              );
+            }
             if (element.type === "levelCrossing") {
               // Mirrors the public renderer (CLAUDE.md rule 13) from the same geometry. The
               // editor always previews `blank` barriers: the canvas is an authoring view of the
@@ -1607,6 +1699,22 @@ export function EditorCanvas({ previewState, signalStates }: EditorCanvasProps =
                   : []
               }
               rotateEnabled={false}
+            />
+          ) : null}
+          {selectedDiamondId ? (
+            // Rotate-only: size is set numerically in the property panel. Snaps to the angles
+            // track is actually drawn at — horizontal, the 1:2 diagonal both ways, and vertical —
+            // so a diamond lines up with its crossing without typing degrees.
+            <Transformer
+              nodes={
+                nodeRefs.current.has(selectedDiamondId)
+                  ? [nodeRefs.current.get(selectedDiamondId)!]
+                  : []
+              }
+              resizeEnabled={false}
+              rotateEnabled
+              rotationSnaps={DIAMOND_ROTATION_SNAPS}
+              rotationSnapTolerance={4}
             />
           ) : null}
           {marquee ? (

@@ -171,6 +171,19 @@ export const MAP_STYLE = {
       postSize: 2.2,
     },
   },
+  /**
+   * Milestone 63: the switched-diamond marker, an open rhombus over the crossing point. Filled
+   * with the map background so the two tracks disappear under it, outlined in `track.color`.
+   * The default 20x10 is one grid square wide; both are per-element and the author rotates it
+   * to suit the crossing.
+   */
+  switchedDiamond: {
+    length: 20,
+    width: 10,
+    /** The map canvas colour (both renderers paint `#0d1117` behind the map). */
+    fill: "#0d1117",
+    strokeWidth: 2,
+  },
   /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
   weldTolerance: 6,
 } as const;

@@ -290,6 +290,23 @@ Applying either form replaces whatever source the crossing had; choosing "Not dr
 (undoable). `validateMapDocument` rejects a crossing with more than one source
 (`multiple_barrier_bindings`) or a source on anything but a crossing (`invalid_barrier_binding`).
 
+### `switchedDiamond`
+
+**Milestone 63.** Marks a diamond crossing as _switched_ (movable blades). A plain fixed diamond
+needs no element: it is two `trackPath`s drawn crossing, as before.
+
+- Fields: `x`/`y` (the rhombus **centre**, placed on the crossing point), `orientation` (degrees,
+  the long axis's angle; 0 = horizontal), `length` (long axis, default 20) and `width` (short axis,
+  default 10).
+- Drawn by both renderers from `switchedDiamondGeometry` as an open rhombus outlined in the track
+  colour and filled with the map background, so the rails beneath it are hidden. It defaults to the
+  Track layer at `zIndex: 1`, above the rails.
+- Editor: places and drags on half-grid steps. When selected it gets a rotate handle, which snaps to
+  0°, ±26.57° (the 1:2 diagonal), 90° and the bisectors between them. Orientation, length and
+  width can also be typed in the property panel.
+- Display only: no binding, no live state, not part of `topology`, never welded, and it never shows
+  or implies which way the blades lie (CLAUDE.md rules 9/10).
+
 ### `label`
 
 Plain sanitized text with position, alignment and size. `\n` in the text wraps to a new line

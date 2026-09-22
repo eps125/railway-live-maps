@@ -328,6 +328,32 @@ const LevelCrossingElementSchema = BaseElementSchema.extend({
   ...placedLabelFields,
 });
 
+/**
+ * Milestone 63 (owner request 2026-09-22): marks a diamond crossing as a **switched** diamond — one
+ * with movable blades, as opposed to a plain fixed diamond. A plain diamond stays what it always
+ * was, two `trackPath`s drawn crossing, and needs no element; this marker is placed on the
+ * crossing point to say "switched".
+ *
+ * Drawn as an open rhombus (`switchedDiamondGeometry`) filled with the map background, so it
+ * masks the crossing beneath it. `x`/`y` is the rhombus's **centre**; `orientation` is the angle
+ * of its long axis in degrees (0 = horizontal), freely rotatable so the author can line it up with
+ * whatever angles the two tracks actually cross at.
+ *
+ * Display only: no binding, no live state, and no claim about which way the blades lie (CLAUDE.md
+ * rules 9/10). Not part of `topology` and never welded.
+ */
+const SwitchedDiamondElementSchema = BaseElementSchema.extend({
+  type: z.literal("switchedDiamond"),
+  x: z.number(),
+  y: z.number(),
+  /** Degrees; the long axis's angle. 0 = long axis horizontal. */
+  orientation: z.number().default(0),
+  /** Tip-to-tip along the long axis, in map units. */
+  length: z.number().positive().default(MAP_STYLE.switchedDiamond.length),
+  /** Tip-to-tip across the short axis, in map units. */
+  width: z.number().positive().default(MAP_STYLE.switchedDiamond.width),
+});
+
 export const MapElementSchema = z.discriminatedUnion("type", [
   TrackPathElementSchema,
   BerthElementSchema,
@@ -341,6 +367,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   ViaductElementSchema,
   WaterElementSchema,
   LevelCrossingElementSchema,
+  SwitchedDiamondElementSchema,
   BoundaryElementSchema,
 ]);
 
@@ -474,6 +501,7 @@ export type TunnelElement = z.infer<typeof TunnelElementSchema>;
 export type ViaductElement = z.infer<typeof ViaductElementSchema>;
 export type WaterElement = z.infer<typeof WaterElementSchema>;
 export type LevelCrossingElement = z.infer<typeof LevelCrossingElementSchema>;
+export type SwitchedDiamondElement = z.infer<typeof SwitchedDiamondElementSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;

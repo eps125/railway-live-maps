@@ -107,38 +107,17 @@ describe("td routes", () => {
     expect(response.json().error.code).toBe("INVALID_TIME_RANGE");
   });
 
-  it("GET /api/v1/td/areas/:area/berths paginates via nextCursor when the page is full", async () => {
+  it("no longer serves the unbounded per-area berth list (removed 2026-09-23)", async () => {
     const pool = fakePool((text) => {
-      if (text.includes("from (")) {
-        return {
-          rows: [
-            {
-              berth_code: "0001",
-              first_observed_at: new Date("2026-08-01T00:00:00Z"),
-              last_observed_at: new Date("2026-08-01T00:00:00Z"),
-              event_count: "3",
-            },
-          ],
-        };
-      }
       throw new Error(`unexpected query: ${text}`);
     });
-
     const app = Fastify();
     await registerTdRoutes(app, { pool });
 
-    const response = await app.inject({ method: "GET", url: "/api/v1/td/areas/ZZ/berths?limit=1" });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
-      berths: [
-        {
-          berthCode: "0001",
-          firstObservedAt: "2026-08-01T00:00:00.000Z",
-          lastObservedAt: "2026-08-01T00:00:00.000Z",
-          eventCount: 3,
-        },
-      ],
-      nextCursor: "0001",
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/td/areas/PX/berths?limit=200",
     });
+    expect(response.statusCode).toBe(404);
   });
 });

@@ -3870,6 +3870,44 @@ Tests: berth-steps endpoint (pair only, direction respected, interposes excluded
 limit, 400s) and page (request, UK time across BST/GMT, empty and error states). The correlation
 endpoints' existing integration tests cover the rewritten queries.
 
+## Milestone 67 — ingest-td no longer crashes on transient DB/archive errors; berth autocomplete removed (2026-09-23)
+
+Incident, 2026-09-23: every map showed stale data. On one editor visit, the berth autocomplete
+called `GET /api/v1/td/areas/PX/berths`. That query grouped PX's entire `td_berth_event` history
+and ran for about 14 minutes. The host was an 8 GB LXC with almost no page cache, so the scan
+starved I/O. TD ingest per-frame time rose from about 250 ms to over 1 s, and lag reached about
+250 s. The owner has since doubled the LXC to 16 GB.
+
+While investigating, we found `ingest-td` had restarted 16 times that day. Under the same
+pressure it hit `getaddrinfo EAI_AGAIN postgres/archive` and pg-pool `connection timeout` errors
+inside `onFrame`. `StompConnection` fired `handleChunk` without awaiting it, so each error became
+an unhandled rejection and killed the process. The TD subscription is not durable, so each crash
+lost the in-flight frame plus everything sent during the ~6 s restart.
+
+- [x] `shared/retryUntilDone.ts`: capped exponential backoff (250 ms up to 10 s) until success
+      or shutdown.
+- [x] `ingestTd.ts`: `recordFrame`, `markFrameAcked` and the `feed_connection_session` insert are
+      retried rather than thrown. Every step of `recordBrokerFrame` is idempotent (content-
+      addressed archive key, upserted archive index, `feed_frame` deduped on `body_hash`).
+      Archive-before-ack is unchanged: the ack only goes out after the frame is stored.
+- [x] `StompConnection`: a rejection from `handleChunk` now destroys the socket, so `start()`
+      reconnects instead of the process exiting. An `onSessionEnd` failure on close is logged and
+      no longer blocks `finish()`. ACK/NACK are skipped once the delivering socket is gone.
+- [x] `recordBrokerFrame`: on failure the client is released with the error, so pg-pool discards
+      a dead connection instead of reusing it on the retry. A failed rollback no longer masks the
+      original error.
+- [x] Editor berth autocomplete and its `GET /api/v1/td/areas/{area}/berths` endpoint removed
+      (owner: not needed). TD area autocomplete remains; it reads the `td_area_summary` rollup.
+
+Tests: `retryUntilDone` (retries to success, backoff cap, rethrow once stopped). `StompConnection`:
+no unhandled rejection and a reconnect when onFrame, onSessionStart or onSessionEnd rejects, and
+no ACK after the socket closes. All four fail against the previous code. The td routes test now
+asserts the berths endpoint returns 404.
+
+Not covered: the TD subscription is still non-durable, so every restart or redeploy still loses
+whatever the broker sends while `ingest-td` is down. A durable subscription (STOMP `client-id` +
+`activemq.subscriptionName`) would close that gap and is the remaining step to zero loss.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

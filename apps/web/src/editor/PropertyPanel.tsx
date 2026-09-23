@@ -22,7 +22,6 @@ import {
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
 import {
   useObservedAreas,
-  useObservedBerths,
   useSClassAreas,
   useSClassDefinitions,
 } from "./useBindingAutocomplete.js";
@@ -169,7 +168,6 @@ function CombinedMemberRow({
     setArea(member.tdArea);
     setBerth(member.berth);
   }, [member.id, member.tdArea, member.berth]);
-  const berths = useObservedBerths(area || null);
 
   function commit(): void {
     if (!area || !berth) return;
@@ -199,17 +197,11 @@ function CombinedMemberRow({
         <span aria-hidden="true">Berth</span>
         <input
           aria-label={`Combined member ${member.combinedOrder ?? ""} berth`}
-          list={`observed-berths-${member.id}`}
           value={berth}
           onChange={(e) => setBerth(e.target.value)}
           onBlur={commit}
         />
       </div>
-      <datalist id={`observed-berths-${member.id}`}>
-        {berths.map((b) => (
-          <option key={b} value={b} />
-        ))}
-      </datalist>
       <button type="button" className="btn" onClick={onRemove}>
         Remove
       </button>
@@ -250,8 +242,6 @@ function BindingFields({
     setLocalArea(initialArea);
     setLocalBerth(initialBerth);
   }, [elementId, initialArea, initialBerth]);
-
-  const berths = useObservedBerths(localArea || null);
 
   /** Renumbers `combinedOrder` 1..N by array position, or clears it entirely for a lone
    * survivor — validate.ts requires every member of a >1 group to have a distinct order, and a
@@ -333,16 +323,10 @@ function BindingFields({
       <label className="field">
         Berth
         <input
-          list="observed-berths"
           value={localBerth}
           onChange={(e) => setLocalBerth(e.target.value)}
           onBlur={() => commitBinding(localArea, localBerth)}
         />
-        <datalist id="observed-berths">
-          {berths.map((berth) => (
-            <option key={berth} value={berth} />
-          ))}
-        </datalist>
       </label>
       {primary ? (
         <button type="button" className="btn" onClick={() => commitGroup([])}>

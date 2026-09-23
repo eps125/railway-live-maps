@@ -20,13 +20,6 @@ interface HeartbeatRow {
   last_heartbeat_at: Date;
 }
 
-interface BerthActivityRow {
-  berth_code: string;
-  first_observed_at: Date;
-  last_observed_at: Date;
-  event_count: string;
-}
-
 interface OccupancyIntervalRow {
   id: string;
   td_area?: string;
@@ -101,41 +94,10 @@ export async function registerTdRoutes(app: FastifyInstance, deps: TdRoutesDeps)
     };
   });
 
-  app.get<{ Params: { area: string }; Querystring: { after?: string; limit?: string } }>(
-    "/api/v1/td/areas/:area/berths",
-    async (request, reply) => {
-      const { area } = request.params;
-      const limit = parseLimit(request.query.limit);
-      const after = request.query.after ?? "";
-
-      const result = await pool.query<BerthActivityRow>(
-        `select berth_code, min(observed_at) as first_observed_at, max(observed_at) as last_observed_at,
-                count(*) as event_count
-         from (
-           select from_berth as berth_code, event_at as observed_at
-           from td_berth_event where td_area = $1 and from_berth is not null
-           union all
-           select to_berth as berth_code, event_at as observed_at
-           from td_berth_event where td_area = $1 and to_berth is not null
-         ) observed
-         group by berth_code
-         having berth_code > $2
-         order by berth_code
-         limit $3`,
-        [area, after, limit],
-      );
-
-      const berths = result.rows.map((row) => ({
-        berthCode: row.berth_code,
-        firstObservedAt: row.first_observed_at.toISOString(),
-        lastObservedAt: row.last_observed_at.toISOString(),
-        eventCount: Number(row.event_count),
-      }));
-      const last = berths.at(-1);
-
-      reply.send({ berths, nextCursor: berths.length === limit && last ? last.berthCode : null });
-    },
-  );
+  // `GET /api/v1/td/areas/:area/berths` was removed 2026-09-23: it grouped an area's entire
+  // td_berth_event history with no time bound, and one editor-autocomplete call ran for ~14
+  // minutes on production, starving TD ingest until every map showed stale. Its only caller (the
+  // editor's berth autocomplete) was dropped at the owner's request.
 
   app.get<{
     Params: { area: string };

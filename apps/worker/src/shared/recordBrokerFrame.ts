@@ -242,6 +242,7 @@ export async function recordBrokerFrame(
   });
 
   const client = await deps.pool.connect();
+  let releaseError: Error | undefined;
   try {
     await client.query("begin");
 
@@ -367,10 +368,15 @@ export async function recordBrokerFrame(
       insertedEvents,
     };
   } catch (error) {
-    await client.query("rollback");
+    // A failure mid-transaction is usually the connection itself dying (a timeout or reset).
+    // Release with the error so pg-pool discards the client instead of handing a dead
+    // connection to the caller's retry. A rollback that fails on that same dead connection
+    // must not replace the original error.
+    releaseError = error instanceof Error ? error : new Error(String(error));
+    await client.query("rollback").catch(() => {});
     throw error;
   } finally {
-    client.release();
+    client.release(releaseError);
   }
 }
 

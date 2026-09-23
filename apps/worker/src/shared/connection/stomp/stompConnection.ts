@@ -141,9 +141,21 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       });
       this.socket = socket;
 
+      // Any rejection out of handleChunk (onSessionStart/onFrame throwing) must end in a
+      // reconnect, never an unhandled rejection. Node kills the process on one of those,
+      // which took ingest-td down 13 times on 2026-09-23 and lost each in-flight frame plus
+      // everything the broker sent during the restart.
+      const failFromHandler = (error: unknown): void => {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (settled) options.onError?.(failure);
+        else finish(failure);
+        if (!this.stopped) this.state = "reconnecting";
+        socket.destroy();
+      };
+
       socket.on("data", (chunk: Buffer) => {
         lastInboundAt = Date.now();
-        void this.handleChunk(decoder, chunk, socket, options, clientId, {
+        this.handleChunk(decoder, chunk, socket, options, clientId, {
           getSessionId: () => sessionId,
           setSessionId: (id) => {
             sessionId = id;
@@ -184,7 +196,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
               if (!socket.destroyed) socket.write(Buffer.from("\n"));
             }, sendIntervalMs);
           },
-        });
+        }).catch(failFromHandler);
       });
 
       socket.on("error", (error) => finish(error));
@@ -192,11 +204,17 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       socket.on("close", () => {
         void (async () => {
           if (sessionId) {
-            await options.onSessionEnd({
-              sessionId,
-              disconnectReason: "connection closed",
-              at: new Date(),
-            });
+            // Bookkeeping only. A failure here must neither crash the process nor stop
+            // finish() from running, since finish() is what lets start() reconnect.
+            try {
+              await options.onSessionEnd({
+                sessionId,
+                disconnectReason: "connection closed",
+                at: new Date(),
+              });
+            } catch (error) {
+              options.onError?.(error instanceof Error ? error : new Error(String(error)));
+            }
           }
           finish();
         })();
@@ -258,12 +276,16 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             receivedAt: new Date(),
             connectionSessionId: session.getSessionId(),
           },
+          // A frame whose storage was retried across a disconnect can finish after its socket is
+          // gone. An ack id is only valid on the connection that delivered it, so skip the write.
           ack: async () => {
+            if (socket.destroyed) return;
             socket.write(
               encodeFrame({ command: "ACK", headers: { id: ackId }, body: Buffer.alloc(0) }),
             );
           },
           nack: async () => {
+            if (socket.destroyed) return;
             socket.write(
               encodeFrame({ command: "NACK", headers: { id: ackId }, body: Buffer.alloc(0) }),
             );

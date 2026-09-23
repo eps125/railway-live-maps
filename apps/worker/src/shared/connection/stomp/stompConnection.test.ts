@@ -262,6 +262,141 @@ describe("StompConnection stale-feed watchdog", () => {
   });
 });
 
+/** Production incident 2026-09-23: a pg connection timeout thrown from onFrame surfaced as an
+ * unhandled rejection (handleChunk was fire-and-forget), which killed ingest-td 13 times in a
+ * day and lost data every time. These errors must now lead to a reconnect, never an exit. */
+describe("StompConnection handler failures", () => {
+  function connectedFixture(overrides: Partial<ReturnType<typeof baseOptions>> = {}) {
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+    });
+    const options = { ...baseOptions(), ...overrides };
+    void connection.start(options);
+    return { connection, options };
+  }
+
+  function messageFrame(id: string): Buffer {
+    return encodeFrame({
+      command: "MESSAGE",
+      headers: { "message-id": id, ack: id, destination: "/topic/x" },
+      body: Buffer.from("[]"),
+    });
+  }
+
+  it("reconnects instead of crashing when onFrame rejects", async () => {
+    vi.useFakeTimers();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const { connection, options } = connectedFixture({
+      onFrame: vi.fn(async () => {
+        throw new Error("Connection terminated due to connection timeout");
+      }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = getLastSocket()!;
+    first.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+    first.emit("data", messageFrame("m-1"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(unhandled).not.toHaveBeenCalled();
+    expect(first.destroy).toHaveBeenCalled();
+    expect(options.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Connection terminated due to connection timeout" }),
+    );
+
+    // start()'s loop dials a fresh socket after its backoff.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(getLastSocket()).not.toBe(first);
+
+    process.off("unhandledRejection", unhandled);
+    await stopAndAdvance(connection);
+  });
+
+  it("reconnects instead of crashing when onSessionStart rejects", async () => {
+    vi.useFakeTimers();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const { connection, options } = connectedFixture({
+      onSessionStart: vi.fn(async (): Promise<string> => {
+        throw new Error("getaddrinfo EAI_AGAIN postgres");
+      }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(unhandled).not.toHaveBeenCalled();
+    expect(socket.destroy).toHaveBeenCalled();
+    expect(options.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "getaddrinfo EAI_AGAIN postgres" }),
+    );
+
+    process.off("unhandledRejection", unhandled);
+    await stopAndAdvance(connection);
+  });
+
+  it("still finishes the session when onSessionEnd rejects on close", async () => {
+    vi.useFakeTimers();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const { connection, options } = connectedFixture({
+      onSessionEnd: vi.fn(async () => {
+        throw new Error("getaddrinfo EAI_AGAIN postgres");
+      }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = getLastSocket()!;
+    first.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+    first.emit("close");
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(unhandled).not.toHaveBeenCalled();
+    expect(options.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "getaddrinfo EAI_AGAIN postgres" }),
+    );
+    expect(getLastSocket()).not.toBe(first);
+
+    process.off("unhandledRejection", unhandled);
+    await stopAndAdvance(connection);
+  });
+
+  it("skips the ACK write when the delivering socket has already closed", async () => {
+    vi.useFakeTimers();
+    let ackLater: (() => Promise<void>) | undefined;
+    const { connection } = connectedFixture({
+      onFrame: vi.fn(async (handle: { ack: () => Promise<void> }) => {
+        ackLater = handle.ack;
+      }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emit("data", messageFrame("m-2"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    socket.destroyed = true;
+    const writesBefore = socket.write.mock.calls.length;
+    await ackLater!();
+    expect(socket.write.mock.calls.length).toBe(writesBefore);
+
+    await stopAndAdvance(connection);
+  });
+});
+
 describe("StompConnection stop", () => {
   it("sends a STOMP DISCONNECT frame and waits before closing the socket", async () => {
     // Regression test for a real production incident: closing the raw TCP socket without ever

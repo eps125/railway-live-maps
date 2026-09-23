@@ -8,6 +8,7 @@ import { applyLiveFromEvents, BindingsCache } from "../td/liveProjector.js";
 import { createRedisDeltaPublisher } from "../td/deltaPublisher.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
 import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
+import { retryUntilDone } from "../shared/retryUntilDone.js";
 
 const NR_TD_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_TD_PORT = 61618;
@@ -64,6 +65,8 @@ export async function runIngestTd(config: Config): Promise<never> {
   });
 
   const stats = createIngestStatsLogger("TD");
+  let stopping = false;
+  const isStopped = (): boolean => stopping;
 
   // Deliberately NOT awaited (2026-09-11 fix — see runUntilShutdownSignal.test.ts's "root
   // cause" test for the reproduction). StompConnection.start() runs `while (!this.stopped) {
@@ -79,14 +82,24 @@ export async function runIngestTd(config: Config): Promise<never> {
   // always NULL in production). Any error from a failed connection attempt is already surfaced
   // via `onError` below, not via this promise rejecting, so nothing here needs to observe it.
   void connection.start({
+    // Retried rather than thrown: SUBSCRIBE is only sent once this returns, so failing here
+    // would drop the connection and pay a full reconnect for what is usually a brief DB blip.
+    // Retrying a plain insert can leave an orphan row if an earlier attempt actually committed,
+    // which only costs a spare bookkeeping row.
     onSessionStart: async (session) => {
-      const result = await pool.query<{ id: string }>(
-        `insert into feed_connection_session (feed_name, client_id, connected_at)
-         values ('TD', $1, $2) returning id`,
-        [session.clientId, session.connectedAt],
+      const id = await retryUntilDone(
+        async () => {
+          const result = await pool.query<{ id: string }>(
+            `insert into feed_connection_session (feed_name, client_id, connected_at)
+             values ('TD', $1, $2) returning id`,
+            [session.clientId, session.connectedAt],
+          );
+          const inserted = result.rows[0]?.id;
+          if (!inserted) throw new Error("Failed to create feed_connection_session row");
+          return inserted;
+        },
+        { label: "TD session start record", isStopped },
       );
-      const id = result.rows[0]?.id;
-      if (!id) throw new Error("Failed to create feed_connection_session row");
       console.log(`TD session started: ${session.clientId}`);
       return id;
     },
@@ -98,12 +111,25 @@ export async function runIngestTd(config: Config): Promise<never> {
       console.log(`TD session ended: ${info.disconnectReason}`);
     },
     onFrame: async (handle) => {
-      const result = await recordFrame(handle.frame, {
-        pool,
-        archiveClient,
-        archiveBucket: config.RAW_ARCHIVE_BUCKET,
+      // Retried until stored, never thrown. A frame we've received but not stored exists only
+      // in this process's memory, and the subscription isn't durable, so the broker won't
+      // redeliver it. Retrying is safe because every step is idempotent: the archive key is
+      // content-addressed, the archive index upserts, and feed_frame dedupes on body_hash (a
+      // retry after a commit whose reply was lost comes back `alreadyRecorded`). Still
+      // archive-before-ack (non-negotiable rule 2): the ack only goes out once this resolves.
+      const result = await retryUntilDone(
+        () =>
+          recordFrame(handle.frame, {
+            pool,
+            archiveClient,
+            archiveBucket: config.RAW_ARCHIVE_BUCKET,
+          }),
+        { label: "TD frame record", isStopped },
+      );
+      await retryUntilDone(() => markFrameAcked(pool, result.frameId), {
+        label: "TD frame ack mark",
+        isStopped,
       });
-      await markFrameAcked(pool, result.frameId);
       await handle.ack();
       stats.record(handle.frame.receivedAt, result.newestNormalizedEventAtUtc);
 
@@ -149,6 +175,7 @@ export async function runIngestTd(config: Config): Promise<never> {
   });
 
   return runUntilShutdownSignal(async () => {
+    stopping = true;
     await connection.stop();
     redisClient?.disconnect();
   });

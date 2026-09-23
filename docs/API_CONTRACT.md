@@ -139,9 +139,11 @@ Sanitized status of web/API, nationwide feeds, archive durability, projections, 
 
 List every observed TD area with first/last event times, C-Class/S-Class counts, heartbeat freshness and whether any published map uses it. This is backed by nationwide ingestion, not a configured allow-list.
 
-### `GET /api/v1/td/areas/{area}/berths?observedFrom=&observedTo=&after=&limit=`
-
-List observed berth identifiers and basic activity statistics for map-authoring and diagnostics.
+> `GET /api/v1/td/areas/{area}/berths` was **removed** 2026-09-23. It grouped an area's entire
+> `td_berth_event` history with no time bound. One editor-autocomplete call ran for ~14 minutes on
+> production and starved TD ingest until every map went stale. The editor's berth autocomplete
+> (its only caller) was dropped at the owner's request. Any replacement must read a bounded
+> window or a rollup, never the full history.
 
 ### `GET /api/v1/td/areas/{tdArea}/berths/{berth}/current-run` (Milestone 9; rebuilt Milestone 34/35, docs/adr/0006)
 

@@ -13,6 +13,17 @@ import { retryUntilDone } from "../shared/retryUntilDone.js";
 const NR_TD_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_TD_PORT = 61618;
 
+/** Durable subscription identity. `client-id` is `<login>-<name>`, the same shape as Network
+ * Rail's example clients (`USERNAME + '-' + CLIENT_ID` with `activemq.subscriptionName` =
+ * CLIENT_ID). The login prefix keeps it clear of other accounts' client-ids on the shared broker,
+ * and the name keeps it clear of any other client on this login, such as openrail-eps. */
+export function tdDurableIdentity(
+  username: string,
+  subscriptionName: string,
+): { clientId: string; subscriptionName: string } {
+  return { clientId: `${username}-${subscriptionName}`, subscriptionName };
+}
+
 /**
  * The live Network Rail TD connector. Refuses to start unless TD_LIVE_ENABLED=true and
  * NR_USERNAME/NR_PASSWORD (or _FILE variants) are set — per docs/IMPLEMENTATION_PLAN.md M3,
@@ -56,13 +67,22 @@ export async function runIngestTd(config: Config): Promise<never> {
   const redis = redisClient ? createRedisDeltaPublisher(redisClient) : null;
   const bindings = new BindingsCache(pool);
 
+  const durable = config.NR_TD_DURABLE_SUBSCRIPTION
+    ? tdDurableIdentity(config.NR_USERNAME, config.NR_TD_DURABLE_SUBSCRIPTION_NAME)
+    : undefined;
   const connection = new StompTdConnection({
     host: NR_TD_HOST,
     port: NR_TD_PORT,
     topic: config.NR_TD_TOPIC,
     username: config.NR_USERNAME,
     password: config.NR_PASSWORD,
+    ...(durable ? { durable } : {}),
   });
+  console.log(
+    durable
+      ? `TD subscription: durable (${durable.subscriptionName})`
+      : "TD subscription: non-durable (messages sent while disconnected are lost)",
+  );
 
   const stats = createIngestStatsLogger("TD");
   let stopping = false;
@@ -100,7 +120,10 @@ export async function runIngestTd(config: Config): Promise<never> {
         },
         { label: "TD session start record", isStopped },
       );
-      console.log(`TD session started: ${session.clientId}`);
+      // A durable client-id embeds the NR login, which stays out of the logs.
+      console.log(
+        `TD session started: ${durable ? `feed_connection_session ${id}` : session.clientId}`,
+      );
       return id;
     },
     onSessionEnd: async (info) => {
@@ -112,8 +135,8 @@ export async function runIngestTd(config: Config): Promise<never> {
     },
     onFrame: async (handle) => {
       // Retried until stored, never thrown. A frame we've received but not stored exists only
-      // in this process's memory, and the subscription isn't durable, so the broker won't
-      // redeliver it. Retrying is safe because every step is idempotent: the archive key is
+      // in this process's memory. A non-durable subscription never redelivers it, and even a
+      // durable one only does so after a reconnect. Retrying is safe because every step is idempotent: the archive key is
       // content-addressed, the archive index upserts, and feed_frame dedupes on body_hash (a
       // retry after a commit whose reply was lost comes back `alreadyRecorded`). Still
       // archive-before-ack (non-negotiable rule 2): the ack only goes out once this resolves.

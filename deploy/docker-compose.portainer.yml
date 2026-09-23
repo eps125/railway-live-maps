@@ -62,6 +62,11 @@ x-worker-env: &worker-env
   NR_USERNAME: ${NR_USERNAME:-}
   NR_PASSWORD: ${NR_PASSWORD:-}
   TD_LIVE_ENABLED: ${TD_LIVE_ENABLED:-true}
+  # Milestone 68: durable TD subscription. Network Rail queues TD messages for up to 5 min while
+  # ingest-td is down (restart/redeploy/crash) instead of dropping them. Production only; the
+  # worker's own default is off, so no dev instance can attach to this subscription.
+  NR_TD_DURABLE_SUBSCRIPTION: ${NR_TD_DURABLE_SUBSCRIPTION:-true}
+  NR_TD_DURABLE_SUBSCRIPTION_NAME: ${NR_TD_DURABLE_SUBSCRIPTION_NAME:-railway-live-maps-td}
   # VSTP_LIVE_ENABLED / TRUST_LIVE_ENABLED / NR_VSTP_TOPIC / NR_TRUST_TOPIC / NR_SCHEDULE_DOWNLOAD_URL
   # were removed with ADR 0002 (2026-09-01): RLM no longer subscribes to NR for VSTP/TRUST/SCHEDULE
   # — that data is mirrored from openrail-eps by `ingest-garner`. Drop them from any existing stack .env.

@@ -3904,9 +3904,49 @@ no unhandled rejection and a reconnect when onFrame, onSessionStart or onSession
 no ACK after the socket closes. All four fail against the previous code. The td routes test now
 asserts the berths endpoint returns 404.
 
-Not covered: the TD subscription is still non-durable, so every restart or redeploy still loses
-whatever the broker sends while `ingest-td` is down. A durable subscription (STOMP `client-id` +
-`activemq.subscriptionName`) would close that gap and is the remaining step to zero loss.
+Not covered here: the TD subscription was still non-durable. Milestone 68 fixes that.
+
+## Milestone 68 — durable TD subscription (2026-09-23)
+
+With a non-durable topic subscription, Network Rail's broker drops everything it sends while
+`ingest-td` is disconnected: every crash, container restart and redeploy (Watchtower redeploys
+on each push to `main`), plus any unacknowledged frame in flight. Network Rail recommends a
+durable subscription, which holds pending messages for five minutes after a disconnect.
+
+- [x] `StompConnection` `durable: { clientId, subscriptionName }`. CONNECT carries a stable
+      `client-id`. SUBSCRIBE carries `durable-subscription-name` and `activemq.subscriptionName`
+      with the same value: the broker is ActiveMQ Artemis, which reads the former first and
+      still accepts the ActiveMQ Classic form Network Rail's examples use. The client-id is
+      also the `feed_connection_session.client_id`, and is not logged because it embeds the
+      NR login.
+- [x] `client-id` = `<NR login>-<NR_TD_DURABLE_SUBSCRIPTION_NAME>` (Network Rail's example
+      shape). The default name is `railway-live-maps-td`, which keeps it distinct from
+      openrail-eps on the same login.
+- [x] `NR_TD_DURABLE_SUBSCRIPTION` defaults off in the worker, so no dev or CI instance can
+      attach to and drain production's queue. `deploy/docker-compose.portainer.yml` turns it on.
+- [x] Redelivery on reconnect is already safe: `feed_frame` dedupes on `body_hash`, so a
+      redelivered frame comes back `alreadyRecorded` and is simply acked. Milestone 67's
+      retry-until-stored means a frame whose socket died mid-store is stored anyway, and the
+      broker's redelivery then dedupes.
+
+Tests: CONNECT/SUBSCRIBE headers when durable and their absence when not, the same client-id
+after a reconnect, and config defaults and validation.
+
+Verified against the live broker, 2026-09-23, with a separate probe subscription
+(`rlm-durable-probe`), never production's:
+
+- The durable CONNECT and SUBSCRIBE were accepted without error.
+- After a 20 s disconnect, the reconnect got an immediate burst of 89 messages in 3 s (normal is
+  about 4/s), and the first ones were timestamped inside the gap.
+- After a ~6 min disconnect, the subscription still existed. It delivered a backlog whose oldest
+  message was exactly 300 s old. So Network Rail's "five minutes" is a per-message expiry, not
+  subscription expiry: an outage of up to 5 min loses nothing, and a longer one loses only
+  what's older than 5 min.
+- `UNSUBSCRIBE` with `durable-subscription-name` is refused (`AMQ339017 Error unsubscribing 0`),
+  presumably because users lack the broker's delete-durable-queue permission. So a durable
+  subscription can't be removed from our side. Don't rename `NR_TD_DURABLE_SUBSCRIPTION_NAME`
+  casually, since each name leaves a permanent rolling 5-minute queue on Network Rail's broker.
+  The probe's own `rlm-durable-probe` subscription is left over for the same reason.
 
 ## Later / unscheduled
 

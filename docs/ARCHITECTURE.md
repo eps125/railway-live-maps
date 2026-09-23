@@ -298,6 +298,8 @@ Key settings:
 - archive access key/secret through mounted secrets where possible
 - `NR_USERNAME_FILE` / `NR_PASSWORD_FILE` or development equivalents
 - `NR_TD_TOPIC`
+- `NR_TD_DURABLE_SUBSCRIPTION` / `NR_TD_DURABLE_SUBSCRIPTION_NAME`: durable TD subscription
+  (Milestone 68). Production only; the worker default is off.
 - `NR_TRUST_TOPIC`
 - `NR_VSTP_TOPIC`
 - `CAPTURE_ALL_TD=true` as a required invariant

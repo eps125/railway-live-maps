@@ -10,6 +10,29 @@ const baseEnv = {
   RAW_ARCHIVE_SECRET_KEY: "s",
 } satisfies NodeJS.ProcessEnv;
 
+describe("loadConfig — durable TD subscription", () => {
+  it("defaults off, so a dev/CI worker never attaches to production's durable subscription", () => {
+    const config = loadConfig({ ...baseEnv });
+    expect(config.NR_TD_DURABLE_SUBSCRIPTION).toBe(false);
+    expect(config.NR_TD_DURABLE_SUBSCRIPTION_NAME).toBe("railway-live-maps-td");
+  });
+
+  it("turns on only for exactly 'true'", () => {
+    expect(
+      loadConfig({ ...baseEnv, NR_TD_DURABLE_SUBSCRIPTION: "true" }).NR_TD_DURABLE_SUBSCRIPTION,
+    ).toBe(true);
+    expect(
+      loadConfig({ ...baseEnv, NR_TD_DURABLE_SUBSCRIPTION: "yes" }).NR_TD_DURABLE_SUBSCRIPTION,
+    ).toBe(false);
+  });
+
+  it("rejects a subscription name that would need STOMP header escaping", () => {
+    expect(() => loadConfig({ ...baseEnv, NR_TD_DURABLE_SUBSCRIPTION_NAME: "rlm:td" })).toThrow(
+      /NR_TD_DURABLE_SUBSCRIPTION_NAME/,
+    );
+  });
+});
+
 describe("loadConfig — garner bridge", () => {
   it("defaults the bridge off and does not require GARNER_DB_*", () => {
     const config = loadConfig({ ...baseEnv });

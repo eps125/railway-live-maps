@@ -28,6 +28,8 @@ const testConfig: Config = {
   CAPTURE_ALL_TD: "true",
   NR_TD_TOPIC: "/topic/TD_ALL_SIG_AREA",
   TD_LIVE_ENABLED: false,
+  NR_TD_DURABLE_SUBSCRIPTION: false,
+  NR_TD_DURABLE_SUBSCRIPTION_NAME: "railway-live-maps-td",
   NR_CORPUS_DOWNLOAD_URL: "https://example.invalid/corpus",
   NR_SMART_DOWNLOAD_URL: "https://example.invalid/smart",
   SCHEDULE_DOWNLOAD_ENABLED: false,

@@ -24,6 +24,21 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
+  // Milestone 68: subscribe to TD durably, so Network Rail queues messages (for up to five
+  // minutes) while ingest-td is down instead of dropping them. Off by default, and turned on only
+  // by the production stack: a dev or CI worker using the same NR login and subscription name
+  // would otherwise attach to production's durable subscription and consume its queued messages.
+  NR_TD_DURABLE_SUBSCRIPTION: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  // Names the durable subscription. The CONNECT `client-id` is `<NR login>-<this>`, following
+  // Network Rail's own example clients. Change it only deliberately: a new name starts a new,
+  // empty subscription.
+  NR_TD_DURABLE_SUBSCRIPTION_NAME: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]+$/, "NR_TD_DURABLE_SUBSCRIPTION_NAME may only use A-Z a-z 0-9 . _ -")
+    .default("railway-live-maps-td"),
   // VSTP_LIVE_ENABLED / TRUST_LIVE_ENABLED / NR_VSTP_TOPIC / NR_TRUST_TOPIC / NR_SCHEDULE_DOWNLOAD_URL
   // were removed with ADR 0002 (2026-09-01): RLM no longer subscribes to NR for VSTP/TRUST/SCHEDULE.
   // That data is mirrored from openrail-eps via the GARNER_* config below.

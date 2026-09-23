@@ -397,6 +397,89 @@ describe("StompConnection handler failures", () => {
   });
 });
 
+describe("StompConnection durable subscription", () => {
+  function sentFrames(socket: FakeSocket): string[] {
+    return socket.write.mock.calls
+      .map(([chunk]) => (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : ""))
+      .filter((text) => text !== "\n");
+  }
+
+  async function connectAndSubscribe(durable?: { clientId: string; subscriptionName: string }) {
+    vi.useFakeTimers();
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/TD_ALL_SIG_AREA",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      ...(durable ? { durable } : {}),
+    });
+    const options = baseOptions();
+    void connection.start(options);
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+    const frames = sentFrames(socket);
+    return {
+      connection,
+      options,
+      connect: frames.find((f) => f.startsWith("CONNECT\n")) ?? "",
+      subscribe: frames.find((f) => f.startsWith("SUBSCRIBE\n")) ?? "",
+    };
+  }
+
+  it("sends a stable client-id on CONNECT and names the subscription on SUBSCRIBE", async () => {
+    const { connection, options, connect, subscribe } = await connectAndSubscribe({
+      clientId: "login-railway-live-maps-td",
+      subscriptionName: "railway-live-maps-td",
+    });
+
+    expect(connect).toContain("\nclient-id:login-railway-live-maps-td\n");
+    expect(subscribe).toContain("\ndurable-subscription-name:railway-live-maps-td\n");
+    expect(subscribe).toContain("\nactivemq.subscriptionName:railway-live-maps-td\n");
+    expect(subscribe).toContain("\nack:client-individual\n");
+    // The session bookkeeping row records the durable client-id, not a random one.
+    expect(options.onSessionStart).toHaveBeenCalledWith(
+      expect.objectContaining({ clientId: "login-railway-live-maps-td" }),
+    );
+
+    await stopAndAdvance(connection);
+  });
+
+  it("stays non-durable (no client-id, no subscription name) when not configured", async () => {
+    const { connection, connect, subscribe } = await connectAndSubscribe();
+
+    expect(connect).not.toContain("client-id:");
+    expect(subscribe).not.toContain("durable-subscription-name");
+    expect(subscribe).not.toContain("activemq.subscriptionName");
+
+    await stopAndAdvance(connection);
+  });
+
+  it("reuses the same client-id after a reconnect", async () => {
+    const { connection } = await connectAndSubscribe({
+      clientId: "login-railway-live-maps-td",
+      subscriptionName: "railway-live-maps-td",
+    });
+    const first = getLastSocket()!;
+    first.emit("close");
+    await vi.advanceTimersByTimeAsync(30_000);
+    const second = getLastSocket()!;
+    expect(second).not.toBe(first);
+    second.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sentFrames(second).find((f) => f.startsWith("CONNECT\n"))).toContain(
+      "\nclient-id:login-railway-live-maps-td\n",
+    );
+
+    await stopAndAdvance(connection);
+  });
+});
+
 describe("StompConnection stop", () => {
   it("sends a STOMP DISCONNECT frame and waits before closing the socket", async () => {
     // Regression test for a real production incident: closing the raw TCP socket without ever

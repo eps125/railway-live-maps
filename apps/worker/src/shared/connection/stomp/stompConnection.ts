@@ -31,6 +31,13 @@ export interface StompConnectionConfig {
    * `error` nor `close` ever fires and the feed just goes dead with the container still "Up"
    * (observed twice, 2026-09-01). Defaults to `max(heartbeatMs * 3, 90s)`. */
   staleTimeoutMs?: number;
+  /** Durable subscription identity. When set, CONNECT carries `client-id` and SUBSCRIBE names
+   * the subscription, so the broker keeps queuing messages while we're disconnected (Network
+   * Rail holds them for five minutes) and redelivers anything sent but not yet ACKed once we
+   * reconnect. Both values must stay the same across reconnects and restarts, since together
+   * they identify the subscription. Without this, every crash, restart or redeploy loses
+   * whatever the broker sends while we're down. */
+  durable?: { clientId: string; subscriptionName: string };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -83,7 +90,8 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
     return new Promise((resolve, reject) => {
       this.state = "connecting";
       const decoder = new StompFrameDecoder();
-      const clientId = `railway-live-maps-${randomUUID()}`;
+      const durable = this.config.durable;
+      const clientId = durable?.clientId ?? `railway-live-maps-${randomUUID()}`;
       const heartbeatMs = this.config.heartbeatMs ?? 15_000;
       const connectTimeoutMs = this.config.connectTimeoutMs ?? 20_000;
       const staleTimeoutMs = this.config.staleTimeoutMs ?? Math.max(heartbeatMs * 3, 90_000);
@@ -134,6 +142,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
               login: this.config.username,
               passcode: this.config.password,
               "heart-beat": `${heartbeatMs},${heartbeatMs}`,
+              ...(durable ? { "client-id": durable.clientId } : {}),
             },
             body: Buffer.alloc(0),
           }),
@@ -243,10 +252,25 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
         session.onConnected();
         const sessionId = await options.onSessionStart({ clientId, connectedAt: new Date() });
         session.setSessionId(sessionId);
+        const durable = this.config.durable;
         socket.write(
           encodeFrame({
             command: "SUBSCRIBE",
-            headers: { id: "0", destination: this.config.topic, ack: "client-individual" },
+            headers: {
+              id: "0",
+              destination: this.config.topic,
+              ack: "client-individual",
+              // Network Rail's broker is ActiveMQ Artemis (its errors are AMQ22xxxx). Artemis
+              // reads `durable-subscription-name` first and still accepts the ActiveMQ Classic
+              // `activemq.subscriptionName` that Network Rail's own examples use. Sending both
+              // with the same value covers either reading.
+              ...(durable
+                ? {
+                    "durable-subscription-name": durable.subscriptionName,
+                    "activemq.subscriptionName": durable.subscriptionName,
+                  }
+                : {}),
+            },
             body: Buffer.alloc(0),
           }),
         );

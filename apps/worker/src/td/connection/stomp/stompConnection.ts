@@ -10,6 +10,7 @@ export interface StompConnectionConfig {
   username: string;
   password: string;
   heartbeatMs?: number;
+  durable?: { clientId: string; subscriptionName: string };
 }
 
 /**

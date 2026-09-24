@@ -3976,6 +3976,23 @@ existing match across, with no TRUST or schedule corroboration. See the ADR 0007
 Owner's boundaries: `PX CE04 ↔ CL A004` and `CL 0007 ↔ PX A304`, both confirmed against real
 crossings on 2026-09-24.
 
+## Milestone 70 — MinIO image mirrored to GHCR; deploy runner re-registered (2026-09-24)
+
+CI started failing at "Start MinIO": `quay.io/minio/minio` now requires a login. This is the
+second registry MinIO has closed; Milestone 26 moved us off Docker Hub for the same reason.
+Production kept running on its cached copy of the image.
+
+- [x] `.github/workflows/mirror-minio.yml` (manual only) pushed the exact image cached on the
+      deployment box, exported with `docker save` into the runner's work volume, to
+      `ghcr.io/eps125/railway-live-maps-minio`. It uses the workflow token and a pinned,
+      checksum-verified `crane`. The image is public by owner decision: unmodified MinIO, AGPLv3.
+- [x] CI and both compose files use it pinned by digest (`sha256:322afb40…`). It is the same
+      MinIO binary; the digest differs from quay's only by the added labels. The next Portainer
+      stack re-apply will recreate `archive` once on the new image reference.
+- [x] Deploy runner: it had been crash-looping (1,043 restarts) because GitHub deleted its
+      stale registration and it wouldn't re-register over its saved config. The owner recreated
+      it with a new fine-grained PAT (Administration: write, this repo only).
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

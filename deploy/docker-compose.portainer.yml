@@ -422,12 +422,11 @@ services:
     networks: [backend, egress]
 
   archive:
-    # Development default only. Replace with a tested immutable tag/digest before relying
-    # on this long-term. `quay.io/minio/minio`, not `minio/minio` — MinIO discontinued free
-    # Docker Hub image distribution in October 2025; the whole `minio/minio` Docker Hub
-    # repository (every tag, confirmed live) now 401s pull attempts. Same image, MinIO's own
-    # still-working mirror on a different registry.
-    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
+    # MinIO stopped distributing its image freely: Docker Hub `minio/minio` (2026-09-11), then
+    # `quay.io/minio/minio` (login required, 2026-09-24). This is the exact image production
+    # already ran, mirrored unmodified into this repo's GHCR by .github/workflows/mirror-minio.yml
+    # and pinned by digest (same MinIO binary; the digest differs from quay's only by added labels).
+    image: ${MINIO_IMAGE:-ghcr.io/eps125/railway-live-maps-minio@sha256:322afb40a9b5e1487827fc509c3ca7664c2950a293280544585c94a746fab77f}
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:

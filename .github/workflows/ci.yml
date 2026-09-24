@@ -76,17 +76,13 @@ jobs:
 
       - name: Start MinIO (archive) for connectivity checks
         run: |
-          # 2026-09-11: MinIO discontinued free `minio/minio` Docker Hub image distribution in
-          # October 2025 — the whole repository (every tag, not just newer ones) now 401s with
-          # "pull access denied ... repository does not exist or may require 'docker login'",
-          # confirmed live (5 identical failures 10s apart is not a transient rate limit; a
-          # pinned pre-October-2025 tag failed identically). `quay.io/minio/minio` is MinIO's
-          # own still-working mirror — same image, different registry. See also
-          # deploy/docker-compose.portainer.yml and deploy/docker-compose.yml, which had the
-          # same now-broken default for the production/dev `archive` service.
+          # MinIO stopped distributing its image freely: Docker Hub `minio/minio` (2026-09-11),
+          # then `quay.io/minio/minio` (login required, 2026-09-24). This is production's exact
+          # image, mirrored unmodified into this repo's GHCR (.github/workflows/mirror-minio.yml)
+          # and pinned by digest — keep in step with deploy/docker-compose*.yml's `archive`.
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio server /data
+            ghcr.io/eps125/railway-live-maps-minio@sha256:322afb40a9b5e1487827fc509c3ca7664c2950a293280544585c94a746fab77f server /data
           for i in $(seq 1 30); do
             curl -fs http://localhost:9000/minio/health/live && break
             sleep 1

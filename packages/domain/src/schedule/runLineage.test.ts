@@ -3,7 +3,7 @@ import {
   confidenceForBasis,
   capInheritedConfidence,
   evaluateStepChain,
-  evaluateBoundaryCorroboration,
+  evaluateBoundaryCrossing,
   isSameRunIdentity,
 } from "./runLineage.js";
 
@@ -73,55 +73,20 @@ describe("evaluateStepChain", () => {
   });
 });
 
-describe("evaluateBoundaryCorroboration", () => {
+describe("evaluateBoundaryCrossing", () => {
   it("never matches on zero candidates", () => {
-    expect(
-      evaluateBoundaryCorroboration({
-        candidateCount: 0,
-        scheduleTimingPlausible: true,
-        trustMovementContinuity: true,
-      }),
-    ).toEqual({ status: "none", reason: "no_candidate" });
+    expect(evaluateBoundaryCrossing({ candidateCount: 0 })).toEqual({
+      status: "none",
+      reason: "no_candidate",
+    });
   });
 
-  it("is ambiguous when more than one candidate is plausible, even with corroboration", () => {
-    expect(
-      evaluateBoundaryCorroboration({
-        candidateCount: 2,
-        scheduleTimingPlausible: true,
-        trustMovementContinuity: true,
-      }),
-    ).toEqual({ status: "ambiguous" });
+  it("carries the run across on exactly one candidate, with no TRUST or schedule evidence", () => {
+    expect(evaluateBoundaryCrossing({ candidateCount: 1 })).toEqual({ status: "matched" });
   });
 
-  it("never matches on a single candidate with no corroboration (not headcode alone)", () => {
-    expect(
-      evaluateBoundaryCorroboration({
-        candidateCount: 1,
-        scheduleTimingPlausible: false,
-        trustMovementContinuity: false,
-      }),
-    ).toEqual({ status: "none", reason: "no_corroboration" });
-  });
-
-  it("matches on schedule timing alone", () => {
-    expect(
-      evaluateBoundaryCorroboration({
-        candidateCount: 1,
-        scheduleTimingPlausible: true,
-        trustMovementContinuity: false,
-      }),
-    ).toEqual({ status: "matched" });
-  });
-
-  it("matches on trust movement continuity alone", () => {
-    expect(
-      evaluateBoundaryCorroboration({
-        candidateCount: 1,
-        scheduleTimingPlausible: false,
-        trustMovementContinuity: true,
-      }),
-    ).toEqual({ status: "matched" });
+  it("is ambiguous when more than one candidate is plausible", () => {
+    expect(evaluateBoundaryCrossing({ candidateCount: 2 })).toEqual({ status: "ambiguous" });
   });
 });
 

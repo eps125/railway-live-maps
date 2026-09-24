@@ -3948,6 +3948,34 @@ Verified against the live broker, 2026-09-23, with a separate probe subscription
   casually, since each name leaves a permanent rolling 5-minute queue on Network Rail's broker.
   The probe's own `rlm-durable-probe` subscription is left over for the same reason.
 
+## Milestone 69 — boundaries carry a match across TD areas (2026-09-24)
+
+1S02 was matched through Preston and unmatched on entering Carlisle, despite a boundary. The old
+boundary check could not fire on any real PX <-> CL crossing: it needed a `CB` cancel, a `CC`
+interpose, and the entry to come after the exit. Owner decision: a curated boundary carries an
+existing match across, with no TRUST or schedule corroboration. See the ADR 0007 addendum
+(2026-09-24).
+
+- [x] `evaluateBoundaryCrossing` replaces `evaluateBoundaryCorroboration`: one candidate is
+      `matched`, more than one is `ambiguous`.
+- [x] `sweepBoundaryCrossings` replaces the `CB`-triggered `processBoundaryBatch`, in both
+      directions. The exit may be a step or a cancel, and the entry an interpose or a step. They
+      must be within 10 min either way with the same headcode. It waits while the train is still
+      at the exit berth.
+- [x] `propagateLinkForward` carries the new link through berths the train has already stepped
+      into on the new side.
+- [x] Load: each unresolved entry is re-checked at most every 5 s, for 20 min, and the exit
+      lookup is bounded to 24 h. Production EXPLAIN ANALYZE with real parameters: candidate query
+      2 ms per tick, exit lookup 2-12 ms, candidate count 2 ms, forward step 0.2 ms.
+- [x] The step batch reads only `CA` rows; `CB` was used only by the removed check.
+- [x] The popup's `boundary_correlated` explanation no longer mentions TRUST.
+- [x] Integration tests: entry before a stepped exit, with forward propagation; a stepped-in
+      entry waiting for the exit; an unmatched exit side; a different headcode; an entry too
+      late.
+
+Owner's boundaries: `PX CE04 ↔ CL A004` and `CL 0007 ↔ PX A304`, both confirmed against real
+crossings on 2026-09-24.
+
 ## Later / unscheduled
 
 Smaller pre-existing deferred items not yet worth their own milestone:

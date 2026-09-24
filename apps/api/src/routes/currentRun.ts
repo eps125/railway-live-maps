@@ -795,7 +795,7 @@ function matchNote(
     return `Identity carried forward from an earlier berth this train physically stepped from (docs/adr/0007) — not re-derived from this berth's own headcode/position data. Not a confirmed RLM identification.`;
   }
   if (status === "matched" && basis === "boundary_correlated") {
-    return `Identity carried forward across a TD-area boundary crossing, corroborated by schedule timing and/or TRUST movement continuity (docs/adr/0007) — never by headcode alone. Not a confirmed RLM identification.`;
+    return `Identity carried forward from the neighbouring TD area across an owner-defined boundary: the same headcode left the paired berth there within minutes of arriving here (docs/adr/0007). Not a confirmed RLM identification.`;
   }
   if (status === "matched") {
     return `Matched by headcode alone (no SMART position data for this berth) — the weakest evidence tier; verify before trusting this. Not a confirmed RLM identification.`;

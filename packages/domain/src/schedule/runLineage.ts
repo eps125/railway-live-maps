@@ -64,35 +64,27 @@ export function evaluateStepChain(input: StepChainInput): StepChainVerdict {
   return { propagate: true };
 }
 
-export interface BoundaryCorroborationInput {
-  /** How many entries on the far side of the boundary are plausible within the crossing window. */
+export interface BoundaryCrossingInput {
+  /** Unclaimed same-headcode occupancies at the entry berth within the crossing window. */
   candidateCount: number;
-  /** The established run's own schedule calling-point times place it here around this time. */
-  scheduleTimingPlausible: boolean;
-  /** The same `trust_id`'s movement reports continue past the crossing. */
-  trustMovementContinuity: boolean;
 }
 
-export type BoundaryCorroborationVerdict =
+export type BoundaryCrossingVerdict =
   { status: "matched" } | { status: "ambiguous" } | { status: "none"; reason: string };
 
 /**
- * Whether a cross-TD-area boundary crossing corroborates strongly enough to inherit identity.
- * Never on headcode continuity alone (docs/adr/0007) — headcode isn't even an input here, only
- * the two corroborating signals that are actually independent of it. More than one plausible
- * candidate on the far side is `ambiguous`, never a guess, exactly as any other tier.
+ * Whether an already-matched run carries across an owner-curated TD-area boundary
+ * (`td_area_boundary`). The curated berth pair is the evidence (owner decision, 2026-09-24,
+ * docs/adr/0007 Milestone 69 addendum): the caller has already required the same headcode on both
+ * sides and an entry close in time to the exit, so exactly one such entry inherits the run — no
+ * TRUST or schedule corroboration. More than one is `ambiguous`, never a guess.
  */
-export function evaluateBoundaryCorroboration(
-  input: BoundaryCorroborationInput,
-): BoundaryCorroborationVerdict {
+export function evaluateBoundaryCrossing(input: BoundaryCrossingInput): BoundaryCrossingVerdict {
   if (input.candidateCount === 0) {
     return { status: "none", reason: "no_candidate" };
   }
   if (input.candidateCount > 1) {
     return { status: "ambiguous" };
-  }
-  if (!input.scheduleTimingPlausible && !input.trustMovementContinuity) {
-    return { status: "none", reason: "no_corroboration" };
   }
   return { status: "matched" };
 }

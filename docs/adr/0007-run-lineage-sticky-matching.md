@@ -292,3 +292,34 @@ Resource cost, measured against production before enabling this: ~0.0076 fresh-r
 attempts/sec for a single mapped area (PX) vs ~1.5/sec nationwide (129,726 new area+headcode
 sightings/day), each ~15-30ms of mostly-indexed DB work — affordable at either scope. Start scoped
 to `mapped` and widen deliberately; RAM, not CPU, is this deployment's tighter constraint.
+
+## Addendum (2026-09-24, Milestone 69): a curated boundary carries the match across
+
+**Owner decision:** if a train is already matched on one side of an owner-defined
+`td_area_boundary`, the match carries across to the paired berth. The curated berth pair is the
+evidence. The schedule-timing and TRUST-continuity corroboration in point 2 above is **no longer
+required**. What remains:
+
+- The same headcode on both sides.
+- The entry falls within 10 minutes either side of the exit.
+- Exactly one unclaimed candidate. Two or more is `ambiguous`, and nothing is linked.
+
+This does not match anything new. It only extends a match that already exists on the other side.
+
+**Why the original check never fired**, from production TD for PX <-> CL on 2026-09-24:
+
+- 1S02 northbound: CL interposed A004 at 16:23:43 and stepped it A004 -> 0005 at 16:25:40. PX
+  stepped CE04 -> COUT at 16:25:48. There was no `CB`.
+- Every southbound train: PX received it as STIN -> A304 about 1.5 min before CL stepped it
+  0007 -> P304.
+
+The old check reacted only to a `CB` at the exit berth, accepted only a `CC` interpose on the
+far side, looked only _after_ the exit, and ran once.
+
+**Now:** the daemon sweeps recent unlinked occupancies at each boundary's entry berth
+(`sweepBoundaryCrossings`, every tick, each entry re-checked at most every 5 s for 20 min).
+
+- An exit is the paired occupancy leaving by any means.
+- An entry is any occupancy, whether interposed or stepped in.
+- An entry that arrives while the train is still at the exit berth is decided once it leaves.
+- A new link is carried on through occupancies the train has already stepped into since.

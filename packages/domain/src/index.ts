@@ -135,14 +135,14 @@ export {
   confidenceForBasis,
   capInheritedConfidence,
   evaluateStepChain,
-  evaluateBoundaryCorroboration,
+  evaluateBoundaryCrossing,
   isSameRunIdentity,
   type RunMatchBasisExtended,
   type MatchConfidence,
   type StepChainInput,
   type StepChainVerdict,
-  type BoundaryCorroborationInput,
-  type BoundaryCorroborationVerdict,
+  type BoundaryCrossingInput,
+  type BoundaryCrossingVerdict,
   type ResolvedRunIdentity,
 } from "./schedule/runLineage.js";
 export {

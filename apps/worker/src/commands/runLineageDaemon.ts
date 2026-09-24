@@ -5,6 +5,7 @@ import {
   seedRunLineageCheckpointIfFresh,
   sweepFreshResolution,
   createFreshResolutionCooldown,
+  createBoundaryCooldown,
   type RunLineageSummary,
 } from "../runLineage/projector.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
@@ -50,6 +51,7 @@ export async function runRunLineageDaemon(config: Config): Promise<void> {
   await seedRunLineageCheckpointIfFresh(pool);
 
   const freshResolutionCooldown = createFreshResolutionCooldown();
+  const boundaryCooldown = createBoundaryCooldown();
 
   await runDaemonLoop({
     label: "run-lineage-daemon",
@@ -59,6 +61,7 @@ export async function runRunLineageDaemon(config: Config): Promise<void> {
         freshResolutionScope: config.RUN_LINEAGE_FRESH_RESOLUTION_ENABLED
           ? config.RUN_LINEAGE_FRESH_RESOLUTION_SCOPE
           : null,
+        boundaryCooldown,
       });
       if (config.RUN_LINEAGE_FRESH_RESOLUTION_ENABLED) {
         await sweepFreshResolution(

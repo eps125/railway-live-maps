@@ -8,14 +8,11 @@ import {
   resolveFreshRunMatch,
   upsertResolvedLink,
   findOccupancyLink,
+  type OccupancyLink,
   londonToday,
   londonMinutesSinceMidnight,
 } from "@railway/database";
-import {
-  evaluateStepChain,
-  evaluateBoundaryCorroboration,
-  isSameRunIdentity,
-} from "@railway/domain";
+import { evaluateStepChain, evaluateBoundaryCrossing, isSameRunIdentity } from "@railway/domain";
 
 /**
  * Milestone 39 (docs/adr/0007): threads an already-`resolved` run identity forward along
@@ -43,23 +40,38 @@ export const RUN_LINEAGE_PROJECTION_VERSION = 1;
 
 const DEFAULT_BATCH_SIZE = 200;
 
-/** How far past a boundary-berth exit a fresh interpose on the paired berth is even considered a
- * candidate at all — generous, since inter-area transit time varies a lot by route. Corroboration
- * (schedule timing / TRUST movement continuity), not this window, is what actually decides
- * `matched` vs `none`/`ambiguous` (docs/adr/0007) — this is only the candidate-discovery net. */
-const BOUNDARY_CANDIDATE_WINDOW_MINUTES = 30;
+/** How far apart, either way, a boundary's exit and entry may be and still count as the same
+ * crossing. Real crossings overlap by a minute or two, the receiving area usually first
+ * (2026-09-24: CL interposed 1S02 at A004 2 min before PX stepped it out of CE04; PX had each
+ * southbound train at A304 ~1.5 min before CL stepped it out of 0007). */
+const BOUNDARY_WINDOW_MINUTES = 10;
 
-/** Within this much tighter window, a candidate's own timing is taken as corroborating on its
- * own (a near-immediate reappearance on the paired berth is itself informative) — outside it,
- * `scheduleTimingPlausible` falls back to false and TRUST movement continuity is required
- * instead. Deliberately conservative; can be widened later against real crossing-time data. */
-const BOUNDARY_TIGHT_WINDOW_MINUTES = 5;
+/** How long an unlinked entry-berth occupancy keeps being checked — covers the window above with
+ * room to spare; after that it is left to fresh resolution. */
+const BOUNDARY_SWEEP_LOOKBACK_MINUTES = 20;
+
+/** How far back an exit-side occupancy may have *entered* its berth. Only bounds the index range
+ * scanned (it must also have left within the window): on production, 7 days of PX CE04 rows cost
+ * 146 ms cold, 24 h costs 2-12 ms. */
+const BOUNDARY_EXIT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+/** Minimum gap between two checks of the same still-undecided entry. */
+const BOUNDARY_RECHECK_MS = 5_000;
+
+/** Safety bound on how many already-stepped occupancies one boundary link is carried through. */
+const MAX_FORWARD_PROPAGATION_STEPS = 200;
+
+/** In-memory, per-daemon-process throttle for the boundary sweep — same shape and lifetime as
+ * `createFreshResolutionCooldown`. */
+export function createBoundaryCooldown(): Map<string, number> {
+  return new Map();
+}
 
 interface TdStepEventRow {
   raw_event_id: string;
   raw_event_normalized_at_utc: Date;
   td_area: string;
-  message_type: "CA" | "CB";
+  message_type: "CA";
   from_berth: string;
   to_berth: string | null;
   description: string | null;
@@ -74,12 +86,6 @@ interface CaStepRow {
   /** The headcode the step carried into `to_berth` — needed only for a step-chain upgrade
    * attempt (see `UpgradeCandidate`); the inheritance path itself never looks at it. */
   description: string | null;
-}
-
-interface CbCancelRow {
-  raw_event_normalized_at_utc: Date;
-  td_area: string;
-  from_berth: string;
 }
 
 interface OccupancyRef {
@@ -149,7 +155,7 @@ const OCCUPANCY_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
  * share it — see `apps/worker/src/td/projector.ts`'s `processCClassBatch`). Deliberately not
  * filtered by `exit_reason`: a `CA` step closes with `'stepped_out'`, a `CB` cancel with
  * `'cancelled'` (`packages/domain/src/td/berthReducer.ts`) — this is shared by both
- * `processStepChainBatch` (`CA`) and `processBoundaryBatch` (`CB`), so it can't hardcode either
+ * `processStepChainBatch` (`CA`) and, originally, a `CB`-triggered boundary check, so it can't hardcode either
  * one's reason string (bug caught by CI, 2026-09-14: originally hardcoded `'stepped_out'`, which
  * silently found nothing for every `CB` cancel). The exact `(td_area, berth_code, left_at)` match
  * is already precise enough to identify the row on its own — but without a predicate on
@@ -272,166 +278,198 @@ async function processStepChainBatch(
   }
 }
 
-interface BoundaryPair {
-  pairedArea: string;
-  pairedBerth: string;
+interface BoundaryEntryRow {
+  exit_area: string;
+  exit_berth: string;
+  entry_area: string;
+  entry_berth: string;
+  id: string;
+  entered_at: Date;
+  description: string;
 }
 
-async function findBoundaryPair(
-  client: PoolClient,
-  tdArea: string,
-  berth: string,
-): Promise<BoundaryPair | null> {
-  const { rows } = await client.query<{ area: string; berth: string }>(
-    `select area_b as area, berth_b as berth from td_area_boundary
-       where area_a = $1 and berth_a = $2
-     union all
-     select area_a as area, berth_a as berth from td_area_boundary
-       where area_b = $1 and berth_b = $2
-     limit 1`,
-    [tdArea, berth],
-  );
-  return rows[0] ? { pairedArea: rows[0].area, pairedBerth: rows[0].berth } : null;
+interface BoundaryExitRow {
+  id: string;
+  entered_at: Date;
+  left_at: Date | null;
 }
 
-async function scheduleCallsNearInWindow(
-  client: PoolClient,
-  cifScheduleId: string,
-  pairedBerthTiplocs: string[],
-  windowStart: Date,
-  windowEnd: Date,
-): Promise<boolean> {
-  if (pairedBerthTiplocs.length === 0) return false;
-  // Loose but safe: only checks that the schedule calls at one of the paired berth's TIPLOCs at
-  // all, not the exact minute — CIF times are day-relative strings, not instants, and this
-  // corroboration is one of two independent signals (docs/adr/0007), not the sole decider.
-  const { rows } = await client.query<{ exists: boolean }>(
-    `select exists(
-       select 1 from cif_schedule_locations
-       where cif_schedule_id = $1 and tiploc_code = any($2::text[])
-     ) as exists`,
-    [cifScheduleId, pairedBerthTiplocs],
-  );
-  void windowStart;
-  void windowEnd;
-  return rows[0]?.exists ?? false;
+interface ForwardOccupancyRow {
+  td_area: string;
+  description: string;
+  left_at: Date | null;
+  exit_reason: string | null;
+  exit_event_id: string | null;
 }
 
-async function trustMovementContinuesPast(
+/**
+ * Carries a just-written boundary link on through occupancies the train has *already* stepped
+ * into on the new side. The entry berth is usually a fringe berth the train leaves before the
+ * exit side lets go (1S02, 2026-09-24: CL A004 -> 0005 at 16:25:40, PX CE04 -> COUT at 16:25:48),
+ * and `processStepChainBatch` never revisits a step it saw while its source was still unlinked.
+ * Follows only clean `stepped_out` exits to the occupancy that same step opened (`entry_event_id`
+ * = the step's raw event), under the same `evaluateStepChain` rules, and stops at the first
+ * occupancy that already has a link of its own.
+ */
+async function propagateLinkForward(
   client: PoolClient,
-  cifScheduleId: string,
-  trafficDay: string,
-  after: Date,
-): Promise<boolean> {
-  const { rows } = await client.query<{ exists: boolean }>(
-    `select exists(
-       select 1 from trust_activation a
-       join trust_movement m on m.trust_id = a.trust_id
-       where a.cif_schedule_id = $1
-         and a.created >= ($2::date)::timestamp at time zone 'Europe/London'
-         and m.actual_timestamp > $3
-     ) as exists`,
-    [cifScheduleId, trafficDay, after],
-  );
-  return rows[0]?.exists ?? false;
-}
-
-async function pairedBerthTiplocs(
-  client: PoolClient,
-  tdArea: string,
-  berth: string,
-): Promise<string[]> {
-  const { rows } = await client.query<{ tiploc: string }>(
-    `select distinct l.tiploc from smart_berth_step s
-     join location_reference l on l.stanox = s.stanox
-     where s.td_area = $1 and (s.from_berth = $2 or s.to_berth = $2) and s.stanox is not null`,
-    [tdArea, berth],
-  );
-  return rows.map((r) => r.tiploc);
-}
-
-async function processBoundaryBatch(
-  client: PoolClient,
-  rows: CbCancelRow[],
+  start: OccupancyRef,
+  trainRunId: string,
   summary: RunLineageSummary,
 ): Promise<void> {
-  for (const row of rows) {
-    const fromOccupancy = await findOccupancyClosedAt(
-      client,
-      row.td_area,
-      row.from_berth,
-      row.raw_event_normalized_at_utc,
-    );
-    if (!fromOccupancy) continue;
-    const link = await findOccupancyLink(client, {
-      id: fromOccupancy.id,
-      enteredAt: fromOccupancy.entered_at,
+  let current = start;
+  for (let step = 0; step < MAX_FORWARD_PROPAGATION_STEPS; step += 1) {
+    const row = (
+      await client.query<ForwardOccupancyRow>(
+        `select td_area, description, left_at, exit_reason, exit_event_id::text as exit_event_id
+         from berth_occupancy where id = $1 and entered_at = $2`,
+        [current.id, current.entered_at],
+      )
+    ).rows[0];
+    if (!row || row.exit_reason !== "stepped_out" || !row.left_at || !row.exit_event_id) return;
+
+    // `(description, entered_at)` index: a step opens its `to` occupancy with the step's own
+    // description at the step's own timestamp, and `entry_event_id` pins it to this exact step.
+    const next = (
+      await client.query<OccupancyRef>(
+        `select id, entered_at from berth_occupancy
+         where description = $1 and entered_at = $2 and td_area = $3
+           and entry_reason = 'ca_step' and entry_event_id = $4`,
+        [row.description, row.left_at, row.td_area, row.exit_event_id],
+      )
+    ).rows[0];
+    if (!next) return;
+
+    const verdict = evaluateStepChain({
+      sourceHasLink: true,
+      isCleanStep: true,
+      duringFeedGap: await duringFeedGap(client, row.td_area, row.left_at),
     });
-    if (!link) continue;
+    if (!verdict.propagate) return;
+    if (!(await insertLink(client, next, trainRunId, "step_chain"))) return;
+    summary.stepChainLinks += 1;
+    current = next;
+  }
+}
 
-    const pair = await findBoundaryPair(client, row.td_area, row.from_berth);
-    if (!pair) continue; // No owner-curated boundary here — falls back to fresh resolution.
+/**
+ * Carries an already-matched run across an owner-curated `td_area_boundary` (docs/adr/0007,
+ * Milestone 69 addendum). The curated berth pair is the evidence: a linked occupancy leaving the
+ * exit berth, and exactly one unclaimed same-headcode occupancy at the paired entry berth within
+ * `BOUNDARY_WINDOW_MINUTES` either side of that exit, and the entry inherits the run. No TRUST or
+ * schedule check. Pairs are usable in both directions.
+ *
+ * A sweep over recent entry-berth occupancies rather than a reaction to one event, because real
+ * crossings don't arrive in one order (2026-09-24, PX <-> CL): the receiving area usually has the
+ * train a minute or two *before* the sending area steps it out, both sides are usually `CA` steps
+ * rather than a `CC` interpose or a `CB` cancel, and whichever event lands second must still find
+ * the first. An entry whose exit side hasn't left yet is simply re-checked on a later tick.
+ */
+async function sweepBoundaryCrossings(
+  client: PoolClient,
+  now: Date,
+  cooldown: Map<string, number> | null,
+  summary: RunLineageSummary,
+): Promise<void> {
+  // One `(td_area, berth_code, entered_at)` index probe per boundary berth.
+  const { rows: entries } = await client.query<BoundaryEntryRow>(
+    `with pairs as (
+       select area_a as exit_area, berth_a as exit_berth, area_b as entry_area, berth_b as entry_berth
+       from td_area_boundary
+       union
+       select area_b, berth_b, area_a, berth_a from td_area_boundary
+     )
+     select p.exit_area, p.exit_berth, p.entry_area, p.entry_berth,
+            e.id, e.entered_at, e.description
+     from pairs p
+     join berth_occupancy e
+       on e.td_area = p.entry_area and e.berth_code = p.entry_berth
+      and e.entered_at >= $1::timestamptz - make_interval(mins => $2)
+      and e.entered_at <= $1::timestamptz
+     where not exists (
+       select 1 from berth_occupancy_run_link l
+       where l.berth_occupancy_id = e.id and l.occupancy_entered_at = e.entered_at
+     )
+     order by e.entered_at`,
+    [now, BOUNDARY_SWEEP_LOOKBACK_MINUTES],
+  );
 
-    // The shared @railway/database findOccupancyLink already joins train_run, so link itself
-    // carries cifScheduleId/cifTrainUid/trafficDay — no separate re-query needed (this used to
-    // hand-roll one against the worker-private, trainRunId-only findOccupancyLink).
-    const run = link;
-
-    const windowStart = row.raw_event_normalized_at_utc;
-    const windowEnd = new Date(windowStart.getTime() + BOUNDARY_CANDIDATE_WINDOW_MINUTES * 60_000);
-    const tightEnd = new Date(windowStart.getTime() + BOUNDARY_TIGHT_WINDOW_MINUTES * 60_000);
-
-    const { rows: candidateRows } = await client.query<OccupancyRef>(
-      `select id, entered_at from berth_occupancy
-       where td_area = $1 and berth_code = $2 and entry_reason = 'cc_interpose'
-         and entered_at between $3 and $4
-       order by entered_at asc`,
-      [pair.pairedArea, pair.pairedBerth, windowStart, windowEnd],
-    );
-    // Only candidates not already claimed by some other run are real candidates here.
-    const unclaimedCandidates: OccupancyRef[] = [];
-    for (const candidate of candidateRows) {
-      const existing = await findOccupancyLink(client, {
-        id: candidate.id,
-        enteredAt: candidate.entered_at,
-      });
-      if (!existing) unclaimedCandidates.push(candidate);
+  const nowMs = now.getTime();
+  if (cooldown) {
+    for (const [key, checkedAt] of cooldown) {
+      if (checkedAt < nowMs - BOUNDARY_SWEEP_LOOKBACK_MINUTES * 60_000) cooldown.delete(key);
     }
-    if (unclaimedCandidates.length === 0) continue;
+  }
+  const windowMs = BOUNDARY_WINDOW_MINUTES * 60_000;
 
-    const withinTight = unclaimedCandidates.filter((c) => c.entered_at <= tightEnd);
-    const scheduleTimingPlausible =
-      withinTight.length > 0 && run.cifScheduleId
-        ? await scheduleCallsNearInWindow(
-            client,
-            run.cifScheduleId,
-            await pairedBerthTiplocs(client, pair.pairedArea, pair.pairedBerth),
-            windowStart,
-            windowEnd,
-          )
-        : false;
-    const trustMovementContinuity = run.cifScheduleId
-      ? await trustMovementContinuesPast(client, run.cifScheduleId, run.trafficDay, windowStart)
-      : false;
+  for (const entry of entries) {
+    // Per-entry work is throttled: an entry whose exit side is never matched stays unlinked for
+    // the whole lookback, and shouldn't be re-queried every 1s tick.
+    if (cooldown) {
+      const key = `${entry.id}:${entry.entered_at.toISOString()}`;
+      const lastChecked = cooldown.get(key);
+      if (lastChecked !== undefined && nowMs - lastChecked < BOUNDARY_RECHECK_MS) continue;
+      cooldown.set(key, nowMs);
+    }
+    const enteredMs = entry.entered_at.getTime();
 
-    const verdict = evaluateBoundaryCorroboration({
-      candidateCount: unclaimedCandidates.length,
-      scheduleTimingPlausible,
-      trustMovementContinuity,
-    });
+    const { rows: exits } = await client.query<BoundaryExitRow>(
+      `select id, entered_at, left_at from berth_occupancy
+       where td_area = $1 and berth_code = $2 and description = $3
+         and entered_at >= $4 and entered_at <= $5
+         and (left_at is null or left_at between $6 and $5)`,
+      [
+        entry.exit_area,
+        entry.exit_berth,
+        entry.description,
+        new Date(enteredMs - BOUNDARY_EXIT_LOOKBACK_MS),
+        new Date(enteredMs + windowMs),
+        new Date(enteredMs - windowMs),
+      ],
+    );
+    // Still standing at the exit berth — decide once it has actually left.
+    if (exits.some((x) => x.left_at === null)) continue;
+
+    const linked: { leftAt: Date; link: OccupancyLink }[] = [];
+    for (const exit of exits) {
+      const link = await findOccupancyLink(client, { id: exit.id, enteredAt: exit.entered_at });
+      if (link && exit.left_at) linked.push({ leftAt: exit.left_at, link });
+    }
+    if (linked.length === 0) continue; // Not matched on the exit side — nothing to carry.
+    if (new Set(linked.map((x) => x.link.trainRunId)).size > 1) {
+      summary.boundaryAmbiguous += 1;
+      continue;
+    }
+    const { leftAt, link } = linked.reduce((a, b) => (b.leftAt > a.leftAt ? b : a));
+
+    // Every unclaimed same-headcode arrival at the entry berth around that exit is a candidate.
+    const { rows: counted } = await client.query<{ count: string }>(
+      `select count(*)::text as count from berth_occupancy e
+       where e.td_area = $1 and e.berth_code = $2 and e.description = $3
+         and e.entered_at between $4 and $5
+         and not exists (
+           select 1 from berth_occupancy_run_link l
+           where l.berth_occupancy_id = e.id and l.occupancy_entered_at = e.entered_at
+         )`,
+      [
+        entry.entry_area,
+        entry.entry_berth,
+        entry.description,
+        new Date(leftAt.getTime() - windowMs),
+        new Date(leftAt.getTime() + windowMs),
+      ],
+    );
+    const verdict = evaluateBoundaryCrossing({ candidateCount: Number(counted[0]?.count ?? 0) });
     if (verdict.status === "ambiguous") {
       summary.boundaryAmbiguous += 1;
       continue;
     }
     if (verdict.status !== "matched") continue;
 
-    const inserted = await insertLink(
-      client,
-      unclaimedCandidates[0]!,
-      link.trainRunId,
-      "boundary_correlated",
-    );
-    if (inserted) summary.boundaryLinks += 1;
+    const entryRef: OccupancyRef = { id: entry.id, entered_at: entry.entered_at };
+    if (!(await insertLink(client, entryRef, link.trainRunId, "boundary_correlated"))) continue;
+    summary.boundaryLinks += 1;
+    await propagateLinkForward(client, entryRef, link.trainRunId, summary);
   }
 }
 
@@ -471,7 +509,7 @@ export function createFreshResolutionCooldown(): Map<string, number> {
  * incidents the same day) rather than folded into it: this also naturally covers occupancies a
  * `CC` interpose opens (a train's very first berth — e.g. its origin — which the CA/CB-only batch
  * loop never reads at all), and boundary crossings with no owner-curated `td_area_boundary` pair
- * (`processBoundaryBatch`'s own `// falls back to fresh resolution` comment, above).
+ * (or where the exit side was never matched, so the boundary sweep has nothing to carry).
  */
 export async function sweepFreshResolution(
   pool: Pool,
@@ -681,6 +719,11 @@ export interface RunLineageOptions {
    * the same category of extra DB work, so it shares the same on/off switch and scope rather than
    * introducing a second one). */
   freshResolutionScope?: FreshResolutionScope | null;
+  /** Reference instant for the boundary sweep's windows — tests pin it; the daemon omits it. */
+  now?: Date;
+  /** Boundary sweep re-check throttle (`createBoundaryCooldown`) — the daemon passes one long-lived
+   * map; omitted, every entry is checked on every call. */
+  boundaryCooldown?: Map<string, number> | null;
 }
 
 export async function runProjectRunLineage(
@@ -716,7 +759,7 @@ export async function runProjectRunLineage(
       `select raw_event_id, raw_event_normalized_at_utc, td_area, message_type,
               from_berth, to_berth, description, ingestion_sequence
        from td_berth_event
-       where ingestion_sequence > $1 and message_type in ('CA', 'CB')
+       where ingestion_sequence > $1 and message_type = 'CA'
        order by ingestion_sequence
        limit $2`,
       [lastSequence, batchSize],
@@ -726,7 +769,7 @@ export async function runProjectRunLineage(
     summary.processedEvents += batch.rows.length;
 
     const caRows: CaStepRow[] = batch.rows
-      .filter((r) => r.message_type === "CA" && r.to_berth !== null)
+      .filter((r) => r.to_berth !== null)
       .map((r) => ({
         raw_event_normalized_at_utc: r.raw_event_normalized_at_utc,
         td_area: r.td_area,
@@ -734,20 +777,12 @@ export async function runProjectRunLineage(
         to_berth: r.to_berth as string,
         description: r.description,
       }));
-    const cbRows: CbCancelRow[] = batch.rows
-      .filter((r) => r.message_type === "CB")
-      .map((r) => ({
-        raw_event_normalized_at_utc: r.raw_event_normalized_at_utc,
-        td_area: r.td_area,
-        from_berth: r.from_berth,
-      }));
 
     const upgradeCandidates: UpgradeCandidate[] = [];
     const client = await pool.connect();
     try {
       await client.query("begin");
       await processStepChainBatch(client, caRows, summary, eligibleAreas, upgradeCandidates);
-      await processBoundaryBatch(client, cbRows, summary);
       const maxSequence = batch.rows.reduce(
         (max, r) => (BigInt(r.ingestion_sequence) > max ? BigInt(r.ingestion_sequence) : max),
         BigInt(lastSequence),
@@ -763,6 +798,21 @@ export async function runProjectRunLineage(
     await attemptStepChainUpgrades(pool, upgradeCandidates, summary);
 
     if (batch.rows.length < batchSize) break;
+  }
+
+  // After the step batches, so steps already ingested this tick are visible to the forward
+  // propagation. Own connection, no transaction: each write is one idempotent insert, and an
+  // entry left half-done is simply picked up again on a later tick.
+  const boundaryClient = await pool.connect();
+  try {
+    await sweepBoundaryCrossings(
+      boundaryClient,
+      options.now ?? new Date(),
+      options.boundaryCooldown ?? null,
+      summary,
+    );
+  } finally {
+    boundaryClient.release();
   }
 
   return summary;

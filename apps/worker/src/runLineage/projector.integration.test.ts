@@ -77,13 +77,14 @@ async function insertOccupancy(params: {
   exitReason: string | null;
   entryEvent: { id: string; normalizedAt: Date };
   exitEvent?: { id: string; normalizedAt: Date };
+  description?: string;
 }): Promise<{ id: string; enteredAt: Date }> {
   const result = await pool.query<{ id: string }>(
     `insert into berth_occupancy (
        projection_version, td_area, berth_code, description, entered_at, left_at,
        entry_event_id, entry_event_normalized_at_utc, entry_reason,
        exit_event_id, exit_event_normalized_at_utc, exit_reason
-     ) values ($1, $2, $3, 'RUN1', $4, $5, $6, $7, $8, $9, $10, $11)
+     ) values ($1, $2, $3, $12, $4, $5, $6, $7, $8, $9, $10, $11)
      returning id`,
     [
       TD_PROJECTION_VERSION,
@@ -97,6 +98,7 @@ async function insertOccupancy(params: {
       params.exitEvent?.id ?? null,
       params.exitEvent?.normalizedAt ?? null,
       params.exitReason,
+      params.description ?? "RUN1",
     ],
   );
   return { id: result.rows[0]!.id, enteredAt: params.enteredAt };
@@ -277,7 +279,7 @@ describe("run-lineage projector (integration)", () => {
     expect(await linkFor(occB)).toBeNull();
   });
 
-  it("boundary-correlates across a curated crossing when TRUST movement continuity corroborates", async () => {
+  it("carries a match across a curated boundary when the exit is a cancel", async () => {
     const berthA = "0021";
     const berthB = "0031";
     const openA = await tdEvent(AREA_A, T(20), "CC", null, berthA);
@@ -334,7 +336,7 @@ describe("run-lineage projector (integration)", () => {
       entryEvent: interpose,
     });
 
-    await runProjectRunLineage(pool, { batchSize: 50 });
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(27) });
 
     const link = await linkFor(occB);
     expect(link).toEqual({ train_run_id: runId, link_basis: "boundary_correlated" });
@@ -398,8 +400,184 @@ describe("run-lineage projector (integration)", () => {
       entryEvent: interpose2,
     });
 
-    await runProjectRunLineage(pool, { batchSize: 50 });
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(48) });
 
     expect(await linkFor(occB1)).toBeNull();
+  });
+
+  // Boundary crossings as they actually happen (PX <-> CL, 2026-09-24): both sides are usually CA
+  // steps, and the receiving area has the train before the sending area lets go.
+
+  /** An exit-berth occupancy in AREA_A, optionally linked to a matched run, plus the boundary. */
+  async function exitSide(params: {
+    exitBerth: string;
+    entryBerth: string;
+    enteredAt: Date;
+    uid: string;
+    matched?: boolean;
+  }) {
+    const open = await tdEvent(AREA_A, params.enteredAt, "CC", null, params.exitBerth);
+    const occ = await insertOccupancy({
+      area: AREA_A,
+      berth: params.exitBerth,
+      enteredAt: params.enteredAt,
+      leftAt: null,
+      entryReason: "cc_interpose",
+      exitReason: null,
+      entryEvent: open,
+    });
+    let runId: string | null = null;
+    if (params.matched ?? true) {
+      runId = await insertTrainRun({
+        cifScheduleId: await insertMinimalSchedule(params.uid),
+        cifTrainUid: params.uid,
+        matchBasis: "trust_activation",
+        matchConfidence: "solid",
+        establishedTdArea: AREA_A,
+        establishedBerth: params.exitBerth,
+      });
+      await insertRunLink(occ, runId, "resolved");
+    }
+    await pool.query(
+      `insert into td_area_boundary (area_a, berth_a, area_b, berth_b, created_by)
+       values ($1, $2, $3, $4, 'test')`,
+      [AREA_A, params.exitBerth, AREA_B, params.entryBerth],
+    );
+    return { occ, runId };
+  }
+
+  async function stepOut(
+    occ: { id: string; enteredAt: Date },
+    area: string,
+    fromBerth: string,
+    toBerth: string,
+    at: Date,
+  ) {
+    const step = await tdEvent(area, at, "CA", fromBerth, toBerth);
+    await pool.query(
+      `update berth_occupancy set left_at = $1, exit_reason = 'stepped_out', exit_event_id = $2,
+         exit_event_normalized_at_utc = $3
+       where id = $4`,
+      [step.normalizedAt, step.id, step.normalizedAt, occ.id],
+    );
+    return step;
+  }
+
+  async function interposeAt(berth: string, at: Date, description = "RUN1") {
+    const event = await tdEvent(AREA_B, at, "CC", null, berth);
+    return insertOccupancy({
+      area: AREA_B,
+      berth,
+      enteredAt: at,
+      leftAt: null,
+      entryReason: "cc_interpose",
+      exitReason: null,
+      entryEvent: event,
+      description,
+    });
+  }
+
+  it("carries a match across when the entry comes first and the exit is a step, then on through steps already taken", async () => {
+    // 1S02: CL interposed A004 16:23:43, stepped A004 -> 0005 16:25:40; PX stepped CE04 -> COUT
+    // 16:25:48. No TRUST or schedule rows exist for this run at all.
+    const { occ: occA, runId } = await exitSide({
+      exitBerth: "0101",
+      entryBerth: "F101",
+      enteredAt: T(100),
+      uid: "BOUND3",
+    });
+    const fringe = await interposeAt("F101", T(101));
+    const onward = await stepOut(fringe, AREA_B, "F101", "0105", T(102.5));
+    const next = await insertOccupancy({
+      area: AREA_B,
+      berth: "0105",
+      enteredAt: onward.normalizedAt,
+      leftAt: null,
+      entryReason: "ca_step",
+      exitReason: null,
+      entryEvent: onward,
+    });
+    await stepOut(occA, AREA_A, "0101", "COUT", T(103));
+
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(103.5) });
+
+    expect(await linkFor(fringe)).toEqual({
+      train_run_id: runId,
+      link_basis: "boundary_correlated",
+    });
+    expect(await linkFor(next)).toEqual({ train_run_id: runId, link_basis: "step_chain" });
+  });
+
+  it("accepts a stepped-in entry, and waits while the train is still at the exit berth", async () => {
+    // Southbound: PX gets STIN -> A304 while the train is still in CL 0007.
+    const { occ: occA, runId } = await exitSide({
+      exitBerth: "0201",
+      entryBerth: "F201",
+      enteredAt: T(200),
+      uid: "BOUND4",
+    });
+    const stepIn = await tdEvent(AREA_B, T(201), "CA", "STIN", "F201");
+    const entry = await insertOccupancy({
+      area: AREA_B,
+      berth: "F201",
+      enteredAt: T(201),
+      leftAt: null,
+      entryReason: "ca_step",
+      exitReason: null,
+      entryEvent: stepIn,
+    });
+
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(202) });
+    expect(await linkFor(entry)).toBeNull();
+
+    await stepOut(occA, AREA_A, "0201", "COUT", T(202.5));
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(203) });
+    expect(await linkFor(entry)).toEqual({
+      train_run_id: runId,
+      link_basis: "boundary_correlated",
+    });
+  });
+
+  it("does not carry anything across when the exit side was never matched", async () => {
+    const { occ: occA } = await exitSide({
+      exitBerth: "0301",
+      entryBerth: "F301",
+      enteredAt: T(300),
+      uid: "BOUND5",
+      matched: false,
+    });
+    await stepOut(occA, AREA_A, "0301", "COUT", T(301));
+    const entry = await interposeAt("F301", T(301.5));
+
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(302) });
+    expect(await linkFor(entry)).toBeNull();
+  });
+
+  it("never links an entry carrying a different headcode", async () => {
+    const { occ: occA } = await exitSide({
+      exitBerth: "0401",
+      entryBerth: "F401",
+      enteredAt: T(400),
+      uid: "BOUND6",
+    });
+    await stepOut(occA, AREA_A, "0401", "COUT", T(401));
+    const entry = await interposeAt("F401", T(401.5), "2X99");
+
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(402) });
+    expect(await linkFor(entry)).toBeNull();
+  });
+
+  it("never links an entry that arrives long after the exit", async () => {
+    const { occ: occA } = await exitSide({
+      exitBerth: "0501",
+      entryBerth: "F501",
+      enteredAt: T(500),
+      uid: "BOUND7",
+    });
+    await stepOut(occA, AREA_A, "0501", "COUT", T(501));
+    const entry = await interposeAt("F501", T(516));
+
+    await runProjectRunLineage(pool, { batchSize: 50, now: T(517) });
+    expect(await linkFor(entry)).toBeNull();
   });
 });

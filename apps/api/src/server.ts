@@ -20,6 +20,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
 import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
 import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
+import { registerBerthExplorerRoutes } from "./routes/admin/berthExplorer.js";
 import { registerSClassAdminRoutes, registerSClassEditorRoutes } from "./routes/admin/sClass.js";
 import { requireRole } from "./auth/requireRole.js";
 import { createPollingDeltaSource } from "./live/pollingDeltaSource.js";
@@ -120,6 +121,8 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (berthQueryScope) => {
     berthQueryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerBerthQueryRoutes(berthQueryScope, { pool });
+    // Milestone 72: the Berth explorer, same admin gate.
+    await registerBerthExplorerRoutes(berthQueryScope, { pool });
   });
 
   // Milestone 36c: the admin S-Class explorer + definitions (any area; web page under the admin

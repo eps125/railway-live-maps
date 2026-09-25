@@ -19,6 +19,7 @@ import { runRefreshReferenceData } from "./commands/refreshReferenceData.js";
 import { runScheduleReferenceRefresh } from "./commands/scheduleReferenceRefresh.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runBackfillSClassBits } from "./commands/backfillSClassBits.js";
+import { runBackfillBerthActivity } from "./commands/backfillBerthActivity.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
 import { runProjectTdLiveDaemon } from "./commands/projectTdLiveDaemon.js";
 import { runPrunePartitions } from "./commands/prunePartitions.js";
@@ -72,6 +73,8 @@ async function main(): Promise<void> {
       return runBackfillTdAreaSummary(config);
     case "backfill-s-class-bits":
       return runBackfillSClassBits(config, argvRest);
+    case "backfill-berth-activity":
+      return runBackfillBerthActivity(config, argvRest);
     case "prune-partitions":
       return runPrunePartitions(config, argvRest);
     case "snapshot-maps":

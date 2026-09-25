@@ -204,6 +204,28 @@ Indexes:
 - BRIN on `entered_at`
 - indexes supporting bounded time-window queries
 
+### `td_berth_daily_activity` (Milestone 72, migration 0043)
+
+Per-berth, per-UTC-day activity counts, derived from `td_berth_event` (rebuildable; cleared with it
+on a `project-td --rebuild`). Primary key `(td_area, activity_date, berth, source)`; index
+`(td_area, berth, activity_date desc)`.
+
+- `events_in` — events whose `to_berth` is this berth (CA steps into it, CC interposes).
+- `events_out` — events whose `from_berth` is this berth (CA steps out of it, CB cancels).
+- `first_event_at` / `last_event_at` — the first and last of those events that day.
+- `source` — `live`: counted additively by `project-td` in the same transaction that inserts the
+  `td_berth_event` rows, so each event is counted exactly once; `backfill`: absolute per-day
+  recounts by `backfill-berth-activity` of events at or before the cutover. Readers sum both.
+
+`td_berth_activity_cutover` (single row) records the `ingestion_sequence` at which `project-td`
+started counting live; events at or before it are the backfill's, events after it the live
+counter's, so the two never count the same event.
+
+It exists because `td_berth_event` has no berth index: "which berths did this area use in the
+last 90 days" and "the newest steps of a berth used once a month" would otherwise read every step
+of the area in the window. The Berth explorer reads this table for the listing, and reads
+`td_berth_event` only on the days a berth was active.
+
 ### C-Class projection behavior
 
 `descr` of `"----"` (four literal hyphens) is a real Train Describer convention for a

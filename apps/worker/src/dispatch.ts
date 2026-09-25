@@ -16,6 +16,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "refresh-reference-data",
   "backfill-td-area-summary",
   "backfill-s-class-bits",
+  "backfill-berth-activity",
   "prune-partitions",
   "snapshot-maps",
   "repair-open-occupancies",

@@ -1677,3 +1677,53 @@ legend {
     max-height: 55%;
   }
 }
+
+/* Milestone 72: Berth explorer — reuses the S-Class explorer's toolbar and two-column layout. */
+.berth-explorer-table td {
+  vertical-align: top;
+}
+
+.berth-explorer-row--selected td {
+  background: var(--color-accent-muted);
+}
+
+.berth-explorer-row--unseen td {
+  color: var(--color-text-muted);
+}
+
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent-hover);
+  cursor: pointer;
+  text-decoration: underline;
+  font: inherit;
+}
+
+.berth-explorer-tag {
+  display: inline-block;
+  margin: 0 0.25rem 0.25rem 0;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+}
+
+.berth-explorer-tag--published {
+  border-color: var(--color-success);
+}
+
+.berth-explorer-tag--draft {
+  border-color: var(--color-warning);
+}
+
+.berth-explorer-tag--none {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+
+.berth-explorer-allocations {
+  margin: 0 0 0.75rem;
+  padding-left: 1.1rem;
+}

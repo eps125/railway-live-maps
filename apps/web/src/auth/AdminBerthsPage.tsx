@@ -20,8 +20,15 @@ const TOOLS: BerthTool[] = [
     title: "Berth steps",
     path: "/admin/berths/steps",
     description:
-      "Give a pair of berths and see the date and time of the last 50 steps from one to the " +
-      "other, with each train's description.",
+      "Give a pair of berths (or just one) and see the date and time of the last 50 steps " +
+      "between them (or at it), with each train's description.",
+  },
+  {
+    title: "Berth explorer",
+    path: "/admin/berths/explorer",
+    description:
+      "See every berth a train describer area has used in the last 7 to 90 days, whether each " +
+      "is on a map yet (including combined berths), and each berth's latest steps.",
   },
   {
     title: "S-Class explorer",

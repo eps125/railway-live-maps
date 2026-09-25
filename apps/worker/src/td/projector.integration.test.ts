@@ -574,6 +574,71 @@ describe("runProjectTd (integration)", () => {
     expect(history).toHaveLength(1);
   });
 
+  it("counts each berth's events per UTC day into td_berth_daily_activity, once (Milestone 72)", async () => {
+    const area = uniqueArea();
+    // Noon UTC two days ago, so the second day's event is still in the past.
+    const now = new Date();
+    const t = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 2, 12);
+    const day1 = new Date(t).toISOString().slice(0, 10);
+    const day2 = new Date(t + 86_400_000).toISOString().slice(0, 10);
+    await record([cc(area, "0950", "JJJJ", t)], new Date(t));
+    await record([ca(area, "0950", "0951", "JJJJ", t + 1000)], new Date(t + 1000));
+    await record([cb(area, "0951", "JJJJ", t + 2000)], new Date(t + 2000));
+    await record([cc(area, "0950", "KKKK", t + 86_400_000)], new Date(t + 86_400_000));
+    await runProjectTd(pool);
+
+    const activity = async (): Promise<unknown[]> =>
+      (
+        await pool.query(
+          `select activity_date::text as day, berth, source, events_in, events_out,
+                  first_event_at, last_event_at
+             from td_berth_daily_activity where td_area = $1
+            order by activity_date, berth, source`,
+          [area],
+        )
+      ).rows;
+    const counted = await activity();
+    expect(counted).toEqual([
+      {
+        day: day1,
+        berth: "0950",
+        source: "live",
+        events_in: 1,
+        events_out: 1,
+        first_event_at: new Date(t),
+        last_event_at: new Date(t + 1000),
+      },
+      {
+        day: day1,
+        berth: "0951",
+        source: "live",
+        events_in: 1,
+        events_out: 1,
+        first_event_at: new Date(t + 1000),
+        last_event_at: new Date(t + 2000),
+      },
+      {
+        day: day2,
+        berth: "0950",
+        source: "live",
+        events_in: 1,
+        events_out: 0,
+        first_event_at: new Date(t + 86_400_000),
+        last_event_at: new Date(t + 86_400_000),
+      },
+    ]);
+    const cutover = await pool.query("select live_after_sequence from td_berth_activity_cutover");
+    expect(cutover.rows).toHaveLength(1);
+
+    // A second run over the same events (nothing new) adds nothing.
+    await runProjectTd(pool);
+    expect(await activity()).toEqual(counted);
+
+    // A rebuild clears the counts with td_berth_event and recounts the replay exactly once.
+    await runProjectTd(pool, { rebuild: true });
+    expect(await activity()).toEqual(counted);
+  });
+
   it("rebuild: decoded S-Class state and transitions are regenerated identically", async () => {
     const area = uniqueArea();
     const t = Date.now();

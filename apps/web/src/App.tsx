@@ -10,6 +10,7 @@ import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
 import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
 import { BerthQueryPage } from "./auth/BerthQueryPage.js";
 import { BerthStepsPage } from "./auth/BerthStepsPage.js";
+import { BerthExplorerPage } from "./auth/BerthExplorerPage.js";
 import { SClassExplorerPage } from "./auth/SClassExplorerPage.js";
 
 export function App(): JSX.Element {
@@ -37,6 +38,8 @@ export function App(): JSX.Element {
         route.name === "adminTdBoundaries" ||
         route.name === "adminBerths" ||
         route.name === "adminBerthQuery" ||
+        route.name === "adminBerthSteps" ||
+        route.name === "adminBerthExplorer" ||
         route.name === "adminSClass") &&
       !isAdmin
     ) {
@@ -76,6 +79,9 @@ export function App(): JSX.Element {
   } else if (route.name === "adminBerthSteps") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthStepsPage />;
+  } else if (route.name === "adminBerthExplorer") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthExplorerPage />;
   } else if (route.name === "adminSClass") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <SClassExplorerPage />;
@@ -166,6 +172,8 @@ export function App(): JSX.Element {
               aria-current={
                 route.name === "adminBerths" ||
                 route.name === "adminBerthQuery" ||
+                route.name === "adminBerthSteps" ||
+                route.name === "adminBerthExplorer" ||
                 route.name === "adminSClass"
                   ? "page"
                   : undefined

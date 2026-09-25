@@ -166,6 +166,10 @@ async function clearProjectionRows(pool: Pool, projectionVersion: number): Promi
     // (raw_event_id, event_at) idempotency guard would make every row look "already projected"
     // and rebuild would silently do nothing.
     await client.query("delete from td_berth_event");
+    // Milestone 72: the Berth explorer's per-day counts are derived from td_berth_event, so they
+    // go with it; clearing the cutover makes the replay count everything as 'live' from zero.
+    await client.query("delete from td_berth_daily_activity");
+    await client.query("delete from td_berth_activity_cutover");
     await client.query("delete from td_heartbeat");
     await client.query("delete from td_s_event");
     // Reset the fast `project-td-live` projector's checkpoint (ADR 0003) so it re-seeds
@@ -767,6 +771,106 @@ async function upsertAreaSummary(
   );
 }
 
+interface BerthDayActivity {
+  tdArea: string;
+  /** UTC calendar date, `YYYY-MM-DD`. */
+  activityDate: string;
+  berth: string;
+  eventsIn: number;
+  eventsOut: number;
+  firstAt: Date;
+  lastAt: Date;
+}
+
+/**
+ * Milestone 72: folds newly inserted berth events into per-(area, UTC day, berth) counts for
+ * `td_berth_daily_activity`. `to_berth` counts as "in" (CA into it, CC interpose), `from_berth` as
+ * "out" (CA out of it, CB cancel); a CA therefore counts once for each of its two berths. Pure.
+ */
+export function aggregateBerthDayActivity(
+  rows: ReadonlyArray<{
+    tdArea: string;
+    eventAt: Date;
+    fromBerth?: string | null;
+    toBerth?: string | null;
+  }>,
+): BerthDayActivity[] {
+  const byKey = new Map<string, BerthDayActivity>();
+  const add = (tdArea: string, berth: string, eventAt: Date, direction: "in" | "out"): void => {
+    const activityDate = eventAt.toISOString().slice(0, 10);
+    const key = `${tdArea}|${activityDate}|${berth}`;
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = {
+        tdArea,
+        activityDate,
+        berth,
+        eventsIn: 0,
+        eventsOut: 0,
+        firstAt: eventAt,
+        lastAt: eventAt,
+      };
+      byKey.set(key, entry);
+    }
+    if (direction === "in") entry.eventsIn += 1;
+    else entry.eventsOut += 1;
+    if (eventAt < entry.firstAt) entry.firstAt = eventAt;
+    if (eventAt > entry.lastAt) entry.lastAt = eventAt;
+  };
+  for (const row of rows) {
+    if (row.toBerth) add(row.tdArea, row.toBerth, row.eventAt, "in");
+    if (row.fromBerth) add(row.tdArea, row.fromBerth, row.eventAt, "out");
+  }
+  return [...byKey.values()];
+}
+
+/** Milestone 72: records where live counting starts (once — later batches leave it alone), then
+ * adds this batch's counts. Runs only on rows this transaction newly inserted into
+ * `td_berth_event`, so — like `upsertAreaSummary` — each event is counted exactly once. */
+async function upsertBerthDailyActivity(
+  client: PoolClient,
+  lastSequence: string,
+  rows: ParsedCClassRow[],
+): Promise<void> {
+  await client.query(
+    `insert into td_berth_activity_cutover (id, live_after_sequence) values (1, $1)
+     on conflict (id) do nothing`,
+    [lastSequence],
+  );
+  const activity = aggregateBerthDayActivity(
+    rows.map((r) => ({
+      tdArea: r.row.td_area,
+      eventAt: r.row.normalized_event_at_utc,
+      fromBerth: r.fromBerth ?? null,
+      toBerth: r.toBerth ?? null,
+    })),
+  );
+  if (activity.length === 0) return;
+  await client.query(
+    `insert into td_berth_daily_activity (
+       td_area, activity_date, berth, source, events_in, events_out, first_event_at, last_event_at
+     )
+     select t.td_area, t.activity_date, t.berth, 'live', t.events_in, t.events_out, t.first_at, t.last_at
+     from unnest($1::text[], $2::date[], $3::text[], $4::int[], $5::int[], $6::timestamptz[], $7::timestamptz[])
+       as t(td_area, activity_date, berth, events_in, events_out, first_at, last_at)
+     on conflict (td_area, activity_date, berth, source) do update set
+       events_in = td_berth_daily_activity.events_in + excluded.events_in,
+       events_out = td_berth_daily_activity.events_out + excluded.events_out,
+       first_event_at = least(td_berth_daily_activity.first_event_at, excluded.first_event_at),
+       last_event_at = greatest(td_berth_daily_activity.last_event_at, excluded.last_event_at),
+       updated_at = now()`,
+    [
+      activity.map((a) => a.tdArea),
+      activity.map((a) => a.activityDate),
+      activity.map((a) => a.berth),
+      activity.map((a) => a.eventsIn),
+      activity.map((a) => a.eventsOut),
+      activity.map((a) => a.firstAt),
+      activity.map((a) => a.lastAt),
+    ],
+  );
+}
+
 /**
  * Turns nationwide raw TD events into current-state/history projections
  * (docs/IMPLEMENTATION_PLAN.md Milestone 4). Processes strictly in `ingestion_sequence` order —
@@ -940,6 +1044,7 @@ export async function runProjectTd(
           newCClassRows,
         );
         summary.anomalies += anomalies;
+        await upsertBerthDailyActivity(client, lastSequence, newCClassRows);
 
         const newSEventIds = await insertSEventsBulk(client, sClassRows);
         summary.sEvents += newSEventIds.size;

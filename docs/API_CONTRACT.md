@@ -597,6 +597,30 @@ ingestionSequence }], nextCursor }` ordered by `event_at` ascending (then `id`),
 Reached through the admin-only "Berths" nav item → "Query Berths" page (`/admin/berths/query` in
 the web app) — a hub page (`/admin/berths`) sits above it for tooling added here later.
 
+**Berth explorer (Milestone 72)** — admin-only, any TD area; web page `/admin/berths/explorer`.
+Reads `td_berth_daily_activity` (docs/DATA_MODEL.md), never `td_berth_event` across a window.
+Queries run under a 15 s statement timeout (`504 SEARCH_TOO_SLOW`).
+
+- `GET /api/v1/admin/berth-explorer/areas` — `{ areas: [{ tdArea, lastEventAt }] }`, every area
+  with C-Class events.
+- `GET /api/v1/admin/berth-explorer/areas/{tdArea}/berths?days=` — `days` is 7, 14, 30, 60 or 90
+  UTC days with today as the first (default 7; anything else falls back to it). Returns
+  `{ tdArea, days, sinceDate, coverageFromDate, berths: [{ berth, eventsIn, eventsOut, activeDays,
+firstSeenAt, lastSeenAt, lastSeenEverAt, allocations: [{ kind: "published" | "draft", mapSlug,
+mapName, elementId, displayName, combinedOrder, combinedMembers: [{ tdArea, berth }] | null }] }] }`.
+  Every berth seen in the window, plus every berth of the area bound on a map but not seen (zero
+  counts, `lastSeenAt: null`, `lastSeenEverAt` when it was last seen at all). Published means the
+  version of each map in effect now; draft means any `map_draft` document. `combinedMembers` lists
+  every member of a combined berth in `combinedOrder`, including other areas'. `coverageFromDate`
+  is the area's earliest counted day (before `backfill-berth-activity` runs, the deploy day).
+- `GET /api/v1/admin/berth-explorer/areas/{tdArea}/berths/{berth}/steps?limit=&before=&beforeId=`
+  — the berth's newest CA/CB/CC events (it is the from or the to berth), newest first:
+  `{ tdArea, berth, steps: [{ id, eventAt, description, messageType, fromBerth, toBerth }], next }`.
+  `limit` defaults to 30, at most 200. Reads `td_berth_event` only on the berth's active days, at
+  most 60 of them per request. `next` is `{ before, beforeId }` to pass back for the following
+  page (`beforeId` null when the page ended on a day boundary rather than a full page), or null at
+  the end of the recorded history.
+
 **S-Class explorer and definitions (Milestone 36c, docs/adr/0013)** — admin-only, any TD area
 with decoded S-Class data; the web page is `/admin/berths/s-class`. Authoring/diagnostics only:
 nothing here ever feeds a map's displayed signal state (still only the bound bit, rule 10).

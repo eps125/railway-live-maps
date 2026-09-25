@@ -4046,3 +4046,48 @@ type at the given train describer area and berth", while keeping the pair search
 Tests: integration (single berth: both directions plus cancel and interpose, other berths and areas
 excluded, empty `toBerth`, 400 without a berth); page (request without `toBerth`, from/to/type
 columns, empty state).
+
+## Milestone 72 — Berth explorer (2026-09-25)
+
+Owner request: a tool like the S-Class explorer that shows which berths have been detected in a
+7/14/30/60/90-day window and whether each is allocated to a berth on a map yet (including as part
+of a combined berth); it must not time out, so little-used berths are still found; clicking a
+berth shows its latest steps, like the S-Class explorer's bit history.
+
+**Why a new table.** `td_berth_event` has no berth index, and nationwide it holds ~2M events a
+day (81M since 2026-08-07). Listing an area's berths over 90 days by scanning it would read every
+step of the area in the window. That is the same worst case the Berth steps tool times out on.
+Migration 0043 adds `td_berth_daily_activity`, one row per area, UTC day and berth, with counts in
+and out and the first and last time seen. The explorer's listing reads only that table. A berth's
+step history reads `td_berth_event` only on the days that table says the berth was active, so a
+berth used once in 90 days costs one day's read.
+
+- [x] Migration 0043: `td_berth_daily_activity` + `td_berth_activity_cutover`.
+- [x] `project-td` counts each newly inserted berth event into it in the same transaction
+      (exactly once, like `td_area_summary`), records the cutover sequence on its first batch, and
+      clears both tables on `--rebuild`.
+- [x] `backfill-berth-activity` (worker one-shot, dry run unless `--execute`): recounts each UTC
+      day, one area at a time on the `(td_area, event_at)` index, for events at or before the
+      cutover, as absolute `backfill` rows. Idempotent, and safe to run while `projector-td` runs,
+      because the live counter only counts events after the cutover, into `live` rows.
+- [x] API: `/api/v1/admin/berth-explorer/...` areas, berths (with published and draft allocations,
+      combined-berth members across areas, and bound-but-unseen berths) and a berth's steps
+      (cursor-paged by active day).
+- [x] Web: "Berth explorer" under Berths (`/admin/berths/explorer`). Pick an area and window;
+      filter by all / seen but not on a map / on a map / on a map but not seen, or by berth code;
+      click a berth for its latest 30 steps with "Load more".
+- [x] Also fixed in passing: `/admin/berths/steps` wasn't in the admin-only redirect list or the
+      Berths nav highlight.
+
+Measured on production: the allocation query takes 40 ms for PX (855 ms in its first form, which
+rescanned the whole map document per binding to find element names).
+
+**Deploy order:** migration 0043 must be applied on production **before** this code deploys,
+because `projector-td` writes the new tables. Then, once `projector-td` has run a batch (so the
+cutover is recorded), run `backfill-berth-activity --execute` to fill the history.
+
+Tests: projector (per-day counts in/out across two days, idempotent re-run, identical after a
+rebuild), backfill (absolute recount up to the cutover, idempotent, empty day), argument parsing and
+aggregation units, API integration (window sums, published/draft/combined allocations, other-area
+member, bound-but-unseen, fallback window, 400; step paging with a same-millisecond cursor), merge
+units, and the page (allocation text, filters, window change, step panel in UK time, load more).

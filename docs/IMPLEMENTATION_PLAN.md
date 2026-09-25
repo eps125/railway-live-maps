@@ -4024,3 +4024,25 @@ Smaller pre-existing deferred items not yet worth their own milestone:
   same `location_reference`/`smart_berth_step` tables. Harmless today (idempotent upserts), but
   worth a deliberate decision (keep one as a fallback for the other, or retire one) rather than
   leaving it as an accident.
+
+## Milestone 71 — Berth steps tool accepts a single berth (2026-09-25)
+
+Owner request: "accept a single berth and just list all steps datetime / headcode / from / to /
+type at the given train describer area and berth", while keeping the pair search.
+
+- [x] `GET /api/v1/admin/berths/steps`: `toBerth` is now optional. Without it, the route returns
+      the newest steps where `fromBerth` is the from _or_ the to berth, of every type (CA, CB,
+      CC; CT carries no berth). Each step now also carries `messageType`, `fromBerth` and
+      `toBerth`; the response has `toBerth: null` in this mode. Pair searches are unchanged
+      (CA only, direction respected).
+- [x] Berth steps page: "To berth" is optional. A single-berth search shows date and time (UK),
+      description, from, to and type (e.g. "Interpose (CC)"); a pair search shows the same table
+      as before.
+- [x] Same bounds as the pair search: 50 rows, look-back of 1/7/30/90 days, 15 s timeout.
+      Measured on production (M9, 7 days): a busy berth 80 ms; a berth with no steps at all
+      8 s on a cold cache (it reads all ~31k M9 steps in the window). So, as with a pair that never
+      steps, a long look-back on a rarely used berth can hit the timeout.
+
+Tests: integration (single berth: both directions plus cancel and interpose, other berths and areas
+excluded, empty `toBerth`, 400 without a berth); page (request without `toBerth`, from/to/type
+columns, empty state).

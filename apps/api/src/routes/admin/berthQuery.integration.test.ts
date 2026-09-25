@@ -145,11 +145,56 @@ describe("admin berth query route (integration)", () => {
     await app.close();
   });
 
-  it("rejects a berth-pair search without a two-character area or both berths", async () => {
+  it("lists every step at a single berth when toBerth is left out (owner request 2026-09-25)", async () => {
+    const app = await buildApp();
+    const code = randomUUID().replace(/-/g, "").slice(0, 3).toUpperCase();
+    const berth = `B${code}`;
+    const other = `O${code}`;
+    await recordObservedBerthEvent(pool, "WZ", null, berth, "2A01"); // interpose into it (CC)
+    await recordObservedBerthEvent(pool, "WZ", berth, other, "2A01"); // step out of it (CA)
+    await recordObservedBerthEvent(pool, "WZ", other, berth, "2A02"); // step into it (CA)
+    await recordObservedBerthEvent(pool, "WZ", berth, null, "2A02"); // cancel from it (CB)
+    await recordObservedBerthEvent(pool, "WZ", other, null, "2A03"); // not this berth: excluded
+    await recordObservedBerthEvent(pool, "WY", other, berth, "2A04"); // another area: excluded
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=wz&fromBerth=${berth.toLowerCase()}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toMatchObject({ tdArea: "WZ", fromBerth: berth, toBerth: null });
+    expect(
+      body.steps.map(
+        (s: {
+          description: string;
+          messageType: string;
+          fromBerth: string | null;
+          toBerth: string | null;
+        }) => [s.description, s.messageType, s.fromBerth, s.toBerth],
+      ),
+    ).toEqual([
+      ["2A02", "CB", berth, null],
+      ["2A02", "CA", other, berth],
+      ["2A01", "CA", berth, other],
+      ["2A01", "CC", null, berth],
+    ]);
+
+    // An empty toBerth is the same as leaving it out.
+    const blank = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=WZ&fromBerth=${berth}&toBerth=&limit=2`,
+    });
+    expect(blank.json().steps).toHaveLength(2);
+    await app.close();
+  });
+
+  it("rejects a berth-steps search without a two-character area or a berth", async () => {
     const app = await buildApp();
     for (const url of [
       "/api/v1/admin/berths/steps?tdArea=PXX&fromBerth=0001&toBerth=0002",
-      "/api/v1/admin/berths/steps?tdArea=PX&fromBerth=0001",
+      "/api/v1/admin/berths/steps?tdArea=PX&toBerth=0002",
+      "/api/v1/admin/berths/steps?tdArea=PX",
     ]) {
       expect((await app.inject({ method: "GET", url })).statusCode).toBe(400);
     }

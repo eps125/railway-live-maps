@@ -581,7 +581,10 @@ the web-app replacement for a one-off manual SQL query.
   to 50, at most 200. `days` is 1, 7, 30 or 90 (default 7; anything else falls back to it) — there
   is no index on the berth pair, so the look-back is what bounds the work and a pair that never
   steps reads every step of the area in it. The query gives up after 15 s with `504
-SEARCH_TOO_SLOW`.
+SEARCH_TOO_SLOW`. **Single berth (2026-09-25):** `toBerth` is optional; leave it out (or empty)
+  and the route lists every step _at_ `fromBerth` — rows where it is the from or the to berth, of
+  any type (CA step, CB cancel, CC interpose) — with `toBerth: null` in the response. Every step
+  (both modes) also carries `messageType`, `fromBerth` and `toBerth`.
 - `GET /api/v1/admin/berths/query?tdAreas=&headcode=&from=&to=&after=&limit=` — `tdAreas` is a
   required comma-separated list (at least one); `headcode` (matched against `description`) is
   required. `from`/`to` follow the same bounded-range rules as §6 (max 7 days, defaults to the

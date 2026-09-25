@@ -85,6 +85,72 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("tdArea (two characters)");
   });
 
+  it("with no To berth, lists every step at the one berth with from, to and type (2026-09-25)", async () => {
+    const fetchMock = vi.fn((_url: string) =>
+      Promise.resolve(
+        jsonResponse({
+          tdArea: "M9",
+          fromBerth: "3879",
+          toBerth: null,
+          days: 7,
+          since: "2026-09-18T12:00:00.000Z",
+          steps: [
+            {
+              eventAt: "2026-09-22T17:06:00.000Z",
+              description: "2F19",
+              messageType: "CA",
+              fromBerth: "3879",
+              toBerth: "3881",
+            },
+            {
+              eventAt: "2026-09-22T17:05:09.000Z",
+              description: "2F19",
+              messageType: "CC",
+              fromBerth: null,
+              toBerth: "3879",
+            },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BerthStepsPage />);
+    fill("m9", "3879", "  ");
+
+    const table = await screen.findByRole("table", { name: "Steps at 3879" });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "/api/v1/admin/berths/steps?tdArea=M9&fromBerth=3879&limit=50&days=7",
+    );
+    const rows = screen.getAllByRole("row");
+    expect(rows[1]).toHaveTextContent(/18:06:00.*2F19.*3879.*3881.*Step \(CA\)/);
+    expect(rows[2]).toHaveTextContent(/18:05:09.*2F19.*3879.*Interpose \(CC\)/);
+    expect(table).toHaveTextContent("From");
+    expect(table).toHaveTextContent("Type");
+  });
+
+  it("says so when a single berth has no steps", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "M9",
+            fromBerth: "ZZZZ",
+            toBerth: null,
+            days: 7,
+            since: "",
+            steps: [],
+          }),
+        ),
+      ),
+    );
+    render(<BerthStepsPage />);
+    fill("M9", "ZZZZ", "");
+    expect(
+      await screen.findByText(/No steps at ZZZZ in M9 in the last 7 days/),
+    ).toBeInTheDocument();
+  });
+
   it("passes the chosen look-back, and shows the API's too-slow message", async () => {
     const fetchMock = vi.fn((_url: string) =>
       Promise.resolve(jsonResponse({ error: { message: "Searching 90 days took too long" } }, 504)),

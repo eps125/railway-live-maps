@@ -72,6 +72,14 @@ const PAIR_STEPS_DEFAULT_DAYS = 7;
 /** A berth-pair search is a diagnostic: give up rather than hold a connection for minutes. */
 const PAIR_STEPS_TIMEOUT_MS = 15_000;
 
+interface StepRow {
+  event_at: Date;
+  description: string | null;
+  message_type: string;
+  from_berth: string | null;
+  to_berth: string | null;
+}
+
 export async function registerBerthQueryRoutes(
   app: FastifyInstance,
   deps: BerthQueryRoutesDeps,
@@ -124,8 +132,14 @@ export async function registerBerthQueryRoutes(
 
   /**
    * Owner request 2026-09-22: the newest berth steps (CA) from one berth to another in one TD
-   * area — when trains last stepped between a pair of berths, and with what description. Reads
-   * `td_berth_event` newest first on the `(td_area, event_at)` index, within the last 90 days.
+   * area — when trains last stepped between a pair of berths, and with what description.
+   *
+   * Owner request 2026-09-25: `toBerth` may be left out, and then it lists every step *at*
+   * `fromBerth` instead — into it or out of it — with each row's type (CA step, CB cancel, CC
+   * interpose) and its own from/to berths. CT heartbeats carry no berth, so never match.
+   *
+   * Both read `td_berth_event` newest first on the `(td_area, event_at)` index, within the chosen
+   * look-back.
    */
   app.get<{
     Querystring: {
@@ -139,13 +153,14 @@ export async function registerBerthQueryRoutes(
     const tdArea = (request.query.tdArea ?? "").trim().toUpperCase();
     const fromBerth = (request.query.fromBerth ?? "").trim().toUpperCase();
     const toBerth = (request.query.toBerth ?? "").trim().toUpperCase();
-    if (!/^[A-Z0-9]{2}$/.test(tdArea) || fromBerth === "" || toBerth === "") {
+    if (!/^[A-Z0-9]{2}$/.test(tdArea) || fromBerth === "") {
       reply.code(400);
       return apiError(
         "VALIDATION_ERROR",
-        "tdArea (two characters), fromBerth and toBerth are required",
+        "tdArea (two characters) and fromBerth are required; toBerth is optional",
       );
     }
+    const singleBerth = toBerth === "";
     const requested = Number(request.query.limit ?? PAIR_STEPS_DEFAULT_LIMIT);
     const limit =
       Number.isInteger(requested) && requested > 0
@@ -163,25 +178,38 @@ export async function registerBerthQueryRoutes(
     try {
       await client.query("begin");
       await client.query(`set local statement_timeout = ${PAIR_STEPS_TIMEOUT_MS}`);
-      const result = await client.query<{ event_at: Date; description: string | null }>(
-        `select event_at, description
-           from td_berth_event
-          where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
-            and event_at >= $4::timestamptz
-          order by event_at desc, id desc
-          limit $5`,
-        [tdArea, fromBerth, toBerth, since, limit],
-      );
+      const result = singleBerth
+        ? await client.query<StepRow>(
+            `select event_at, description, message_type, from_berth, to_berth
+               from td_berth_event
+              where td_area = $1 and (from_berth = $2 or to_berth = $2)
+                and event_at >= $3::timestamptz
+              order by event_at desc, id desc
+              limit $4`,
+            [tdArea, fromBerth, since, limit],
+          )
+        : await client.query<StepRow>(
+            `select event_at, description, message_type, from_berth, to_berth
+               from td_berth_event
+              where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
+                and event_at >= $4::timestamptz
+              order by event_at desc, id desc
+              limit $5`,
+            [tdArea, fromBerth, toBerth, since, limit],
+          );
       await client.query("commit");
       return {
         tdArea,
         fromBerth,
-        toBerth,
+        toBerth: singleBerth ? null : toBerth,
         days,
         since: since.toISOString(),
         steps: result.rows.map((row) => ({
           eventAt: row.event_at.toISOString(),
           description: row.description,
+          messageType: row.message_type,
+          fromBerth: row.from_berth,
+          toBerth: row.to_berth,
         })),
       };
     } catch (error) {
@@ -191,7 +219,9 @@ export async function registerBerthQueryRoutes(
         reply.code(504);
         return apiError(
           "SEARCH_TOO_SLOW",
-          `Searching ${days} days took too long — try a shorter period. A pair that never steps is the slowest case, because every step in the period has to be checked.`,
+          singleBerth
+            ? `Searching ${days} days took too long — try a shorter period. A berth that is rarely used is the slowest case, because every step in the period has to be checked.`
+            : `Searching ${days} days took too long — try a shorter period. A pair that never steps is the slowest case, because every step in the period has to be checked.`,
         );
       }
       throw error;

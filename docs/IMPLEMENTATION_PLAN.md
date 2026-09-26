@@ -4152,3 +4152,22 @@ saved rather than in conflict. Existing conflict, import and reload tests unchan
 Follow-up: the save itself is slow on Carlisle (~3 s for a ~340 KB document, each save also
 storing a full copy in `map_draft_revision`). It no longer causes conflicts, but it is worth
 profiling separately.
+
+### Milestone 73 follow-up — wheel zoom on a PC (2026-09-26)
+
+Owner report: zooming on a PC made the map "sort of jump about"; mobile pinch was perfect. The
+wheel zoomed a fixed 10% per event around the middle of the window, so the point under the mouse
+slid away, a touchpad's stream of small events lurched in 10% steps, and every event queued its
+own full-size redraw.
+
+- [x] The wheel zooms towards the mouse pointer: the map point under it stays under it.
+- [x] Each event zooms in proportion to how far the wheel or touchpad moved (a mouse notch is
+      still about 10%; line- and page-mode deltas are converted; a touchpad pinch, ctrl+wheel, is
+      more sensitive), capped per event.
+- [x] Events are gathered into one zoom per animation frame.
+- [x] A scroll event that arrives between a zoom and its redraw is ignored rather than read at the
+      wrong scale, and browser scroll anchoring is off for the map (`overflow-anchor: none`).
+
+Verified in a dev build against live data (Carlisle): zooming in and back out with touchpad-sized
+deltas, with the pointer off-centre, kept the map point under the pointer within 0.3 map units
+and returned to the exact starting magnification.

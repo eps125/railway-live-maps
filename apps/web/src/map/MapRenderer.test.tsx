@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAP_STYLE, type CompiledMapBundle } from "@railway/map-schema";
 import {
@@ -9,6 +9,8 @@ import {
   viewBoxToView,
   viewToViewBox,
   clampScale,
+  wheelZoomFactor,
+  zoomAroundPoint,
   MIN_ZOOM_WIDTH,
 } from "./MapRenderer.js";
 
@@ -1400,13 +1402,15 @@ describe("native scrolling (Milestone 73)", () => {
     expect(screen.getByText("1A01")).toBe(text);
   });
 
-  it("zooms on a vertical wheel by resizing the drawing, and leaves a sideways swipe to the browser", () => {
+  it("zooms on a vertical wheel by resizing the drawing, and leaves a sideways swipe to the browser", async () => {
     const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 400 } });
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
     const scroller = container.querySelector(".map-frame__scroll")!;
     const width = Number(svg.getAttribute("width"));
     const before = view(svg);
+    const nextFrame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
 
     const sideways = new WheelEvent("wheel", {
       deltaX: 40,
@@ -1415,14 +1419,18 @@ describe("native scrolling (Milestone 73)", () => {
       bubbles: true,
     });
     scroller.dispatchEvent(sideways);
+    await nextFrame();
     expect(sideways.defaultPrevented).toBe(false);
     expect(Number(svg.getAttribute("width"))).toBe(width);
 
+    // Several notches in one frame are gathered into a single zoom.
     fireEvent.wheel(scroller, { deltaY: -100 });
-    expect(Number(svg.getAttribute("width"))).toBeGreaterThan(width);
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    await nextFrame();
+    expect(Number(svg.getAttribute("width"))).toBeCloseTo(width * Math.exp(0.2));
     const after = view(svg);
     expect(after[2]).toBeLessThan(before[2]!);
-    // Zoom keeps the middle of the window where it was.
+    // With no measurable pointer offset (jsdom), the middle of the window stays put.
     expect(after[0]! + after[2]! / 2).toBeCloseTo(before[0]! + before[2]! / 2);
   });
 
@@ -1447,6 +1455,32 @@ describe("native scrolling (Milestone 73)", () => {
 });
 
 describe("view maths (Milestone 73)", () => {
+  it("zooms towards the pointer: the map point under it stays under it", () => {
+    const v = { cx: 1000, cy: 300, scale: 1 };
+    // Pointer 400 px right of the middle of the window, over map x = 1400.
+    const next = zoomAroundPoint(v, 400, -100, 2);
+    expect(next.cx + 400 / 2).toBeCloseTo(1400);
+    expect(next.cy - 100 / 2).toBeCloseTo(200);
+    expect(next.scale).toBe(2);
+  });
+
+  it("zooms in proportion to how far the wheel moved, capped per event", () => {
+    const notch = wheelZoomFactor({ deltaY: -100, deltaMode: 0, ctrlKey: false }, 800);
+    expect(notch).toBeCloseTo(Math.exp(0.1));
+    expect(wheelZoomFactor({ deltaY: 4, deltaMode: 0, ctrlKey: false }, 800)).toBeCloseTo(
+      Math.exp(-0.004),
+    );
+    // Line mode (Firefox mouse wheel): 3 lines ≈ 48 px.
+    expect(wheelZoomFactor({ deltaY: 3, deltaMode: 1, ctrlKey: false }, 800)).toBeCloseTo(
+      Math.exp(-0.048),
+    );
+    // A touchpad pinch arrives as ctrl+wheel with small deltas and is more sensitive.
+    expect(wheelZoomFactor({ deltaY: -10, deltaMode: 0, ctrlKey: true }, 800)).toBeCloseTo(
+      Math.exp(0.1),
+    );
+    expect(wheelZoomFactor({ deltaY: -10_000, deltaMode: 0, ctrlKey: false }, 800)).toBe(2);
+  });
+
   it("round-trips a view through its viewBox", () => {
     const v = { cx: 500, cy: 200, scale: 0.8 };
     expect(viewBoxToView(viewToViewBox(v, 1400, 650), 1400, 650)).toEqual(v);

@@ -732,6 +732,32 @@ export function clampScale(
   return Math.min(Math.max(scale, min), max);
 }
 
+/** Pure: how much one wheel event zooms, as a factor on the magnification (> 1 zooms in). In
+ * proportion to the distance scrolled, so a mouse notch (~100 px) zooms about 10% and a
+ * touchpad's small deltas zoom smoothly; a touchpad pinch (reported as ctrl+wheel) is more
+ * sensitive. Line- and page-mode deltas are converted to pixels. Capped per event. */
+export function wheelZoomFactor(
+  event: { deltaY: number; deltaMode: number; ctrlKey: boolean },
+  pageHeight: number,
+): number {
+  const px =
+    event.deltaMode === 1
+      ? event.deltaY * 16
+      : event.deltaMode === 2
+        ? event.deltaY * pageHeight
+        : event.deltaY;
+  const factor = Math.exp(-px * (event.ctrlKey ? 0.01 : 0.001));
+  return Math.min(Math.max(factor, 0.5), 2);
+}
+
+/** Pure: the view after zooming to `scale`, keeping the map point `(dx, dy)` pixels from the
+ * middle of the window where it is — zoom towards the pointer. */
+export function zoomAroundPoint(view: MapView, dx: number, dy: number, scale: number): MapView {
+  const x = view.cx + dx / view.scale;
+  const y = view.cy + dy / view.scale;
+  return { cx: x - dx / scale, cy: y - dy / scale, scale };
+}
+
 const EMPTY_RECORD = {};
 const EMPTY_IDS: ReadonlyArray<string> = [];
 
@@ -990,7 +1016,9 @@ export function MapRenderer({
 
   // Whenever the magnification or the window changes, the canvas has been resized: scroll so the
   // same map point stays in the middle.
+  const renderedScale = useRef(scale);
   useLayoutEffect(() => {
+    renderedScale.current = scale;
     applyScroll();
   }, [scale, windowPx.w, windowPx.h]);
 
@@ -998,6 +1026,9 @@ export function MapRenderer({
     const el = scrollRef.current;
     const v = view.current;
     if (!el || !v || gesture.current?.kind === "pinch") return;
+    // A zoom is waiting to be drawn: this scroll position belongs to the old size, so reading it
+    // at the new scale would move the view. The zoom's own scroll follows once it is drawn.
+    if (v.scale !== renderedScale.current) return;
     v.cx = world.x + el.scrollLeft / v.scale;
     v.cy = world.y + el.scrollTop / v.scale;
     viewChanged();
@@ -1013,20 +1044,48 @@ export function MapRenderer({
     setView(viewBoxToView(defaultView(bundle, w, h), w, h));
   }
 
-  // The wheel zooms, around the middle of the window, as before. A mainly sideways wheel or
-  // touchpad swipe (or shift+wheel) is left to the browser, so it scrolls natively. A real,
+  // The wheel zooms towards the mouse pointer (2026-09-26: zooming round the middle of the window
+  // made the map seem to jump about on a PC). Each event zooms in proportion to how far the wheel
+  // or touchpad actually moved, and events are gathered into one zoom per animation frame, so a
+  // touchpad's stream of tiny events is smooth rather than a queue of full-map redraws. A mainly
+  // sideways swipe (or shift+wheel) is left to the browser, so it scrolls natively. A real,
   // non-passive listener, because React's synthetic onWheel is passive and can't preventDefault.
+  const pendingZoom = useRef<{ factor: number; dx: number; dy: number } | null>(null);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    let frame = 0;
+    function applyZoom(): void {
+      frame = 0;
+      const pending = pendingZoom.current;
+      pendingZoom.current = null;
+      if (!pending) return;
+      const v = view.current!;
+      const { w, h } = windowSize();
+      const target = clampScale(v.scale * pending.factor, w, h, world);
+      setView(zoomAroundPoint(v, pending.dx, pending.dy, target));
+    }
     function onWheel(event: WheelEvent): void {
       if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
       event.preventDefault();
-      const v = view.current!;
-      setView({ ...v, scale: v.scale / (event.deltaY > 0 ? 1.1 : 0.9) });
+      const rect = el!.getBoundingClientRect();
+      const { w, h } = windowSize();
+      const factor = wheelZoomFactor(event, h);
+      // The pointer's offset from the middle of the window (0 when it can't be measured).
+      const dx = rect.width > 0 ? event.clientX - rect.left - w / 2 : 0;
+      const dy = rect.height > 0 ? event.clientY - rect.top - h / 2 : 0;
+      pendingZoom.current = {
+        factor: (pendingZoom.current?.factor ?? 1) * factor,
+        dx: Number.isFinite(dx) ? dx : 0,
+        dy: Number.isFinite(dy) ? dy : 0,
+      };
+      if (!frame) frame = requestAnimationFrame(applyZoom);
     }
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      if (frame) cancelAnimationFrame(frame);
+    };
   });
 
   function pointerDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {

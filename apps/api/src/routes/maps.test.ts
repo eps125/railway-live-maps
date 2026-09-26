@@ -1,7 +1,8 @@
 import Fastify from "fastify";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { registerMapRoutes } from "./maps.js";
+import { clearMapVersionCache } from "../lib/mapVersion.js";
 
 type QueryHandler = (text: string, values?: unknown[]) => { rows: unknown[] };
 
@@ -42,6 +43,10 @@ function mapVersionRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+// Version content is cached by id (immutable in production); these tests reuse one id with
+// different bundles, so start each from an empty cache.
+beforeEach(() => clearMapVersionCache());
 
 describe("map routes", () => {
   it("GET /api/v1/maps lists published maps with live-data status", async () => {

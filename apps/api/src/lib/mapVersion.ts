@@ -66,9 +66,10 @@ export async function currentVersionForSlug(
     const loaded = await pool.query<{
       canonical_document: MapDocument;
       compiled_runtime_bundle: CompiledMapBundle;
-    }>(`select canonical_document, compiled_runtime_bundle from map_version where id = $1`, [
-      row.id,
-    ]);
+    }>(
+      `select mv.canonical_document, mv.compiled_runtime_bundle from map_version mv where mv.id = $1`,
+      [row.id],
+    );
     content = loaded.rows[0];
     if (!content) return undefined;
   }

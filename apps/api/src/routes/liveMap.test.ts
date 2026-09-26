@@ -1,10 +1,11 @@
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import type { LiveDeltaMessage, LiveWsMessage } from "@railway/protocol";
 import { registerLiveMapRoutes } from "./liveMap.js";
 import type { LiveDeltaSource } from "../live/deltaSource.js";
+import { clearMapVersionCache } from "../lib/mapVersion.js";
 
 type QueryHandler = (
   text: string,
@@ -106,6 +107,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+// Version content is cached by id (immutable in production); these tests reuse one id with
+// different bundles, so start each from an empty cache.
+beforeEach(() => clearMapVersionCache());
 
 describe("GET /api/v1/maps/:slug/live — snapshot/subscribe ordering", () => {
   it("does not drop a delta published while the snapshot's berth_current_state query is still in flight", async () => {

@@ -3,6 +3,8 @@ import type { MapDocument } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
 
 const AUTOSAVE_DEBOUNCE_MS = 2000;
+/** After a failed save (network or server error), wait longer before trying again. */
+const AUTOSAVE_RETRY_MS = 10_000;
 
 export type DraftSyncStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
@@ -36,47 +38,77 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
   const [status, setStatus] = useState<DraftSyncStatus>("idle");
   const [syncedRevision, setSyncedRevision] = useState(initialRevision);
   const [conflictRevision, setConflictRevision] = useState<number | null>(null);
+  // 2026-09-26 (owner: "server has a different version" after binding one signal): saves are
+  // strictly one at a time. `status` used to be an effect dependency, so starting a save re-armed
+  // a second timer carrying the same expectedRevision, and a PUT slower than the debounce (the
+  // large Carlisle draft) raced it into a 409 against our own first save.
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const inFlight = useRef(false);
+  const conflicted = useRef(false);
+  const lastFailed = useRef(false);
+  /** Bumped when a finished save leaves newer edits (or a failure) to save — re-arms the timer. */
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    if (!dirty || status === "conflict") return;
+    if (!dirty || conflicted.current) return;
+    const timer = setTimeout(
+      () => void save(),
+      lastFailed.current ? AUTOSAVE_RETRY_MS : AUTOSAVE_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [doc, dirty, slug, retry]);
 
-    const timer = setTimeout(() => {
-      setStatus("saving");
-      fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/draft`, {
+  async function save(): Promise<void> {
+    // A save already on its way: when it returns it re-arms the timer for anything newer.
+    if (inFlight.current || conflicted.current) return;
+    const sent = docRef.current;
+    inFlight.current = true;
+    setStatus("saving");
+    let settled = false;
+    try {
+      const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/draft`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canonicalDocument: doc, expectedRevision: revisionRef.current }),
-      })
-        .then(async (response) => {
-          if (response.status === 409) {
-            const body = (await response.json()) as {
-              error: { details?: { currentRevision?: number } };
-            };
-            setConflictRevision(body.error.details?.currentRevision ?? null);
-            setStatus("conflict");
-            return;
-          }
-          if (!response.ok) {
-            setStatus("error");
-            return;
-          }
-          const body = (await response.json()) as DraftResponse;
-          revisionRef.current = body.revision;
-          setSyncedRevision(body.revision);
-          dispatch({ type: "markSynced" });
-          setStatus("saved");
-        })
-        .catch(() => setStatus("error"));
-    }, AUTOSAVE_DEBOUNCE_MS);
-
-    return () => clearTimeout(timer);
-  }, [doc, dirty, slug, dispatch, status]);
+        body: JSON.stringify({ canonicalDocument: sent, expectedRevision: revisionRef.current }),
+      });
+      if (response.status === 409) {
+        const body = (await response.json()) as {
+          error: { details?: { currentRevision?: number } };
+        };
+        conflicted.current = true;
+        setConflictRevision(body.error.details?.currentRevision ?? null);
+        setStatus("conflict");
+        return;
+      }
+      if (!response.ok) {
+        setStatus("error");
+        return;
+      }
+      const body = (await response.json()) as DraftResponse;
+      revisionRef.current = body.revision;
+      setSyncedRevision(body.revision);
+      // Clean only if nothing changed since this document was sent; a newer edit stays dirty and
+      // is saved next, against the revision just returned.
+      dispatch({ type: "markSynced", document: sent });
+      settled = sent === docRef.current;
+      setStatus(settled ? "saved" : "saving");
+    } catch {
+      setStatus("error");
+    } finally {
+      inFlight.current = false;
+      lastFailed.current = !settled && !conflicted.current && sent === docRef.current;
+      if (!settled && !conflicted.current) setRetry((n) => n + 1);
+    }
+  }
 
   function reloadFromServer(): void {
     fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/draft`)
       .then((response) => (response.ok ? (response.json() as Promise<DraftResponse>) : null))
       .then((body) => {
         if (!body) return;
+        conflicted.current = false;
+        lastFailed.current = false;
         revisionRef.current = body.revision;
         setSyncedRevision(body.revision);
         dispatch({ type: "setDocument", document: body.canonicalDocument });

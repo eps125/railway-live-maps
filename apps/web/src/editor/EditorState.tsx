@@ -78,7 +78,9 @@ export type EditorAction =
    * "plain state update, no undo entry" treatment as `setMapName`; `point: null` clears it back
    * to the plain bounding-box centre. */
   | { type: "setMapHomePoint"; point: { x: number; y: number } | null }
-  | { type: "markSynced" }
+  /** The save of `document` succeeded. Only clears `dirty` if the editor still holds that exact
+   * document — an edit made while the save was in flight stays dirty and is saved next. */
+  | { type: "markSynced"; document?: MapDocument }
   | { type: "startRouteTrace"; signalId: string; routeId?: string }
   | { type: "addRouteWaypoint"; point: { x: number; y: number } }
   | { type: "removeRouteWaypoint" }
@@ -167,6 +169,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         dirty: action.dirty ?? false,
       };
     case "markSynced":
+      if (action.document !== undefined && action.document !== state.document) return state;
       return { ...state, dirty: false };
     case "startRouteTrace":
       return {

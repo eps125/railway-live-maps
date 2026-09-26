@@ -4122,3 +4122,33 @@ zooms around the middle while a sideways swipe is left to the browser; a pre-Mil
 view restores; finite view in a zero-size container; view maths round-trip and zoom clamping. The
 view is published as `data-view` on the SVG for these tests. A jsdom `PointerEvent` stand-in was
 added: without it the old pan test passed on a NaN viewBox.
+
+## Milestone 74 — Editor autosave no longer conflicts with itself (2026-09-26)
+
+Owner report: while editing, the editor frequently said the server had a different version,
+forcing a refresh and redoing the work, sometimes after binding a single signal.
+
+**Cause.** `useDraftSync` had `status` among its effect dependencies. Starting a save set
+`status = "saving"`, which re-ran the effect while the document was still dirty and armed a
+second 2 s autosave timer carrying the same `expectedRevision`. Any save slower than 2 s was
+therefore raced by a second PUT against the revision the first had just replaced, a 409 against
+our own save. The API logs for the last 72 h show Carlisle draft saves taking a median 3.2 s (p90
+4.2 s), and **21 conflicts against 25 successful saves**. Nothing else writes the draft's
+revision. A second bug lost edits: an edit made while a save was in flight was marked saved when
+that save returned, although it had never been sent.
+
+- [x] Saves are strictly one at a time (an in-flight guard); the effect no longer depends on
+      `status`. A save that finishes with newer edits pending re-arms the timer, and the next save
+      uses the revision just returned.
+- [x] `markSynced` carries the document that was saved and only clears `dirty` if the editor
+      still holds exactly that document.
+- [x] A failed save (network or server error) is retried after 10 s rather than waiting for the
+      next edit.
+
+Tests: a PUT slower than the debounce never has a second PUT outstanding and settles as saved; an
+edit made during a slow save is sent afterwards, with the new revision and both edits, and ends
+saved rather than in conflict. Existing conflict, import and reload tests unchanged.
+
+Follow-up: the save itself is slow on Carlisle (~3 s for a ~340 KB document, each save also
+storing a full copy in `map_draft_revision`). It no longer causes conflicts, but it is worth
+profiling separately.

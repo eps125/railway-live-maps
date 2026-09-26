@@ -194,4 +194,133 @@ describe("useDraftSync", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  describe("2026-09-26 regression: saves slower than the debounce", () => {
+    // Owner report: the editor kept saying the server had a different version, sometimes after
+    // binding a single signal. The autosave effect depended on `status`, so starting a save
+    // re-armed a second 2 s timer with the same expectedRevision; a PUT slower than that (the
+    // large Carlisle draft) raced it, and the second PUT hit a 409 against our own first save.
+    function slowServer() {
+      const pending: Array<(response: Response) => void> = [];
+      let revision = 1;
+      const fetchMock = vi.fn(
+        (_url: string, _init?: RequestInit) =>
+          new Promise<Response>((resolve) => {
+            pending.push(resolve);
+          }),
+      );
+      return {
+        fetchMock,
+        /** Completes the oldest outstanding PUT the way the real server would. */
+        respond(): void {
+          const init = fetchMock.mock.calls[fetchMock.mock.calls.length - pending.length]?.[1];
+          const body = JSON.parse(init?.body as string) as { expectedRevision: number };
+          const resolve = pending.shift()!;
+          if (body.expectedRevision !== revision) {
+            resolve(
+              jsonResponse(409, {
+                error: { code: "DRAFT_REVISION_CONFLICT", details: { currentRevision: revision } },
+              }),
+            );
+            return;
+          }
+          revision += 1;
+          resolve(jsonResponse(200, { revision, canonicalDocument: baseDoc() }));
+        },
+        outstanding: () => pending.length,
+      };
+    }
+
+    function renderSync() {
+      return renderHook(
+        () => {
+          const dispatch = useEditorDispatch();
+          const sync = useDraftSync("test-slug", 1);
+          return { dispatch, sync };
+        },
+        { wrapper },
+      );
+    }
+
+    it("never has two saves outstanding, so a slow save can't conflict with itself", async () => {
+      vi.useFakeTimers();
+      const server = slowServer();
+      vi.stubGlobal("fetch", server.fetchMock);
+      const { result } = renderSync();
+
+      act(() => {
+        result.current.dispatch({
+          type: "dispatchCommand",
+          command: { type: "addElement", elements: [makeElement("signal-binding")] },
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(server.fetchMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        server.respond();
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(result.current.sync.status).toBe("saved");
+      expect(result.current.sync.syncedRevision).toBe(2);
+      expect(server.fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("saves an edit made during a slow save afterwards, against the new revision", async () => {
+      vi.useFakeTimers();
+      const server = slowServer();
+      vi.stubGlobal("fetch", server.fetchMock);
+      const { result } = renderSync();
+
+      act(() => {
+        result.current.dispatch({
+          type: "dispatchCommand",
+          command: { type: "addElement", elements: [makeElement("first")] },
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(server.outstanding()).toBe(1);
+
+      // A second edit while the first save is still on its way.
+      act(() => {
+        result.current.dispatch({
+          type: "dispatchCommand",
+          command: { type: "addElement", elements: [makeElement("second")] },
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(server.fetchMock).toHaveBeenCalledTimes(1);
+
+      // The first save's response settles (re-arming the timer once React commits), then the
+      // debounce runs.
+      await act(async () => {
+        server.respond();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      // The second edit was not marked saved by the first save; it goes out now, on revision 2.
+      expect(server.fetchMock).toHaveBeenCalledTimes(2);
+      const second = JSON.parse(server.fetchMock.mock.calls[1]![1]!.body as string) as {
+        expectedRevision: number;
+        canonicalDocument: MapDocument;
+      };
+      expect(second.expectedRevision).toBe(2);
+      expect(second.canonicalDocument.elements.map((e) => e.id)).toEqual(["first", "second"]);
+
+      await act(async () => {
+        server.respond();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.sync.status).toBe("saved");
+      expect(result.current.sync.syncedRevision).toBe(3);
+    });
+  });
 });

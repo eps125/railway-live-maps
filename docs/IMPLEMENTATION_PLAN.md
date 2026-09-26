@@ -4171,3 +4171,39 @@ own full-size redraw.
 Verified in a dev build against live data (Carlisle): zooming in and back out with touchpad-sized
 deltas, with the pointer off-centre, kept the map point under the pointer within 0.3 map units
 and returned to the exact starting magnification.
+
+## Milestone 75 — Editor saves and publishes no longer queue behind recompiles (2026-09-26)
+
+Owner reports: saving in the editor was taking ages, then publishing Carlisle returned a 504.
+
+**Cause.** The API is one Node.js process. Its log for 15:00–15:16 showed the editor's live-state
+preview (`GET /api/v1/editor/state/carlisle-psb`, polled every ~3 s) taking **2–20 s per
+request**, and the public `/maps/carlisle-psb/state` 2–16 s. The editor endpoint recompiled the
+whole draft on every poll: `compileMapDocument` for Carlisle takes ~2.1 s of CPU (measured on
+production), so the thread was busy almost continuously and every other request queued behind it.
+Draft saves took a median 3.2 s. All five publishes that afternoon actually committed (versions
+37–41), but the last two took longer than the ~100 s gateway limit to answer, hence the 504. The
+public endpoints read and parsed each version's full document and compiled bundle from the
+database on every request too. Timed separately on production: the save's own work is 0.2–0.5 s,
+and a publish is ~4.5 s (validation 0.3 s, compile 2.1 s, writes 1.9 s, rolled back).
+
+- [x] `GET /api/v1/editor/state/:slug` keeps the compiled draft in memory, keyed by draft id and
+      revision. A poll reads only the revision, and recompiles only when it has changed.
+- [x] `currentVersionForSlug` caches each published version's parsed document and bundle by
+      version id (small LRU). Published versions are immutable (rule 11), so an entry can never go
+      stale; a publish is picked up because the new version has a new id.
+- [x] Draft saves are also gzipped by the editor (`CompressionStream`, sent as
+      `application/x-rlm-draft-gzip`): Carlisle's 298 KB draft becomes 30 KB (10×, 8 ms). A
+      browser without `CompressionStream` sends plain JSON, and a refused compressed save (400/415)
+      makes the editor switch to plain JSON and resave at once. The API gunzips it (4 MB
+      compressed / 32 MB expanded limits; a corrupt body is a 400 and changes nothing).
+- [x] The save no longer reads the whole existing draft just to check it exists, nor reads the
+      document back after writing it.
+- [x] nginx `client_max_body_size 8m` on `/api/`: the 1 MB default would have started refusing
+      large maps' uncompressed saves.
+
+Tests: editor state recompiles when the revision changes and serves the cached compile when it
+hasn't; a new published version replaces the cached one while an older one still resolves at its
+own time; a gzipped save stores the same document in `map_draft` and `map_draft_revision`; a
+corrupt gzipped body is a 400 with no change; the editor gzips saves and falls back to plain JSON.
+Full integration suite: 249 passed.

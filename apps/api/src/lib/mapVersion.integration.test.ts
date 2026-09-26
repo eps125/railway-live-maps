@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
-import { liveDataStatus } from "./mapVersion.js";
+import { currentVersionForSlug, liveDataStatus } from "./mapVersion.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -115,5 +115,46 @@ describe("liveDataStatus (integration)", () => {
 
     const status = await liveDataStatus(pool, [area], now);
     expect(status).toBe("stale");
+  });
+
+  it("serves a new published version, not the cached old one (2026-09-26 version cache)", async () => {
+    const slug = `cache-${randomUUID().slice(0, 8)}`;
+    const map = await pool.query<{ id: string }>(
+      "insert into map (slug, name) values ($1, $1) returning id",
+      [slug],
+    );
+    const publish = async (n: number, from: string) =>
+      (
+        await pool.query<{ id: string }>(
+          `insert into map_version (map_id, version_number, canonical_document, compiled_runtime_bundle,
+                                    effective_from, published_by, schema_version, checksum)
+           values ($1, $2, $3, $4, $5, 'test', 1, 'x') returning id`,
+          [
+            map.rows[0]!.id,
+            n,
+            JSON.stringify({ v: n }),
+            JSON.stringify({ mapName: `v${n}` }),
+            from,
+          ],
+        )
+      ).rows[0]!.id;
+
+    const first = await publish(1, "2026-01-01T00:00:00Z");
+    const a = await currentVersionForSlug(pool, slug, new Date());
+    expect(a).toMatchObject({ id: first, version_number: 1 });
+    expect(a!.compiled_runtime_bundle).toEqual({ mapName: "v1" });
+    // Served again from the cache: same content.
+    expect((await currentVersionForSlug(pool, slug, new Date()))!.canonical_document).toEqual({
+      v: 1,
+    });
+
+    await pool.query("update map_version set effective_to = '2026-02-01' where id = $1", [first]);
+    const second = await publish(2, "2026-02-01T00:00:00Z");
+    const b = await currentVersionForSlug(pool, slug, new Date());
+    expect(b).toMatchObject({ id: second, version_number: 2 });
+    expect(b!.compiled_runtime_bundle).toEqual({ mapName: "v2" });
+    // And the old version, asked for at a time it was in effect, still resolves to its own content.
+    const old = await currentVersionForSlug(pool, slug, new Date("2026-01-15T00:00:00Z"));
+    expect(old!.canonical_document).toEqual({ v: 1 });
   });
 });

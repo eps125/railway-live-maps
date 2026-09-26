@@ -695,7 +695,10 @@ gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/
   versions. `404 MAP_NOT_FOUND` for an unknown slug; `204` on success. Never touches nationwide
   TD/TRUST/etc. event tables (CLAUDE.md rule 17) — only this map's own configuration.
 - `GET /api/v1/editor/maps/{slug}/draft`
-- `PUT /api/v1/editor/maps/{slug}/draft` with optimistic revision check
+- `PUT /api/v1/editor/maps/{slug}/draft` with optimistic revision check. The body is JSON
+  (`application/json`), or the same JSON gzipped with `Content-Type: application/x-rlm-draft-gzip`
+  (2026-09-26; the editor sends this; up to 4 MB compressed, 32 MB expanded; `400` if it doesn't
+  decompress or parse).
 - `GET /api/v1/editor/maps/{slug}/revisions`
 - `POST /api/v1/editor/maps/{slug}/validate`
 - `POST /api/v1/editor/maps/{slug}/publish`

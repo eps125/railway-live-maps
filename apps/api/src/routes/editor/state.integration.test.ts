@@ -83,6 +83,46 @@ describe("GET /api/v1/editor/state/:slug (integration)", () => {
     }
   });
 
+  it("recompiles only when the draft's revision changes (2026-09-26 compile cache)", async () => {
+    const slug = uniqueSlug();
+    const area = uniqueArea();
+    await seedDraft(slug, area, "0001");
+    await recordObservedBerthEvent(pool, area, null, "0001", "1A23");
+    await recordObservedBerthEvent(pool, area, null, "0002", "2B34");
+
+    const app = await buildApp();
+    try {
+      const first = await app.inject({ method: "GET", url: `/api/v1/editor/state/${slug}` });
+      expect(first.json()).toMatchObject({ draftRevision: 1 });
+      expect(first.json().berths["berth-a"]).toMatchObject({ description: "1A23" });
+
+      // Rebind the berth to 0002 as a new revision: the next poll must use the new bindings.
+      await pool.query(
+        `update map_draft
+            set canonical_document = jsonb_set(canonical_document, '{bindings,0,berth}', '"0002"'),
+                revision = 2
+          where slug = $1`,
+        [slug],
+      );
+      const second = await app.inject({ method: "GET", url: `/api/v1/editor/state/${slug}` });
+      expect(second.json()).toMatchObject({ draftRevision: 2 });
+      expect(second.json().berths["berth-a"]).toMatchObject({ description: "2B34" });
+
+      // A document change without a revision bump is not how the editor saves; the cache keeps
+      // the compile for revision 2 — proving the poll no longer recompiles an unchanged draft.
+      await pool.query(
+        `update map_draft
+            set canonical_document = jsonb_set(canonical_document, '{bindings,0,berth}', '"0001"')
+          where slug = $1`,
+        [slug],
+      );
+      const third = await app.inject({ method: "GET", url: `/api/v1/editor/state/${slug}` });
+      expect(third.json().berths["berth-a"]).toMatchObject({ description: "2B34" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("404s when no draft exists yet", async () => {
     const app = await buildApp();
     try {

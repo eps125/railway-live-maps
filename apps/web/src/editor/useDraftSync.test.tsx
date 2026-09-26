@@ -3,7 +3,10 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MapDocument } from "@railway/map-schema";
 import { EditorStateProvider, useEditorDispatch } from "./EditorState.js";
-import { useDraftSync } from "./useDraftSync.js";
+import { gunzipSync } from "node:zlib";
+import { Blob as NodeBlob } from "node:buffer";
+import { CompressionStream as NodeCompressionStream } from "node:stream/web";
+import { GZIP_DRAFT_CONTENT_TYPE, useDraftSync } from "./useDraftSync.js";
 
 function baseDoc(): MapDocument {
   return {
@@ -321,6 +324,89 @@ describe("useDraftSync", () => {
       });
       expect(result.current.sync.status).toBe("saved");
       expect(result.current.sync.syncedRevision).toBe(3);
+    });
+  });
+
+  describe("2026-09-26: compressed saves", () => {
+    // Owner: "saving is taking absolutely ages" — nearly all of a ~3 s Carlisle save was
+    // uploading ~300 KB of JSON. The editor now gzips it.
+    async function bodyText(init: RequestInit): Promise<string> {
+      const body = init.body as Blob | string;
+      if (typeof body === "string") return body;
+      return gunzipSync(Buffer.from(await body.arrayBuffer())).toString("utf8");
+    }
+
+    function withCompression(): void {
+      vi.stubGlobal("CompressionStream", NodeCompressionStream);
+      vi.stubGlobal("Blob", NodeBlob);
+    }
+
+    it("sends the save gzipped, and it decompresses to exactly the plain JSON", async () => {
+      vi.useFakeTimers();
+      withCompression();
+      const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+        Promise.resolve(jsonResponse(200, { revision: 2, canonicalDocument: baseDoc() })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(
+        () => ({ dispatch: useEditorDispatch(), sync: useDraftSync("test-slug", 1) }),
+        { wrapper },
+      );
+      act(() => {
+        result.current.dispatch({
+          type: "dispatchCommand",
+          command: { type: "addElement", elements: [makeElement("gz")] },
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const init = fetchMock.mock.calls[0]![1]!;
+      expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+        GZIP_DRAFT_CONTENT_TYPE,
+      );
+      const sent = JSON.parse(await bodyText(init)) as {
+        expectedRevision: number;
+        canonicalDocument: MapDocument;
+      };
+      expect(sent.expectedRevision).toBe(1);
+      expect(sent.canonicalDocument.elements.map((e) => e.id)).toEqual(["gz"]);
+      await vi.waitFor(() => expect(result.current.sync.status).toBe("saved"));
+    });
+
+    it("falls back to plain JSON straight away if a compressed save is refused", async () => {
+      vi.useFakeTimers();
+      withCompression();
+      const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+        Promise.resolve(
+          typeof init?.body === "string"
+            ? jsonResponse(200, { revision: 2, canonicalDocument: baseDoc() })
+            : jsonResponse(415, { error: { code: "FST_ERR_CTP_INVALID_MEDIA_TYPE" } }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(
+        () => ({ dispatch: useEditorDispatch(), sync: useDraftSync("test-slug", 1) }),
+        { wrapper },
+      );
+      act(() => {
+        result.current.dispatch({
+          type: "dispatchCommand",
+          command: { type: "addElement", elements: [makeElement("plain")] },
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      const second = fetchMock.mock.calls[1]![1]!;
+      expect((second.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+      expect(typeof second.body).toBe("string");
+      await vi.waitFor(() => expect(result.current.sync.status).toBe("saved"));
     });
   });
 });

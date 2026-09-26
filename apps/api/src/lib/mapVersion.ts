@@ -19,17 +19,35 @@ export interface MapVersionRow {
   effective_to: Date | null;
 }
 
+/** 2026-09-26: a published version's document and compiled bundle, parsed, by version id. Published
+ * versions are immutable (CLAUDE.md rule 11), so an entry can never go stale. Every `/state`,
+ * `/live`, `/definition` request used to read and parse both (~300 KB and more for Carlisle) —
+ * CPU on the API's single thread that queued editor saves and publishes behind it. Small LRU:
+ * a handful of maps, and a publish supersedes the entry naturally with a new id. */
+const VERSION_CACHE_LIMIT = 16;
+const versionContent = new Map<
+  string,
+  { canonical_document: MapDocument; compiled_runtime_bundle: CompiledMapBundle }
+>();
+
+/** Test-only: forget cached version content. */
+export function clearMapVersionCache(): void {
+  versionContent.clear();
+}
+
 /** Resolves the published map_version effective at `at` for a slug. Shared by `/definition`,
  * `/state`, `/live`, and the Milestone 11/12 editor (draft-seeding, diff) — every read of
- * "current published map" goes through this one query. */
+ * "current published map" goes through this one query. The large document and bundle come from
+ * the immutable-version cache when present. */
 export async function currentVersionForSlug(
   pool: Pool,
   slug: string,
   at: Date,
 ): Promise<MapVersionRow | undefined> {
-  const result = await pool.query<MapVersionRow>(
-    `select mv.id, mv.map_id, m.slug, m.name, mv.version_number, mv.canonical_document,
-            mv.compiled_runtime_bundle, mv.effective_from, mv.effective_to
+  const result = await pool.query<
+    Omit<MapVersionRow, "canonical_document" | "compiled_runtime_bundle">
+  >(
+    `select mv.id, mv.map_id, m.slug, m.name, mv.version_number, mv.effective_from, mv.effective_to
      from map_version mv
      join map m on m.id = mv.map_id
      where m.slug = $1 and mv.effective_from <= $2 and (mv.effective_to is null or mv.effective_to > $2)
@@ -37,7 +55,28 @@ export async function currentVersionForSlug(
      limit 1`,
     [slug, at],
   );
-  return result.rows[0];
+  const row = result.rows[0];
+  if (!row) return undefined;
+
+  let content = versionContent.get(row.id);
+  if (content) {
+    // Refresh its place in the LRU.
+    versionContent.delete(row.id);
+  } else {
+    const loaded = await pool.query<{
+      canonical_document: MapDocument;
+      compiled_runtime_bundle: CompiledMapBundle;
+    }>(`select canonical_document, compiled_runtime_bundle from map_version where id = $1`, [
+      row.id,
+    ]);
+    content = loaded.rows[0];
+    if (!content) return undefined;
+  }
+  versionContent.set(row.id, content);
+  while (versionContent.size > VERSION_CACHE_LIMIT) {
+    versionContent.delete(versionContent.keys().next().value!);
+  }
+  return { ...row, ...content };
 }
 
 export function tdAreasFromBundle(bundle: CompiledMapBundle): string[] {

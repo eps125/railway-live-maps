@@ -1,9 +1,25 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import { compileMapDocument } from "@railway/map-schema";
+import { compileMapDocument, type CompiledMapBundle } from "@railway/map-schema";
 import { apiError } from "../../lib/queryRange.js";
 import { computeLiveState } from "../../lib/liveState.js";
 import { getDraft } from "../../editor/draftStore.js";
+
+/** 2026-09-26: the compiled draft, by slug, for the revision it was compiled from. The editor
+ * polls this endpoint every few seconds, and compiling Carlisle takes ~2 s of CPU on the API's
+ * single thread — every poll recompiled an unchanged draft, and saves, publishes and map loads
+ * queued behind it (publishes timed out). A poll now reads only the draft's revision and
+ * recompiles only when it has changed. */
+const compiledDrafts = new Map<
+  string,
+  { draftId: string; revision: number; bundle: CompiledMapBundle }
+>();
+const COMPILED_DRAFT_LIMIT = 8;
+
+/** Test-only: forget compiled drafts. */
+export function clearCompiledDraftCache(): void {
+  compiledDrafts.clear();
+}
 
 export interface EditorStateRoutesDeps {
   pool: Pool;
@@ -48,13 +64,36 @@ export async function registerEditorStateRoutes(
         );
       }
 
-      const draft = await getDraft(pool, request.params.slug);
-      if (!draft) {
+      const { slug } = request.params;
+      const current = await pool.query<{ id: string; revision: number }>(
+        "select id, revision from map_draft where slug = $1",
+        [slug],
+      );
+      const draftRow = current.rows[0];
+      if (!draftRow) {
         reply.code(404);
-        return apiError("DRAFT_NOT_FOUND", `No draft exists for "${request.params.slug}" yet`);
+        return apiError("DRAFT_NOT_FOUND", `No draft exists for "${slug}" yet`);
       }
 
-      const bundle = compileMapDocument(draft.canonical_document);
+      let cached = compiledDrafts.get(slug);
+      if (!cached || cached.draftId !== draftRow.id || cached.revision !== draftRow.revision) {
+        const draft = await getDraft(pool, slug);
+        if (!draft) {
+          reply.code(404);
+          return apiError("DRAFT_NOT_FOUND", `No draft exists for "${slug}" yet`);
+        }
+        cached = {
+          draftId: draft.id,
+          revision: draft.revision,
+          bundle: compileMapDocument(draft.canonical_document),
+        };
+        compiledDrafts.delete(slug);
+        compiledDrafts.set(slug, cached);
+        while (compiledDrafts.size > COMPILED_DRAFT_LIMIT) {
+          compiledDrafts.delete(compiledDrafts.keys().next().value!);
+        }
+      }
+      const bundle = cached.bundle;
       const { sourceSequence, berths, signals, quality } = await computeLiveState(
         pool,
         bundle,
@@ -62,8 +101,8 @@ export async function registerEditorStateRoutes(
       );
 
       return {
-        slug: request.params.slug,
-        draftRevision: draft.revision,
+        slug,
+        draftRevision: cached.revision,
         asOf: now.toISOString(),
         sourceSequence,
         mode: "live" as const,

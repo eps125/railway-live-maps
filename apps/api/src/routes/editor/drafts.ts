@@ -1,8 +1,18 @@
+import { gunzip } from "node:zlib";
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import { MapDocumentSchema } from "@railway/map-schema";
 import { apiError, parseLimit } from "../../lib/queryRange.js";
 import { getOrSeedDraft, getDraft } from "../../editor/draftStore.js";
+
+/** 2026-09-26 (owner: "saving is taking absolutely ages"): the editor gzips a draft save —
+ * nearly all of a ~3 s Carlisle save was uploading ~300 KB of JSON, and map JSON compresses about
+ * tenfold. A dedicated content type rather than `Content-Encoding`, so anything between the
+ * browser and here passes it through untouched rather than trying to decode it. */
+export const GZIP_DRAFT_CONTENT_TYPE = "application/x-rlm-draft-gzip";
+/** Compressed upload limit, and the most a compressed draft may expand to. */
+const GZIP_DRAFT_BODY_LIMIT = 4 * 1024 * 1024;
+const GZIP_DRAFT_MAX_EXPANDED = 32 * 1024 * 1024;
 
 export interface EditorDraftRoutesDeps {
   pool: Pool;
@@ -52,6 +62,24 @@ export async function registerEditorDraftRoutes(
 ): Promise<void> {
   const { pool } = deps;
 
+  app.addContentTypeParser(
+    GZIP_DRAFT_CONTENT_TYPE,
+    { parseAs: "buffer", bodyLimit: GZIP_DRAFT_BODY_LIMIT },
+    (_request, payload, done) => {
+      gunzip(payload as Buffer, { maxOutputLength: GZIP_DRAFT_MAX_EXPANDED }, (error, expanded) => {
+        if (error) {
+          done(Object.assign(new Error("Could not decompress the draft"), { statusCode: 400 }));
+          return;
+        }
+        try {
+          done(null, JSON.parse(expanded.toString("utf8")));
+        } catch {
+          done(Object.assign(new Error("The draft is not valid JSON"), { statusCode: 400 }));
+        }
+      });
+    },
+  );
+
   app.get<{ Params: { slug: string } }>("/api/v1/editor/maps/:slug/draft", async (request) => {
     const draft = await getOrSeedDraft(pool, request.params.slug);
     return draftResponse(draft);
@@ -80,8 +108,11 @@ export async function registerEditorDraftRoutes(
       }
 
       // Ensure a draft row exists (first save for a never-before-drafted slug) before
-      // attempting the optimistic-lock update below.
-      await getOrSeedDraft(pool, slug);
+      // attempting the optimistic-lock update below. Checked without reading the document back:
+      // the usual case is an existing draft, and reading ~300 KB just to discard it cost ~70 ms.
+      const exists = await pool.query("select 1 from map_draft where slug = $1", [slug]);
+      if (exists.rowCount === 0) await getOrSeedDraft(pool, slug);
+      const documentJson = JSON.stringify(parsed.data);
 
       const client = await pool.connect();
       try {
@@ -90,18 +121,19 @@ export async function registerEditorDraftRoutes(
           id: string;
           slug: string;
           map_id: string | null;
-          canonical_document: unknown;
           revision: number;
           base_map_version_id: string | null;
           updated_by: string | null;
           updated_at: Date;
           created_at: Date;
         }>(
+          // Everything but the document: the response echoes the document just validated.
           `update map_draft
            set canonical_document = $1, revision = revision + 1, updated_by = $2, updated_at = now()
            where slug = $3 and revision = $4
-           returning *`,
-          [JSON.stringify(parsed.data), body.updatedBy ?? null, slug, body.expectedRevision],
+           returning id, slug, map_id, revision, base_map_version_id, updated_by, updated_at,
+                     created_at`,
+          [documentJson, body.updatedBy ?? null, slug, body.expectedRevision],
         );
 
         if (updated.rows.length === 0) {
@@ -122,7 +154,7 @@ export async function registerEditorDraftRoutes(
           [
             row.id,
             row.revision,
-            row.canonical_document,
+            documentJson,
             body.commandSummary ? JSON.stringify(body.commandSummary) : null,
             body.updatedBy ?? null,
             body.comment ?? null,
@@ -130,7 +162,7 @@ export async function registerEditorDraftRoutes(
         );
 
         await client.query("commit");
-        return draftResponse(row);
+        return draftResponse({ ...row, canonical_document: parsed.data });
       } catch (error) {
         await client.query("rollback");
         throw error;

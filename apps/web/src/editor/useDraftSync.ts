@@ -6,6 +6,22 @@ const AUTOSAVE_DEBOUNCE_MS = 2000;
 /** After a failed save (network or server error), wait longer before trying again. */
 const AUTOSAVE_RETRY_MS = 10_000;
 
+/** Matches the API's `GZIP_DRAFT_CONTENT_TYPE` (apps/api/src/routes/editor/drafts.ts). */
+export const GZIP_DRAFT_CONTENT_TYPE = "application/x-rlm-draft-gzip";
+
+/** 2026-09-26 (owner: "saving is taking absolutely ages"): nearly all of a ~3 s Carlisle save was
+ * uploading ~300 KB of JSON, which gzips about tenfold. Returns the gzipped bytes, or null where
+ * the browser can't compress (the caller then sends plain JSON). */
+export async function gzipDraftBody(json: string): Promise<Blob | null> {
+  if (typeof CompressionStream === "undefined") return null;
+  try {
+    const stream = new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"));
+    return await new Response(stream).blob();
+  } catch {
+    return null;
+  }
+}
+
 export type DraftSyncStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
 export interface UseDraftSyncResult {
@@ -47,15 +63,20 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
   const inFlight = useRef(false);
   const conflicted = useRef(false);
   const lastFailed = useRef(false);
+  const gzipAllowed = useRef(true);
+  const retryNow = useRef(false);
   /** Bumped when a finished save leaves newer edits (or a failure) to save — re-arms the timer. */
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     if (!dirty || conflicted.current) return;
-    const timer = setTimeout(
-      () => void save(),
-      lastFailed.current ? AUTOSAVE_RETRY_MS : AUTOSAVE_DEBOUNCE_MS,
-    );
+    const delay = retryNow.current
+      ? 0
+      : lastFailed.current
+        ? AUTOSAVE_RETRY_MS
+        : AUTOSAVE_DEBOUNCE_MS;
+    retryNow.current = false;
+    const timer = setTimeout(() => void save(), delay);
     return () => clearTimeout(timer);
   }, [doc, dirty, slug, retry]);
 
@@ -67,11 +88,23 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
     setStatus("saving");
     let settled = false;
     try {
+      const json = JSON.stringify({
+        canonicalDocument: sent,
+        expectedRevision: revisionRef.current,
+      });
+      const gzipped = gzipAllowed.current ? await gzipDraftBody(json) : null;
       const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/draft`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canonicalDocument: sent, expectedRevision: revisionRef.current }),
+        headers: { "Content-Type": gzipped ? GZIP_DRAFT_CONTENT_TYPE : "application/json" },
+        body: gzipped ?? json,
       });
+      if (gzipped && (response.status === 400 || response.status === 415)) {
+        // Something between here and the API (or the API) wouldn't take the compressed upload:
+        // send plain JSON from now on, straight away.
+        gzipAllowed.current = false;
+        retryNow.current = true;
+        return;
+      }
       if (response.status === 409) {
         const body = (await response.json()) as {
           error: { details?: { currentRevision?: number } };
@@ -97,7 +130,8 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
       setStatus("error");
     } finally {
       inFlight.current = false;
-      lastFailed.current = !settled && !conflicted.current && sent === docRef.current;
+      lastFailed.current =
+        !settled && !conflicted.current && !retryNow.current && sent === docRef.current;
       if (!settled && !conflicted.current) setRetry((n) => n + 1);
     }
   }

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import Fastify from "fastify";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
-import { registerEditorDraftRoutes } from "./drafts.js";
+import { GZIP_DRAFT_CONTENT_TYPE, registerEditorDraftRoutes } from "./drafts.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -160,6 +161,58 @@ describe("editor draft routes (integration)", () => {
       });
       expect(response.statusCode).toBe(400);
       expect(response.json().error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT accepts a gzipped draft (2026-09-26), stores the same document, and records the revision", async () => {
+    const slug = uniqueSlug();
+    const app = await buildApp();
+    try {
+      await app.inject({ method: "GET", url: `/api/v1/editor/maps/${slug}/draft` });
+      const doc = { ...minimalDoc(slug), editorMetadata: { note: "gzipped" } };
+      const response = await app.inject({
+        method: "PUT",
+        url: `/api/v1/editor/maps/${slug}/draft`,
+        headers: { "content-type": GZIP_DRAFT_CONTENT_TYPE },
+        payload: gzipSync(JSON.stringify({ canonicalDocument: doc, expectedRevision: 1 })),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().revision).toBe(2);
+      expect(response.json().canonicalDocument.editorMetadata).toEqual({ note: "gzipped" });
+
+      const stored = await pool.query<{ canonical_document: { editorMetadata: unknown } }>(
+        "select canonical_document from map_draft where slug = $1",
+        [slug],
+      );
+      expect(stored.rows[0]!.canonical_document.editorMetadata).toEqual({ note: "gzipped" });
+      const revision = await pool.query<{ canonical_document: { editorMetadata: unknown } }>(
+        `select r.canonical_document from map_draft_revision r
+           join map_draft d on d.id = r.map_draft_id
+          where d.slug = $1 and r.revision = 2`,
+        [slug],
+      );
+      expect(revision.rows[0]!.canonical_document.editorMetadata).toEqual({ note: "gzipped" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("PUT rejects a gzipped body that doesn't decompress, with 400 and no change", async () => {
+    const slug = uniqueSlug();
+    const app = await buildApp();
+    try {
+      await app.inject({ method: "GET", url: `/api/v1/editor/maps/${slug}/draft` });
+      const response = await app.inject({
+        method: "PUT",
+        url: `/api/v1/editor/maps/${slug}/draft`,
+        headers: { "content-type": GZIP_DRAFT_CONTENT_TYPE },
+        payload: Buffer.from("definitely not gzip"),
+      });
+      expect(response.statusCode).toBe(400);
+      const get = await app.inject({ method: "GET", url: `/api/v1/editor/maps/${slug}/draft` });
+      expect(get.json().revision).toBe(1);
     } finally {
       await app.close();
     }

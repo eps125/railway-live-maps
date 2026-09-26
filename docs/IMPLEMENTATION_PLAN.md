@@ -4091,3 +4091,34 @@ rebuild), backfill (absolute recount up to the cutover, idempotent, empty day), 
 aggregation units, API integration (window sums, published/draft/combined allocations, other-area
 member, bound-but-unseen, fallback window, 400; step paging with a same-millisecond cursor), merge
 units, and the page (allocation text, filters, window change, step panel in UK time, load more).
+
+## Milestone 73 — Public map scrolls natively (2026-09-26)
+
+Owner report: scrolling the map left and right had become very slow, particularly on Carlisle;
+traksy.uk scrolls quickly. Measured on live.mattslab.online (1400 px window): about **380 ms per
+pan step on Carlisle** and 260 ms on Preston. Setting the SVG's viewBox directly cost about 9 ms,
+so the time was the renderer's own JavaScript. Every mouse move re-rendered all ~1,400 elements
+and recomputed their geometry, including each berth's nearest-track search across the whole map.
+Traksy (inspected with the owner's permission, technique only) also uses SVG, with about 10,700
+nodes. It draws the whole line once in a native horizontal scroll container, so scrolling runs no
+JavaScript.
+
+- [x] The map is drawn once at a fixed `viewBox` covering the whole map, inside a native scroll
+      container padded by half the window each side, so any point can reach the middle and a view
+      maps to the scroll position exactly. Dragging sets `scrollLeft`/`scrollTop`, with no React
+      render. The wheel still zooms, around the middle of the window, by changing only the SVG's
+      pixel size. A mainly sideways wheel or touchpad swipe scrolls natively. Pinch-zoom, "Reset
+      view", search/boundary centring and the remembered per-map view are unchanged, and views
+      remembered before this still restore.
+- [x] Static elements are drawn once per bundle; berth rectangles are computed once per bundle;
+      berths and signals are memoised components, so a live update re-renders only what changed.
+- [x] A zero-size container (a hidden panel) no longer turns the view into NaN.
+
+Measured with the new renderer against live data (dev build, 1400 px window, Carlisle): **0.6 ms
+per pan step** (worst 1.5 ms), 11–32 ms per wheel-zoom step.
+
+Tests: fixed viewBox with the view moving on a pan; a pan mutates no map element; vertical wheel
+zooms around the middle while a sideways swipe is left to the browser; a pre-Milestone-73 saved
+view restores; finite view in a zero-size container; view maths round-trip and zoom clamping. The
+view is published as `data-view` on the SVG for these tests. A jsdom `PointerEvent` stand-in was
+added: without it the old pan test passed on a NaN viewBox.

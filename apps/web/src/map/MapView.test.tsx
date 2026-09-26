@@ -211,7 +211,7 @@ describe("MapView", () => {
     await screen.findByText("2A16");
 
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(90);
     expect(y! + height! / 2).toBeCloseTo(90);
   });
@@ -228,7 +228,7 @@ describe("MapView", () => {
     await screen.findByText("2A16");
 
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(70);
     expect(y! + height! / 2).toBeCloseTo(70);
   });
@@ -249,7 +249,7 @@ describe("MapView", () => {
     // No throw, no alert — just the ordinary default view (bounding-box centre).
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(50);
     expect(y! + height! / 2).toBeCloseTo(50);
   });
@@ -283,7 +283,7 @@ describe("MapView", () => {
 
     const svg = container.querySelector("svg")!;
     await waitFor(() => {
-      const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+      const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
       expect(x! + width! / 2).toBeCloseTo(40);
       expect(y! + height! / 2).toBeCloseTo(320);
     });

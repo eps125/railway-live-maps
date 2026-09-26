@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   MAP_CSS_TOKENS,
   MAP_STYLE,
@@ -114,8 +114,8 @@ export function boundaryLinkUrl(
 /** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
  * removed with the berth-run resolver (ADR 0002) and there's no matched/ambiguous distinction
  * worth showing until run↔schedule correlation is rebuilt. */
-function berthColors(berthState: BerthState | undefined): { fill: string; stroke: string } {
-  if (!berthState?.description) return { fill: "#161d27", stroke: "#2d3644" };
+function berthColors(description: string | undefined): { fill: string; stroke: string } {
+  if (!description) return { fill: "#161d27", stroke: "#2d3644" };
   return { fill: "#3d7fc4", stroke: "#6aa4de" };
 }
 
@@ -684,49 +684,426 @@ export function viewBoxAfterPinch(
   return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
 }
 
+/** Milestone 73: nominal container size used before the real one is measured (first render, and
+ * a hidden or zero-size container, where dividing by the real width would give NaN). */
+const NOMINAL_WIDTH = 1200;
+const NOMINAL_HEIGHT = 700;
+/** How far out the viewer may zoom, as a fraction of "the whole map fits the window". */
+const MIN_FIT_FRACTION = 0.25;
+
+/** Milestone 73: the view as the renderer tracks it — the map point at the middle of the window,
+ * and the magnification in CSS pixels per map unit. */
+export interface MapView {
+  cx: number;
+  cy: number;
+  scale: number;
+}
+
+/** Pure: the map-unit rectangle a view shows in a window of `w` × `h` pixels. This is also the
+ * shape the remembered view is stored in, so views saved before Milestone 73 still restore. */
+export function viewToViewBox(view: MapView, w: number, h: number): ViewBox {
+  const width = w / view.scale;
+  const height = h / view.scale;
+  return { x: view.cx - width / 2, y: view.cy - height / 2, width, height };
+}
+
+/** Pure: the view that shows `box` in a `w` × `h` window — centred on it, fitted the way SVG's
+ * `xMidYMid meet` fitted the old viewBox. */
+export function viewBoxToView(box: ViewBox, w: number, h: number): MapView {
+  return {
+    cx: box.x + box.width / 2,
+    cy: box.y + box.height / 2,
+    scale: Math.min(w / box.width, h / box.height),
+  };
+}
+
+/** Pure: keep the magnification between "`MIN_ZOOM_WIDTH` map units fill the window" and "the
+ * whole map fits in `MIN_FIT_FRACTION` of it". */
+export function clampScale(
+  scale: number,
+  w: number,
+  h: number,
+  world: { width: number; height: number },
+): number {
+  const max = Math.min(w, h) / MIN_ZOOM_WIDTH;
+  const fit = Math.min(w / Math.max(world.width, 1), h / Math.max(world.height, 1));
+  const min = Math.min(fit * MIN_FIT_FRACTION, max);
+  if (!Number.isFinite(scale)) return Math.min(Math.max(fit, min), max);
+  return Math.min(Math.max(scale, min), max);
+}
+
+const EMPTY_RECORD = {};
+const EMPTY_IDS: ReadonlyArray<string> = [];
+
+/** Milestone 73: one berth, memoised so a live update only re-renders the berths whose display
+ * actually changed. `description` is what is shown (already blanked if inhibited). */
+const BerthNode = memo(function BerthNode({
+  id,
+  rect,
+  description,
+  fontSize,
+  onSelect,
+}: {
+  id: string;
+  rect: { x: number; y: number; width: number; height: number };
+  description: string | undefined;
+  fontSize: number;
+  onSelect: (id: string) => void;
+}): JSX.Element {
+  const colors = berthColors(description);
+  // An empty berth has nothing to show a popup for — only occupied berths respond to clicks
+  // (docs/PROJECT_SPEC.md §5: "click a populated berth"). Re-enabled in Milestone 34 (ADR 0006).
+  const isOccupied = Boolean(description);
+  return (
+    <g
+      onClick={isOccupied ? () => onSelect(id) : undefined}
+      style={{ cursor: isOccupied ? "pointer" : "default" }}
+    >
+      <rect
+        x={rect.x}
+        y={rect.y}
+        width={rect.width}
+        height={rect.height}
+        fill={colors.fill}
+        stroke={colors.stroke}
+        strokeWidth={1}
+        rx={2}
+      />
+      <text
+        x={rect.x + rect.width / 2}
+        y={rect.y + rect.height / 2}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
+        fontSize={fontSize}
+        fill={description ? "#04101f" : "#8b96a5"}
+        fontWeight={description ? 700 : 400}
+      >
+        {description ?? ""}
+      </text>
+    </g>
+  );
+});
+
+/** Milestone 73: one signal, memoised on its state. */
+const SignalNode = memo(function SignalNode({
+  element,
+  state,
+}: {
+  element: SignalElement;
+  state: SignalState["state"];
+}): JSX.Element {
+  return renderSignal(element, state);
+});
+
+/** An element that never changes while the map is shown — drawn once per bundle. Anything with
+ * live state (berths, signals, crossings, routes) or a playback-dependent click (labels,
+ * boundaries) is drawn separately. Returns `undefined` for those. */
+function renderStaticElement(
+  element: MapElement,
+  elementsById: Record<string, MapElement>,
+  trackPaths: ReadonlyArray<TrackPathElement>,
+): JSX.Element | null | undefined {
+  switch (element.type) {
+    case "trackPath":
+      // ADR 0004 D2/D4: the compiler has already welded topology-joined segments into single
+      // polylines, so a round `stroke-linejoin` closes every diagonal↔horizontal corner — no
+      // junction dots, matching OpenTrainTimes. Caps stay `butt`.
+      return (
+        <polyline
+          key={element.id}
+          points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill="none"
+          stroke={MAP_STYLE.track.color}
+          strokeWidth={MAP_STYLE.track.strokeWidth}
+          strokeLinejoin="round"
+          strokeLinecap="butt"
+          shapeRendering="geometricPrecision"
+        />
+      );
+    case "platform":
+      return renderPlatform(element, elementsById);
+    case "platformNumber":
+      return renderPlatformNumber(element);
+    case "station": {
+      const lines = element.name.split("\n");
+      return (
+        <text
+          key={element.id}
+          x={element.x}
+          y={element.y}
+          textAnchor="middle"
+          fontSize={element.fontSize}
+          fontWeight={700}
+          fill="var(--map-station-label, #58a6ff)"
+        >
+          {lines.map((line, i) => (
+            <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
+              {line}
+              {i === lines.length - 1 && element.crs ? ` [${element.crs}]` : ""}
+            </tspan>
+          ))}
+        </text>
+      );
+    }
+    case "neutralSection":
+      return renderNeutralSection(element);
+    case "tunnel":
+      return renderTunnel(element);
+    case "viaduct":
+      return renderViaduct(element);
+    case "water":
+      return renderWater(element);
+    case "switchedDiamond":
+      return renderSwitchedDiamond(element, trackPaths);
+    default:
+      return undefined;
+  }
+}
+
 /** Basic SVG public map renderer (docs/IMPLEMENTATION_PLAN.md Milestone 5,
- * docs/MAP_EDITOR_SPEC.md §12): plain SVG, pan/zoom via viewBox manipulation, semantic style
- * tokens for signals. The full train/run popup needs the resolver (Milestone 9) — clicking a
- * berth here only shows the raw description/berth id as a stub. */
+ * docs/MAP_EDITOR_SPEC.md §12): plain SVG, semantic style tokens for signals.
+ *
+ * Milestone 73 (owner report 2026-09-26: "scrolling is very slow, particularly on Carlisle"):
+ * the map is drawn once, at a fixed `viewBox` covering the whole map, inside a native scroll
+ * container — the way traksy.uk does it. Panning is the browser's own scrolling (a drag just sets
+ * `scrollLeft`/`scrollTop`), so it runs no React at all; zooming changes only the SVG's pixel
+ * size. Previously every mouse move re-rendered and re-measured all ~1,400 elements (measured
+ * ~380 ms per step on Carlisle). Static elements are now drawn once per bundle, and berths and
+ * signals are memoised so a live update re-renders only what changed.
+ *
+ * The canvas is padded by half the window on every side, so any map point can be scrolled to
+ * the middle, and a view maps to the scroll position exactly: `scrollLeft = (cx − minX) × scale`.
+ */
 export function MapRenderer({
   bundle,
   berths,
   signals,
-  crossings = {},
-  routes = {},
+  crossings = EMPTY_RECORD,
+  routes = EMPTY_RECORD,
   showEmptyBerths = true,
   centerElementId,
   atIso = null,
-  highlightElementIds = [],
+  highlightElementIds = EMPTY_IDS,
   playbackLink = null,
 }: MapRendererProps): JSX.Element {
-  // `useRef`'s initial value is only ever evaluated on the first render, which is exactly "look
-  // at this once, at mount" — a later change to `centerElementId` (or the visitor panning away)
-  // must not keep re-centering the view underneath them.
-  const initialCenterPoint = useRef<{ x: number; y: number } | null>(
-    centerElementId ? elementCenterPoint(bundle.elementsById[centerElementId]) : null,
-  );
-  const [viewBox, setViewBox] = useState<ViewBox>(() =>
-    initialCenterPoint.current
-      ? pointCenteredView(initialCenterPoint.current.x, initialCenterPoint.current.y)
-      : (readSavedView(bundle.mapId) ?? defaultView(bundle)),
-  );
-  // True if the first paint came from a remembered view (or a search jump-to-element) — the
-  // mount effect then leaves it alone; false means "first ever visit", so the effect snaps it to
-  // the fixed default zoom sized to the real container.
-  const restoredFromStorage = useRef<boolean>(
-    initialCenterPoint.current !== null || readSavedView(bundle.mapId) !== null,
-  );
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
-  const [drag, setDrag] = useState<{ startX: number; startY: number; origin: ViewBox } | null>(
-    null,
-  );
-  // Two-finger pinch-to-zoom (touch has no wheel event) — tracks the distance between the two
-  // touches at pinch start so subsequent moves scale the viewBox by how that distance has
-  // changed, the same "zoom around a fixed center" idea onWheel already uses for the mouse.
-  const [pinch, setPinch] = useState<{ startDistance: number; origin: ViewBox } | null>(null);
-  const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const world = useMemo(() => {
+    const { minX, minY, maxX, maxY } = bundle.boundingBox;
+    return { x: minX, y: minY, width: Math.max(maxX - minX, 1), height: Math.max(maxY - minY, 1) };
+  }, [bundle]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+
+  /** The real window size, or the nominal one while it can't be measured. */
+  function windowSize(): { w: number; h: number } {
+    const el = scrollRef.current;
+    return { w: el?.clientWidth || NOMINAL_WIDTH, h: el?.clientHeight || NOMINAL_HEIGHT };
+  }
+
+  /** Where to start: an explicit element to centre on (Milestone 31), else the remembered view,
+   * else the fixed-magnification default. Worked out for a given window size. */
+  function startingView(w: number, h: number): { view: MapView; remembered: boolean } {
+    const centre = centerElementId
+      ? elementCenterPoint(bundle.elementsById[centerElementId])
+      : null;
+    if (centre)
+      return {
+        view: viewBoxToView(pointCenteredView(centre.x, centre.y, w, h), w, h),
+        remembered: true,
+      };
+    const saved = readSavedView(bundle.mapId);
+    if (saved) return { view: viewBoxToView(saved, w, h), remembered: true };
+    return { view: viewBoxToView(defaultView(bundle, w, h), w, h), remembered: false };
+  }
+
+  const view = useRef<MapView | null>(null);
+  if (view.current === null) {
+    view.current = startingView(NOMINAL_WIDTH, NOMINAL_HEIGHT).view;
+  }
+  const [scale, setScale] = useState(view.current.scale);
+  const [windowPx, setWindowPx] = useState({ w: NOMINAL_WIDTH, h: NOMINAL_HEIGHT });
+  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+
+  const gesture = useRef<
+    | { kind: "drag"; startX: number; startY: number; origin: MapView }
+    | { kind: "pinch"; startDistance: number; origin: MapView }
+    | null
+  >(null);
+  const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const saveTimer = useRef<number | undefined>(undefined);
+
+  /** Publishes the current view (for tests and debugging) and remembers it, debounced so a drag
+   * doesn't hammer localStorage (traksy.uk behaviour). */
+  function viewChanged(): void {
+    const { w, h } = windowSize();
+    const box = viewToViewBox(view.current!, w, h);
+    svgRef.current?.setAttribute("data-view", `${box.x} ${box.y} ${box.width} ${box.height}`);
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(
+      () => writeSavedView(bundle.mapId, box),
+      VIEW_SAVE_DEBOUNCE_MS,
+    );
+  }
+
+  /** Scrolls the window to the current view. The browser clamps at the edges; the scroll event
+   * that follows reads the clamped position back into the view. */
+  function applyScroll(): void {
+    const el = scrollRef.current;
+    const v = view.current!;
+    if (el) {
+      el.scrollLeft = (v.cx - world.x) * v.scale;
+      el.scrollTop = (v.cy - world.y) * v.scale;
+    }
+    viewChanged();
+  }
+
+  function setView(next: MapView): void {
+    const { w, h } = windowSize();
+    view.current = { ...next, scale: clampScale(next.scale, w, h, world) };
+    if (view.current.scale !== scale) setScale(view.current.scale);
+    else applyScroll();
+  }
+
+  // Once mounted: measure the real window, and settle the starting view for it (a first-ever
+  // visit snaps to the fixed default zoom sized to the real window; a remembered view keeps its
+  // magnification). Then keep the window size current.
+  useLayoutEffect(() => {
+    const { w, h } = windowSize();
+    setWindowPx({ w, h });
+    const start = startingView(w, h);
+    view.current = { ...start.view, scale: clampScale(start.view.scale, w, h, world) };
+    setScale(view.current.scale);
+    applyScroll();
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      const size = windowSize();
+      setWindowPx((current) => (current.w === size.w && current.h === size.h ? current : size));
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(saveTimer.current);
+    };
+  }, [bundle.mapId]);
+
+  // Whenever the magnification or the window changes, the canvas has been resized: scroll so the
+  // same map point stays in the middle.
+  useLayoutEffect(() => {
+    applyScroll();
+  }, [scale, windowPx.w, windowPx.h]);
+
+  function onScroll(): void {
+    const el = scrollRef.current;
+    const v = view.current;
+    if (!el || !v || gesture.current?.kind === "pinch") return;
+    v.cx = world.x + el.scrollLeft / v.scale;
+    v.cy = world.y + el.scrollTop / v.scale;
+    viewChanged();
+  }
+
+  function resetView(): void {
+    try {
+      window.localStorage.removeItem(VIEW_KEY_PREFIX + bundle.mapId);
+    } catch {
+      /* ignore */
+    }
+    const { w, h } = windowSize();
+    setView(viewBoxToView(defaultView(bundle, w, h), w, h));
+  }
+
+  // The wheel zooms, around the middle of the window, as before. A mainly sideways wheel or
+  // touchpad swipe (or shift+wheel) is left to the browser, so it scrolls natively. A real,
+  // non-passive listener, because React's synthetic onWheel is passive and can't preventDefault.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function onWheel(event: WheelEvent): void {
+      if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+      event.preventDefault();
+      const v = view.current!;
+      setView({ ...v, scale: v.scale / (event.deltaY > 0 ? 1.1 : 0.9) });
+    }
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  });
+
+  function pointerDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function setGrabbing(on: boolean): void {
+    if (scrollRef.current) scrollRef.current.style.cursor = on ? "grabbing" : "grab";
+  }
+
+  function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    // Deliberately no setPointerCapture here (tried it, reverted 2026-08-11): capturing on
+    // every pointerdown — including a plain tap that lands on a berth — broke the click event a
+    // berth's own onClick depends on to open the popup.
+    activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointers.current.size === 2) {
+      // A second finger landing supersedes any single-finger pan already in progress.
+      const [a, b] = [...activePointers.current.values()];
+      gesture.current = {
+        kind: "pinch",
+        startDistance: pointerDistance(a!, b!),
+        origin: { ...view.current! },
+      };
+    } else if (activePointers.current.size === 1) {
+      gesture.current = {
+        kind: "drag",
+        startX: event.clientX,
+        startY: event.clientY,
+        origin: { ...view.current! },
+      };
+      setGrabbing(true);
+    }
+  }
+
+  function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    if (!activePointers.current.has(event.pointerId)) return;
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const g = gesture.current;
+    if (g?.kind === "pinch" && activePointers.current.size === 2) {
+      const [a, b] = [...activePointers.current.values()];
+      const { w, h } = windowSize();
+      const next = viewBoxAfterPinch(
+        { startDistance: g.startDistance, origin: viewToViewBox(g.origin, w, h) },
+        pointerDistance(a!, b!),
+      );
+      if (next) setView({ ...g.origin, scale: viewBoxToView(next, w, h).scale });
+      return;
+    }
+    if (g?.kind === "drag" && activePointers.current.size === 1) {
+      // Pixels map straight onto scroll: no React render, just a scroll position.
+      view.current = {
+        ...g.origin,
+        cx: g.origin.cx - (event.clientX - g.startX) / g.origin.scale,
+        cy: g.origin.cy - (event.clientY - g.startY) / g.origin.scale,
+      };
+      applyScroll();
+    }
+  }
+
+  function onPointerUp(event: React.PointerEvent<HTMLDivElement>): void {
+    activePointers.current.delete(event.pointerId);
+    gesture.current = null;
+    setGrabbing(false);
+    // One finger still down after the other lifts — resume panning from where it is now rather
+    // than jumping back to wherever the very first pointerdown in this gesture happened.
+    if (activePointers.current.size === 1) {
+      const [remaining] = [...activePointers.current.values()];
+      gesture.current = {
+        kind: "drag",
+        startX: remaining!.x,
+        startY: remaining!.y,
+        origin: { ...view.current! },
+      };
+    }
+  }
 
   // For a combined berth (docs/MAP_EDITOR_SPEC.md's berth section) more than one key maps to the
   // same elementId — the click-a-berth run popup shows every member's detail (Milestone 50), so
@@ -756,13 +1133,9 @@ export function MapRenderer({
   }, [bundle]);
 
   // Paint order and layer visibility must match the editor canvas exactly (CLAUDE.md rule 13:
-  // public renderer and editor preview share the same domain model/state semantics) —
-  // `elementsById` is a Record, and relying on its own key-insertion order to already reflect
-  // sortElementsForPaint's result is exactly the kind of implicit assumption that's easy to
-  // silently break, so paint order is computed explicitly here via the same shared function
-  // EditorCanvas.tsx uses. A layer with no explicit `visible: false` (including one this bundle
-  // doesn't list at all) still renders — unlike the editor's stricter default, an unknown/absent
-  // layer here should never hide real published content.
+  // public renderer and editor preview share the same domain model/state semantics) — paint
+  // order is computed explicitly via the same shared function EditorCanvas.tsx uses. A layer with
+  // no explicit `visible: false` (including one this bundle doesn't list at all) still renders.
   const layersById = useMemo(
     () => new Map(bundle.layers.map((layer) => [layer.id, layer])),
     [bundle],
@@ -786,363 +1159,219 @@ export function MapRenderer({
     [bundle],
   );
 
-  function centredDefaultView(): ViewBox {
-    const svg = svgRef.current;
-    return defaultView(bundle, svg?.clientWidth || 1200, svg?.clientHeight || 700);
-  }
-
-  // First-ever visit to this map: once the container is measured, snap to the fixed default
-  // zoom (constant magnification) centred on the content. A remembered view is left untouched.
-  useEffect(() => {
-    if (restoredFromStorage.current) return;
-    setViewBox(centredDefaultView());
-  }, [bundle.mapId]);
-
-  // Remember where the viewer is looking, per map (traksy.uk behaviour). Debounced so a drag
-  // doesn't hammer localStorage.
-  useEffect(() => {
-    const id = window.setTimeout(
-      () => writeSavedView(bundle.mapId, viewBox),
-      VIEW_SAVE_DEBOUNCE_MS,
-    );
-    return () => window.clearTimeout(id);
-  }, [bundle.mapId, viewBox]);
-
-  function resetView(): void {
-    try {
-      window.localStorage.removeItem(VIEW_KEY_PREFIX + bundle.mapId);
-    } catch {
-      /* ignore */
+  // Milestone 73: everything that can't change while the map is shown, drawn once per bundle.
+  const staticNodes = useMemo(() => {
+    const nodes = new Map<string, JSX.Element | null>();
+    for (const element of elements) {
+      const node = renderStaticElement(element, bundle.elementsById, trackPaths);
+      if (node !== undefined) nodes.set(element.id, node);
     }
-    setViewBox(centredDefaultView());
-  }
+    return nodes;
+  }, [elements, bundle, trackPaths]);
 
-  // React attaches its synthetic onWheel listener as passive at the root, so
-  // event.preventDefault() there is silently ignored (and Chrome logs a warning on every
-  // tick) — attach a real, non-passive listener directly on the element instead so zooming
-  // the map actually stops the page from scrolling underneath it.
-  useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    function onWheel(event: WheelEvent): void {
-      event.preventDefault();
-      const scale = event.deltaY > 0 ? 1.1 : 0.9;
-      setViewBox((current) => {
-        const newWidth = Math.max(current.width * scale, MIN_ZOOM_WIDTH);
-        const newHeight = Math.max(current.height * scale, MIN_ZOOM_WIDTH);
-        const cx = current.x + current.width / 2;
-        const cy = current.y + current.height / 2;
-        return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
-      });
+  // ADR 0004 D1: each berth is centred on its bound track rather than trusting the authored top-
+  // left y. Worked out once per bundle — for a berth with no bound track it searches every track.
+  const berthRects = useMemo(() => {
+    const rects = new Map<string, ReturnType<typeof berthRenderRect>>();
+    for (const element of elements) {
+      if (element.type === "berth")
+        rects.set(element.id, berthRenderRect(element, bundle.elementsById));
     }
+    return rects;
+  }, [elements, bundle]);
 
-    svg.addEventListener("wheel", onWheel, { passive: false });
-    return () => svg.removeEventListener("wheel", onWheel);
-  }, []);
+  const selectBerth = useCallback((id: string) => setSelectedElementId(id), []);
 
-  function pointerDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {
-    return Math.hypot(a.x - b.x, a.y - b.y);
-  }
+  // The map's content. Re-evaluated only when live state (or the bundle) changes — never on a
+  // scroll or zoom — and even then static elements are reused as-is.
+  const content = useMemo(
+    () =>
+      elements.map((element) => {
+        if (staticNodes.has(element.id)) return staticNodes.get(element.id)!;
+        if (element.type === "berth") {
+          const rawDescription = berths[element.id]?.description;
+          // Opt-in TD-area fringe pairs (2026-09-11 owner request, BerthElementSchema.inhibitedBy):
+          // when the berth this one is inhibited by currently shows the identical description,
+          // render this berth exactly as if vacant. Purely cosmetic — live state, history and
+          // playback all keep this berth's real data untouched; only what gets drawn changes.
+          const inhibiting = element.inhibitedBy ? berths[element.inhibitedBy] : undefined;
+          const description =
+            rawDescription && rawDescription === inhibiting?.description
+              ? undefined
+              : rawDescription || undefined;
+          // ADR 0004 D5: a vacant berth can be hidden entirely (berthmaps style).
+          if (!description && !showEmptyBerths) return null;
+          return (
+            <BerthNode
+              key={element.id}
+              id={element.id}
+              rect={berthRects.get(element.id)!}
+              description={description}
+              fontSize={element.fontSize}
+              onSelect={selectBerth}
+            />
+          );
+        }
+        if (element.type === "signal") {
+          return (
+            <SignalNode
+              key={element.id}
+              element={element}
+              state={signals[element.id]?.state ?? "blank"}
+            />
+          );
+        }
+        if (element.type === "label") {
+          // Labels wrap on explicit newlines (`\n`) — each becomes a <tspan> on the next line.
+          const lines = element.text.split("\n");
+          // Milestone 32 (folded into `label` 2026-09-13): a label carrying `adjacentMapSlug`
+          // is a boundary link — clickable, normal label style (owner preference).
+          const handleClick = boundaryClickHandler(
+            element.adjacentMapSlug,
+            element.adjacentBoundaryName,
+            element.text,
+            playbackLink,
+          );
+          return (
+            <text
+              key={element.id}
+              x={element.x}
+              y={element.y}
+              textAnchor={
+                element.align === "center" ? "middle" : element.align === "right" ? "end" : "start"
+              }
+              fontSize={element.fontSize}
+              fill="#c9d1d9"
+              onClick={handleClick}
+              style={{ cursor: handleClick ? "pointer" : undefined }}
+            >
+              {lines.map((line, i) => (
+                <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
+                  {line === "" ? " " : line}
+                </tspan>
+              ))}
+            </text>
+          );
+        }
+        if (element.type === "levelCrossing") {
+          return renderLevelCrossing(element, crossings[element.id]?.state ?? "blank");
+        }
+        if (element.type === "route") {
+          // Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and
+          // unset draw nothing — the plain track underneath is the "no route" picture.
+          return routes[element.id]?.state === "set" ? renderSetRoute(element) : null;
+        }
+        if (element.type === "boundary") {
+          // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);
+          // kept rendering only for already-published immutable versions that still have one.
+          const handleClick = boundaryClickHandler(
+            element.adjacentMapSlug,
+            element.adjacentBoundaryName,
+            element.name,
+            playbackLink,
+          );
+          return (
+            <g
+              key={element.id}
+              onClick={handleClick}
+              style={{ cursor: handleClick ? "pointer" : "default" }}
+            >
+              <circle cx={element.x} cy={element.y} r={4} fill="#8b949e" />
+              <text x={element.x + 8} y={element.y + 4} fontSize={10} fill="#8b949e">
+                {element.name}
+              </text>
+            </g>
+          );
+        }
+        return null;
+      }),
+    [
+      elements,
+      staticNodes,
+      berthRects,
+      berths,
+      signals,
+      crossings,
+      routes,
+      showEmptyBerths,
+      playbackLink?.atIso,
+      playbackLink?.speed,
+      playbackLink?.playing,
+      selectBerth,
+    ],
+  );
 
-  function onPointerDown(event: React.PointerEvent<SVGSVGElement>): void {
-    // Deliberately no setPointerCapture here (tried it, reverted 2026-08-11): capturing on
-    // every pointerdown — including a plain tap that lands on a berth — broke the click event a
-    // berth's own onClick depends on to open the popup. Losing a fast-moving finger past the
-    // element's edge mid-gesture is a real but much smaller cost than that.
-    activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-
-    if (activePointers.current.size === 2) {
-      // A second finger landing supersedes any single-finger pan already in progress.
-      setDrag(null);
-      const [a, b] = [...activePointers.current.values()];
-      setPinch({ startDistance: pointerDistance(a!, b!), origin: viewBox });
-    } else if (activePointers.current.size === 1) {
-      setDrag({ startX: event.clientX, startY: event.clientY, origin: viewBox });
-    }
-  }
-
-  function onPointerMove(event: React.PointerEvent<SVGSVGElement>): void {
-    if (!activePointers.current.has(event.pointerId)) return;
-    activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-
-    if (pinch && activePointers.current.size === 2) {
-      const [a, b] = [...activePointers.current.values()];
-      const next = viewBoxAfterPinch(pinch, pointerDistance(a!, b!));
-      if (next) setViewBox(next);
-      return;
-    }
-
-    if (drag && activePointers.current.size === 1) {
-      const svg = event.currentTarget;
-      const scaleX = drag.origin.width / svg.clientWidth;
-      const scaleY = drag.origin.height / svg.clientHeight;
-      const dx = (event.clientX - drag.startX) * scaleX;
-      const dy = (event.clientY - drag.startY) * scaleY;
-      setViewBox({ ...drag.origin, x: drag.origin.x - dx, y: drag.origin.y - dy });
-    }
-  }
-
-  function onPointerUp(event: React.PointerEvent<SVGSVGElement>): void {
-    activePointers.current.delete(event.pointerId);
-    setDrag(null);
-    setPinch(null);
-    // One finger still down after the other lifts (pinch ending, or a 3rd+ touch releasing) —
-    // resume panning from its current position rather than jumping back to wherever the very
-    // first pointerdown in this gesture happened.
-    if (activePointers.current.size === 1) {
-      const [remaining] = [...activePointers.current.values()];
-      setDrag({ startX: remaining!.x, startY: remaining!.y, origin: viewBox });
-    }
-  }
+  const highlight = useMemo(
+    () =>
+      highlightElementIds.length > 0 ? (
+        <g className="map-highlight" data-testid="map-highlight" pointerEvents="none">
+          {highlightElementIds.map((id) => {
+            const element = bundle.elementsById[id];
+            if (!element) return null;
+            if ("points" in element) {
+              return (
+                <polyline
+                  key={id}
+                  points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+                  fill="none"
+                  stroke="#f0b429"
+                  strokeWidth={MAP_STYLE.track.strokeWidth + 6}
+                  strokeOpacity={0.55}
+                  strokeLinejoin="round"
+                />
+              );
+            }
+            return (
+              <circle
+                key={id}
+                cx={element.x}
+                cy={element.y}
+                r={14}
+                fill="none"
+                stroke="#f0b429"
+                strokeWidth={2.5}
+              />
+            );
+          })}
+        </g>
+      ) : null,
+    [highlightElementIds, bundle],
+  );
 
   const selectedMembers = selectedElementId ? elementIdToMembers.get(selectedElementId) : undefined;
   const selectedElement = selectedElementId ? bundle.elementsById[selectedElementId] : undefined;
 
   return (
     <div className="map-frame">
-      <svg
-        ref={svgRef}
-        role="img"
-        aria-label={`${bundle.mapName} schematic map`}
-        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-        preserveAspectRatio="xMidYMid meet"
-        style={{
-          background: "#0d1117",
-          cursor: drag || pinch ? "grabbing" : "grab",
-          touchAction: "none",
-          userSelect: "none",
-          WebkitUserSelect: "none",
-        }}
+      <div
+        ref={scrollRef}
+        className="map-frame__scroll"
+        style={{ cursor: "grab", touchAction: "none" }}
+        onScroll={onScroll}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onPointerLeave={onPointerUp}
       >
-        {elements.map((element) => {
-          if (element.type === "trackPath") {
-            // ADR 0004 D2/D4: the compiler has already welded topology-joined segments into
-            // single polylines, so a round `stroke-linejoin` closes every diagonal↔horizontal
-            // corner — no junction dots, matching OpenTrainTimes. Caps stay `butt`.
-            return (
-              <polyline
-                key={element.id}
-                points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
-                fill="none"
-                stroke={MAP_STYLE.track.color}
-                strokeWidth={MAP_STYLE.track.strokeWidth}
-                strokeLinejoin="round"
-                strokeLinecap="butt"
-                shapeRendering="geometricPrecision"
-              />
-            );
-          }
-          if (element.type === "platform") {
-            return renderPlatform(element, bundle.elementsById);
-          }
-          if (element.type === "platformNumber") {
-            return renderPlatformNumber(element);
-          }
-          if (element.type === "station") {
-            const lines = element.name.split("\n");
-            return (
-              <text
-                key={element.id}
-                x={element.x}
-                y={element.y}
-                textAnchor="middle"
-                fontSize={element.fontSize}
-                fontWeight={700}
-                fill="var(--map-station-label, #58a6ff)"
-              >
-                {lines.map((line, i) => (
-                  <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
-                    {line}
-                    {i === lines.length - 1 && element.crs ? ` [${element.crs}]` : ""}
-                  </tspan>
-                ))}
-              </text>
-            );
-          }
-          if (element.type === "berth") {
-            const rawBerthState = berths[element.id];
-            const inhibitingState = element.inhibitedBy ? berths[element.inhibitedBy] : undefined;
-            // Opt-in TD-area fringe pairs (2026-09-11 owner request, BerthElementSchema.inhibitedBy):
-            // when the berth this one is inhibited by currently shows the identical description,
-            // render this berth exactly as if vacant. Purely cosmetic — `berths` (live state),
-            // history, and playback all keep this berth's real data untouched; only what gets
-            // drawn here changes.
-            const isInhibited =
-              Boolean(rawBerthState?.description) &&
-              rawBerthState?.description === inhibitingState?.description;
-            const berthState = isInhibited ? undefined : rawBerthState;
-            const colors = berthColors(berthState);
-            // An empty berth has nothing to show a popup for — only occupied berths respond to
-            // clicks (docs/PROJECT_SPEC.md §5: "click a populated berth").
-            const isOccupied = Boolean(berthState?.description);
-            // Re-enabled (Milestone 34, docs/adr/0006) — was temporarily disabled 2026-09-12
-            // pending the resolver rebuild the popup depends on; that's what `resolveRunMatch`/
-            // the position-scoped `currentRun.ts` now is.
-            const clickEnabled = true;
-            // ADR 0004 D5: a vacant berth can be hidden entirely (berthmaps style).
-            if (!isOccupied && !showEmptyBerths) return null;
-            // ADR 0004 D1: centre the box on its bound track rather than trusting the authored
-            // top-left y.
-            const rect = berthRenderRect(element, bundle.elementsById);
-            return (
-              <g
-                key={element.id}
-                onClick={
-                  isOccupied && clickEnabled ? () => setSelectedElementId(element.id) : undefined
-                }
-                style={{ cursor: isOccupied && clickEnabled ? "pointer" : "default" }}
-              >
-                <rect
-                  x={rect.x}
-                  y={rect.y}
-                  width={rect.width}
-                  height={rect.height}
-                  fill={colors.fill}
-                  stroke={colors.stroke}
-                  strokeWidth={1}
-                  rx={2}
-                />
-                <text
-                  x={rect.x + rect.width / 2}
-                  y={rect.y + rect.height / 2}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
-                  fontSize={element.fontSize}
-                  fill={berthState?.description ? "#04101f" : "#8b96a5"}
-                  fontWeight={berthState?.description ? 700 : 400}
-                >
-                  {berthState?.description ?? ""}
-                </text>
-              </g>
-            );
-          }
-          if (element.type === "signal") {
-            return renderSignal(element, signals[element.id]?.state ?? "blank");
-          }
-          if (element.type === "label") {
-            // Labels wrap on explicit newlines (`\n`) — each becomes a <tspan> on the next line.
-            const lines = element.text.split("\n");
-            // Milestone 32 (folded into `label` 2026-09-13): a label carrying `adjacentMapSlug`
-            // is a boundary link — clickable, normal label style (owner preference), no circle
-            // marker the old standalone `boundary` type drew.
-            const handleClick = boundaryClickHandler(
-              element.adjacentMapSlug,
-              element.adjacentBoundaryName,
-              element.text,
-              playbackLink,
-            );
-            return (
-              <text
-                key={element.id}
-                x={element.x}
-                y={element.y}
-                textAnchor={
-                  element.align === "center"
-                    ? "middle"
-                    : element.align === "right"
-                      ? "end"
-                      : "start"
-                }
-                fontSize={element.fontSize}
-                fill="#c9d1d9"
-                onClick={handleClick}
-                style={{ cursor: handleClick ? "pointer" : undefined }}
-              >
-                {lines.map((line, i) => (
-                  <tspan key={i} x={element.x} dy={i === 0 ? 0 : "1.2em"}>
-                    {line === "" ? " " : line}
-                  </tspan>
-                ))}
-              </text>
-            );
-          }
-          if (element.type === "neutralSection") {
-            return renderNeutralSection(element);
-          }
-          if (element.type === "tunnel") {
-            return renderTunnel(element);
-          }
-          if (element.type === "viaduct") {
-            return renderViaduct(element);
-          }
-          if (element.type === "water") {
-            return renderWater(element);
-          }
-          if (element.type === "levelCrossing") {
-            return renderLevelCrossing(element, crossings[element.id]?.state ?? "blank");
-          }
-          if (element.type === "switchedDiamond") {
-            return renderSwitchedDiamond(element, trackPaths);
-          }
-          if (element.type === "route") {
-            // Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and
-            // unset draw nothing — the plain track underneath is the "no route" picture.
-            return routes[element.id]?.state === "set" ? renderSetRoute(element) : null;
-          }
-          if (element.type === "boundary") {
-            // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);
-            // kept rendering only for already-published immutable versions that still have one.
-            const handleClick = boundaryClickHandler(
-              element.adjacentMapSlug,
-              element.adjacentBoundaryName,
-              element.name,
-              playbackLink,
-            );
-            return (
-              <g
-                key={element.id}
-                onClick={handleClick}
-                style={{ cursor: handleClick ? "pointer" : "default" }}
-              >
-                <circle cx={element.x} cy={element.y} r={4} fill="#8b949e" />
-                <text x={element.x + 8} y={element.y + 4} fontSize={10} fill="#8b949e">
-                  {element.name}
-                </text>
-              </g>
-            );
-          }
-          return null;
-        })}
-        {highlightElementIds.length > 0 ? (
-          <g className="map-highlight" data-testid="map-highlight" pointerEvents="none">
-            {highlightElementIds.map((id) => {
-              const element = bundle.elementsById[id];
-              if (!element) return null;
-              if ("points" in element) {
-                return (
-                  <polyline
-                    key={id}
-                    points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
-                    fill="none"
-                    stroke="#f0b429"
-                    strokeWidth={MAP_STYLE.track.strokeWidth + 6}
-                    strokeOpacity={0.55}
-                    strokeLinejoin="round"
-                  />
-                );
-              }
-              return (
-                <circle
-                  key={id}
-                  cx={element.x}
-                  cy={element.y}
-                  r={14}
-                  fill="none"
-                  stroke="#f0b429"
-                  strokeWidth={2.5}
-                />
-              );
-            })}
-          </g>
-        ) : null}
-      </svg>
+        <div
+          className="map-frame__canvas"
+          style={{ padding: `${windowPx.h / 2}px ${windowPx.w / 2}px` }}
+        >
+          <svg
+            ref={svgRef}
+            role="img"
+            aria-label={`${bundle.mapName} schematic map`}
+            viewBox={`${world.x} ${world.y} ${world.width} ${world.height}`}
+            width={world.width * scale}
+            height={world.height * scale}
+            style={{ background: "#0d1117" }}
+          >
+            {content}
+            {highlight}
+          </svg>
+        </div>
+      </div>
 
       <button
         type="button"

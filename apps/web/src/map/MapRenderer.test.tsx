@@ -6,8 +6,23 @@ import {
   boundaryLinkUrl,
   elementCenterPoint,
   viewBoxAfterPinch,
+  viewBoxToView,
+  viewToViewBox,
+  clampScale,
   MIN_ZOOM_WIDTH,
 } from "./MapRenderer.js";
+
+// jsdom has no PointerEvent, so fireEvent.pointer* would build events with no clientX/clientY.
+if (typeof window.PointerEvent === "undefined") {
+  class TestPointerEvent extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  (window as unknown as { PointerEvent: typeof TestPointerEvent }).PointerEvent = TestPointerEvent;
+}
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
@@ -331,7 +346,7 @@ describe("MapRenderer", () => {
       <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="station-1" />,
     );
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     // Centred means the element's point sits in the middle of the viewBox, not at the
     // bounding-box centre (500, 500) the default view would have used instead.
     expect(x! + width! / 2).toBeCloseTo(900);
@@ -344,7 +359,7 @@ describe("MapRenderer", () => {
       <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="does-not-exist" />,
     );
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(500);
     expect(y! + height! / 2).toBeCloseTo(500);
   });
@@ -356,7 +371,7 @@ describe("MapRenderer", () => {
     });
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(250);
     expect(y! + height! / 2).toBeCloseTo(300);
   });
@@ -382,7 +397,7 @@ describe("MapRenderer", () => {
       <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="station-1" />,
     );
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
     expect(x! + width! / 2).toBeCloseTo(900);
     expect(y! + height! / 2).toBeCloseTo(900);
   });
@@ -391,13 +406,13 @@ describe("MapRenderer", () => {
     const doc = bundle();
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
-    const initialViewBox = svg.getAttribute("viewBox")!;
+    const initialViewBox = svg.getAttribute("data-view")!;
     const initialWidth = Number(initialViewBox.split(" ")[2]);
 
     fireEvent.pointerDown(svg, { pointerId: 1, clientX: 100, clientY: 100 });
     fireEvent.pointerMove(svg, { pointerId: 1, clientX: 60, clientY: 100 });
 
-    const newViewBox = svg.getAttribute("viewBox")!;
+    const newViewBox = svg.getAttribute("data-view")!;
     const newWidth = Number(newViewBox.split(" ")[2]);
     // Panning moves x/y, never changes width/height.
     expect(newWidth).toBe(initialWidth);
@@ -1316,6 +1331,132 @@ describe("MapRenderer", () => {
     fireEvent.click(screen.getByText("Just a label"));
 
     expect(window.location.pathname).toBe("/map/preston");
+  });
+});
+
+describe("native scrolling (Milestone 73)", () => {
+  const view = (svg: SVGSVGElement) => svg.getAttribute("data-view")!.split(" ").map(Number);
+
+  it("draws the whole map at a fixed viewBox; a pan moves the view, never the drawing", () => {
+    const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 400 } });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    expect(svg.getAttribute("viewBox")).toBe("0 0 5000 400");
+    const width = svg.getAttribute("width");
+    const before = view(svg);
+
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 300, clientY: 100 });
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+
+    const after = view(svg);
+    expect(svg.getAttribute("viewBox")).toBe("0 0 5000 400");
+    expect(svg.getAttribute("width")).toBe(width);
+    // Dragged 100 px left: the view moved right by 100 px worth of map units.
+    expect(after[0]! - before[0]!).toBeCloseTo(100 * (before[2]! / 1200));
+    expect(after[2]).toBeCloseTo(before[2]!);
+  });
+
+  it("does not re-render the map's elements when the view pans", () => {
+    const doc = bundle({
+      elementsById: {
+        "berth-1": {
+          id: "berth-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "berth",
+          x: 10,
+          y: 10,
+          width: 40,
+          height: 16,
+          displayName: "0001",
+          fontSize: 10,
+          textAlign: "center",
+        },
+      },
+    });
+    const { container } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-1": { description: "1A01" } as never }}
+        signals={{}}
+      />,
+    );
+    const svg = container.querySelector("svg")!;
+    const text = screen.getByText("1A01");
+    const observer = new MutationObserver(() => undefined);
+    observer.observe(svg, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 300, clientY: 100 });
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 250, clientY: 120 });
+    const mutations = observer.takeRecords();
+    observer.disconnect();
+    // The only change is the published view — no element was touched.
+    expect(mutations.every((m) => m.target === svg && m.attributeName === "data-view")).toBe(true);
+    expect(screen.getByText("1A01")).toBe(text);
+  });
+
+  it("zooms on a vertical wheel by resizing the drawing, and leaves a sideways swipe to the browser", () => {
+    const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 400 } });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    const scroller = container.querySelector(".map-frame__scroll")!;
+    const width = Number(svg.getAttribute("width"));
+    const before = view(svg);
+
+    const sideways = new WheelEvent("wheel", {
+      deltaX: 40,
+      deltaY: 5,
+      cancelable: true,
+      bubbles: true,
+    });
+    scroller.dispatchEvent(sideways);
+    expect(sideways.defaultPrevented).toBe(false);
+    expect(Number(svg.getAttribute("width"))).toBe(width);
+
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    expect(Number(svg.getAttribute("width"))).toBeGreaterThan(width);
+    const after = view(svg);
+    expect(after[2]).toBeLessThan(before[2]!);
+    // Zoom keeps the middle of the window where it was.
+    expect(after[0]! + after[2]! / 2).toBeCloseTo(before[0]! + before[2]! / 2);
+  });
+
+  it("restores a view remembered before Milestone 73 (same stored shape)", () => {
+    window.localStorage.setItem(
+      "mtm.mapView.lancaster",
+      JSON.stringify({ x: 100, y: 50, width: 1200, height: 700 }),
+    );
+    const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 2000 } });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const [x, y, width, height] = view(container.querySelector("svg")!);
+    expect([x, y, width, height].map((n) => Math.round(n!))).toEqual([100, 50, 1200, 700]);
+  });
+
+  it("keeps a finite view in a container that has no size yet (hidden panel)", () => {
+    const { container } = render(<MapRenderer bundle={bundle()} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 40, clientY: 90 });
+    expect(view(svg).every(Number.isFinite)).toBe(true);
+  });
+});
+
+describe("view maths (Milestone 73)", () => {
+  it("round-trips a view through its viewBox", () => {
+    const v = { cx: 500, cy: 200, scale: 0.8 };
+    expect(viewBoxToView(viewToViewBox(v, 1400, 650), 1400, 650)).toEqual(v);
+  });
+
+  it("clamps zoom between MIN_ZOOM_WIDTH across the window and a quarter of 'fit the map'", () => {
+    const world = { width: 20000, height: 500 };
+    expect(clampScale(1000, 1400, 700, world)).toBe(700 / MIN_ZOOM_WIDTH);
+    expect(clampScale(0.00001, 1400, 700, world)).toBeCloseTo((1400 / 20000) * 0.25);
+    expect(Number.isFinite(clampScale(Number.NaN, 1400, 700, world))).toBe(true);
   });
 });
 

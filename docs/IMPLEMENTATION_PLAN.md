@@ -4207,3 +4207,31 @@ hasn't; a new published version replaces the cached one while an older one still
 own time; a gzipped save stores the same document in `map_draft` and `map_draft_revision`; a
 corrupt gzipped body is a 400 with no change; the editor gzips saves and falls back to plain JSON.
 Full integration suite: 249 passed.
+
+## Milestone 76 — Quiet signals keep their last known state (2026-09-26)
+
+Owner report: four signals just bound on Carlisle (CL 02:3, 02:5, 02:6, 02:7) stayed grey. Byte 02
+was last stated at 06:13 UTC (value 00: all four at danger) and had not changed in over nine hours.
+A signal's byte was only searched for within 6 hours (`SIGNAL_STATE_LOOKBACK_MS`), on the
+documented assumption that every area re-states its bytes about every 2 hours. **CL sends only
+changes (SF): 9,615 in 24 hours and no SG/SH refresh at all**, so any CL signal quiet for 6 hours
+went blank although nothing had contradicted its last value.
+
+**Owner decision (2026-09-26): trust until a feed gap.** The trust rule is unchanged: a byte's
+value counts only if no TD receive silence longer than the tolerance began after it was stated
+(`sByteTrustedAt`). Only the search bound changes.
+
+- [x] `SIGNAL_STATE_LOOKBACK_MS` is 7 days (was 6 hours). Same value for the map, snapshots,
+      playback, inferred crossings, routes and the S-Class mini explorer.
+- [x] `fetchSByteFactsAt` reads `td_s_current_state` first: the projector updates it on every
+      statement of a byte, so when that statement is at or before `at` (always, for live) it is the
+      answer. Only a byte stated again after `at` (playback) falls back to the `td_s_event` index
+      seek, still bounded by the lookback — a byte never stated can't make every request scan a
+      week of events. Measured on production: the fallback seek for CL byte 02 (quiet 9 h) takes
+      41 ms.
+
+Tests: a byte stated eight hours ago resolves; playback before a later statement falls back to the
+earlier one; a byte older than the lookback is unknown; a never-stated byte is absent (driven
+through the real projector). The S-Class snapshot fixture now models an undecoded byte the way the
+projector writes one (`raw_only`, no value) rather than as a decoded 00 with no event. Full
+integration suite: 250 passed.

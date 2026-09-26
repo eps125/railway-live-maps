@@ -86,14 +86,26 @@ async function bitChange(address: string, bit: number, next: boolean, at: Date):
   );
 }
 
-async function currentByte(address: string, value: number, at: Date): Promise<void> {
+/** A byte's row in `td_s_current_state`. A `null` value is a byte the area has mentioned but that
+ * never decoded — the projector writes exactly that (`raw_only`, no value); a decoded row always
+ * comes with its decoded `td_s_event`. */
+async function currentByte(address: string, value: number | null, at: Date): Promise<void> {
   const raw = await rawSEvent(at);
   await pool.query(
     `insert into td_s_current_state (projection_version, td_area, address, raw_value, byte_value,
        decoded_bitset, event_at, source_event_id, source_event_normalized_at_utc,
        source_ingestion_sequence, decode_status, source_kind)
-     values ($1, $2, $3, 'xx', $4, '[]', $5, $6, $5, $7, 'decoded', 'update')`,
-    [TD_S_STATE_PROJECTION_VERSION, AREA, address, value, at, raw.id, raw.ingestion_sequence],
+     values ($1, $2, $3, 'xx', $4, '[]', $5, $6, $5, $7, $8, 'update')`,
+    [
+      TD_S_STATE_PROJECTION_VERSION,
+      AREA,
+      address,
+      value,
+      at,
+      raw.id,
+      raw.ingestion_sequence,
+      value === null ? "raw_only" : "decoded",
+    ],
   );
 }
 
@@ -102,7 +114,7 @@ async function currentByte(address: string, value: number, at: Date): Promise<vo
 // decoded statement at all, so its value is unknown rather than guessed.
 beforeAll(async () => {
   await currentByte("03", 0x00, minutesAgo(1));
-  await currentByte("05", 0x00, minutesAgo(1));
+  await currentByte("05", null, minutesAgo(1));
   await byteStated("03", 0x04, minutesAgo(10));
   await byteStated("03", 0x00, minutesAgo(1));
   await bitChange("03", 2, true, minutesAgo(30));

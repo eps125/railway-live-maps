@@ -24,8 +24,9 @@ overlapping/near `at`; `quality.status` is `"stale"` when a gap actually covers 
 `signals` (Milestone 36b, docs/adr/0013): each signal element's `state` is `blank` | `on` | `off`
 — only ever its bound `tdSBit` bit read through the binding's `activeMeans` (red = on, green =
 off; never an aspect, never inferred — CLAUDE.md rules 9/10). `blank` covers unmapped signals,
-bytes with no decoded statement in the last 6 hours (including all history before Milestone
-36a), bindings without `activeMeans`, and bytes not re-confirmed since a TD receive silence that
+bytes with no decoded statement in the last 7 days (including all history before Milestone
+36a; 6 hours until 2026-09-26 — some areas, such as Carlisle, send only changes, so a quiet byte's
+last statement can be many hours old), bindings without `activeMeans`, and bytes not re-confirmed since a TD receive silence that
 has lasted more than 5 minutes. Live mode also reads S-Class rows newer than the history
 projector's checkpoint, so a live snapshot is never behind the deltas that follow it.
 
@@ -644,7 +645,7 @@ hits, ofClears, ofTransitions, medianLeadSeconds, medianHeldSeconds, definition 
 - `GET .../areas/{tdArea}/snapshot?at=&windowSeconds=` (Milestone 65) — the map viewer's mini
   explorer: `{ tdArea, at, windowSeconds, bytes: [{ address, value | null }], changes: [{ address,
 bit, previousValue, newValue, eventAt }], truncated, definitions }`. `at` defaults to now; each byte
-  is its latest decoded statement at or before `at` within 6 h (null = unknown); `changes` are the
+  is its latest decoded statement at or before `at` within 7 days (null = unknown); `changes` are the
   bit changes in `(at - windowSeconds, at]`, newest first, at most 300. `windowSeconds` 1-3600,
   default 120. Live (no `at`): also folds in raw S-Class rows newer than the history projector's
   checkpoint, so it is as current as the live map; `overlayTruncated` is true if the projector is too

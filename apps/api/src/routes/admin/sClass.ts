@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { Pool, PoolClient } from "pg";
 import {
   S_CLASS_DEFINITION_KINDS,
+  SIGNAL_STATE_LOOKBACK_MS,
   TD_S_STATE_PROJECTION_VERSION,
   decodeSClassPayload,
   formatSAddress,
@@ -47,9 +48,9 @@ const SNAPSHOT_DEFAULT_WINDOW_SECONDS = 120;
 const SNAPSHOT_MAX_WINDOW_SECONDS = 3600;
 /** The newest changes returned in one snapshot. */
 const SNAPSHOT_CHANGE_LIMIT = 300;
-/** How far back a byte's last statement may be and still count as its value at `at`. Matches the
+/** How far back a byte's last statement may be and still count as its value at `at` — the
  * signal state lookback, so the panel and the map agree about what is known. */
-const SNAPSHOT_LOOKBACK_MS = 6 * 3_600_000;
+const SNAPSHOT_LOOKBACK_MS = SIGNAL_STATE_LOOKBACK_MS;
 /** Live snapshots also read raw rows the history projector hasn't reached yet — the same bounds
  * the live map uses for its own overlay. */
 const SNAPSHOT_OVERLAY_MAX_ROWS = 5_000;

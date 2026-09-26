@@ -104,10 +104,13 @@ export function sByteTrustedAt(
   return true;
 }
 
-/** How far back a point-in-time lookup searches for a byte's last confirming event. Every
- * S-Class area observed refreshes roughly every 2 hours, so a live byte is always re-stated well
- * within this; a byte with nothing in the window is unknown. */
-export const SIGNAL_STATE_LOOKBACK_MS = 6 * 60 * 60_000;
+/** How far back a point-in-time lookup searches for a byte's last confirming event; a byte with
+ * nothing in the window is unknown. What makes a found value trustworthy is `sByteTrustedAt`: no
+ * feed silence since it was stated. Owner decision 2026-09-26 ("trust until a feed gap"): this was
+ * 6 hours on the assumption that every area re-states its bytes about every 2 hours, but Carlisle
+ * (CL) sends only changes — no periodic refresh in 24 h — so a signal quiet for 6 hours went
+ * grey although its last value was never contradicted. Seven days bounds the search. */
+export const SIGNAL_STATE_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
 
 /** One `tdSBit` binding, with its address already canonical (`canonicalSAddress`). */
 export interface SignalBinding {

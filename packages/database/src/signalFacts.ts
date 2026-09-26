@@ -19,12 +19,22 @@ export interface SByteFactRow {
   confirmedSequence: string;
 }
 
+/** Mirrors `@railway/domain`'s `TD_S_STATE_PROJECTION_VERSION` (duplicated because this package
+ * is a leaf). */
+const TD_S_STATE_PROJECTION_VERSION = 2;
+
 /**
  * For each `(tdArea, address)`: the byte's value as stated by the most recent decoded
- * `td_s_event` at or before `at`, within `lookbackMs`. One `(td_area, event_at desc)` index seek
- * per byte (`limit 1` lateral), bounded by the lookback so a byte that is never stated can't scan
- * an area's whole history. Rows before decoding existed (`raw_only`) are never used — history
- * from before Milestone 36a resolves as unknown, not guessed.
+ * `td_s_event` at or before `at`, within `lookbackMs`. Rows before decoding existed (`raw_only`)
+ * are never used — history from before Milestone 36a resolves as unknown, not guessed.
+ *
+ * 2026-09-26: the lookback is now days, not hours (some areas — Carlisle — send only changes,
+ * never periodic refreshes, so a quiet byte's last statement can be many hours old). To keep that
+ * cheap, the projector's `td_s_current_state` answers first: it holds every byte's latest
+ * statement, so when that statement is at or before `at` (always, for live) it *is* the answer.
+ * Only a byte whose latest statement is after `at` (playback) falls back to one
+ * `(td_area, event_at desc)` index seek per byte (`limit 1` lateral), bounded by the lookback so a
+ * byte that is never stated can't scan an area's whole history.
  */
 export async function fetchSByteFactsAt(
   pool: Pool,
@@ -36,6 +46,32 @@ export async function fetchSByteFactsAt(
   if (bytes.length === 0) return facts;
   const unique = [...new Map(bytes.map((b) => [`${b.tdArea}|${b.address}`, b])).values()];
   const since = new Date(at.getTime() - lookbackMs);
+
+  const current = await pool.query<{
+    td_area: string;
+    address: string;
+    byte_value: number | null;
+    event_at: Date;
+    source_ingestion_sequence: string;
+  }>(
+    `select s.td_area, s.address, s.byte_value, s.event_at, s.source_ingestion_sequence::text
+       from unnest($1::text[], $2::text[]) as wanted(td_area, address)
+       join td_s_current_state s
+         on s.projection_version = $3 and s.td_area = wanted.td_area and s.address = wanted.address
+      where s.decode_status = 'decoded'`,
+    [unique.map((b) => b.tdArea), unique.map((b) => b.address), TD_S_STATE_PROJECTION_VERSION],
+  );
+  const settled = new Set<string>();
+  for (const row of current.rows) {
+    const key = `${row.td_area}|${row.address}`;
+    if (row.event_at > at) continue; // stated again since `at`: look further back below
+    settled.add(key);
+    if (row.byte_value === null || row.event_at <= since) continue; // unknown at `at`
+    facts.set(key, { value: row.byte_value, confirmedSequence: row.source_ingestion_sequence });
+  }
+  const remaining = unique.filter((b) => !settled.has(`${b.tdArea}|${b.address}`));
+  if (remaining.length === 0) return facts;
+
   const result = await pool.query<{
     td_area: string;
     address: string;
@@ -54,7 +90,7 @@ export async function fetchSByteFactsAt(
           order by e.event_at desc, e.ingestion_sequence desc
           limit 1
        ) latest`,
-    [unique.map((b) => b.tdArea), unique.map((b) => b.address), at, since],
+    [remaining.map((b) => b.tdArea), remaining.map((b) => b.address), at, since],
   );
   for (const row of result.rows) {
     if (row.value === null || row.ingestion_sequence === null) continue;

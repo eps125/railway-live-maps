@@ -189,6 +189,37 @@ describe("admin berth query route (integration)", () => {
     await app.close();
   });
 
+  it("answers at once for a berth never seen, or a pair that never steps, from the activity table", async () => {
+    // Owner report 2026-09-27: CL A475 (never seen in CL) timed out even at 7 days, because proving
+    // "no steps" read every step in the area. Only the days the activity table lists are read.
+    const app = await buildApp();
+    const code = randomUUID().replace(/-/g, "").slice(0, 3).toUpperCase();
+    const [a, b, c] = [`A${code}`, `B${code}`, `C${code}`];
+    await recordObservedBerthEvent(pool, "WZ", a, b, "2B01"); // A -> B
+    await recordObservedBerthEvent(pool, "WZ", c, a, "2B02"); // C -> A
+
+    const never = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=WZ&fromBerth=N${code}&days=90`,
+    });
+    expect(never.statusCode).toBe(200);
+    expect(never.json().steps).toEqual([]);
+
+    // B and C are both active today, but B never steps to C.
+    const noPair = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=WZ&fromBerth=${b}&toBerth=${c}&days=90`,
+    });
+    expect(noPair.json().steps).toEqual([]);
+
+    const pair = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/steps?tdArea=WZ&fromBerth=${c}&toBerth=${a}&days=90`,
+    });
+    expect(pair.json().steps.map((s: { description: string }) => s.description)).toEqual(["2B02"]);
+    await app.close();
+  });
+
   it("rejects a berth-steps search without a two-character area or a berth", async () => {
     const app = await buildApp();
     for (const url of [

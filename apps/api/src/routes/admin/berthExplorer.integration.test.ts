@@ -187,8 +187,8 @@ describe("admin Berth explorer routes (integration, Milestone 72)", () => {
     await recordObservedBerthEvent(pool, "WX", s, x, "3A01"); // CA out of S
     await recordObservedBerthEvent(pool, "WX", null, s, "3A02"); // CC into S
     await recordObservedBerthEvent(pool, "WX", null, x, "3A03"); // not S: excluded
-    // The helper does not run the projector, so record the active days it would have.
-    await activity("WX", s, daysAgo(0), "live", 2, 1);
+    // The helper records today's activity as the projector would; add an earlier listed day with
+    // no steps left in it, which the read must pass over.
     await activity("WX", s, daysAgo(1), "live", 0, 0);
 
     const base = `/api/v1/admin/berth-explorer/areas/WX/berths/${s}/steps`;

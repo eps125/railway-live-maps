@@ -71,6 +71,10 @@ const PAIR_STEPS_LOOKBACK_CHOICES = [1, 7, 30, 90];
 const PAIR_STEPS_DEFAULT_DAYS = 7;
 /** A berth-pair search is a diagnostic: give up rather than hold a connection for minutes. */
 const PAIR_STEPS_TIMEOUT_MS = 15_000;
+/** 2026-09-27: after this long, no further day is started — the search returns what it has found
+ * and says how far back it got. On a cold cache one busy area-day (CL) was measured at 12 s, so a
+ * berth active every day can't always fill 50 steps in time; a partial answer beats a failure. */
+const PAIR_STEPS_BUDGET_MS = 20_000;
 
 interface StepRow {
   event_at: Date;
@@ -139,7 +143,12 @@ export async function registerBerthQueryRoutes(
    * interpose) and its own from/to berths. CT heartbeats carry no berth, so never match.
    *
    * Both read `td_berth_event` newest first on the `(td_area, event_at)` index, within the chosen
-   * look-back.
+   * look-back — but only on the days `td_berth_daily_activity` (Milestone 72) says the berth (or,
+   * for a pair, the from-berth stepping out and the to-berth stepping in) was active. Owner report
+   * 2026-09-27: a berth never seen in the area (CL A475) timed out even at 7 days, because proving
+   * "no steps" meant reading every CL step in the period — on a cold cache over 50 s. Now it is
+   * one small index read and an instant empty answer. That table is written in the same
+   * transaction as the steps themselves, so it never lags them.
    */
   app.get<{
     Querystring: {
@@ -178,25 +187,79 @@ export async function registerBerthQueryRoutes(
     try {
       await client.query("begin");
       await client.query(`set local statement_timeout = ${PAIR_STEPS_TIMEOUT_MS}`);
-      const result = singleBerth
-        ? await client.query<StepRow>(
-            `select event_at, description, message_type, from_berth, to_berth
-               from td_berth_event
-              where td_area = $1 and (from_berth = $2 or to_berth = $2)
-                and event_at >= $3::timestamptz
-              order by event_at desc, id desc
-              limit $4`,
-            [tdArea, fromBerth, since, limit],
+      const sinceDay = since.toISOString().slice(0, 10);
+      const activeDays = singleBerth
+        ? await client.query<{ day: string }>(
+            `select activity_date::text as day
+               from td_berth_daily_activity
+              where td_area = $1 and berth = $2 and activity_date >= $3::date
+              group by activity_date
+              order by activity_date desc`,
+            [tdArea, fromBerth, sinceDay],
           )
-        : await client.query<StepRow>(
-            `select event_at, description, message_type, from_berth, to_berth
-               from td_berth_event
-              where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
-                and event_at >= $4::timestamptz
-              order by event_at desc, id desc
-              limit $5`,
-            [tdArea, fromBerth, toBerth, since, limit],
+        : await client.query<{ day: string }>(
+            `select activity_date::text as day
+               from td_berth_daily_activity
+              where td_area = $1 and activity_date >= $4::date
+                and ((berth = $2 and events_out > 0) or (berth = $3 and events_in > 0))
+              group by activity_date
+             having bool_or(berth = $2 and events_out > 0) and bool_or(berth = $3 and events_in > 0)
+              order by activity_date desc`,
+            [tdArea, fromBerth, toBerth, sinceDay],
           );
+
+      const rows: StepRow[] = [];
+      const started = Date.now();
+      // Set when the search stopped for time: steps before this were not searched.
+      let incompleteBefore: string | null = null;
+      for (const [index, { day }] of activeDays.rows.entries()) {
+        const dayStart = new Date(`${day}T00:00:00Z`);
+        if (index > 0 && Date.now() - started > PAIR_STEPS_BUDGET_MS) {
+          incompleteBefore = new Date(dayStart.getTime() + 86_400_000).toISOString();
+          break;
+        }
+        const from = dayStart < since ? since : dayStart;
+        const to = new Date(dayStart.getTime() + 86_400_000);
+        const query = () =>
+          singleBerth
+            ? client.query<StepRow>(
+                `select event_at, description, message_type, from_berth, to_berth
+                   from td_berth_event
+                  where td_area = $1 and (from_berth = $2 or to_berth = $2)
+                    and event_at >= $3::timestamptz and event_at < $4::timestamptz
+                  order by event_at desc, id desc
+                  limit $5`,
+                [tdArea, fromBerth, from, to, limit - rows.length],
+              )
+            : client.query<StepRow>(
+                `select event_at, description, message_type, from_berth, to_berth
+                   from td_berth_event
+                  where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
+                    and event_at >= $4::timestamptz and event_at < $5::timestamptz
+                  order by event_at desc, id desc
+                  limit $6`,
+                [tdArea, fromBerth, toBerth, from, to, limit - rows.length],
+              );
+        // After the first day, a day that runs past the statement timeout ends the search with what
+        // it has, rather than losing it; the savepoint keeps the transaction usable.
+        let result: { rows: StepRow[] };
+        if (index === 0) {
+          result = await query();
+        } else {
+          await client.query("savepoint day");
+          try {
+            result = await query();
+            await client.query("release savepoint day");
+          } catch (error) {
+            if ((error as { code?: string }).code !== "57014") throw error;
+            await client.query("rollback to savepoint day");
+            incompleteBefore = new Date(dayStart.getTime() + 86_400_000).toISOString();
+            break;
+          }
+        }
+        rows.push(...result.rows);
+        if (rows.length >= limit) break;
+      }
       await client.query("commit");
       return {
         tdArea,
@@ -204,7 +267,8 @@ export async function registerBerthQueryRoutes(
         toBerth: singleBerth ? null : toBerth,
         days,
         since: since.toISOString(),
-        steps: result.rows.map((row) => ({
+        incompleteBefore,
+        steps: rows.map((row) => ({
           eventAt: row.event_at.toISOString(),
           description: row.description,
           messageType: row.message_type,

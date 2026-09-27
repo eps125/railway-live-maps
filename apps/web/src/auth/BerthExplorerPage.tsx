@@ -77,8 +77,15 @@ function londonDateTime(iso: string): string {
 }
 
 async function errorMessage(response: Response, fallback: string): Promise<string> {
-  const body = await readApiJson<{ error?: { message?: string } }>(response);
-  return body.error?.message ?? fallback;
+  // A 504's own explanation can be replaced by the proxy's error page (Cloudflare): fall back to
+  // what the status says rather than a "non-JSON response" error.
+  const body = await readApiJson<{ error?: { message?: string } }>(response).catch(
+    () => ({}) as { error?: { message?: string } },
+  );
+  return (
+    body.error?.message ??
+    (response.status === 504 ? `${fallback}: it took too long — try again.` : fallback)
+  );
 }
 
 function allocationText(a: Allocation, tdArea: string): string {

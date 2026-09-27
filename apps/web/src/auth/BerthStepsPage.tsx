@@ -17,6 +17,8 @@ interface StepsResponse {
   toBerth: string | null;
   days: number;
   since: string;
+  /** Set when the search stopped for time: steps before this were not searched. */
+  incompleteBefore?: string | null;
   steps: Step[];
 }
 
@@ -82,9 +84,18 @@ export function BerthStepsPage(): JSX.Element {
       });
       const response = await fetch(`/api/v1/admin/berths/steps?${params.toString()}`);
       if (!response.ok) {
-        const body = await readApiJson<{ error?: { message?: string } }>(response);
+        // A 504's own explanation can be replaced by the proxy's error page (Cloudflare), so
+        // don't let an unreadable body hide what the status already says.
+        const body = await readApiJson<{ error?: { message?: string } }>(response).catch(
+          () => ({}) as { error?: { message?: string } },
+        );
         setResult(null);
-        setError(body.error?.message ?? "Search failed.");
+        setError(
+          body.error?.message ??
+            (response.status === 504
+              ? `Searching ${days} days took too long — try a shorter period.`
+              : `Search failed (HTTP ${response.status}).`),
+        );
         return;
       }
       setResult(await readApiJson<StepsResponse>(response));
@@ -114,9 +125,9 @@ export function BerthStepsPage(): JSX.Element {
       <p className="field-hint">
         The last 50 steps from one berth to another, newest first. Leave &ldquo;To berth&rdquo;
         empty to see every step at a single berth instead &mdash; into it or out of it, including
-        cancels and interposes. Times are UK time. A longer period takes longer to search, and a
-        berth or pair that is rarely used is the slowest case of all, because every step in the
-        period has to be checked.
+        cancels and interposes. Times are UK time. Only the days the berth (or pair) was active are
+        searched, so a berth that has never been seen answers at once; a busy area over a long
+        period can take a while, and then you get the steps found so far.
       </p>
 
       <form className="panel-card" onSubmit={(e) => void search(e)}>
@@ -169,7 +180,20 @@ export function BerthStepsPage(): JSX.Element {
         </button>
       </form>
 
-      {result && result.steps.length === 0 ? (
+      {result?.incompleteBefore ? (
+        <p role="status" className="panel-card panel-card--empty">
+          Only searched back to{" "}
+          {new Date(result.incompleteBefore).toLocaleDateString("en-GB", {
+            timeZone: "Europe/London",
+            day: "numeric",
+            month: "short",
+          })}{" "}
+          &mdash; searching further took too long. Searching again is usually much quicker, as the
+          days already read are then cached.
+        </p>
+      ) : null}
+
+      {result && result.steps.length === 0 && !result.incompleteBefore ? (
         <p className="panel-card panel-card--empty">
           No steps{" "}
           {result.toBerth

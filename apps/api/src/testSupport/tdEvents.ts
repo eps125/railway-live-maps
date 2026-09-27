@@ -49,6 +49,26 @@ export async function recordObservedBerthEvent(
     [eventId, now, tdArea, messageType, fromBerth, toBerth, description, ingestionSequence],
   );
 
+  // Milestone 72: `project-td` counts every event into td_berth_daily_activity in the same
+  // transaction (to_berth "in", from_berth "out"); searches use it to find a berth's active days.
+  for (const [berth, eventsIn, eventsOut] of [
+    [toBerth, 1, 0],
+    [fromBerth, 0, 1],
+  ] as const) {
+    if (!berth) continue;
+    await pool.query(
+      `insert into td_berth_daily_activity (
+         td_area, activity_date, berth, source, events_in, events_out, first_event_at, last_event_at
+       ) values ($1, ($2::timestamptz at time zone 'UTC')::date, $3, 'live', $4, $5, $2, $2)
+       on conflict (td_area, activity_date, berth, source) do update set
+         events_in = td_berth_daily_activity.events_in + excluded.events_in,
+         events_out = td_berth_daily_activity.events_out + excluded.events_out,
+         first_event_at = least(td_berth_daily_activity.first_event_at, excluded.first_event_at),
+         last_event_at = greatest(td_berth_daily_activity.last_event_at, excluded.last_event_at)`,
+      [tdArea, now, berth, eventsIn, eventsOut],
+    );
+  }
+
   if (toBerth) {
     await pool.query(
       `insert into berth_current_state (

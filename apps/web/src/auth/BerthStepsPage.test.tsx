@@ -162,4 +162,45 @@ describe("BerthStepsPage (owner request 2026-09-22)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("took too long");
     expect(String(fetchMock.mock.calls[0]![0])).toContain("days=90");
   });
+
+  it("says it took too long when the proxy replaces a 504 with its own error page", async () => {
+    // Owner report 2026-09-27: Cloudflare's HTML error page made this read "Search failed."
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response("<html>504 Gateway Time-out</html>", {
+            status: 504,
+            headers: { "content-type": "text/html" },
+          }),
+        ),
+      ),
+    );
+    render(<BerthStepsPage />);
+    fill("CL", "A475", "");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Searching 7 days took too long");
+  });
+
+  it("shows the steps found so far when the search ran out of time", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "CL",
+            fromBerth: "A465",
+            toBerth: null,
+            days: 30,
+            since: "",
+            incompleteBefore: "2026-09-20T00:00:00.000Z",
+            steps: [],
+          }),
+        ),
+      ),
+    );
+    render(<BerthStepsPage />);
+    fill("CL", "A465", "");
+    expect(await screen.findByRole("status")).toHaveTextContent("Only searched back to 20 Sept");
+    expect(screen.queryByText(/No steps at/)).toBeNull();
+  });
 });

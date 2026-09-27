@@ -4334,3 +4334,46 @@ Tests: the buffer stop drawing (size, mirroring, both styles) and bounds; the st
 (position, turn, no post, always red, parts); cut-out sizes; renderer (buffer stop, stop board,
 cut-out under the post); the editor's track-end snapping, layer, half grid and bounds; route ends
 following a moved signal and undo; the Signals tool re-attaching routes.
+
+## Milestone 80 — Berth steps: search only the active days, never lose the answer (2026-09-27)
+
+Owner report: CL A475 in the Berth steps tool said "Search failed." at 7, 30 and 90 days.
+
+- [x] **Cause:** A475 has never been seen in CL, and proving "no steps" meant reading every CL
+      step in the period — 110k rows for 7 days, 52 s from a cold cache against a 15 s limit.
+      The API's "took too long" reply was then replaced by Cloudflare's own 504 page, which the
+      page couldn't read, so it only said "Search failed."
+- [x] Both single-berth and pair searches now read only the days `td_berth_daily_activity`
+      (Milestone 72) lists for the berth (or for the from-berth stepping out and the to-berth
+      stepping in). A berth never seen answers at once (4 ms on production for CL A475 at 90
+      days). The table is written in the same transaction as the steps, so it never lags them.
+- [x] A busy berth can still be slow on a cold cache (one CL day measured at 12 s). After 20 s no
+      further day is started, and a day that hits the timeout after the first ends the search;
+      either way the steps found so far are returned with "Only searched back to …".
+- [x] The Berth steps and Berth explorer pages say a 504 took too long even when the proxy
+      replaced the API's explanation.
+- [ ] A berth index on `td_berth_event` would make every search instant — about 1.5 GB per
+      monthly partition, so it needs the owner's decision.
+
+Tests: a never-seen berth and a never-stepping pair answer empty from the activity table; a
+matching pair is found; the page reports a replaced 504 and a partial search. The integration
+test helper now records activity as `project-td` does.
+
+## Milestone 81 — Hidden track for flyovers (2026-09-27)
+
+Owner request: flyovers are drawn as a viaduct mark either side with the lower line broken
+between them, so a route along the lower line (Carlisle 0495 → 0493) had no track to follow.
+
+- [x] A track can be marked **Hidden (passes under a flyover)**. It isn't drawn on the public map
+      (faint and dashed in the editor), but the route tracer crosses it.
+- [x] Routes aren't drawn along a hidden track — in the public map and the editor alike — so they
+      show on the track either side and not across the line above. Worked out at draw time, so
+      routes traced before a track is marked hidden follow the change.
+- [x] A hidden track is never welded to the visible track it joins at publish, and never counts
+      as a crossing for a switched diamond.
+
+No migration: one optional field on `trackPath`.
+
+Tests: route splitting (either side of a hidden piece, whole segments, bends, a hidden track
+that only crosses the route, rounding at the split); no welding of a hidden track; the public map
+draws neither the hidden track nor the route along it.

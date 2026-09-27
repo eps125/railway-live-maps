@@ -1,3 +1,4 @@
+import { checkRouteEnds } from "./routeEnds.js";
 import {
   applySignalNamePrefix,
   berthBoxes,
@@ -59,6 +60,10 @@ export interface SignalToolPlan {
   patches: Array<{ elementId: string; patch: Record<string, unknown> }>;
   /** Berths the tool resizes. */
   berthsResized: number;
+  /** Routes whose ends the tool re-attaches to their signals. */
+  routesRealigned: number;
+  /** Routes whose ends are off their signals in a way the tool won't guess at — re-trace them. */
+  routesNeedingRetrace: string[];
 }
 
 /** Key for an S-Class label lookup: `tdArea|ADDRESS|bit` with the address in canonical form. */
@@ -196,7 +201,30 @@ export function planSignalTool(
     });
   }
 
-  return { rows, patches, berthsResized: trims.size };
+  // 2026-09-27 (owner): routes stay attached to their signals — both where this run moves a
+  // signal and where an earlier move left a route end a short way off (routeEnds.ts).
+  const finalX = new Map(
+    patches.flatMap((p) => (typeof p.patch.x === "number" ? [[p.elementId, p.patch.x]] : [])),
+  );
+  const signalAt = (id: string) => {
+    const signal = byId.get(id);
+    if (!signal || signal.type !== "signal") return undefined;
+    return { x: (finalX.get(id) as number | undefined) ?? signal.x, y: signal.y };
+  };
+  let routesRealigned = 0;
+  const routesNeedingRetrace: string[] = [];
+  for (const element of doc.elements) {
+    if (element.type !== "route") continue;
+    const check = checkRouteEnds(element, signalAt);
+    if (check.status === "realign") {
+      routesRealigned += 1;
+      patches.push({ elementId: element.id, patch: { points: check.points } });
+    } else if (check.status === "needs-retrace") {
+      routesNeedingRetrace.push(element.label ?? element.id);
+    }
+  }
+
+  return { rows, patches, berthsResized: trims.size, routesRealigned, routesNeedingRetrace };
 }
 
 /** How far a signal moves when the berth it stands next to is resized: it follows the berth end
@@ -245,6 +273,7 @@ export function summariseSignalTool(plan: SignalToolPlan): {
   directionsSkipped: number;
   berthsResized: number;
   signalsMoved: number;
+  routesRealigned: number;
 } {
   const count = (pick: (row: SignalToolRow) => SignalToolOutcome, status: string) =>
     plan.rows.filter((row) => pick(row).status === status).length;
@@ -256,5 +285,6 @@ export function summariseSignalTool(plan: SignalToolPlan): {
     directionsSkipped: count((r) => r.direction, "skipped"),
     berthsResized: plan.berthsResized,
     signalsMoved: count((r) => r.position, "change"),
+    routesRealigned: plan.routesRealigned,
   };
 }

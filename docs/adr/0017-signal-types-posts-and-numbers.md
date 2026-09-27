@@ -140,3 +140,16 @@ editor step:
   (nearest box edge on its own track within 40, on the side its direction implies), keeping its
   gap to the box. A berth already 40 wide is left alone, so running the tool again changes
   nothing more.
+
+## Revision — 2026-09-27 (owner): stop boards and the cut-out
+
+- **Stop board (`signalType: "stopBoard"`):** for depots. From the owner's photo: a white board,
+  a red disc, and "Stop" in black below it. It has **no post**: the board lies along the track, 1
+  unit from its edge, 13 long (a post and head) and 9.5 deep, turned ±90° so the disc **leads** in
+  the direction it applies. `appliesTo`/`side` work as for any signal, and so does the number. It
+  has no state: it is always drawn in its own colours, so no colour on it is an aspect or a bit
+  (rule 9 as amended is untouched). Drawn in the level crossing's realistic palette.
+- **Cut-out:** every signal on a post, and every stop board, is drawn over a 0.75-unit border in
+  the map background colour (`#0d1117`) round its post and head, so it stays clear where it
+  stands over a platform. The owner chose 0.75 after seeing 1 ("a little too much") and 2. The
+  cut-out starts at the track edge, like the post, so the track itself is never cut.

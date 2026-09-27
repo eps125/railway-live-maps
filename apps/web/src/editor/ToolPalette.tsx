@@ -21,6 +21,8 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "viaduct", label: "Viaduct" },
   { mode: "water", label: "Water" },
   { mode: "levelCrossing", label: "Level xing" },
+  // 2026-09-27: placed on the nearest dead track end, facing the way trains reach it.
+  { mode: "bufferStop", label: "Buffer stop" },
   // Milestone 63: marks a diamond crossing as switched (a plain diamond is just crossing track).
   { mode: "switchedDiamond", label: "Sw. diamond" },
 ];

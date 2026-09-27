@@ -218,6 +218,53 @@ describe("planSignalTool berth resize (owner, 2026-09-27)", () => {
   });
 });
 
+describe("planSignalTool keeps routes attached (owner, 2026-09-27)", () => {
+  it("moves a moved signal's route ends with it, and repairs ends an earlier move left behind", () => {
+    const route = (id: string, entry: string, points: Array<[number, number]>): MapElement =>
+      ({
+        id,
+        layerId: "l",
+        zIndex: 0,
+        type: "route",
+        entrySignalId: entry,
+        points: points.map(([x, y]) => ({ x, y })),
+        trackIds: [],
+      }) as MapElement;
+    // a (x 70) moves to 60 with berth b1's trimmed end; "old" already sits 10 off signal c.
+    const d = doc(
+      [
+        signal("a", 70),
+        route("ra", "a", [
+          [70, 100],
+          [300, 100],
+        ]),
+        signal("c", 250),
+        route("old", "c", [
+          [260, 100],
+          [400, 100],
+        ]),
+      ],
+      [],
+    );
+    const plan = planSignalTool(d, new Map(), { ...DEFAULT_SIGNAL_TOOL_OPTIONS, setNames: false });
+    const patch = (id: string) => plan.patches.find((p) => p.elementId === id)?.patch;
+    expect(patch("ra")).toEqual({
+      points: [
+        { x: 60, y: 100 },
+        { x: 300, y: 100 },
+      ],
+    });
+    expect(patch("old")).toEqual({
+      points: [
+        { x: 250, y: 100 },
+        { x: 400, y: 100 },
+      ],
+    });
+    expect(plan.routesRealigned).toBe(2);
+    expect(plan.routesNeedingRetrace).toEqual([]);
+  });
+});
+
 describe("patchElements command (ADR 0017)", () => {
   it("patches many elements in one step, and one undo restores them all", () => {
     const before = doc([signal("a", 70, { label: "X" }), signal("b", 90)], []);

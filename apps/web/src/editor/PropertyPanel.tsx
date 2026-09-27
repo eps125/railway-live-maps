@@ -1653,6 +1653,39 @@ export function PropertyPanel(): JSX.Element {
         />
       )}
 
+      {element.type === "bufferStop" && (
+        <>
+          <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
+          <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
+          <label className="field">
+            Faces trains travelling
+            <select
+              value={element.facing === "left" ? "right" : "left"}
+              onChange={(e) => setProp("facing", e.target.value === "right" ? "left" : "right")}
+            >
+              <option value="right">Right (line ends on the right)</option>
+              <option value="left">Left (line ends on the left)</option>
+            </select>
+          </label>
+          <label className="field">
+            Style
+            <select
+              value={element.style ?? "rawie"}
+              onChange={(e) =>
+                setProp("style", e.target.value === "rawie" ? undefined : e.target.value)
+              }
+            >
+              <option value="rawie">Modern (Rawie)</option>
+              <option value="hydraulic">Older (hydraulic)</option>
+            </select>
+          </label>
+          <p className="field-hint">
+            The Buffer stop tool puts it on the nearest track end and faces it for you; dragging it
+            near another track end snaps it there.
+          </p>
+        </>
+      )}
+
       {element.type === "levelCrossing" && (
         <>
           <PlacedLabelFieldset
@@ -1787,8 +1820,15 @@ export function PropertyPanel(): JSX.Element {
               <option value="main">Main (red / green)</option>
               <option value="subsidiary">Subsidiary (red / white)</option>
               <option value="distant">Distant (yellow / green)</option>
+              <option value="stopBoard">Stop board (no state)</option>
             </select>
           </label>
+          {element.signalType === "stopBoard" ? (
+            <p className="field-hint">
+              A depot stop board is a fixed sign: it is always drawn red and white, whatever any
+              binding says, lying along the track with its disc leading.
+            </p>
+          ) : null}
           <label className="field">
             Applies to trains travelling
             <select

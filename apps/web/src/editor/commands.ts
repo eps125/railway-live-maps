@@ -1,3 +1,4 @@
+import { routesFollowingSignal } from "./routeEnds.js";
 import type { MapDocument, MapElement, MapBinding, TopologyEdge } from "@railway/map-schema";
 
 type Layer = MapDocument["layers"][number];
@@ -106,7 +107,7 @@ function applyMoveElements(
   dy: number,
 ): ApplyCommandResult {
   const idSet = new Set(elementIds);
-  const elements = doc.elements.map((element): MapElement => {
+  let elements = doc.elements.map((element): MapElement => {
     if (!idSet.has(element.id)) return element;
     if (hasPoints(element)) {
       return {
@@ -116,6 +117,19 @@ function applyMoveElements(
     }
     return { ...element, x: element.x + dx, y: element.y + dy };
   });
+
+  // 2026-09-27: a signal moved along its track takes its routes' ends with it (routeEnds.ts).
+  // Symmetric, so the inverse move (-dx) slides them back. Not for a move off the track (dy).
+  if (dy === 0) {
+    for (const original of doc.elements) {
+      if (original.type !== "signal" || !idSet.has(original.id)) continue;
+      for (const { routeId, points } of routesFollowingSignal(elements, original, dx, idSet)) {
+        elements = elements.map((element) =>
+          element.id === routeId && element.type === "route" ? { ...element, points } : element,
+        );
+      }
+    }
+  }
 
   return {
     doc: { ...doc, elements },

@@ -56,6 +56,23 @@ export const MAP_STYLE = {
     /** ADR 0017: signal numbers. One fixed size; `labelBand` is the distance from the track centre
      * to the middle of the default number (between a berth box's edge and the next track's). */
     number: { fontSize: 6, labelBand: 15, fill: "#8b949e", minScreenPx: 6 },
+    /** 2026-09-27 (owner): a thin gap in the map background round a signal's post and head, so it
+     * reads clearly where it stands over a platform (and anything else painted beneath it). */
+    cutout: { width: 0.75, color: "#0d1117" },
+    /** 2026-09-27 (owner): a depot stop board — the photo's white board, red disc and "Stop",
+     * without a post, lying along the track with the disc leading. As long as a signal's post and
+     * head, and no further from the track. */
+    stopBoard: {
+      length: 13,
+      depth: 9.5,
+      gap: 1,
+      discRadius: 3.1,
+      fontSize: 3.4,
+      white: "#f5f7fa",
+      red: "#d7263d",
+      edge: "#4a525c",
+      text: "#1f2328",
+    },
   },
   platform: {
     /** Schematic bar thickness. */
@@ -187,6 +204,18 @@ export const MAP_STYLE = {
       postColor: "#4a525c",
       postSize: 2.2,
     },
+  },
+  /** 2026-09-27 (owner): a top-down UK buffer stop, in the level crossing's realistic palette:
+   * `across` units across the track (centred on it), `depth` deep from the face a train meets. */
+  bufferStop: {
+    across: 10,
+    depth: 5,
+    red: "#d7263d",
+    redLight: "#e0333a",
+    redEdge: "#a51d2d",
+    white: "#f5f7fa",
+    dark: "#1f2328",
+    darkEdge: "#444c56",
   },
   /**
    * Milestone 63 (revised): the switched-diamond mark, drawn in each switched obtuse corner of a

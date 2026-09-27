@@ -93,6 +93,12 @@ hide vacant boxes entirely (ADR 0004 D5).
 - optional future S-Class binding
 - `signalType` (ADR 0017): `main` (default) / `subsidiary` / `distant` — picks the colours the
   bound bit's on/off is drawn in (main red/green, subsidiary red/white, distant yellow/green).
+  `stopBoard` (2026-09-27) is a depot stop board: a fixed sign with no state, drawn as a white
+  board with a red disc and "Stop", no post, lying along the track 1 unit from its edge and as
+  long as a post and head (13), turned so the disc leads the way it applies. A stop board with no
+  `appliesTo` faces right. Any binding it has is ignored for drawing.
+- Every signal with a post, and every stop board, has a 0.75-unit cut-out in the map background
+  colour round it, so it stays clear over a platform (2026-09-27).
 - `appliesTo` (`right` / `left`) and `side` (`above` / `below`) (ADR 0017): once set, the signal
   stands on an L-shaped post beside the track — stem from the track edge, arm pointing the way it
   applies, head touching the arm; main and distant heads are round, a subsidiary's is a
@@ -105,6 +111,11 @@ hide vacant boxes entirely (ADR 0004 D5).
   told to overwrite.
 - The bulk "Signals…" tool can also resize every berth to 40 wide about its centre; signals next
   to a trimmed berth end move in with it (ADR 0017 revision, 2026-09-27).
+- A route's ends follow its signals (2026-09-27): moving a signal along its track slides the end
+  of every route that starts or finishes exactly on it, in the same undo step; the Signals tool
+  re-attaches route ends up to 20 units away on a level stretch. An end that would need bending
+  (a signal moved to another track, an end on a diagonal) is never changed — the tool lists those
+  routes to re-trace.
 - `renderMode` (ADR 0005 E4, retired by ADR 0017): only affects a signal with no `appliesTo`,
   which keeps its old drawing; the editor no longer offers it.
 
@@ -302,6 +313,21 @@ crossing exactly one of:
 Applying either form replaces whatever source the crossing had; choosing "Not driven" clears it
 (undoable). `validateMapDocument` rejects a crossing with more than one source
 (`multiple_barrier_bindings`) or a source on anything but a crossing (`invalid_barrier_binding`).
+
+### `bufferStop`
+
+**2026-09-27 (Milestone 79).** A buffer stop, drawn top down in the level crossing's realistic
+style, 10 units across the track (centred on it) and 5 deep.
+
+- Fields: `x`/`y` (its face, on the track end), `facing` (`left`: the face points left, so the
+  line ends on the right and trains running right meet it; `right`: the mirror) and `style`
+  (`rawie`, the default: a modern all-red Rawie stop with two box buffers, white stripes and dark
+  faces, its frame sloping back; `hydraulic`: an older stop, red cylinders with black discs on a
+  dark beam).
+- Editor: the Buffer stop tool puts it on the nearest dead track end within 30 units (an end no
+  other track starts or finishes at) facing the way trains reach it; dragging snaps the same way.
+  Off a track end it is placed on the half grid. It goes on the Track layer above the rails.
+- Drawn by `bufferStopDrawing`, shared by both renderers. Display only: no binding, no state.
 
 ### `switchedDiamond`
 

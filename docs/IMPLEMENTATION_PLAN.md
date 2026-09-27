@@ -4306,3 +4306,31 @@ Owner feedback after running the Signals tool on Blackpool.
 Tests: geometry and renderer at the new sizes; the berth resize (centre kept, signals follow the
 end they are next to, a signal set to face the other way stays, running twice changes nothing);
 the dialog's berth summary, moves and single undo; the padded drawing area and draw-past-edge.
+
+## Milestone 79 — Routes follow signals, signal cut-out, buffer stops, stop boards, faster CI (2026-09-27)
+
+Owner requests, one push.
+
+- [x] **Routes follow their signals** ("moving the signals needs to move all the routes too"):
+      moving a signal along its track slides the end of each route starting or finishing exactly
+      on it, in the same undo step. The Signals tool re-attaches route ends that have drifted up
+      to 20 units along a level stretch and lists any route that would need bending to re-trace.
+      On the Blackpool draft: 60 routes re-attached, none to re-trace, and a second run changes
+      nothing.
+- [x] **Cut-out round signals** (ADR 0017 revision): a 0.75-unit border in the map background
+      colour round every post, head and stop board, so signals are clear over platforms.
+- [x] **Buffer stops** (`bufferStop` element): top down, 10 across and 5 deep, Rawie by default
+      and hydraulic as an option, in the level crossing's style. The tool and dragging snap to the
+      nearest dead track end and face it the right way.
+- [x] **Stop boards** (`signalType: "stopBoard"`, ADR 0017 revision): white board, red disc,
+      "Stop"; no post; along the track with the disc leading.
+- [x] **Faster CI:** the duplicate, uncached "Build Docker images" step is gone (the publish job
+      builds the images); the three images build in parallel with a GitHub Actions layer cache
+      each; lint, format, typecheck and unit tests run as their own job in parallel with the
+      integration job; a newer push cancels an older run on the same branch; docs-only pushes
+      (`docs/**`, `*.md`) don't run CI. Pull requests no longer build the Docker images.
+
+Tests: the buffer stop drawing (size, mirroring, both styles) and bounds; the stop board
+(position, turn, no post, always red, parts); cut-out sizes; renderer (buffer stop, stop board,
+cut-out under the post); the editor's track-end snapping, layer, half grid and bounds; route ends
+following a moved signal and undo; the Signals tool re-attaching routes.

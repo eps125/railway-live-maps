@@ -3,10 +3,24 @@ name: CI
 on:
   push:
     branches: [main]
+    # Milestone 79 (owner: CI "takes too long"): a docs-only change can't break anything built,
+    # tested or deployed here, so it doesn't queue a full run.
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
 
 permissions:
   contents: read
+
+# Milestone 79: a newer push supersedes a running one on the same branch — the older run's images
+# would be replaced by the newer run's within minutes anyway, so let it go rather than queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   DATABASE_URL: postgresql://railway:railway@localhost:5432/railway_live_maps
@@ -19,6 +33,35 @@ env:
   CAPTURE_ALL_TD: "true"
 
 jobs:
+  # Milestone 79: the fast checks run as their own job, in parallel with the integration job
+  # below, rather than in front of it.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Format check
+        run: pnpm run format:check
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
   build-and-test:
     runs-on: ubuntu-latest
 
@@ -58,18 +101,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        run: pnpm run lint
-
-      - name: Format check
-        run: pnpm run format:check
-
-      - name: Typecheck
-        run: pnpm run typecheck
-
-      - name: Unit tests
-        run: pnpm test
 
       - name: Build
         run: pnpm run build
@@ -111,19 +142,20 @@ jobs:
       - name: Publish the Lancaster test map (Milestone 5 smoke test)
         run: node apps/worker/dist/index.js publish-map lancaster packages/map-schema/fixtures/lancaster-minimal.json
 
-      - name: Build Docker images
-        run: |
-          docker build -f apps/api/Dockerfile -t railway-live-maps-api:ci .
-          docker build -f apps/worker/Dockerfile -t railway-live-maps-worker:ci .
-          docker build -f apps/web/Dockerfile -t railway-live-maps-web:ci .
-
+  # Milestone 79: the three images build side by side, each with its own layer cache in GitHub's
+  # Actions cache, so an unchanged dependency layer (pnpm install) isn't rebuilt every push. The
+  # separate "Build Docker images" step that used to run in build-and-test is gone: it built the
+  # same three images a second time, uncached, only to throw them away.
   publish:
-    needs: build-and-test
+    needs: [checks, build-and-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        image: [api, worker, web]
 
     steps:
       - uses: actions/checkout@v4
@@ -137,35 +169,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push api image
+      - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: apps/api/Dockerfile
+          file: apps/${{ matrix.image }}/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}-api:latest
-            ghcr.io/${{ github.repository }}-api:${{ github.sha }}
-
-      - name: Build and push worker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/worker/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}-worker:latest
-            ghcr.io/${{ github.repository }}-worker:${{ github.sha }}
-
-      - name: Build and push web image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/web/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}-web:latest
-            ghcr.io/${{ github.repository }}-web:${{ github.sha }}
+            ghcr.io/${{ github.repository }}-${{ matrix.image }}:latest
+            ghcr.io/${{ github.repository }}-${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
   deploy:
     # Auto-deploy on green CI (owner decision 2026-09-11, docs/IMPLEMENTATION_PLAN.md Milestone

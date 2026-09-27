@@ -125,7 +125,7 @@ const SignalElementSchema = BaseElementSchema.extend({
   renderMode: z.enum(["inline", "offset"]).optional(),
   /** ADR 0017: which colours the bound bit's on/off state is drawn in — main red/green,
    * subsidiary red/white, distant yellow/green. Absent = main. Never an aspect (rule 9). */
-  signalType: z.enum(["main", "subsidiary", "distant"]).optional(),
+  signalType: z.enum(["main", "subsidiary", "distant", "stopBoard"]).optional(),
   /** ADR 0017: the direction of travel the signal applies to. Set = drawn on an L-shaped post
    * whose arm points this way; absent = drawn exactly as before ADR 0017. */
   appliesTo: z.enum(["right", "left"]).optional(),
@@ -311,6 +311,21 @@ const WaterElementSchema = BaseElementSchema.extend({
 });
 
 /**
+ * 2026-09-27 (owner): a UK buffer stop, drawn top-down in the level crossing's realistic palette —
+ * 10 units across the track (centred on it) and 5 deep. `(x, y)` is the face a train meets, on
+ * the track end; `facing` is the way that face points (towards the trains): a buffer at the right
+ * end of a track faces left. Scenery: no binding, no state.
+ */
+const BufferStopElementSchema = BaseElementSchema.extend({
+  type: z.literal("bufferStop"),
+  x: z.number(),
+  y: z.number(),
+  facing: z.enum(["left", "right"]),
+  /** Rawie (modern: red box buffers, sloping frame) or older hydraulic (red cylinders). */
+  style: z.enum(["rawie", "hydraulic"]).optional(),
+});
+
+/**
  * Milestone 55 (owner request 2026-09-20): a level crossing — the road drawn across the railway.
  *
  * `x`/`y` is the point on the track the road crosses; `orientation` is the road's angle in
@@ -413,6 +428,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   ViaductElementSchema,
   WaterElementSchema,
   LevelCrossingElementSchema,
+  BufferStopElementSchema,
   SwitchedDiamondElementSchema,
   RouteElementSchema,
   BoundaryElementSchema,
@@ -567,6 +583,7 @@ export type ViaductElement = z.infer<typeof ViaductElementSchema>;
 export type WaterElement = z.infer<typeof WaterElementSchema>;
 export type LevelCrossingElement = z.infer<typeof LevelCrossingElementSchema>;
 export type SwitchedDiamondElement = z.infer<typeof SwitchedDiamondElementSchema>;
+export type BufferStopElement = z.infer<typeof BufferStopElementSchema>;
 export type RouteElement = z.infer<typeof RouteElementSchema>;
 export type TdSBitRouteBinding = z.infer<typeof TdSBitRouteBindingSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;

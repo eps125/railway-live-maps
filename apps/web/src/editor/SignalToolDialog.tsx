@@ -213,8 +213,17 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
         <p role="status" className="field-hint">
           {loading
             ? "Loading S-Class labels…"
-            : `Numbers: ${summary.namesChanged} to change, ${summary.namesSkipped} skipped. Directions: ${summary.directionsChanged} to change, ${summary.directionsSkipped} skipped. Berths: ${summary.berthsResized} to resize, ${summary.signalsMoved} signals move with them.`}
+            : `Numbers: ${summary.namesChanged} to change, ${summary.namesSkipped} skipped. Directions: ${summary.directionsChanged} to change, ${summary.directionsSkipped} skipped. Berths: ${summary.berthsResized} to resize, ${summary.signalsMoved} signals move with them. Routes: ${summary.routesRealigned} re-attached to their signals.`}
         </p>
+
+        {plan.routesNeedingRetrace.length > 0 ? (
+          <p className="field-hint" role="note">
+            {plan.routesNeedingRetrace.length} route
+            {plan.routesNeedingRetrace.length === 1 ? " doesn't" : "s don't"} meet their signals in
+            a way this tool can fix — re-trace:{" "}
+            <span className="mono">{plan.routesNeedingRetrace.join(", ")}</span>
+          </p>
+        ) : null}
 
         {listed.length > 0 ? (
           <div className="signal-tool__preview">

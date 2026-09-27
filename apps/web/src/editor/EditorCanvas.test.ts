@@ -241,3 +241,25 @@ describe("boundsIntersect", () => {
     ).toBe(false);
   });
 });
+
+describe("buffer stop (2026-09-27)", () => {
+  const stop = (facing: "left" | "right"): MapElement => ({
+    id: "bs",
+    layerId: "layer-track",
+    zIndex: 1,
+    type: "bufferStop",
+    x: 100,
+    y: 50,
+    facing,
+  });
+
+  it("belongs on the Track layer and uses the half grid", () => {
+    expect(defaultLayerIdForTool("bufferStop", standardLayers)).toBe("layer-track");
+    expect(snapStep("bufferStop", 10)).toBe(5);
+  });
+
+  it("selects by its drawn body, beyond the track end", () => {
+    expect(elementBounds(stop("left"))).toEqual({ minX: 100, minY: 45, maxX: 105, maxY: 55 });
+    expect(elementBounds(stop("right"))).toEqual({ minX: 95, minY: 45, maxX: 100, maxY: 55 });
+  });
+});

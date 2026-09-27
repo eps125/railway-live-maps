@@ -4,6 +4,8 @@ import Konva from "konva";
 import {
   MAP_STYLE,
   berthRenderRect,
+  bufferStopBounds,
+  bufferStopDrawing,
   computeBoundingBox,
   levelCrossingGeometry,
   realisticLevelCrossingGeometry,
@@ -30,6 +32,8 @@ import {
   routeFromTrace,
 } from "./routeTrace.js";
 import { RouteTraceBar } from "./RouteTraceBar.js";
+import { nearestTrackEnd } from "./bufferStops.js";
+import { KonvaPrimitives } from "./KonvaPrimitives.js";
 
 /** Perpendicular distance from a point to a line segment — picks which segment of a polyline a
  * double-click lands on for vertex insertion (ADR 0005 E2). */
@@ -84,6 +88,8 @@ const HALF_GRID_TYPES = new Set([
   "viaduct",
   "water",
   "levelCrossing",
+  // 2026-09-27: a buffer stop snaps to a track end; off one, the finer step helps line it up.
+  "bufferStop",
   // Milestone 63: a diamond sits wherever two tracks cross, which on a 1:2 diagonal is often
   // between grid lines.
   "switchedDiamond",
@@ -163,6 +169,15 @@ export function elementBounds(element: MapElement): Bounds | null {
       maxY: element.y + reach,
     };
   }
+  if (element.type === "bufferStop") {
+    const bounds = bufferStopBounds(element);
+    return {
+      minX: bounds.x,
+      minY: bounds.y,
+      maxX: bounds.x + bounds.width,
+      maxY: bounds.y + bounds.height,
+    };
+  }
   if (element.type === "levelCrossing") {
     const { bounds } = levelCrossingGeometry(element);
     return {
@@ -237,6 +252,8 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   levelCrossing: /track/i,
   // Milestone 63: with the track it marks, painting above the rails (zIndex 1) so it masks them.
   switchedDiamond: /track/i,
+  // 2026-09-27: with the track it ends, painting above the rails (zIndex 1).
+  bufferStop: /track/i,
 };
 
 export function defaultLayerIdForTool(tool: ToolMode, layers: MapLayer[]): string | undefined {
@@ -375,6 +392,17 @@ function defaultElementForTool(
         roadWidth: MAP_STYLE.levelCrossing.roadWidth,
         labelPosition: "below",
         fontSize: MAP_STYLE.placedLabel.fontSize,
+      };
+    case "bufferStop":
+      // Rawie is the owner's default; `facing` is set from the track end it is placed on.
+      return {
+        id,
+        layerId,
+        zIndex: 1,
+        type: "bufferStop",
+        x: point.x,
+        y: point.y,
+        facing: "left",
       };
     case "switchedDiamond":
       // zIndex 1: above the rails in the Track layer, so its background fill hides the crossing.
@@ -688,6 +716,10 @@ export function EditorCanvas({
       placeSwitchedDiamond(stage);
       return;
     }
+    if (toolMode === "bufferStop") {
+      placeBufferStop(stage);
+      return;
+    }
     if (!clickedOnEmpty) return;
 
     const point = toWorldPoint(stage);
@@ -724,6 +756,11 @@ export function EditorCanvas({
     if (toolMode === "switchedDiamond") {
       const stage = e.target.getStage();
       if (stage) placeSwitchedDiamond(stage);
+      return;
+    }
+    if (toolMode === "bufferStop") {
+      const stage = e.target.getStage();
+      if (stage) placeBufferStop(stage);
       return;
     }
     if (toolMode !== "select") return;
@@ -1083,6 +1120,51 @@ export function EditorCanvas({
     dispatch({ type: "setToolMode", mode: "select" });
   }
 
+  /** 2026-09-27: place a buffer stop on the dead track end nearest the click, facing the way
+   * trains reach it; with none in reach, where clicked (on the half grid), facing left. */
+  function placeBufferStop(stage: Konva.Stage): void {
+    const layerId = defaultLayerIdForTool("bufferStop", doc.layers);
+    if (!layerId) return;
+    const clicked = toWorldPoint(stage);
+    const end = nearestTrackEnd(doc.elements, clicked);
+    const step = snapStep("bufferStop", gridSize);
+    const element = defaultElementForTool(
+      "bufferStop",
+      layerId,
+      end?.point ?? { x: snap(clicked.x, step), y: snap(clicked.y, step) },
+    );
+    if (!element || element.type !== "bufferStop") return;
+    if (end) element.facing = end.facing;
+    dispatch({ type: "dispatchCommand", command: { type: "addElement", elements: [element] } });
+    dispatch({ type: "setSelection", ids: [element.id] });
+    dispatch({ type: "setToolMode", mode: "select" });
+  }
+
+  /** A dragged buffer stop snaps onto the nearest dead track end in reach (and faces the way
+   * trains reach it); with none in reach it stays where dropped, on the half grid. */
+  function handleBufferStopDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (element?.type !== "bufferStop") return;
+    const dropped = { x: e.target.x(), y: e.target.y() };
+    const end = nearestTrackEnd(
+      doc.elements.filter((el) => el.id !== elementId),
+      dropped,
+    );
+    const step = snapStep(element.type, gridSize);
+    const target = end?.point ?? { x: snap(dropped.x, step), y: snap(dropped.y, step) };
+    e.target.position({ x: element.x, y: element.y });
+    const facing = end?.facing ?? element.facing;
+    if (target.x === element.x && target.y === element.y && facing === element.facing) return;
+    dispatch({
+      type: "dispatchCommand",
+      command: {
+        type: "patchElement",
+        elementId,
+        patch: { x: target.x, y: target.y, facing },
+      },
+    });
+  }
+
   const selectedBerthId =
     selection.length === 1 && doc.elements.find((el) => el.id === selection[0])?.type === "berth"
       ? selection[0]
@@ -1426,16 +1508,8 @@ export function EditorCanvas({
               const color = signalColor(element.signalType, state);
               const numberAt = signalLabelPosition(element, geometry);
               const fontSize = MAP_STYLE.signal.number.fontSize;
-              const headCentre =
-                geometry.head.kind === "circle"
-                  ? { x: geometry.head.cx, y: geometry.head.cy }
-                  : {
-                      x:
-                        geometry.post[4] +
-                        (geometry.appliesTo === "right" ? 1 : -1) *
-                          (MAP_STYLE.signal.subsidiaryRadius / 2),
-                      y: geometry.post[5],
-                    };
+              const { headCentre, cutout, head } = geometry;
+              const board = MAP_STYLE.signal.stopBoard;
               return (
                 <Group
                   key={element.id}
@@ -1446,27 +1520,80 @@ export function EditorCanvas({
                   onClick={(e) => handleElementClick(e, element.id)}
                   onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
                 >
-                  <Line
-                    points={geometry.post}
-                    stroke={MAP_STYLE.signal.post.color}
-                    strokeWidth={MAP_STYLE.signal.post.width}
-                    lineCap="butt"
-                    lineJoin="miter"
-                  />
-                  {geometry.head.kind === "circle" ? (
+                  {/* The cut-out: a thin gap in the background colour round the post and head. */}
+                  {geometry.post ? (
+                    <Line
+                      points={geometry.post}
+                      stroke={cutout.color}
+                      strokeWidth={cutout.postWidth}
+                      lineCap="butt"
+                      lineJoin="miter"
+                    />
+                  ) : null}
+                  {head.kind === "circle" ? (
                     <Circle
-                      x={geometry.head.cx}
-                      y={geometry.head.cy}
-                      radius={geometry.head.r}
+                      x={head.cx}
+                      y={head.cy}
+                      radius={head.r}
+                      fill={cutout.color}
+                      stroke={cutout.color}
+                      strokeWidth={cutout.headStroke}
+                    />
+                  ) : head.kind === "quadrant" ? (
+                    <Path
+                      data={head.path}
+                      fill={cutout.color}
+                      stroke={cutout.color}
+                      strokeWidth={cutout.headStroke}
+                      lineJoin="miter"
+                    />
+                  ) : null}
+                  {geometry.post ? (
+                    <Line
+                      points={geometry.post}
+                      stroke={MAP_STYLE.signal.post.color}
+                      strokeWidth={MAP_STYLE.signal.post.width}
+                      lineCap="butt"
+                      lineJoin="miter"
+                    />
+                  ) : null}
+                  {head.kind === "circle" ? (
+                    <Circle
+                      x={head.cx}
+                      y={head.cy}
+                      radius={head.r}
+                      fill={color}
+                      {...(selected ? { stroke: "#58a6ff", strokeWidth: 2 } : {})}
+                    />
+                  ) : head.kind === "quadrant" ? (
+                    <Path
+                      data={head.path}
                       fill={color}
                       {...(selected ? { stroke: "#58a6ff", strokeWidth: 2 } : {})}
                     />
                   ) : (
-                    <Path
-                      data={geometry.head.path}
-                      fill={color}
-                      {...(selected ? { stroke: "#58a6ff", strokeWidth: 2 } : {})}
-                    />
+                    <Group x={head.x} y={head.y} rotation={head.rotation}>
+                      {/* Hit area: the drawn parts don't listen. */}
+                      <Rect
+                        x={-board.depth / 2}
+                        y={-board.length / 2}
+                        width={board.depth}
+                        height={board.length}
+                        fill="transparent"
+                      />
+                      <KonvaPrimitives parts={head.parts} />
+                      {selected ? (
+                        <Rect
+                          x={-board.depth / 2 - 1}
+                          y={-board.length / 2 - 1}
+                          width={board.depth + 2}
+                          height={board.length + 2}
+                          stroke="#58a6ff"
+                          strokeWidth={1}
+                          listening={false}
+                        />
+                      ) : null}
+                    </Group>
                   )}
                   {signalStates?.[element.id] ? (
                     <Circle
@@ -1805,6 +1932,45 @@ export function EditorCanvas({
                   {selected ? (
                     <Circle radius={12} stroke="#58a6ff" strokeWidth={1.5} listening={false} />
                   ) : null}
+                </Group>
+              );
+            }
+            if (element.type === "bufferStop") {
+              // 2026-09-27: the same drawing as the public map (CLAUDE.md rule 13).
+              const drawing = bufferStopDrawing(element);
+              const s = MAP_STYLE.bufferStop;
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handleBufferStopDragEnd(e, element.id)}
+                >
+                  <Group scaleX={drawing.scaleX}>
+                    {/* Hit area: the drawn parts don't listen. */}
+                    <Rect
+                      x={0}
+                      y={-s.across / 2}
+                      width={s.depth}
+                      height={s.across}
+                      fill="transparent"
+                    />
+                    <KonvaPrimitives parts={drawing.parts} />
+                    {selected ? (
+                      <Rect
+                        x={-1}
+                        y={-s.across / 2 - 1}
+                        width={s.depth + 2}
+                        height={s.across + 2}
+                        stroke="#58a6ff"
+                        strokeWidth={1}
+                        listening={false}
+                      />
+                    ) : null}
+                  </Group>
                 </Group>
               );
             }

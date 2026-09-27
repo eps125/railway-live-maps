@@ -3,6 +3,7 @@ import {
   MAP_CSS_TOKENS,
   MAP_STYLE,
   berthRenderRect,
+  bufferStopDrawing,
   levelCrossingGeometry,
   realisticLevelCrossingGeometry,
   neutralSectionGeometry,
@@ -18,6 +19,8 @@ import {
   type CompiledMapBundle,
   type MapElement,
   type BarrierDisplayState,
+  type BufferStopElement,
+  type DrawPrimitive,
   type LevelCrossingElement,
   type NeutralSectionElement,
   type PlacedLabel,
@@ -543,6 +546,93 @@ function renderSetRoute(element: RouteElement): JSX.Element {
   );
 }
 
+/** 2026-09-27: draws the shared `DrawPrimitive` shapes (buffer stops, stop boards) as SVG. */
+function SvgPrimitives({ parts }: { parts: readonly DrawPrimitive[] }): JSX.Element {
+  return (
+    <>
+      {parts.map((part, i) => {
+        switch (part.kind) {
+          case "rect":
+            return (
+              <rect
+                key={i}
+                x={part.x}
+                y={part.y}
+                width={part.width}
+                height={part.height}
+                rx={part.rx}
+                fill={part.fill}
+                stroke={part.stroke}
+                strokeWidth={part.strokeWidth}
+              />
+            );
+          case "polygon":
+            return (
+              <polygon
+                key={i}
+                points={part.points.join(" ")}
+                fill={part.fill}
+                stroke={part.stroke}
+                strokeWidth={part.strokeWidth}
+              />
+            );
+          case "circle":
+            return <circle key={i} cx={part.cx} cy={part.cy} r={part.r} fill={part.fill} />;
+          case "polyline":
+            return (
+              <polyline
+                key={i}
+                points={part.points.join(" ")}
+                fill="none"
+                stroke={part.stroke}
+                strokeWidth={part.strokeWidth}
+              />
+            );
+          case "path":
+            return (
+              <path
+                key={i}
+                d={part.d}
+                fill={part.fill}
+                stroke={part.stroke}
+                strokeWidth={part.strokeWidth}
+              />
+            );
+          case "text":
+            return (
+              <text
+                key={i}
+                x={part.x}
+                y={part.y}
+                textAnchor="middle"
+                fontFamily="Arial, Helvetica, sans-serif"
+                fontWeight={part.bold ? 700 : 400}
+                fontSize={part.fontSize}
+                fill={part.fill}
+              >
+                {part.text}
+              </text>
+            );
+        }
+      })}
+    </>
+  );
+}
+
+/** 2026-09-27: a buffer stop, top-down, in the level crossing's realistic style. */
+function renderBufferStop(element: BufferStopElement): JSX.Element {
+  const drawing = bufferStopDrawing(element);
+  return (
+    <g
+      key={element.id}
+      className="buffer-stop"
+      transform={`translate(${drawing.x} ${drawing.y}) scale(${drawing.scaleX} 1)`}
+    >
+      <SvgPrimitives parts={drawing.parts} />
+    </g>
+  );
+}
+
 /** ADR 0017: a signal with a direction stands on an L-shaped post beside the track — the stem
  * touching the track edge, the arm pointing the way it applies, the head touching the arm — in its
  * type's colours for the bound bit's state (never an aspect: rule 9 as amended). A signal without
@@ -558,23 +648,64 @@ function renderSignal(
   const geometry = signalPostGeometry(element);
 
   if (geometry) {
-    const [x0, y0, x1, y1, x2, y2] = geometry.post;
     const label = signalLabelPosition(element, geometry);
     const { post, number } = MAP_STYLE.signal;
+    const { cutout, head } = geometry;
+    const postPoints = geometry.post
+      ? `${geometry.post[0]},${geometry.post[1]} ${geometry.post[2]},${geometry.post[3]} ${geometry.post[4]},${geometry.post[5]}`
+      : null;
     return (
       <g key={element.id} transform={`translate(${element.x} ${element.y})`}>
-        <polyline
-          points={`${x0},${y0} ${x1},${y1} ${x2},${y2}`}
-          fill="none"
-          stroke={post.color}
-          strokeWidth={post.width}
-          strokeLinecap="butt"
-          strokeLinejoin="miter"
-        />
-        {geometry.head.kind === "circle" ? (
-          <circle cx={geometry.head.cx} cy={geometry.head.cy} r={geometry.head.r} fill={color} />
+        {/* The cut-out: a thin gap in the background colour round the post and head. */}
+        {postPoints ? (
+          <polyline
+            className="signal-cutout"
+            points={postPoints}
+            fill="none"
+            stroke={cutout.color}
+            strokeWidth={cutout.postWidth}
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
+          />
+        ) : null}
+        {head.kind === "circle" ? (
+          <circle
+            className="signal-cutout"
+            cx={head.cx}
+            cy={head.cy}
+            r={head.r}
+            fill={cutout.color}
+            stroke={cutout.color}
+            strokeWidth={cutout.headStroke}
+          />
+        ) : head.kind === "quadrant" ? (
+          <path
+            className="signal-cutout"
+            d={head.path}
+            fill={cutout.color}
+            stroke={cutout.color}
+            strokeWidth={cutout.headStroke}
+            strokeLinejoin="miter"
+          />
+        ) : null}
+        {postPoints ? (
+          <polyline
+            points={postPoints}
+            fill="none"
+            stroke={post.color}
+            strokeWidth={post.width}
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
+          />
+        ) : null}
+        {head.kind === "circle" ? (
+          <circle cx={head.cx} cy={head.cy} r={head.r} fill={color} />
+        ) : head.kind === "quadrant" ? (
+          <path d={head.path} fill={color} />
         ) : (
-          <path d={geometry.head.path} fill={color} />
+          <g transform={`translate(${head.x} ${head.y}) rotate(${head.rotation})`}>
+            <SvgPrimitives parts={head.parts} />
+          </g>
         )}
         {showNumber && element.label ? (
           <text
@@ -938,6 +1069,8 @@ function renderStaticElement(
       return renderViaduct(element);
     case "water":
       return renderWater(element);
+    case "bufferStop":
+      return renderBufferStop(element);
     case "switchedDiamond":
       return renderSwitchedDiamond(element, trackPaths);
     default:

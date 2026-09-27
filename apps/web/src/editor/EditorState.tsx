@@ -17,6 +17,7 @@ export type ToolMode =
   | "viaduct"
   | "water"
   | "levelCrossing"
+  | "bufferStop"
   | "switchedDiamond";
 
 export interface Viewport {

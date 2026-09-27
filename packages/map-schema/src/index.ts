@@ -15,6 +15,7 @@ export {
   type LabelElement,
   type LevelCrossingElement,
   type SwitchedDiamondElement,
+  type BufferStopElement,
   type RouteElement,
   type NeutralSectionElement,
   type TunnelElement,
@@ -97,3 +98,10 @@ export {
   type PlacedLabelFields,
   type Rect,
 } from "./geometry.js";
+export {
+  bufferStopBounds,
+  bufferStopDrawing,
+  stopBoardParts,
+  type DrawPrimitive,
+  type PlacedDrawing,
+} from "./drawing.js";

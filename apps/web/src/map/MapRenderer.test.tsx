@@ -807,6 +807,25 @@ describe("MapRenderer", () => {
     expect(text.getAttribute("y")).toBe("40");
   });
 
+  it("draws a buffer stop at its track end, mirrored for a line ending on the left", () => {
+    const stop = {
+      id: "bs-1",
+      layerId: "layer-visible",
+      zIndex: 1,
+      type: "bufferStop" as const,
+      x: 300,
+      y: 40,
+      facing: "right" as const,
+    };
+    const { container } = render(
+      <MapRenderer bundle={bundle({ elementsById: { "bs-1": stop } })} berths={{}} signals={{}} />,
+    );
+    const g = container.querySelector("g.buffer-stop")!;
+    expect(g.getAttribute("transform")).toBe("translate(300 40) scale(-1 1)");
+    // Rawie by default: the red frame sloping back.
+    expect(g.querySelector("polygon")!.getAttribute("fill")).toBe("#d7263d");
+  });
+
   it("draws a schematic crossing's barriers from its state, blank when it has none (ADR 0014)", () => {
     // Milestone 59: realistic is the default; the schematic lines are the opt-out.
     const crossing = {
@@ -1070,9 +1089,9 @@ describe("MapRenderer", () => {
 
     it("draws a signal with a direction on an L-shaped post, touching track and head", () => {
       const c = renderSignal(mk("s", { appliesTo: "right" }), "on");
-      const post = c.querySelector("polyline")!;
+      const post = c.querySelector("polyline:not(.signal-cutout)")!;
       expect(post.getAttribute("points")).toBe("0,-1.5 0,-8.5 3,-8.5");
-      const head = c.querySelector("circle")!;
+      const head = c.querySelector("circle:not(.signal-cutout)")!;
       expect(head).toMatchObject({});
       expect(head.getAttribute("cx")).toBe("8");
       expect(head.getAttribute("cy")).toBe("-8.5");
@@ -1082,13 +1101,39 @@ describe("MapRenderer", () => {
 
     it("draws a subsidiary as a quarter-circle, white when off; a distant yellow when on", () => {
       const sub = renderSignal(mk("s", { appliesTo: "left", signalType: "subsidiary" }), "off");
-      const quadrant = sub.querySelector("path")!;
+      const quadrant = sub.querySelector("path:not(.signal-cutout)")!;
       expect(quadrant.getAttribute("d")).toBe("M -3 3.5 L -3 13.5 A 10 10 0 0 1 -13 3.5 Z");
       expect(quadrant.getAttribute("fill")).toBe("#e6edf3");
       expect(sub.querySelector("circle")).toBeNull();
 
       const distant = renderSignal(mk("d", { appliesTo: "right", signalType: "distant" }), "on");
-      expect(distant.querySelector("circle")!.getAttribute("fill")).toBe("#e3b341");
+      expect(distant.querySelector("circle:not(.signal-cutout)")!.getAttribute("fill")).toBe(
+        "#e3b341",
+      );
+    });
+
+    it("cuts a thin background-coloured gap round the post and head, beneath them", () => {
+      const c = renderSignal(mk("s", { appliesTo: "right" }), "on");
+      const [cutPost, cutHead] = [
+        c.querySelector("polyline.signal-cutout")!,
+        c.querySelector("circle.signal-cutout")!,
+      ];
+      expect(cutPost.getAttribute("stroke")).toBe("#0d1117");
+      expect(cutPost.getAttribute("stroke-width")).toBe("3.5");
+      expect(cutPost.getAttribute("points")).toBe("0,-1.5 0,-8.5 3,-8.5");
+      expect(cutHead.getAttribute("stroke-width")).toBe("1.5");
+      // Drawn before (under) the real post.
+      const nodes = Array.from(c.querySelectorAll("polyline"));
+      expect(nodes.indexOf(cutPost as SVGPolylineElement)).toBe(0);
+    });
+
+    it("draws a stop board with no post, turned so its disc leads, always red", () => {
+      const c = renderSignal(mk("s", { appliesTo: "left", signalType: "stopBoard" }), "off");
+      expect(c.querySelector("polyline")).toBeNull();
+      const board = c.querySelector('g[transform^="translate(-6.5 7.25)"]')!;
+      expect(board.getAttribute("transform")).toBe("translate(-6.5 7.25) rotate(-90)");
+      expect(board.querySelector("circle")!.getAttribute("fill")).toBe("#d7263d");
+      expect(board.querySelector("text")!.textContent).toBe("Stop");
     });
 
     it("keeps the old drawing for a signal without a direction", () => {

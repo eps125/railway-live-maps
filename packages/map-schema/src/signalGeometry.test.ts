@@ -31,8 +31,8 @@ describe("signalPostGeometry (ADR 0017)", () => {
   it("right-running main: post rises from the track edge above, arm right, head touching it", () => {
     const g = signalPostGeometry({ appliesTo: "right" })!;
     expect(g.side).toBe("above");
-    expect(g.post).toEqual([0, -1.5, 0, -10.5, 4, -10.5]);
-    expect(g.head).toEqual({ kind: "circle", cx: 10, cy: -10.5, r: 6 });
+    expect(g.post).toEqual([0, -1.5, 0, -8.5, 3, -8.5]);
+    expect(g.head).toEqual({ kind: "circle", cx: 8, cy: -8.5, r: 5 });
     // The number runs back along the protected berth (to the left), ending at the post.
     expect(g.label).toEqual({ x: -1, y: -15, anchor: "end" });
   });
@@ -40,29 +40,29 @@ describe("signalPostGeometry (ADR 0017)", () => {
   it("left-running main defaults below the track, mirrored", () => {
     const g = signalPostGeometry({ appliesTo: "left" })!;
     expect(g.side).toBe("below");
-    expect(g.post).toEqual([0, 1.5, 0, 10.5, -4, 10.5]);
-    expect(g.head).toEqual({ kind: "circle", cx: -10, cy: 10.5, r: 6 });
+    expect(g.post).toEqual([0, 1.5, 0, 8.5, -3, 8.5]);
+    expect(g.head).toEqual({ kind: "circle", cx: -8, cy: 8.5, r: 5 });
     expect(g.label).toEqual({ x: 1, y: 15, anchor: "start" });
   });
 
   it("honours an overridden side", () => {
     const g = signalPostGeometry({ appliesTo: "right", side: "below" })!;
-    expect(g.post).toEqual([0, 1.5, 0, 10.5, 4, 10.5]);
+    expect(g.post).toEqual([0, 1.5, 0, 8.5, 3, 8.5]);
   });
 
-  it("subsidiary: a 12-wide quarter-circle, flat edge to the track, arm at its middle", () => {
+  it("subsidiary: a quarter-circle as wide as a main head, flat edge to the track, arm at its middle", () => {
     const right = signalPostGeometry({ appliesTo: "right", signalType: "subsidiary" })!;
-    // Corner nearest the track (4, -4.5); flat edge up to (4, -16.5), centred on the arm at
-    // -10.5; curve out to (16, -4.5): 12 wide, bottom level with a main head's.
+    // Corner nearest the track (3, -3.5); flat edge up to (3, -13.5), centred on the arm at
+    // -8.5; curve out to (13, -3.5): 10 wide, bottom level with a main head's.
     expect(right.head).toEqual({
       kind: "quadrant",
-      path: "M 4 -4.5 L 4 -16.5 A 12 12 0 0 1 16 -4.5 Z",
+      path: "M 3 -3.5 L 3 -13.5 A 10 10 0 0 1 13 -3.5 Z",
     });
     // The other way round is the same shape turned 180°.
     const left = signalPostGeometry({ appliesTo: "left", signalType: "subsidiary" })!;
     expect(left.head).toEqual({
       kind: "quadrant",
-      path: "M -4 4.5 L -4 16.5 A 12 12 0 0 1 -16 4.5 Z",
+      path: "M -3 3.5 L -3 13.5 A 10 10 0 0 1 -13 3.5 Z",
     });
     // Mirrored in one axis only (right-running, below): the arc runs the other way.
     const mirrored = signalPostGeometry({
@@ -72,7 +72,7 @@ describe("signalPostGeometry (ADR 0017)", () => {
     })!;
     expect(mirrored.head).toEqual({
       kind: "quadrant",
-      path: "M 4 4.5 L 4 16.5 A 12 12 0 0 0 16 4.5 Z",
+      path: "M 3 3.5 L 3 13.5 A 10 10 0 0 0 13 3.5 Z",
     });
   });
 

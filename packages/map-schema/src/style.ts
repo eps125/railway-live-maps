@@ -34,7 +34,9 @@ export const MAP_STYLE = {
   signal: {
     /** Standard perpendicular gap from the bound track to the signal head. */
     offset: 12,
-    radius: 6,
+    /** 2026-09-27 (owner): 5, down from 6 — heads looked a touch too big. With the post below,
+     * one signal reaches 13.5 from its track, so two fit in the 30-unit gap between tracks. */
+    radius: 5,
     /** The only public signal states (CLAUDE.md rule 9, PROJECT_SPEC §6): red = on, green = off,
      * grey = blank (unmapped/unknown). Shared by the public renderer and the editor so a bound
      * signal looks the same in both (rule 13). */
@@ -48,9 +50,9 @@ export const MAP_STYLE = {
     },
     /** ADR 0017: the L-shaped post (map units). The stem rises `rise` from the track edge, the arm
      * runs `arm` in the direction the signal applies to, touching the head. */
-    post: { rise: 9, arm: 4, width: 2, color: "#8b949e" },
-    /** ADR 0017: the subsidiary quarter-circle's radius — 12 wide, the same as a main head. */
-    subsidiaryRadius: 12,
+    post: { rise: 7, arm: 3, width: 2, color: "#8b949e" },
+    /** ADR 0017: the subsidiary quarter-circle's radius — as wide as a main head. */
+    subsidiaryRadius: 10,
     /** ADR 0017: signal numbers. One fixed size; `labelBand` is the distance from the track centre
      * to the middle of the default number (between a berth box's edge and the next track's). */
     number: { fontSize: 6, labelBand: 15, fill: "#8b949e", minScreenPx: 6 },

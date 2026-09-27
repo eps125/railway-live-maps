@@ -4282,3 +4282,27 @@ when shown, hidden when zoomed out); property panel (type, direction/side as han
 number as hand-set, no offset option); planner (names with prefix, hand-set kept, overwrite,
 reasons, only-ticked options); `patchElements` with a single undo; the dialog end to end; the
 admin-only map checkbox.
+
+## Milestone 78 — Smaller signals, berth resize in the Signals tool, no more map clipping (2026-09-27)
+
+Owner feedback after running the Signals tool on Blackpool.
+
+- [x] **Signal size (option C, ADR 0017 revision):** head radius 5, rise 7, arm 3, subsidiary 10
+      wide. Two signals now fit in one 30-unit gap between tracks (13.5 each). Also applies to
+      signals drawn the old way (radius 5).
+- [x] **"Resize berths to 40 wide"** in the Signals tool (on by default): each berth becomes 40
+      wide about its centre, and a signal next to a trimmed end moves in with it, so its gap to
+      the box is kept. At Blackpool's 60-wide berths that is "10 closer". Idempotent: 40-wide
+      berths are left alone. Previewed (berth count, and each signal's move in a Position column)
+      and applied in the same single undo step. Measured on the Blackpool draft: 74 berths
+      resized, 71 signals moved.
+- [x] **Map clipping** (owner report: "To Preston PSB", the station names towards Blackpool South
+      and the shunt neck near Blackpool North cut off): the bounding box holds only anchor points,
+      and Milestone 73's native-scroll renderer drew exactly that box, so anything overhanging it
+      was clipped. The drawing now has a 120-unit margin and the SVG draws past its own edge.
+      Fixed in the renderer, so already-published maps are fixed without republishing.
+- [ ] Distant marker on the post: drawn and dropped by the owner (distants marked in the number).
+
+Tests: geometry and renderer at the new sizes; the berth resize (centre kept, signals follow the
+end they are next to, a signal set to face the other way stays, running twice changes nothing);
+the dialog's berth summary, moves and single undo; the padded drawing area and draw-past-edge.

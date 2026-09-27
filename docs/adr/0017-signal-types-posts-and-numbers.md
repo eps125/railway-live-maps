@@ -126,3 +126,17 @@ editor step:
   when zoomed in are acceptable.
 - **Keeping ADR 0005 E4's perpendicular stem** — rejected: it adds clutter without showing
   direction.
+
+## Revision — 2026-09-27 (owner, after running the tool on Blackpool)
+
+- **Smaller heads and posts (option "C"):** head radius 5 (was 6), rise 7 (was 9), arm 3 (was 4);
+  a subsidiary's quarter-circle is 10 wide, still matching a main head. One signal now reaches
+  13.5 units from its track, so two signals — one from each track — fit in the 30-unit gap
+  between tracks at the same point.
+- **No distant marker:** a triangle on the post was drawn and dropped; distants are shown by
+  their yellow/green head, and the owner marks them in the signal number.
+- **Berth resize in the bulk tool:** a "Resize berths to 40 wide" option (on by default) makes
+  every berth 40 wide about its centre; a signal next to a trimmed berth end moves in with it
+  (nearest box edge on its own track within 40, on the side its direction implies), keeping its
+  gap to the box. A berth already 40 wide is left alone, so running the tool again changes
+  nothing more.

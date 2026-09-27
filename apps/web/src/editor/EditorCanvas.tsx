@@ -1430,7 +1430,10 @@ export function EditorCanvas({
                 geometry.head.kind === "circle"
                   ? { x: geometry.head.cx, y: geometry.head.cy }
                   : {
-                      x: geometry.post[4] + (geometry.appliesTo === "right" ? 6 : -6),
+                      x:
+                        geometry.post[4] +
+                        (geometry.appliesTo === "right" ? 1 : -1) *
+                          (MAP_STYLE.signal.subsidiaryRadius / 2),
                       y: geometry.post[5],
                     };
               return (

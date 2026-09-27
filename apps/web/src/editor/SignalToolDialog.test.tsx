@@ -125,7 +125,9 @@ describe("SignalToolDialog (ADR 0017 §5)", () => {
     await waitFor(() => expect(preview).toHaveTextContent("none → CE0491"));
     expect(preview).toHaveTextContent("skipped: number set by hand");
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply to 2 signals" }));
+    // Two signals plus the two berths resized to 40.
+    expect(screen.getByText(/Berths: 2 to resize, 2 signals move with them/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Apply 4 changes" }));
     expect(onClose).toHaveBeenCalled();
     const signals = () => JSON.parse(screen.getByTestId("signals").textContent ?? "[]");
     expect(signals()).toEqual([
@@ -145,9 +147,13 @@ describe("SignalToolDialog (ADR 0017 §5)", () => {
       }),
     ]);
 
+    // Both signals moved in 10 with their berths' trimmed ends.
+    expect(signals().map((sig: { x: number }) => sig.x)).toEqual([60, 100]);
+
     // One undo restores every signal.
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(signals()[0]).not.toHaveProperty("appliesTo");
     expect(signals()[1]).not.toHaveProperty("appliesTo");
+    expect(signals().map((sig: { x: number }) => sig.x)).toEqual([70, 90]);
   });
 });

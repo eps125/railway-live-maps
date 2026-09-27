@@ -12,6 +12,7 @@ import {
   wheelZoomFactor,
   zoomAroundPoint,
   MIN_ZOOM_WIDTH,
+  WORLD_MARGIN,
 } from "./MapRenderer.js";
 
 // jsdom has no PointerEvent, so fireEvent.pointer* would build events with no clientX/clientY.
@@ -1070,11 +1071,11 @@ describe("MapRenderer", () => {
     it("draws a signal with a direction on an L-shaped post, touching track and head", () => {
       const c = renderSignal(mk("s", { appliesTo: "right" }), "on");
       const post = c.querySelector("polyline")!;
-      expect(post.getAttribute("points")).toBe("0,-1.5 0,-10.5 4,-10.5");
+      expect(post.getAttribute("points")).toBe("0,-1.5 0,-8.5 3,-8.5");
       const head = c.querySelector("circle")!;
       expect(head).toMatchObject({});
-      expect(head.getAttribute("cx")).toBe("10");
-      expect(head.getAttribute("cy")).toBe("-10.5");
+      expect(head.getAttribute("cx")).toBe("8");
+      expect(head.getAttribute("cy")).toBe("-8.5");
       expect(head.getAttribute("fill")).toBe("#f85149");
       expect(post.closest("g")!.getAttribute("transform")).toBe("translate(20 20)");
     });
@@ -1082,7 +1083,7 @@ describe("MapRenderer", () => {
     it("draws a subsidiary as a quarter-circle, white when off; a distant yellow when on", () => {
       const sub = renderSignal(mk("s", { appliesTo: "left", signalType: "subsidiary" }), "off");
       const quadrant = sub.querySelector("path")!;
-      expect(quadrant.getAttribute("d")).toBe("M -4 4.5 L -4 16.5 A 12 12 0 0 1 -16 4.5 Z");
+      expect(quadrant.getAttribute("d")).toBe("M -3 3.5 L -3 13.5 A 10 10 0 0 1 -13 3.5 Z");
       expect(quadrant.getAttribute("fill")).toBe("#e6edf3");
       expect(sub.querySelector("circle")).toBeNull();
 
@@ -1444,7 +1445,7 @@ describe("native scrolling (Milestone 73)", () => {
     const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 400 } });
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
-    expect(svg.getAttribute("viewBox")).toBe("0 0 5000 400");
+    expect(svg.getAttribute("viewBox")).toBe("-120 -120 5240 640");
     const width = svg.getAttribute("width");
     const before = view(svg);
 
@@ -1453,11 +1454,24 @@ describe("native scrolling (Milestone 73)", () => {
     fireEvent.pointerUp(svg, { pointerId: 1, clientX: 200, clientY: 100 });
 
     const after = view(svg);
-    expect(svg.getAttribute("viewBox")).toBe("0 0 5000 400");
+    expect(svg.getAttribute("viewBox")).toBe("-120 -120 5240 640");
     expect(svg.getAttribute("width")).toBe(width);
     // Dragged 100 px left: the view moved right by 100 px worth of map units.
     expect(after[0]! - before[0]!).toBeCloseTo(100 * (before[2]! / 1200));
     expect(after[2]).toBeCloseTo(before[2]!);
+  });
+
+  it("never clips things that overhang the bounding box (2026-09-27 Blackpool report)", () => {
+    // The box holds anchor points only: a label starting at the left edge, text rising above the
+    // top row, and berths/posts past the last anchor all extend beyond it.
+    const doc = bundle({ boundingBox: { minX: 280, minY: 90, maxX: 4260, maxY: 350 } });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    const [x, y, w, h] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    expect([x, y]).toEqual([280 - WORLD_MARGIN, 90 - WORLD_MARGIN]);
+    expect([x! + w!, y! + h!]).toEqual([4260 + WORLD_MARGIN, 350 + WORLD_MARGIN]);
+    // Anything further out still draws, into the scroll padding, rather than being cut off.
+    expect(svg.style.overflow).toBe("visible");
   });
 
   it("does not re-render the map's elements when the view pans", () => {

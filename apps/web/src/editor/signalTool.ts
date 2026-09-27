@@ -1,8 +1,10 @@
 import {
   applySignalNamePrefix,
   berthBoxes,
+  berthRenderRect,
   canonicalSAddress,
   defaultSignalDirection,
+  SIGNAL_BERTH_SEARCH,
   type MapDocument,
   type SignalElement,
 } from "@railway/map-schema";
@@ -19,7 +21,13 @@ export interface SignalToolOptions {
   overwriteCustomNames: boolean;
   setDirections: boolean;
   overwriteCustomDirections: boolean;
+  /** 2026-09-27 (owner): make every berth `BERTH_TOOL_WIDTH` wide about its centre; a signal next
+   * to a trimmed end moves in with it, keeping its gap to the box. */
+  resizeBerths: boolean;
 }
+
+/** The berth width the tool resizes to. */
+export const BERTH_TOOL_WIDTH = 40;
 
 export const DEFAULT_SIGNAL_TOOL_OPTIONS: SignalToolOptions = {
   setNames: true,
@@ -27,6 +35,7 @@ export const DEFAULT_SIGNAL_TOOL_OPTIONS: SignalToolOptions = {
   overwriteCustomNames: false,
   setDirections: true,
   overwriteCustomDirections: false,
+  resizeBerths: true,
 };
 
 export type SignalToolOutcome =
@@ -41,11 +50,15 @@ export interface SignalToolRow {
   current: string | null;
   name: SignalToolOutcome;
   direction: SignalToolOutcome;
+  /** Moving in (or out) with a resized berth's end. */
+  position: SignalToolOutcome;
 }
 
 export interface SignalToolPlan {
   rows: SignalToolRow[];
   patches: Array<{ elementId: string; patch: Record<string, unknown> }>;
+  /** Berths the tool resizes. */
+  berthsResized: number;
 }
 
 /** Key for an S-Class label lookup: `tdArea|ADDRESS|bit` with the address in canonical form. */
@@ -72,6 +85,19 @@ export function planSignalTool(
   options: SignalToolOptions,
 ): SignalToolPlan {
   const boxes = options.setDirections ? berthBoxes(doc.elements) : [];
+  const byId = new Map(doc.elements.map((e) => [e.id, e]));
+  // Each berth's drawn box now, and how much each end moves in (negative: out) when resized.
+  const berths = doc.elements.flatMap((e) =>
+    e.type === "berth" ? [{ element: e, rect: berthRenderRect(e, byId) }] : [],
+  );
+  const trims = new Map<string, number>();
+  if (options.resizeBerths) {
+    for (const { element } of berths) {
+      if (element.width !== BERTH_TOOL_WIDTH) {
+        trims.set(element.id, (element.width - BERTH_TOOL_WIDTH) / 2);
+      }
+    }
+  }
   const rows: SignalToolRow[] = [];
   const patches: SignalToolPlan["patches"] = [];
 
@@ -136,11 +162,78 @@ export function planSignalTool(
       }
     }
 
-    rows.push({ elementId: element.id, current: element.label ?? null, name, direction });
+    let position: SignalToolOutcome = { status: "off" };
+    if (options.resizeBerths) {
+      const finalDirection = (patch.appliesTo as "right" | "left" | undefined) ?? element.appliesTo;
+      const move = signalMoveWithBerth(element, finalDirection, berths, trims);
+      if (move === 0) position = { status: "unchanged" };
+      else {
+        position = {
+          status: "change",
+          from: `x ${element.x}`,
+          to: `x ${element.x + move} (${move < 0 ? "←" : "→"} ${Math.abs(move)})`,
+        };
+        patch.x = element.x + move;
+      }
+    }
+
+    rows.push({
+      elementId: element.id,
+      current: element.label ?? null,
+      name,
+      direction,
+      position,
+    });
     if (Object.keys(patch).length > 0) patches.push({ elementId: element.id, patch });
   }
 
-  return { rows, patches };
+  for (const { element } of berths) {
+    const trim = trims.get(element.id);
+    if (trim === undefined) continue;
+    patches.push({
+      elementId: element.id,
+      patch: { x: element.x + trim, width: BERTH_TOOL_WIDTH },
+    });
+  }
+
+  return { rows, patches, berthsResized: trims.size };
+}
+
+/** How far a signal moves when the berth it stands next to is resized: it follows the berth end
+ * it is next to (nearest box edge on its own track within 40), so its gap to the box is kept. A
+ * signal to the right of a berth follows its right end, one to the left its left end — unless its
+ * direction says it belongs to the other side. Inside a box, or exactly between two: no move. */
+function signalMoveWithBerth(
+  signal: SignalElement,
+  direction: "right" | "left" | undefined,
+  berths: ReadonlyArray<{
+    element: { id: string };
+    rect: { x: number; y: number; width: number; height: number };
+  }>,
+  trims: ReadonlyMap<string, number>,
+): number {
+  let after: { distance: number; id: string } | null = null; // berth on the signal's left
+  let before: { distance: number; id: string } | null = null; // berth on the signal's right
+  for (const { element, rect } of berths) {
+    if (Math.abs(rect.y + rect.height / 2 - signal.y) > 4) continue;
+    const right = rect.x + rect.width;
+    if (signal.x > rect.x && signal.x < right) return 0;
+    if (signal.x >= right && (!after || signal.x - right < after.distance)) {
+      after = { distance: signal.x - right, id: element.id };
+    }
+    if (signal.x <= rect.x && (!before || rect.x - signal.x < before.distance)) {
+      before = { distance: rect.x - signal.x, id: element.id };
+    }
+  }
+  const a = after && after.distance <= SIGNAL_BERTH_SEARCH ? after : null;
+  const b = before && before.distance <= SIGNAL_BERTH_SEARCH ? before : null;
+  if (a && (!b || a.distance < b.distance) && direction !== "left") {
+    return -(trims.get(a.id) ?? 0);
+  }
+  if (b && (!a || b.distance < a.distance) && direction !== "right") {
+    return trims.get(b.id) ?? 0;
+  }
+  return 0;
 }
 
 /** Counts for the preview's summary line. */
@@ -150,6 +243,8 @@ export function summariseSignalTool(plan: SignalToolPlan): {
   namesSkipped: number;
   directionsChanged: number;
   directionsSkipped: number;
+  berthsResized: number;
+  signalsMoved: number;
 } {
   const count = (pick: (row: SignalToolRow) => SignalToolOutcome, status: string) =>
     plan.rows.filter((row) => pick(row).status === status).length;
@@ -159,5 +254,7 @@ export function summariseSignalTool(plan: SignalToolPlan): {
     namesSkipped: count((r) => r.name, "skipped"),
     directionsChanged: count((r) => r.direction, "change"),
     directionsSkipped: count((r) => r.direction, "skipped"),
+    berthsResized: plan.berthsResized,
+    signalsMoved: count((r) => r.position, "change"),
   };
 }

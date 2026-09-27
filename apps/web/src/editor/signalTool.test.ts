@@ -72,6 +72,7 @@ describe("planSignalTool (ADR 0017 §5)", () => {
     const plan = planSignalTool(doc([signal("a", 70), signal("b", 90)], ["a", "b"]), labels, {
       ...DEFAULT_SIGNAL_TOOL_OPTIONS,
       prefix: "CE",
+      resizeBerths: false,
     });
     expect(plan.patches).toEqual([
       {
@@ -125,6 +126,7 @@ describe("planSignalTool (ADR 0017 §5)", () => {
       ...DEFAULT_SIGNAL_TOOL_OPTIONS,
       overwriteCustomNames: true,
       overwriteCustomDirections: true,
+      resizeBerths: false,
     });
     const custom = overwrite.patches.find((p) => p.elementId === "custom")!;
     expect(custom.patch).toMatchObject({
@@ -170,11 +172,49 @@ describe("planSignalTool (ADR 0017 §5)", () => {
     const namesOnly = planSignalTool(d, labels, {
       ...DEFAULT_SIGNAL_TOOL_OPTIONS,
       setDirections: false,
+      resizeBerths: false,
     });
     expect(namesOnly.patches).toEqual([
       { elementId: "a", patch: { label: "S0491", labelSource: "tool" } },
     ]);
     expect(namesOnly.rows[0]!.direction).toEqual({ status: "off" });
+  });
+});
+
+describe("planSignalTool berth resize (owner, 2026-09-27)", () => {
+  it("resizes every berth to 40 about its centre, and signals move in with the ends", () => {
+    // Berths [0, 60] and [100, 160]: signal a 10 right of the first, b 10 left of the second,
+    // c 30 right of the second (still next to it), d not near any berth.
+    const d = doc([signal("a", 70), signal("b", 90), signal("c", 190), signal("d", 400)], []);
+    const plan = planSignalTool(d, new Map(), { ...DEFAULT_SIGNAL_TOOL_OPTIONS, setNames: false });
+    const patch = (id: string) => plan.patches.find((p) => p.elementId === id)?.patch;
+    expect(patch("b1")).toEqual({ x: 10, width: 40 });
+    expect(patch("b2")).toEqual({ x: 110, width: 40 });
+    expect(patch("a")).toMatchObject({ x: 60, appliesTo: "right" });
+    expect(patch("b")).toMatchObject({ x: 100, appliesTo: "left" });
+    expect(patch("c")).toMatchObject({ x: 180 });
+    expect(patch("d")?.x).toBeUndefined();
+    expect(plan.berthsResized).toBe(2);
+    expect(summariseSignalTool(plan)).toMatchObject({ berthsResized: 2, signalsMoved: 3 });
+  });
+
+  it("does nothing to berths already 40 wide, so running it twice changes nothing more", () => {
+    const d = doc([signal("a", 70)], []);
+    const first = planSignalTool(d, new Map(), DEFAULT_SIGNAL_TOOL_OPTIONS);
+    const once = applyCommand(d, { type: "patchElements", patches: first.patches }).doc;
+    const second = planSignalTool(once, new Map(), DEFAULT_SIGNAL_TOOL_OPTIONS);
+    expect(second.berthsResized).toBe(0);
+    expect(second.patches).toEqual([]);
+  });
+
+  it("leaves a signal that faces away from the nearer berth where it is", () => {
+    // 10 right of the first berth, but set by hand to apply to left-running trains.
+    const d = doc(
+      [signal("a", 70, { appliesTo: "left", side: "below", orientationSource: "custom" })],
+      [],
+    );
+    const plan = planSignalTool(d, new Map(), DEFAULT_SIGNAL_TOOL_OPTIONS);
+    expect(plan.rows[0]!.position).toEqual({ status: "unchanged" });
   });
 });
 

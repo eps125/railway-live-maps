@@ -108,12 +108,10 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
 
   const plan = useMemo(() => planSignalTool(doc, labels, options), [doc, labels, options]);
   const summary = summariseSignalTool(plan);
-  const listed = plan.rows.filter(
-    (row) =>
-      row.name.status === "change" ||
-      row.name.status === "skipped" ||
-      row.direction.status === "change" ||
-      row.direction.status === "skipped",
+  const listed = plan.rows.filter((row) =>
+    [row.name, row.direction, row.position].some(
+      (o) => o.status === "change" || o.status === "skipped",
+    ),
   );
 
   function set<K extends keyof SignalToolOptions>(key: K, value: SignalToolOptions[K]): void {
@@ -195,6 +193,18 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
           </label>
         </fieldset>
 
+        <fieldset>
+          <legend>Berths</legend>
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={options.resizeBerths}
+              onChange={(e) => set("resizeBerths", e.target.checked)}
+            />
+            Resize berths to 40 wide (keeping their centre; signals next to them move in with them)
+          </label>
+        </fieldset>
+
         {error ? (
           <p role="alert" className="login-form__error">
             {error}
@@ -203,7 +213,7 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
         <p role="status" className="field-hint">
           {loading
             ? "Loading S-Class labels…"
-            : `Numbers: ${summary.namesChanged} to change, ${summary.namesSkipped} skipped. Directions: ${summary.directionsChanged} to change, ${summary.directionsSkipped} skipped.`}
+            : `Numbers: ${summary.namesChanged} to change, ${summary.namesSkipped} skipped. Directions: ${summary.directionsChanged} to change, ${summary.directionsSkipped} skipped. Berths: ${summary.berthsResized} to resize, ${summary.signalsMoved} signals move with them.`}
         </p>
 
         {listed.length > 0 ? (
@@ -214,6 +224,7 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
                   <th>Signal</th>
                   <th>Number</th>
                   <th>Direction</th>
+                  <th>Position</th>
                 </tr>
               </thead>
               <tbody>
@@ -222,6 +233,7 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
                     <td className="mono">{row.current ?? row.elementId}</td>
                     <td>{outcomeText(row.name)}</td>
                     <td>{outcomeText(row.direction)}</td>
+                    <td>{outcomeText(row.position)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -236,7 +248,7 @@ export function SignalToolDialog({ onClose }: { onClose: () => void }): JSX.Elem
             disabled={loading || plan.patches.length === 0}
             onClick={apply}
           >
-            Apply to {plan.patches.length} signals
+            Apply {plan.patches.length} changes
           </button>
           <button type="button" className="btn" onClick={onClose}>
             Cancel

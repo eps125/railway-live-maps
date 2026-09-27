@@ -736,6 +736,10 @@ export function viewBoxAfterPinch(
   return { x: cx - newWidth / 2, y: cy - newHeight / 2, width: newWidth, height: newHeight };
 }
 
+/** Map units drawn around the bounding box, so things that overhang their anchor point (text,
+ * berth boxes, signal posts) are never cut off at the edge of the map. */
+export const WORLD_MARGIN = 120;
+
 /** Milestone 73: nominal container size used before the real one is measured (first render, and
  * a hidden or zero-size container, where dividing by the real width would give NaN). */
 const NOMINAL_WIDTH = 1200;
@@ -968,9 +972,18 @@ export function MapRenderer({
   highlightElementIds = EMPTY_IDS,
   playbackLink = null,
 }: MapRendererProps): JSX.Element {
+  // 2026-09-27 (owner report: labels, station names and a shunt neck clipped on Blackpool): the
+  // bounding box holds only element anchor points — a berth's top-left, where text starts, a
+  // signal's point on the track — so anything extending past them fell outside the SVG and was cut
+  // off. A margin covers ordinary overhang, and the SVG draws past its own edge for the rest.
   const world = useMemo(() => {
     const { minX, minY, maxX, maxY } = bundle.boundingBox;
-    return { x: minX, y: minY, width: Math.max(maxX - minX, 1), height: Math.max(maxY - minY, 1) };
+    return {
+      x: minX - WORLD_MARGIN,
+      y: minY - WORLD_MARGIN,
+      width: Math.max(maxX - minX, 1) + 2 * WORLD_MARGIN,
+      height: Math.max(maxY - minY, 1) + 2 * WORLD_MARGIN,
+    };
   }, [bundle]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1488,7 +1501,7 @@ export function MapRenderer({
             }
             width={world.width * scale}
             height={world.height * scale}
-            style={{ background: "#0d1117" }}
+            style={{ background: "#0d1117", overflow: "visible" }}
           >
             {content}
             {highlight}

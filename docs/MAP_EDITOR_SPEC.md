@@ -103,6 +103,8 @@ hide vacant boxes entirely (ADR 0004 D5).
 - `labelSource` / `orientationSource` (ADR 0017): `tool` or `custom` — whether the bulk
   "Signals…" tool or the author set the number / direction; the tool leaves `custom` alone unless
   told to overwrite.
+- The bulk "Signals…" tool can also resize every berth to 40 wide about its centre; signals next
+  to a trimmed berth end move in with it (ADR 0017 revision, 2026-09-27).
 - `renderMode` (ADR 0005 E4, retired by ADR 0017): only affects a signal with no `appliesTo`,
   which keeps its old drawing; the editor no longer offers it.
 

@@ -10,6 +10,7 @@ import { ReviewPanel } from "./ReviewPanel.js";
 import { useDraftSync } from "./useDraftSync.js";
 import { useEditorState } from "./EditorState.js";
 import { useLiveSClassStates } from "./useLiveSignalStates.js";
+import { SignalToolDialog } from "./SignalToolDialog.js";
 
 export interface EditorWorkspaceProps {
   slug: string;
@@ -33,6 +34,7 @@ type ViewMode = "design" | "test" | "review";
 export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps): JSX.Element {
   const [importError, setImportError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("design");
+  const [signalToolOpen, setSignalToolOpen] = useState(false);
   const draftSync = useDraftSync(slug, initialRevision);
   const testMode = useTestModePanel(slug);
   const { document: currentDocument } = useEditorState();
@@ -83,7 +85,7 @@ export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps)
         </nav>
       </div>
 
-      <Toolbar onImportError={setImportError} />
+      <Toolbar onImportError={setImportError} onOpenSignalTool={() => setSignalToolOpen(true)} />
       {importError ? (
         <p role="alert" className="editor-import-error">
           {importError}
@@ -119,6 +121,7 @@ export function EditorWorkspace({ slug, initialRevision }: EditorWorkspaceProps)
           ) : null}
         </div>
       </div>
+      {signalToolOpen ? <SignalToolDialog onClose={() => setSignalToolOpen(false)} /> : null}
     </section>
   );
 }

@@ -1040,6 +1040,107 @@ describe("MapRenderer", () => {
     expect(offset.container.querySelector("line")).not.toBeNull();
   });
 
+  describe("signal posts, types and numbers (ADR 0017)", () => {
+    const mk = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "signal" as const,
+      x: 20,
+      y: 20,
+      orientation: 0,
+      symbolStyle: "signal-blank" as const,
+      label: "CE0451",
+      ...extra,
+    });
+    const renderSignal = (
+      element: ReturnType<typeof mk>,
+      state: "blank" | "on" | "off",
+      showSignalNumbers = false,
+    ) =>
+      render(
+        <MapRenderer
+          bundle={bundle({ elementsById: { [element.id]: element } as never })}
+          berths={{}}
+          signals={{ [element.id]: { state } } as never}
+          showSignalNumbers={showSignalNumbers}
+        />,
+      ).container;
+
+    it("draws a signal with a direction on an L-shaped post, touching track and head", () => {
+      const c = renderSignal(mk("s", { appliesTo: "right" }), "on");
+      const post = c.querySelector("polyline")!;
+      expect(post.getAttribute("points")).toBe("0,-1.5 0,-10.5 4,-10.5");
+      const head = c.querySelector("circle")!;
+      expect(head).toMatchObject({});
+      expect(head.getAttribute("cx")).toBe("10");
+      expect(head.getAttribute("cy")).toBe("-10.5");
+      expect(head.getAttribute("fill")).toBe("#f85149");
+      expect(post.closest("g")!.getAttribute("transform")).toBe("translate(20 20)");
+    });
+
+    it("draws a subsidiary as a quarter-circle, white when off; a distant yellow when on", () => {
+      const sub = renderSignal(mk("s", { appliesTo: "left", signalType: "subsidiary" }), "off");
+      const quadrant = sub.querySelector("path")!;
+      expect(quadrant.getAttribute("d")).toBe("M -4 4.5 L -4 16.5 A 12 12 0 0 1 -16 4.5 Z");
+      expect(quadrant.getAttribute("fill")).toBe("#e6edf3");
+      expect(sub.querySelector("circle")).toBeNull();
+
+      const distant = renderSignal(mk("d", { appliesTo: "right", signalType: "distant" }), "on");
+      expect(distant.querySelector("circle")!.getAttribute("fill")).toBe("#e3b341");
+    });
+
+    it("keeps the old drawing for a signal without a direction", () => {
+      const c = renderSignal(mk("s"), "off");
+      expect(c.querySelector("polyline")).toBeNull();
+      expect(c.querySelector("circle")!.getAttribute("cx")).toBe("20");
+    });
+
+    it("draws numbers only when asked (admins), at the default place or the dragged one", () => {
+      expect(renderSignal(mk("s", { appliesTo: "right" }), "on").textContent).not.toContain(
+        "CE0451",
+      );
+      const shown = renderSignal(mk("s", { appliesTo: "right" }), "on", true);
+      const number = shown.querySelector("text.signal-number")!;
+      expect(number.textContent).toBe("CE0451");
+      expect([number.getAttribute("x"), number.getAttribute("y")]).toEqual(["-1", "-15"]);
+      expect(number.getAttribute("text-anchor")).toBe("end");
+
+      const moved = renderSignal(
+        mk("s", { appliesTo: "right", labelOffset: { x: 12, y: -24 } }),
+        "on",
+        true,
+      ).querySelector("text.signal-number")!;
+      expect([moved.getAttribute("x"), moved.getAttribute("y")]).toEqual(["12", "-24"]);
+
+      // Old-style signals' labels are admin-only too.
+      expect(renderSignal(mk("s"), "on").textContent).not.toContain("CE0451");
+      expect(renderSignal(mk("s"), "on", true).textContent).toContain("CE0451");
+    });
+
+    it("hides numbers when zoomed out too far to read them, and shows them zoomed in", async () => {
+      const element = mk("s", { appliesTo: "right" });
+      const { container } = render(
+        <MapRenderer
+          bundle={bundle({
+            boundingBox: { minX: 0, minY: 0, maxX: 20000, maxY: 800 },
+            elementsById: { s: element } as never,
+          })}
+          berths={{}}
+          signals={{ s: { state: "on" } } as never}
+          showSignalNumbers
+        />,
+      );
+      const svg = container.querySelector("svg")!;
+      // The default view is 1.4 map units per pixel: a 6-unit number would be ~4 px.
+      expect(svg.getAttribute("class")).toBe("map--signal-numbers-hidden");
+      const scroller = container.querySelector(".map-frame__scroll")!;
+      for (let i = 0; i < 4; i++) fireEvent.wheel(scroller, { deltaY: -100 });
+      await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      expect(svg.getAttribute("class")).toBeNull();
+    });
+  });
+
   it("renders a berth blank when its inhibiting berth shows the identical description (TD-area fringe pair)", () => {
     const berthEl = (id: string, x: number, inhibitedBy?: string) => ({
       id,

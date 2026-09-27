@@ -76,6 +76,25 @@ function writeShowEmptyBerths(value: boolean): void {
   }
 }
 
+const SIGNAL_NUMBERS_KEY = "rlm.showSignalNumbers";
+
+/** ADR 0017: an admin's "Signal numbers" choice, remembered in this browser. Off by default. */
+function readShowSignalNumbers(): boolean {
+  try {
+    return window.localStorage.getItem(SIGNAL_NUMBERS_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeShowSignalNumbers(value: boolean): void {
+  try {
+    window.localStorage.setItem(SIGNAL_NUMBERS_KEY, String(value));
+  } catch {
+    /* ignore — the toggle still works for this session via React state */
+  }
+}
+
 /** docs/PROJECT_SPEC.md §5: the public map shows live berth activity with a clear
  * connected/stale/data-gap status, and (Milestone 10) can switch to historical playback of a
  * chosen time. */
@@ -99,6 +118,17 @@ export function MapView({
     });
   }
   const [showEmptyBerths, setShowEmptyBerths] = useState<boolean>(readShowEmptyBerths);
+  const [signalNumbersChosen, setSignalNumbersChosen] = useState<boolean>(readShowSignalNumbers);
+  // ADR 0017: signal numbers are admin-only for now; the choice only takes effect for an admin.
+  const showSignalNumbers = isAdmin && signalNumbersChosen;
+
+  function toggleSignalNumbers(): void {
+    setSignalNumbersChosen((prev) => {
+      const next = !prev;
+      writeShowSignalNumbers(next);
+      return next;
+    });
+  }
 
   function toggleEmptyBerths(): void {
     setShowEmptyBerths((prev) => {
@@ -158,6 +188,12 @@ export function MapView({
           Show empty berths
         </label>
         {isAdmin ? (
+          <label className="map-page__toggle">
+            <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
+            Signal numbers
+          </label>
+        ) : null}
+        {isAdmin ? (
           <button
             type="button"
             className="map-page__mode-btn"
@@ -187,6 +223,7 @@ export function MapView({
           crossings={state?.crossings ?? {}}
           routes={state?.routes ?? {}}
           showEmptyBerths={showEmptyBerths}
+          showSignalNumbers={showSignalNumbers}
           centerElementId={resolvedCenterElementId}
           highlightElementIds={highlight}
         />
@@ -198,6 +235,7 @@ export function MapView({
           initialPlaying={initialPlayback?.playing ?? false}
           bundle={definition.definition}
           showEmptyBerths={showEmptyBerths}
+          showSignalNumbers={showSignalNumbers}
           centerElementId={resolvedCenterElementId}
           highlight={highlight}
           sClassPanel={
@@ -237,6 +275,7 @@ interface PlaybackViewProps {
   initialPlaying: boolean;
   bundle: CompiledMapBundle;
   showEmptyBerths: boolean;
+  showSignalNumbers: boolean;
   centerElementId: string | null;
   highlight: string[];
   /** The admin S-Class mini explorer, given the playback clock — or null when closed. */
@@ -251,6 +290,7 @@ function PlaybackView({
   initialPlaying,
   bundle,
   showEmptyBerths,
+  showSignalNumbers,
   centerElementId,
   highlight,
   sClassPanel,
@@ -288,6 +328,7 @@ function PlaybackView({
         crossings={pb.crossings}
         routes={pb.routes}
         showEmptyBerths={showEmptyBerths}
+        showSignalNumbers={showSignalNumbers}
         atIso={pb.atIso}
         centerElementId={centerElementId}
         highlightElementIds={highlight}

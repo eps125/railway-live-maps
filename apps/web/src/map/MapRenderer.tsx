@@ -12,6 +12,9 @@ import {
   switchedDiamondGeometry,
   viaductWidth,
   sortElementsForPaint,
+  signalColor,
+  signalLabelPosition,
+  signalPostGeometry,
   type CompiledMapBundle,
   type MapElement,
   type BarrierDisplayState,
@@ -45,6 +48,9 @@ export interface MapRendererProps {
   /** ADR 0004 D5: when false, vacant berths draw nothing (berthmaps behaviour); occupied
    * berths are unaffected. Defaults to true — parity with the pre-ADR renderer. */
   showEmptyBerths?: boolean;
+  /** ADR 0017: draw signal numbers. The public map passes this only for an admin who has ticked
+   * "Signal numbers"; numbers are also hidden when zoomed out too far to read them. */
+  showSignalNumbers?: boolean;
   /** Milestone 31: jump to and centre the initial view on this element (a places-search
    * click-through) instead of the remembered/default view. Only evaluated on first mount —
    * subsequent identical prop values don't re-centre a view the visitor has since panned away
@@ -70,8 +76,6 @@ export interface ViewBox {
   width: number;
   height: number;
 }
-
-const SIGNAL_COLORS: Record<SignalState["state"], string> = MAP_STYLE.signal.stateColors;
 
 /** Milestone 32 (folded into `label` 2026-09-13): shared click-through for a boundary link,
  * used by both a `label` carrying `adjacentMapSlug` (the current, preferred way to author one)
@@ -539,14 +543,55 @@ function renderSetRoute(element: RouteElement): JSX.Element {
   );
 }
 
-/** ADR 0005 E4: a signal is either `inline` (head on the track at x,y — today's look) or
- * `offset` (a short stem out to a head set off the track, OTT-inspired but not identical:
- * shorter stem, solid aspect-colour head with a thin outline, label centred below). Side of
- * the stem is `orientation` (>= 90 && < 270 → above the track, else below). No aspect change —
- * still blank/on/off only (CLAUDE.md rule 9). */
-function renderSignal(element: SignalElement, state: SignalState["state"]): JSX.Element {
-  const color = SIGNAL_COLORS[state];
+/** ADR 0017: a signal with a direction stands on an L-shaped post beside the track — the stem
+ * touching the track edge, the arm pointing the way it applies, the head touching the arm — in its
+ * type's colours for the bound bit's state (never an aspect: rule 9 as amended). A signal without
+ * a direction keeps its pre-ADR 0017 drawing: ADR 0005 E4's `inline` head on the track or
+ * `offset` stem. The number is drawn only when `showNumber` (admins, zoomed in). */
+function renderSignal(
+  element: SignalElement,
+  state: SignalState["state"],
+  showNumber: boolean,
+): JSX.Element {
+  const color = signalColor(element.signalType, state);
   const r = MAP_STYLE.signal.radius;
+  const geometry = signalPostGeometry(element);
+
+  if (geometry) {
+    const [x0, y0, x1, y1, x2, y2] = geometry.post;
+    const label = signalLabelPosition(element, geometry);
+    const { post, number } = MAP_STYLE.signal;
+    return (
+      <g key={element.id} transform={`translate(${element.x} ${element.y})`}>
+        <polyline
+          points={`${x0},${y0} ${x1},${y1} ${x2},${y2}`}
+          fill="none"
+          stroke={post.color}
+          strokeWidth={post.width}
+          strokeLinecap="butt"
+          strokeLinejoin="miter"
+        />
+        {geometry.head.kind === "circle" ? (
+          <circle cx={geometry.head.cx} cy={geometry.head.cy} r={geometry.head.r} fill={color} />
+        ) : (
+          <path d={geometry.head.path} fill={color} />
+        )}
+        {showNumber && element.label ? (
+          <text
+            className="signal-number"
+            x={label.x}
+            y={label.y}
+            textAnchor={geometry.label.anchor}
+            dominantBaseline="middle"
+            fontSize={number.fontSize}
+            fill={number.fill}
+          >
+            {element.label}
+          </text>
+        ) : null}
+      </g>
+    );
+  }
 
   if (element.renderMode === "offset") {
     const up = element.orientation >= 90 && element.orientation < 270;
@@ -563,8 +608,9 @@ function renderSignal(element: SignalElement, state: SignalState["state"]): JSX.
           strokeWidth={2}
         />
         <circle cx={element.x} cy={headY} r={r} fill={color} stroke="#0d1117" strokeWidth={1} />
-        {element.label ? (
+        {showNumber && element.label ? (
           <text
+            className="signal-number"
             x={element.x}
             y={headY + dir * (r + 8)}
             textAnchor="middle"
@@ -582,8 +628,14 @@ function renderSignal(element: SignalElement, state: SignalState["state"]): JSX.
   return (
     <g key={element.id}>
       <circle cx={element.x} cy={element.y} r={r} fill={color} />
-      {element.label ? (
-        <text x={element.x + 10} y={element.y + 4} fontSize={10} fill="#8b949e">
+      {showNumber && element.label ? (
+        <text
+          className="signal-number"
+          x={element.x + 10}
+          y={element.y + 4}
+          fontSize={10}
+          fill="#8b949e"
+        >
           {element.label}
         </text>
       ) : null}
@@ -815,11 +867,13 @@ const BerthNode = memo(function BerthNode({
 const SignalNode = memo(function SignalNode({
   element,
   state,
+  showNumber,
 }: {
   element: SignalElement;
   state: SignalState["state"];
+  showNumber: boolean;
 }): JSX.Element {
-  return renderSignal(element, state);
+  return renderSignal(element, state, showNumber);
 });
 
 /** An element that never changes while the map is shown — drawn once per bundle. Anything with
@@ -908,6 +962,7 @@ export function MapRenderer({
   crossings = EMPTY_RECORD,
   routes = EMPTY_RECORD,
   showEmptyBerths = true,
+  showSignalNumbers = false,
   centerElementId,
   atIso = null,
   highlightElementIds = EMPTY_IDS,
@@ -1277,6 +1332,7 @@ export function MapRenderer({
               key={element.id}
               element={element}
               state={signals[element.id]?.state ?? "blank"}
+              showNumber={showSignalNumbers}
             />
           );
         }
@@ -1353,6 +1409,7 @@ export function MapRenderer({
       crossings,
       routes,
       showEmptyBerths,
+      showSignalNumbers,
       playbackLink?.atIso,
       playbackLink?.speed,
       playbackLink?.playing,
@@ -1422,6 +1479,13 @@ export function MapRenderer({
             role="img"
             aria-label={`${bundle.mapName} schematic map`}
             viewBox={`${world.x} ${world.y} ${world.width} ${world.height}`}
+            // ADR 0017: signal numbers are fixed at a small size; when zoomed out too far to read
+            // them they are hidden rather than drawn as specks.
+            className={
+              scale * MAP_STYLE.signal.number.fontSize < MAP_STYLE.signal.number.minScreenPx
+                ? "map--signal-numbers-hidden"
+                : undefined
+            }
             width={world.width * scale}
             height={world.height * scale}
             style={{ background: "#0d1117" }}

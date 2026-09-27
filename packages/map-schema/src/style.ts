@@ -39,6 +39,21 @@ export const MAP_STYLE = {
      * grey = blank (unmapped/unknown). Shared by the public renderer and the editor so a bound
      * signal looks the same in both (rule 13). */
     stateColors: { blank: "#5f6b7a", on: "#f85149", off: "#3fb950" },
+    /** ADR 0017: each signal type's colours for the same three states. Still only the bound bit's
+     * on/off — never an aspect (rule 9 as amended). `main` equals `stateColors`. */
+    typeColors: {
+      main: { blank: "#5f6b7a", on: "#f85149", off: "#3fb950" },
+      subsidiary: { blank: "#5f6b7a", on: "#f85149", off: "#e6edf3" },
+      distant: { blank: "#5f6b7a", on: "#e3b341", off: "#3fb950" },
+    },
+    /** ADR 0017: the L-shaped post (map units). The stem rises `rise` from the track edge, the arm
+     * runs `arm` in the direction the signal applies to, touching the head. */
+    post: { rise: 9, arm: 4, width: 2, color: "#8b949e" },
+    /** ADR 0017: the subsidiary quarter-circle's radius — 12 wide, the same as a main head. */
+    subsidiaryRadius: 12,
+    /** ADR 0017: signal numbers. One fixed size; `labelBand` is the distance from the track centre
+     * to the middle of the default number (between a berth box's edge and the next track's). */
+    number: { fontSize: 6, labelBand: 15, fill: "#8b949e", minScreenPx: 6 },
   },
   platform: {
     /** Schematic bar thickness. */

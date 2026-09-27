@@ -119,9 +119,28 @@ const SignalElementSchema = BaseElementSchema.extend({
   trackElementId: z.string().optional(),
   bindingId: z.string().optional(),
   /** ADR 0005 E4: `offset` = a short stem from (x,y) out to a head set off the track (side from
-   * `orientation`), OTT-inspired. Absent / `inline` = today's head on the track at (x,y). Both
-   * ship so the owner can compare and drop one later. No aspect change either way (rule 9). */
+   * `orientation`), OTT-inspired. Absent / `inline` = today's head on the track at (x,y).
+   * Retired by ADR 0017: ignored once the signal has `appliesTo`, and no longer offered by the
+   * editor; kept so older documents still parse and render as before. */
   renderMode: z.enum(["inline", "offset"]).optional(),
+  /** ADR 0017: which colours the bound bit's on/off state is drawn in — main red/green,
+   * subsidiary red/white, distant yellow/green. Absent = main. Never an aspect (rule 9). */
+  signalType: z.enum(["main", "subsidiary", "distant"]).optional(),
+  /** ADR 0017: the direction of travel the signal applies to. Set = drawn on an L-shaped post
+   * whose arm points this way; absent = drawn exactly as before ADR 0017. */
+  appliesTo: z.enum(["right", "left"]).optional(),
+  /** ADR 0017: which side of the track the post stands. Absent with `appliesTo` set: above for
+   * `right`, below for `left` (the owner's default rule). */
+  side: z.enum(["above", "below"]).optional(),
+  /** ADR 0017: where the signal number sits, as an offset from (x, y). Absent = the default
+   * place along the berth the signal protects, ending at the post. */
+  labelOffset: PointSchema.optional(),
+  /** ADR 0017: whether `label` was set by the bulk signal tool or by hand. The tool re-applies
+   * over its own values and leaves hand-set ones unless told to overwrite. Absent with a label
+   * present is treated as hand-set. */
+  labelSource: z.enum(["tool", "custom"]).optional(),
+  /** ADR 0017: the same, for `appliesTo`/`side`. */
+  orientationSource: z.enum(["tool", "custom"]).optional(),
 });
 
 const PlatformElementSchema = BaseElementSchema.extend({

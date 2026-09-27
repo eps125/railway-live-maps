@@ -756,7 +756,7 @@ describe("PropertyPanel S-Class signal binding (Milestone 36c)", () => {
     ]);
 
     fireEvent.click(screen.getByRole("button", { name: "Use as label" }));
-    expect(await screen.findByLabelText("Label")).toHaveValue("S3003");
+    expect(await screen.findByLabelText("Signal number")).toHaveValue("S3003");
   });
 
   it("won't bind until the address is hex and the bit is 0-7", async () => {
@@ -1117,5 +1117,79 @@ describe("route bit binding (Milestone 64)", () => {
     await bindDefinedRoute();
     expect(committed().label).toBe("Up Main to P3");
     expect(committed().bits).toHaveLength(1);
+  });
+});
+
+describe("PropertyPanel signal type, direction and number (ADR 0017)", () => {
+  function doc(): MapDocument {
+    const d = baseDoc();
+    return {
+      ...d,
+      elements: [
+        ...d.elements,
+        {
+          id: "sig-1",
+          layerId: "l",
+          zIndex: 0,
+          type: "signal",
+          x: 10,
+          y: 10,
+          orientation: 0,
+          symbolStyle: "signal-blank",
+        },
+      ],
+    };
+  }
+
+  function SignalProbe(): JSX.Element {
+    const { document: d } = useEditorState();
+    return (
+      <pre data-testid="signal">{JSON.stringify(d.elements.find((e) => e.id === "sig-1"))}</pre>
+    );
+  }
+
+  const signal = () => JSON.parse(screen.getByTestId("signal").textContent ?? "{}");
+
+  function renderPanel(): void {
+    render(
+      <EditorStateProvider initialDocument={doc()}>
+        <Select id="sig-1" />
+        <PropertyPanel />
+        <SignalProbe />
+      </EditorStateProvider>,
+    );
+  }
+
+  it("no longer offers the old offset stem, and sets the signal type", async () => {
+    renderPanel();
+    await screen.findByLabelText("Signal type");
+    expect(screen.queryByText(/Offset style/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Signal type"), { target: { value: "subsidiary" } });
+    expect(signal().signalType).toBe("subsidiary");
+    fireEvent.change(screen.getByLabelText("Signal type"), { target: { value: "main" } });
+    expect(signal().signalType).toBeUndefined();
+  });
+
+  it("sets the direction as hand-set, with the default side, and lets the side be changed", async () => {
+    renderPanel();
+    fireEvent.change(await screen.findByLabelText("Applies to trains travelling"), {
+      target: { value: "left" },
+    });
+    expect(signal()).toMatchObject({
+      appliesTo: "left",
+      side: "below",
+      orientationSource: "custom",
+    });
+    fireEvent.change(screen.getByLabelText("Side of the track"), { target: { value: "above" } });
+    expect(signal()).toMatchObject({ appliesTo: "left", side: "above" });
+    expect(screen.getByText("Drag the number on the canvas to move it.")).toBeInTheDocument();
+  });
+
+  it("marks a typed number as hand-set, so the bulk tool leaves it alone", async () => {
+    renderPanel();
+    const field = await screen.findByLabelText("Signal number");
+    fireEvent.change(field, { target: { value: "CE451" } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(signal()).toMatchObject({ label: "CE451", labelSource: "custom" }));
   });
 });

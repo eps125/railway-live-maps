@@ -4235,3 +4235,50 @@ earlier one; a byte older than the lookback is unknown; a never-stated byte is a
 through the real projector). The S-Class snapshot fixture now models an undecoded byte the way the
 projector writes one (`raw_only`, no value) rather than as a decoded 00 with no event. Full
 integration suite: 250 passed.
+
+## Milestone 77 — Signal types, posts, numbers and the bulk signal tool (2026-09-27)
+
+Owner design session 2026-09-26/27, recorded in [ADR 0017](adr/0017-signal-types-posts-and-numbers.md)
+(accepted; amends CLAUDE.md rule 9 and retires ADR 0005 E4's render modes). Research: UK WestCAD
+copies IECC, whose main signal is a roundel on an L-shaped post beside the track, foot at the
+approach end, head towards the direction of travel; subsidiaries are quarter-discs.
+
+- [x] **Signal types:** `signalType` main / subsidiary / distant; colours per type for the bound
+      bit's blank/on/off (main red/green, subsidiary red/white, distant yellow/green, blank grey).
+      Rule 9 reworded: never an aspect.
+- [x] **Posts:** a signal with `appliesTo` stands on an L-shaped post (rise 9, arm 4, touching the
+      track edge and the head). Main and distant: today's 12-unit round head. Subsidiary: a
+      12-unit quarter-circle, flat edge to the track, arm meeting the middle of its other flat
+      edge, turned 180° for the opposite direction. Shared geometry
+      (`signalPostGeometry`) drawn by both the public SVG renderer and the editor canvas (rule 13).
+      A signal with no direction draws exactly as before, so published maps don't change until
+      their signals are oriented.
+- [x] **Direction and side:** `appliesTo` right / left and `side` above / below, editable in the
+      property panel (hand-set = `orientationSource: custom`). Default rule: right of a berth →
+      above, right-running; left of a berth → below, left-running.
+- [x] **Signal numbers:** `label` as the number, `labelOffset` to move it (drag on the canvas;
+      "Reset number position" in the panel), fixed 6-unit text, hidden when zoomed out below 6
+      px. The public map draws numbers only for admins, behind a "Signal numbers" checkbox
+      remembered per browser — including old-style signals' labels, which every visitor used to
+      see.
+- [x] **Bulk "Signals…" tool** in the editor toolbar: numbers from the bound bit's S-Class label
+      with an optional prefix replacing its leading letters (S001 + CE → CE001), and direction/side
+      by the default rule; hand-set numbers/directions are left alone unless their overwrite box is
+      ticked (a number that predates the tool counts as hand-set); a preview lists every change and
+      skip with its reason; applying is one undo step (new `patchElements` command). On Carlisle
+      as drawn the direction rule settles 265 of 281 signals.
+- [x] **Level crossing panel overflow** (owner report, same push): an inferred crossing's input
+      rows put five fields and a button on one no-wrap flex line whose inputs kept their intrinsic
+      width, running off the 300 px panel. They are now a small grid (signal and "bit set means"
+      full width; area, address and bit on one line), and no field in the editor's side panels
+      can be wider than the panel.
+- [x] The editor no longer moves an element when one of its child nodes (a label or signal
+      number) is dragged.
+
+Tests: shared geometry (colours per type, post and head coordinates for every direction/side,
+subsidiary arcs, number positions, the default-direction rule and its skips, the prefix rule);
+public renderer (post and head, subsidiary quadrant, distant yellow, old drawing kept, numbers only
+when shown, hidden when zoomed out); property panel (type, direction/side as hand-set, typed
+number as hand-set, no offset option); planner (names with prefix, hand-set kept, overwrite,
+reasons, only-ticked options); `patchElements` with a single undo; the dialog end to end; the
+admin-only map checkbox.

@@ -19,8 +19,11 @@ function cloneWithNewId<T extends { id: string }>(item: T): T {
  * plan's scope decision), but the shortcuts themselves are live. */
 export function Toolbar({
   onImportError,
+  onOpenSignalTool,
 }: {
   onImportError: (message: string) => void;
+  /** ADR 0017: opens the bulk "Name and orient signals" tool. */
+  onOpenSignalTool?: () => void;
 }): JSX.Element {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
@@ -252,6 +255,11 @@ export function Toolbar({
         <button type="button" className="btn" onClick={() => fileInputRef.current?.click()}>
           Import JSON
         </button>
+        {onOpenSignalTool ? (
+          <button type="button" className="btn" onClick={onOpenSignalTool}>
+            Signals…
+          </button>
+        ) : null}
         <input
           ref={fileInputRef}
           type="file"

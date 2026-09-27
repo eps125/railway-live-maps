@@ -59,6 +59,21 @@ export {
 } from "./compiler.js";
 export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
 export {
+  applySignalNamePrefix,
+  berthBoxes,
+  defaultSideFor,
+  defaultSignalDirection,
+  signalColor,
+  signalLabelPosition,
+  signalPostGeometry,
+  SIGNAL_BERTH_SEARCH,
+  type SignalDirectionDecision,
+  type SignalDisplayState,
+  type SignalHead,
+  type SignalPostGeometry,
+  type SignalType,
+} from "./signalGeometry.js";
+export {
   berthRenderRect,
   levelCrossingGeometry,
   realisticLevelCrossingGeometry,

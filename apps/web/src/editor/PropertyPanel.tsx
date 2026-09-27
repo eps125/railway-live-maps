@@ -739,10 +739,10 @@ function InferredBarrierFields({
         ))}
       </datalist>
       {rows.map((row, i) => (
-        <div key={i} className="field-row">
+        <div key={i} className="field-row field-row--inferred">
           {/* `.field` divs rather than <label>s: every row repeats the same visible text, and each
               input's accessible name is its row-specific aria-label (see CombinedMemberRow). */}
-          <div className="field">
+          <div className="field field--wide">
             <span aria-hidden="true">Signal</span>
             <input
               aria-label={`Input ${i + 1} signal name`}
@@ -776,7 +776,7 @@ function InferredBarrierFields({
               onChange={(e) => update(i, { bit: e.target.value })}
             />
           </div>
-          <div className="field">
+          <div className="field field--wide">
             <span aria-hidden="true">Bit set means</span>
             <select
               aria-label={`Input ${i + 1} bit set means`}
@@ -1433,6 +1433,14 @@ export function PropertyPanel(): JSX.Element {
     });
   }
 
+  /** Several properties of this element as one undo step; `undefined` removes a key. */
+  function patchProps(patch: Record<string, unknown>): void {
+    dispatch({
+      type: "dispatchCommand",
+      command: { type: "patchElement", elementId, patch },
+    });
+  }
+
   const existingIds = doc.elements.filter((el) => el.id !== elementId).map((el) => el.id);
 
   return (
@@ -1755,14 +1763,85 @@ export function PropertyPanel(): JSX.Element {
       {element.type === "signal" && (
         <>
           <TextField
-            label="Label"
+            label="Signal number"
             value={element.label ?? ""}
-            onCommit={(v) => setProp("label", v || undefined)}
+            // ADR 0017: a number typed here is hand-set, so the bulk tool leaves it alone.
+            onCommit={(v) =>
+              patchProps(
+                v
+                  ? { label: v, labelSource: "custom" }
+                  : { label: undefined, labelSource: undefined },
+              )
+            }
           />
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <label className="field">
-            Symbol style
+            Signal type
+            <select
+              value={element.signalType ?? "main"}
+              onChange={(e) =>
+                setProp("signalType", e.target.value === "main" ? undefined : e.target.value)
+              }
+            >
+              <option value="main">Main (red / green)</option>
+              <option value="subsidiary">Subsidiary (red / white)</option>
+              <option value="distant">Distant (yellow / green)</option>
+            </select>
+          </label>
+          <label className="field">
+            Applies to trains travelling
+            <select
+              value={element.appliesTo ?? ""}
+              // ADR 0017: a direction chosen here is hand-set; the side follows the default rule
+              // for the new direction unless already chosen.
+              onChange={(e) => {
+                const appliesTo = e.target.value as "" | "right" | "left";
+                patchProps(
+                  appliesTo === ""
+                    ? { appliesTo: undefined, side: undefined, orientationSource: undefined }
+                    : {
+                        appliesTo,
+                        side: element.side ?? (appliesTo === "right" ? "above" : "below"),
+                        orientationSource: "custom",
+                      },
+                );
+              }}
+            >
+              <option value="">Not set (old style, no post)</option>
+              <option value="right">→ Right</option>
+              <option value="left">← Left</option>
+            </select>
+          </label>
+          {element.appliesTo ? (
+            <>
+              <label className="field">
+                Side of the track
+                <select
+                  value={element.side ?? (element.appliesTo === "right" ? "above" : "below")}
+                  onChange={(e) =>
+                    patchProps({ side: e.target.value, orientationSource: "custom" })
+                  }
+                >
+                  <option value="above">Above</option>
+                  <option value="below">Below</option>
+                </select>
+              </label>
+              {element.labelOffset ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setProp("labelOffset", undefined)}
+                >
+                  Reset number position
+                </button>
+              ) : (
+                <p className="field-hint">Drag the number on the canvas to move it.</p>
+              )}
+            </>
+          ) : null}
+          <label className="field">
+            Symbol style (unbound preview)
             <select
               value={element.symbolStyle}
               onChange={(e) => setProp("symbolStyle", e.target.value)}
@@ -1772,21 +1851,13 @@ export function PropertyPanel(): JSX.Element {
               <option value="signal-off">off</option>
             </select>
           </label>
-          <label className="field field--checkbox">
-            <input
-              type="checkbox"
-              checked={element.renderMode === "offset"}
-              onChange={(e) => setProp("renderMode", e.target.checked ? "offset" : "inline")}
-            />
-            Offset style (stem + head off the track)
-          </label>
           <SignalBindingFields
             elementId={elementId}
             binding={doc.bindings.find(
               (b): b is TdSBitBinding => b.type === "tdSBit" && b.elementId === elementId,
             )}
             currentLabel={element.label}
-            onUseLabel={(label) => setProp("label", label)}
+            onUseLabel={(label) => patchProps({ label, labelSource: "custom" })}
           />
           <SignalRoutesFieldset signalId={elementId} />
         </>

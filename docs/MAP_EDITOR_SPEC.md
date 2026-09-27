@@ -91,9 +91,20 @@ hide vacant boxes entirely (ADR 0004 D5).
 - symbol style
 - optional associated track
 - optional future S-Class binding
-- `renderMode` (ADR 0005 E4): absent / `inline` = head on the track at `(x, y)` (today's look);
-  `offset` = a short stem out to a head set off the track, side from `orientation`. Both ship
-  until the owner picks one. No aspect change either way.
+- `signalType` (ADR 0017): `main` (default) / `subsidiary` / `distant` — picks the colours the
+  bound bit's on/off is drawn in (main red/green, subsidiary red/white, distant yellow/green).
+- `appliesTo` (`right` / `left`) and `side` (`above` / `below`) (ADR 0017): once set, the signal
+  stands on an L-shaped post beside the track — stem from the track edge, arm pointing the way it
+  applies, head touching the arm; main and distant heads are round, a subsidiary's is a
+  quarter-circle the same width. `side` defaults to above for `right`, below for `left`.
+- `labelOffset` (ADR 0017): where the signal number sits, dragged in the editor; absent = along
+  the berth the signal protects, ending at the post. Numbers show on the public map only for
+  admins who tick "Signal numbers", and only when zoomed in enough to read them.
+- `labelSource` / `orientationSource` (ADR 0017): `tool` or `custom` — whether the bulk
+  "Signals…" tool or the author set the number / direction; the tool leaves `custom` alone unless
+  told to overwrite.
+- `renderMode` (ADR 0005 E4, retired by ADR 0017): only affects a signal with no `appliesTo`,
+  which keeps its old drawing; the editor no longer offers it.
 
 For Lancaster, no S-Class binding is required and operational state is blank.
 

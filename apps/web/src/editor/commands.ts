@@ -20,6 +20,12 @@ export type EditorCommand =
   /** Milestone 64: several properties of one element in one undo step — a route re-trace changes
    * its points, traced tracks and exit signal together. A value of `undefined` removes the key. */
   | { type: "patchElement"; elementId: string; patch: Record<string, unknown> }
+  /** ADR 0017: the same across many elements in one undo step — the bulk signal tool names and
+   * orients a whole map's signals at once. */
+  | {
+      type: "patchElements";
+      patches: ReadonlyArray<{ elementId: string; patch: Record<string, unknown> }>;
+    }
   | { type: "renameElement"; elementId: string; newId: string }
   | { type: "setBinding"; elementId: string; binding: MapBinding | null }
   /** Owner request 2026-09-17: a combined berth — up to 4 `tdBerth` bindings sharing one
@@ -186,6 +192,22 @@ function applyPatchElement(
     doc: { ...doc, elements },
     inverse: { type: "patchElement", elementId, patch: previous },
   };
+}
+
+function applyPatchElements(
+  doc: MapDocument,
+  patches: ReadonlyArray<{ elementId: string; patch: Record<string, unknown> }>,
+): ApplyCommandResult {
+  let next = doc;
+  const inverses: Array<{ elementId: string; patch: Record<string, unknown> }> = [];
+  for (const { elementId, patch } of patches) {
+    const result = applyPatchElement(next, elementId, patch);
+    next = result.doc;
+    const inverse = result.inverse as { elementId: string; patch: Record<string, unknown> };
+    inverses.push({ elementId: inverse.elementId, patch: inverse.patch });
+  }
+  // Undo in reverse order, so an element patched twice returns to its first state.
+  return { doc: next, inverse: { type: "patchElements", patches: inverses.reverse() } };
 }
 
 /** Element IDs are referenced from three other places in the document: `bindings.elementId`,
@@ -362,6 +384,8 @@ export function applyCommand(doc: MapDocument, command: EditorCommand): ApplyCom
       return applySetProperty(doc, command.elementId, command.property, command.value);
     case "patchElement":
       return applyPatchElement(doc, command.elementId, command.patch);
+    case "patchElements":
+      return applyPatchElements(doc, command.patches);
     case "renameElement":
       return applyRenameElement(doc, command.elementId, command.newId);
     case "setBinding":

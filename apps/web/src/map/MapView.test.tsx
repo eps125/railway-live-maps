@@ -329,6 +329,26 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
     ).toBeVisible();
   });
 
+  it("offers the signal numbers checkbox to an admin only, and remembers it (ADR 0017)", async () => {
+    stubFetch();
+    const { unmount } = render(<MapView slug="lancaster" />);
+    await screen.findByText("2A16");
+    expect(screen.queryByLabelText("Signal numbers")).toBeNull();
+    unmount();
+
+    const admin = render(<MapView slug="lancaster" isAdmin />);
+    const box = await screen.findByLabelText("Signal numbers");
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    expect(window.localStorage.getItem("rlm.showSignalNumbers")).toBe("true");
+    admin.unmount();
+
+    render(<MapView slug="lancaster" isAdmin />);
+    expect(await screen.findByLabelText("Signal numbers")).toBeChecked();
+    window.localStorage.removeItem("rlm.showSignalNumbers");
+  });
+
   it("opens in playback at the position a boundary link carried, instead of live", async () => {
     const fetchMock = stubFetch();
     const atMs = Date.parse("2026-09-20T10:00:00.000Z");

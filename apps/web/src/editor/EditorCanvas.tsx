@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Line, Rect, Text, Circle, Group, Transformer } from "react-konva";
+import { Stage, Layer, Line, Rect, Text, Circle, Group, Path, Transformer } from "react-konva";
 import Konva from "konva";
 import {
   MAP_STYLE,
@@ -15,6 +15,9 @@ import {
   switchedDiamondGeometry,
   viaductWidth,
   sortElementsForPaint,
+  signalColor,
+  signalLabelPosition,
+  signalPostGeometry,
   type Layer as MapLayer,
   type MapElement,
 } from "@railway/map-schema";
@@ -188,12 +191,13 @@ export function boundsIntersect(a: Bounds, b: Bounds): boolean {
   return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
 }
 
-function signalFill(symbolStyle: string): string {
+function signalStateFromStyle(symbolStyle: string): "blank" | "on" | "off" {
   // Editor-only preview convention for the symbolStyle token itself (an editable document
-  // field, not a computed aspect) — matches CLAUDE.md #9's blank/on/off vocabulary exactly.
-  if (symbolStyle === "signal-on") return MAP_STYLE.signal.stateColors.on;
-  if (symbolStyle === "signal-off") return MAP_STYLE.signal.stateColors.off;
-  return MAP_STYLE.signal.stateColors.blank;
+  // field, not a computed aspect) — CLAUDE.md rule 9's blank/on/off vocabulary; the signal's
+  // type then picks the colours (ADR 0017).
+  if (symbolStyle === "signal-on") return "on";
+  if (symbolStyle === "signal-off") return "off";
+  return "blank";
 }
 
 function nextElementId(): string {
@@ -737,6 +741,8 @@ export function EditorCanvas({
   /** Position-based elements (berth/signal/label/boundary) are Groups positioned at (x,y) —
    * dragend gives the new absolute position directly. */
   function handlePositionedDragEnd(e: Konva.KonvaEventObject<DragEvent>, elementId: string): void {
+    // A dragged child (a label or signal number) is its own edit: never move the element for it.
+    if (e.target !== e.currentTarget) return;
     const element = doc.elements.find((el) => el.id === elementId);
     if (!element || !("x" in element)) return;
     const step = snapStep(element.type, gridSize);
@@ -783,6 +789,25 @@ export function EditorCanvas({
     // rendered label off its committed offset (same discipline as handlePositionedDragEnd).
     e.target.position(element.labelOffset);
     commitLabelOffset(elementId, next, element.labelOffset);
+  }
+
+  /** ADR 0017: a signal's number is dragged on its own inside the signal's Group, so the node's
+   * local x/y is the offset from the signal that `labelOffset` stores. Unlike a placed label it
+   * always has a default place, so the first drag commits from there. Rounded to whole units
+   * rather than the grid: numbers need finer placement than elements. */
+  function handleSignalNumberDragEnd(
+    e: Konva.KonvaEventObject<DragEvent>,
+    elementId: string,
+  ): void {
+    e.cancelBubble = true;
+    const element = doc.elements.find((el) => el.id === elementId);
+    if (!element || element.type !== "signal") return;
+    const geometry = signalPostGeometry(element);
+    if (!geometry) return;
+    const current = signalLabelPosition(element, geometry);
+    const next = { x: Math.round(e.target.x()), y: Math.round(e.target.y()) };
+    e.target.position(current);
+    commitLabelOffset(elementId, next, current);
   }
 
   /** Milestone 55: a points-based shape (tunnel/viaduct/water) draws at absolute coordinates, so
@@ -1393,6 +1418,83 @@ export function EditorCanvas({
                 </Group>
               );
             }
+            if (element.type === "signal" && signalPostGeometry(element)) {
+              // ADR 0017: the L-shaped post, the type's colours and a draggable number — the
+              // same shared geometry as the public renderer (CLAUDE.md rule 13).
+              const geometry = signalPostGeometry(element)!;
+              const state = signalStates?.[element.id] ?? signalStateFromStyle(element.symbolStyle);
+              const color = signalColor(element.signalType, state);
+              const numberAt = signalLabelPosition(element, geometry);
+              const fontSize = MAP_STYLE.signal.number.fontSize;
+              const headCentre =
+                geometry.head.kind === "circle"
+                  ? { x: geometry.head.cx, y: geometry.head.cy }
+                  : {
+                      x: geometry.post[4] + (geometry.appliesTo === "right" ? 6 : -6),
+                      y: geometry.post[5],
+                    };
+              return (
+                <Group
+                  key={element.id}
+                  ref={setRef}
+                  x={element.x}
+                  y={element.y}
+                  draggable={draggable}
+                  onClick={(e) => handleElementClick(e, element.id)}
+                  onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
+                >
+                  <Line
+                    points={geometry.post}
+                    stroke={MAP_STYLE.signal.post.color}
+                    strokeWidth={MAP_STYLE.signal.post.width}
+                    lineCap="butt"
+                    lineJoin="miter"
+                  />
+                  {geometry.head.kind === "circle" ? (
+                    <Circle
+                      x={geometry.head.cx}
+                      y={geometry.head.cy}
+                      radius={geometry.head.r}
+                      fill={color}
+                      {...(selected ? { stroke: "#58a6ff", strokeWidth: 2 } : {})}
+                    />
+                  ) : (
+                    <Path
+                      data={geometry.head.path}
+                      fill={color}
+                      {...(selected ? { stroke: "#58a6ff", strokeWidth: 2 } : {})}
+                    />
+                  )}
+                  {signalStates?.[element.id] ? (
+                    <Circle
+                      x={headCentre.x}
+                      y={headCentre.y}
+                      radius={MAP_STYLE.signal.radius + 3}
+                      stroke="#8b949e"
+                      strokeWidth={1}
+                      dash={[2, 2]}
+                      listening={false}
+                    />
+                  ) : null}
+                  {element.label ? (
+                    <Text
+                      text={element.label}
+                      {...anchoredText(
+                        numberAt.x,
+                        numberAt.y,
+                        fontSize,
+                        geometry.label.anchor === "end" ? "right" : "left",
+                      )}
+                      offsetY={fontSize / 2}
+                      fontSize={fontSize}
+                      fill={MAP_STYLE.signal.number.fill}
+                      draggable={draggable}
+                      onDragEnd={(e) => handleSignalNumberDragEnd(e, element.id)}
+                    />
+                  ) : null}
+                </Group>
+              );
+            }
             if (element.type === "signal") {
               // ADR 0005 E4: `offset` draws a stem out to a head set off the track; `inline` is
               // today's on-track circle. Side from `orientation` (>=90 && <270 -> above).
@@ -1415,11 +1517,10 @@ export function EditorCanvas({
                   <Circle
                     y={hy}
                     radius={MAP_STYLE.signal.radius}
-                    fill={
-                      signalStates?.[element.id]
-                        ? MAP_STYLE.signal.stateColors[signalStates[element.id]!]
-                        : signalFill(element.symbolStyle)
-                    }
+                    fill={signalColor(
+                      element.signalType,
+                      signalStates?.[element.id] ?? signalStateFromStyle(element.symbolStyle),
+                    )}
                     stroke={selected ? "#58a6ff" : "#2d3644"}
                     strokeWidth={selected ? 2 : 1}
                   />

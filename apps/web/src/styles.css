@@ -324,6 +324,40 @@ button {
   min-width: 0;
 }
 
+/* 2026-09-27 owner report: an inferred crossing's input rows (signal, TD area, address, bit, "bit
+ * set means", Remove) sat in one no-wrap flex row, and each input kept its intrinsic width — the
+ * same nested-flexbox trap as above — so the row ran off the 300px panel. A small grid instead:
+ * the signal and "bit set means" span the row; area, address and bit share one line. */
+.field-row--inferred {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.4rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.field-row--inferred .field {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.field-row--inferred .field--wide,
+.field-row--inferred > .btn {
+  grid-column: 1 / -1;
+}
+
+.field-row--inferred > .btn {
+  justify-self: start;
+}
+
+.field-row--inferred .field input,
+.field-row--inferred .field select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .berth-clear-list {
   list-style: none;
   margin: 0;
@@ -543,6 +577,11 @@ legend {
 
 .map-frame__canvas > svg {
   display: block;
+}
+
+/* ADR 0017: signal numbers are hidden when zoomed out too far to read them. */
+.map--signal-numbers-hidden .signal-number {
+  display: none;
 }
 
 .map-frame__reset {
@@ -1741,4 +1780,48 @@ legend {
 .berth-explorer-allocations {
   margin: 0 0 0.75rem;
   padding-left: 1.1rem;
+}
+
+/* 2026-09-27: no field in the editor's side panels may be wider than the panel itself. */
+.editor-panels .field {
+  min-width: 0;
+}
+
+.editor-panels .field input,
+.editor-panels .field select {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* ADR 0017: the bulk "Name and orient signals" dialog. */
+.signal-tool-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(1, 4, 9, 0.6);
+}
+
+.signal-tool {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.signal-tool__preview {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.signal-tool__actions {
+  display: flex;
+  gap: 0.5rem;
 }

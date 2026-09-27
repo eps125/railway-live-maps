@@ -13,6 +13,8 @@ import {
   placedLabelAnchor,
   pointsBounds,
   findTrackCrossing,
+  hiddenTracks,
+  visibleRouteRuns,
   snapToTrack,
   switchedDiamondGeometry,
   viaductWidth,
@@ -1082,7 +1084,7 @@ export function EditorCanvas({
     if (element?.type !== "switchedDiamond") return;
     const dropped = { x: e.target.x(), y: e.target.y() };
     const crossing = findTrackCrossing(
-      drawnTracks(doc),
+      drawnTracks(doc).filter((track) => !("hidden" in track && track.hidden)),
       dropped,
       MAP_STYLE.switchedDiamond.snapDistance,
     );
@@ -1104,7 +1106,7 @@ export function EditorCanvas({
     if (!layerId) return;
     const clicked = toWorldPoint(stage);
     const crossing = findTrackCrossing(
-      drawnTracks(doc),
+      drawnTracks(doc).filter((track) => !("hidden" in track && track.hidden)),
       clicked,
       MAP_STYLE.switchedDiamond.snapDistance,
     );
@@ -1229,6 +1231,11 @@ export function EditorCanvas({
   })();
   const traceResult = routeTrace ? computeRouteTrace(doc, routeTrace) : null;
   const drawnTrackList = drawnTracks(doc);
+  // 2026-09-27: a hidden track (under a flyover) still traces routes, but never makes a crossing
+  // for a switched diamond, and routes aren't drawn along it.
+  const hidden = hiddenTracks(doc.elements);
+  const hiddenIds = new Set(hidden.map((track) => track.id));
+  const crossingTracks = drawnTrackList.filter((track) => !hiddenIds.has(track.id));
   const paintOrderedElements = sortElementsForPaint(
     doc.elements.filter((element) => layersById.get(element.layerId)?.visible ?? false),
     doc.layers,
@@ -1328,6 +1335,9 @@ export function EditorCanvas({
                     points={flattenPoints(element.points)}
                     stroke={selected ? "#58a6ff" : "#5f6b7a"}
                     strokeWidth={selected ? 3 : 2}
+                    // 2026-09-27: a hidden track is editor-only — faint and dashed, so it can
+                    // still be seen, selected and moved.
+                    {...(element.hidden && !selected ? { opacity: 0.45, dash: [4, 4] } : {})}
                     hitStrokeWidth={16}
                     draggable={draggable}
                     onClick={(e) => handleElementClick(e, element.id)}
@@ -1848,37 +1858,44 @@ export function EditorCanvas({
                   routeStates?.[element.id] === "set") &&
                 routeTrace?.routeId !== element.id;
               if (!shown) return null;
-              const flat = element.points.flatMap((p) => [p.x, p.y]);
+              // Not drawn along a hidden track, exactly as on the public map (rule 13).
+              const runs = visibleRouteRuns(element.points, hidden).map((run) =>
+                run.flatMap((p) => [p.x, p.y]),
+              );
               return (
                 <Group
                   key={element.id}
                   ref={setRef}
                   onClick={(e) => handleElementClick(e, element.id)}
                 >
-                  {selected ? (
-                    <Line
-                      points={flat}
-                      stroke="#58a6ff"
-                      strokeWidth={MAP_STYLE.track.strokeWidth + 4}
-                      opacity={0.5}
-                      lineJoin="round"
-                    />
-                  ) : null}
-                  <Line
-                    points={flat}
-                    stroke={MAP_STYLE.route.color}
-                    strokeWidth={MAP_STYLE.track.strokeWidth}
-                    lineJoin="round"
-                    hitStrokeWidth={10}
-                  />
-                  <Line
-                    points={flat}
-                    stroke={MAP_STYLE.route.dashColor}
-                    strokeWidth={MAP_STYLE.track.strokeWidth}
-                    dash={[...MAP_STYLE.route.dash]}
-                    lineJoin="round"
-                    listening={false}
-                  />
+                  {runs.map((flat, i) => (
+                    <Group key={i}>
+                      {selected ? (
+                        <Line
+                          points={flat}
+                          stroke="#58a6ff"
+                          strokeWidth={MAP_STYLE.track.strokeWidth + 4}
+                          opacity={0.5}
+                          lineJoin="round"
+                        />
+                      ) : null}
+                      <Line
+                        points={flat}
+                        stroke={MAP_STYLE.route.color}
+                        strokeWidth={MAP_STYLE.track.strokeWidth}
+                        lineJoin="round"
+                        hitStrokeWidth={10}
+                      />
+                      <Line
+                        points={flat}
+                        stroke={MAP_STYLE.route.dashColor}
+                        strokeWidth={MAP_STYLE.track.strokeWidth}
+                        dash={[...MAP_STYLE.route.dash]}
+                        lineJoin="round"
+                        listening={false}
+                      />
+                    </Group>
+                  ))}
                 </Group>
               );
             }
@@ -1886,7 +1903,7 @@ export function EditorCanvas({
               // Same marks as the public renderer (rule 13), fitted to the crossing from the
               // drawn tracks. Drawn relative to a Group at x/y so dragging works as for any
               // point element; a near-invisible disc gives it something to grab.
-              const geometry = switchedDiamondGeometry(element, drawnTrackList);
+              const geometry = switchedDiamondGeometry(element, crossingTracks);
               const rel = (p: { x: number; y: number }): number[] => [
                 p.x - element.x,
                 p.y - element.y,

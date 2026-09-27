@@ -105,3 +105,4 @@ export {
   type DrawPrimitive,
   type PlacedDrawing,
 } from "./drawing.js";
+export { hiddenTracks, visibleRouteRuns } from "./hiddenTrack.js";

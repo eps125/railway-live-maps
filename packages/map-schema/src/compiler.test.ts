@@ -402,6 +402,28 @@ describe("weldTrackPaths (ADR 0004 D2 — junction-gap fix)", () => {
     expect(rewrittenBerth).toMatchObject({ trackElementId: "a" });
   });
 
+  it("never merges a hidden track (under a flyover) with the visible line it joins", () => {
+    const a = track(
+      "a",
+      [
+        { x: 0, y: 0 },
+        { x: 50, y: 0 },
+      ],
+      { topologyEdgeId: "e1" },
+    );
+    const b = track(
+      "b",
+      [
+        { x: 50, y: 0 },
+        { x: 90, y: 0 },
+      ],
+      { topologyEdgeId: "e1", hidden: true } as Partial<MapElement>,
+    );
+    const { elements, remap } = weldTrackPaths([a, b], { nodes: [], edges: [] });
+    expect(remap).toEqual({});
+    expect(elements.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
   it("does not merge a purely visual crossing with no topology", () => {
     const a = track("a", [
       { x: 0, y: 100 },

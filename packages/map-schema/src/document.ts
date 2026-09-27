@@ -73,6 +73,9 @@ const TrackPathElementSchema = BaseElementSchema.extend({
   line: z.string().optional(),
   direction: z.enum(["up", "down", "bidirectional"]).optional(),
   topologyEdgeId: z.string().optional(),
+  /** 2026-09-27: not drawn on the public map (e.g. the piece of a line passing under a
+   * flyover), but still track for route tracing; routes are not drawn along it either. */
+  hidden: z.boolean().optional(),
 });
 
 /** 3-letter CRS station code (e.g. `LAN`). Uppercase only; the editor uppercases on commit. */

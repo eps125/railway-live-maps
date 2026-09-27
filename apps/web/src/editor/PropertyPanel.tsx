@@ -18,6 +18,7 @@ import {
   type TdSBitBarrierBinding,
   type TdSBitBarrierInferredBinding,
   type TdSBitBinding,
+  type TrackPathElement,
 } from "@railway/map-schema";
 import { useEditorDispatch, useEditorState } from "./EditorState.js";
 import {
@@ -998,7 +999,9 @@ function SwitchedDiamondFields({
   const onCrossing =
     switchedDiamondGeometry(
       { x, y, corners, style: markStyle },
-      doc.elements.filter((element) => element.type === "trackPath"),
+      doc.elements.filter(
+        (element): element is TrackPathElement => element.type === "trackPath" && !element.hidden,
+      ),
     ) !== null;
   const toggle = (corner: "a" | "b", on: boolean): void => {
     const next = on ? [...new Set([...corners, corner])] : corners.filter((c) => c !== corner);
@@ -2037,11 +2040,25 @@ export function PropertyPanel(): JSX.Element {
       )}
 
       {element.type === "trackPath" && (
-        <TextField
-          label="Line"
-          value={element.line ?? ""}
-          onCommit={(v) => setProp("line", v || undefined)}
-        />
+        <>
+          <TextField
+            label="Line"
+            value={element.line ?? ""}
+            onCommit={(v) => setProp("line", v || undefined)}
+          />
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={element.hidden === true}
+              onChange={(e) => setProp("hidden", e.target.checked ? true : undefined)}
+            />
+            Hidden (passes under a flyover)
+          </label>
+          <p className="field-hint">
+            Not drawn on the map, but still track: routes can be traced across it, and are drawn on
+            the track either side of it but not along it.
+          </p>
+        </>
       )}
 
       <button

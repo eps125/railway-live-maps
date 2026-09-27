@@ -40,6 +40,16 @@ Published compilation removes editor-only metadata and precomputes lookup indexe
 
 A schematic polyline with stable element ID, layer, points, line/direction metadata and optional topology edge association.
 
+`hidden` (2026-09-27, Milestone 81): the piece of a line that passes under a flyover, drawn
+between the two viaduct marks. It is not drawn on the public map (the editor shows it faint and
+dashed), but it is still track: the route tracer crosses it, so a route runs through the gap. The
+part of a route lying along a hidden track isn't drawn, in either renderer, so the route shows on
+the track either side and not across the line going over. Worked out at draw time
+(`visibleRouteRuns`), so ticking or unticking Hidden also changes routes already traced. A hidden
+track is never welded to its neighbours at publish, and never makes a crossing for a switched
+diamond. Draw it end to end across the gap: its ends join the visible track, while crossing the
+line above only in the middle never joins them.
+
 ### `berth`
 
 - position and dimensions

@@ -173,6 +173,9 @@ export function weldTrackPaths(
         const b = working.get(ids[j]!);
         if (!a || !b) continue;
         if ((a.line ?? null) !== (b.line ?? null)) continue;
+        // A hidden track (under a flyover) keeps its own identity, or welding would hide the
+        // visible line it joins or show the hidden piece.
+        if (a.hidden || b.hidden) continue;
         if (!topologyJoined(a, b)) continue;
 
         const aStart = a.points[0]!;

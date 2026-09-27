@@ -4,6 +4,8 @@ import {
   MAP_STYLE,
   berthRenderRect,
   bufferStopDrawing,
+  hiddenTracks,
+  visibleRouteRuns,
   levelCrossingGeometry,
   realisticLevelCrossingGeometry,
   neutralSectionGeometry,
@@ -520,28 +522,38 @@ function renderSwitchedDiamond(
  * with a dark dash on top, the width of the track — green-and-black dashes along the rail. Pure
  * display of the traced line; the renderer does no path-finding.
  */
-function renderSetRoute(element: RouteElement): JSX.Element {
-  const points = element.points.map((p) => `${p.x},${p.y}`).join(" ");
+function renderSetRoute(
+  element: RouteElement,
+  hidden: ReadonlyArray<TrackPathElement>,
+): JSX.Element {
   const style = MAP_STYLE.route;
+  // 2026-09-27: not drawn along a hidden track (the piece of a line under a flyover).
+  const runs = visibleRouteRuns(element.points, hidden).map((run) =>
+    run.map((p) => `${p.x},${p.y}`).join(" "),
+  );
   return (
     <g key={element.id} data-testid={`route-${element.id}`}>
-      <polyline
-        points={points}
-        fill="none"
-        stroke={style.color}
-        strokeWidth={MAP_STYLE.track.strokeWidth}
-        strokeLinejoin="round"
-        strokeLinecap="butt"
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={style.dashColor}
-        strokeWidth={MAP_STYLE.track.strokeWidth}
-        strokeDasharray={style.dash.join(" ")}
-        strokeLinejoin="round"
-        strokeLinecap="butt"
-      />
+      {runs.map((points, i) => (
+        <g key={i}>
+          <polyline
+            points={points}
+            fill="none"
+            stroke={style.color}
+            strokeWidth={MAP_STYLE.track.strokeWidth}
+            strokeLinejoin="round"
+            strokeLinecap="butt"
+          />
+          <polyline
+            points={points}
+            fill="none"
+            stroke={style.dashColor}
+            strokeWidth={MAP_STYLE.track.strokeWidth}
+            strokeDasharray={style.dash.join(" ")}
+            strokeLinejoin="round"
+            strokeLinecap="butt"
+          />
+        </g>
+      ))}
     </g>
   );
 }
@@ -1021,6 +1033,8 @@ function renderStaticElement(
 ): JSX.Element | null | undefined {
   switch (element.type) {
     case "trackPath":
+      // 2026-09-27: a hidden track (under a flyover) is only there for route tracing.
+      if (element.hidden) return null;
       // ADR 0004 D2/D4: the compiler has already welded topology-joined segments into single
       // polylines, so a round `stroke-linejoin` closes every diagonal↔horizontal corner — no
       // junction dots, matching OpenTrainTimes. Caps stay `butt`.
@@ -1410,14 +1424,16 @@ export function MapRenderer({
       ),
     [bundle, layersById],
   );
-  // Milestone 63: switched diamonds fit themselves to the crossing of the drawn tracks.
+  // Milestone 63: switched diamonds fit themselves to the crossing of the drawn tracks — only
+  // the drawn ones, so a hidden track under a flyover never makes a crossing.
   const trackPaths = useMemo(
     () =>
       Object.values(bundle.elementsById).filter(
-        (element): element is TrackPathElement => element.type === "trackPath",
+        (element): element is TrackPathElement => element.type === "trackPath" && !element.hidden,
       ),
     [bundle],
   );
+  const hidden = useMemo(() => hiddenTracks(Object.values(bundle.elementsById)), [bundle]);
 
   // Milestone 73: everything that can't change while the map is shown, drawn once per bundle.
   const staticNodes = useMemo(() => {
@@ -1520,7 +1536,7 @@ export function MapRenderer({
         if (element.type === "route") {
           // Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and
           // unset draw nothing — the plain track underneath is the "no route" picture.
-          return routes[element.id]?.state === "set" ? renderSetRoute(element) : null;
+          return routes[element.id]?.state === "set" ? renderSetRoute(element, hidden) : null;
         }
         if (element.type === "boundary") {
           // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);
@@ -1554,6 +1570,7 @@ export function MapRenderer({
       signals,
       crossings,
       routes,
+      hidden,
       showEmptyBerths,
       showSignalNumbers,
       playbackLink?.atIso,

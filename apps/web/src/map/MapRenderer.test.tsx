@@ -689,6 +689,54 @@ describe("MapRenderer", () => {
     }
   });
 
+  it("never draws a hidden track, nor a set route along it (flyover, 2026-09-27)", () => {
+    const doc = bundle({
+      elementsById: {
+        under: {
+          id: "under",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "trackPath",
+          points: [
+            { x: 80, y: 50 },
+            { x: 120, y: 50 },
+          ],
+          hidden: true,
+        },
+        "route-1": {
+          id: "route-1",
+          layerId: "layer-visible",
+          zIndex: 2,
+          type: "route",
+          entrySignalId: "sig-1",
+          points: [
+            { x: 10, y: 50 },
+            { x: 190, y: 50 },
+          ],
+          trackIds: ["under"],
+        },
+      },
+    });
+    const { container, getByTestId } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{}}
+        signals={{}}
+        routes={{ "route-1": { state: "set" } }}
+      />,
+    );
+    const routeLines = getByTestId("route-route-1").querySelectorAll("polyline");
+    // Two runs (either side of the flyover), each a green line and its dash.
+    expect(Array.from(routeLines).map((line) => line.getAttribute("points"))).toEqual([
+      "10,50 80,50",
+      "10,50 80,50",
+      "120,50 190,50",
+      "120,50 190,50",
+    ]);
+    // Nothing else is drawn: the hidden track itself isn't.
+    expect(container.querySelectorAll("polyline")).toHaveLength(4);
+  });
+
   it("draws a detached neutral section label at its offset from the board centre", () => {
     const doc = bundle({
       elementsById: {

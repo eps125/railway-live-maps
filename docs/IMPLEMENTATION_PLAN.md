@@ -4409,6 +4409,8 @@ Query plans checked against production (2026-09-29): the band walk for a full 5,
 582); `/delays` 16 ms–1.3 s cold. Two slower shapes were rejected on the way (per-berth
 `left_at` filtering, 5–15 s; train-first push lookup, 20 s).
 
+First deploy: the projection's start-point query (`min(id)` over the last 24 h) walked the whole `trust_movement` primary key and timed out every tick; it now reads the `created` index (24 ms).
+
 **Production needs migration 0044 applied by hand** — the deploy doesn't migrate. Until it is,
 the map loads normally without delay colours and `ingest-garner` logs a failing projection each
 tick.

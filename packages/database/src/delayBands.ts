@@ -92,9 +92,16 @@ export async function projectTrustDelayBands(
   let after = Number(checkpoint?.lastIngestionSequence ?? "0");
 
   if (after === 0 && checkpoint?.lastCompletedAt == null) {
+    // Earliest report in the window by `created` (its own index), not `min(id)`: the planner
+    // answers `min(id) ... where created >= X` by walking the primary key up from the oldest row,
+    // which on production (~23M rows) hit the 30 s statement timeout on every tick after the
+    // Milestone 82 deploy. This form takes 24 ms. Ids follow `created` closely, so starting from
+    // this row's id is the same window.
     const start = await pool.query<{ first_id: string | null }>(
-      `select min(id)::text as first_id from trust_movement
-       where created >= now() - $1::interval`,
+      `select id::text as first_id from trust_movement
+       where created >= now() - $1::interval
+       order by created, id
+       limit 1`,
       [FRESH_START_LOOKBACK],
     );
     const firstId = start.rows[0]?.first_id;

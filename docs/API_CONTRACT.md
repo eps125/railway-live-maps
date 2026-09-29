@@ -97,8 +97,8 @@ future) for that moment, rounded down to the whole minute, for playback.
 }
 ```
 
-`band` is `minor` (15–29 min late), `moderate` (30–59) or `severe` (60+); unlisted berths are
-under 15 minutes late, early, on time, off route or unknown. Only the band is published — never
+`band` is `on_time` (under 15 min late, or early), `minor` (15–29 min late), `moderate` (30–59)
+or `severe` (60+); unlisted berths have no information (no report, or off route). Only the band is published — never
 the minutes (owner, 2026-09-29). A berth is listed only when its occupancy carries a run link
 (solid or weak; ambiguous and unmatched berths have none) and the band comes from
 `trust_delay_band_change`, recorded by `ingest-garner` as openrail-eps reports — nothing is

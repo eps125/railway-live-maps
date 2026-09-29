@@ -17,18 +17,21 @@ export interface MapDelaysResponse {
 }
 
 /**
- * Owner-specified bands (2026-09-29): 15-29 min yellow, 30-59 amber, 60+ red; anything else
- * keeps the normal occupied blue. Chosen so the dark headcode text (`#04101f`) is at least as
- * readable on each as on the existing blue (about 4.6:1): yellow ~12:1, amber ~7.7:1, red ~4.7:1.
- * Each stroke is a lighter tint of its fill, like the blue's.
+ * Owner-specified bands (2026-09-29): under 15 min late (or early) green, 15-29 min yellow,
+ * 30-59 amber, 60+ red; no information keeps the normal occupied blue. Chosen so the dark headcode
+ * text (`#04101f`) is at least as readable on each as on the existing blue (about 4.6:1): green
+ * ~7.5:1, yellow ~12:1, amber ~7.7:1, red ~4.7:1. Each stroke is a lighter tint of its fill, like
+ * the blue's.
  */
 export const DELAY_BAND_COLORS: Record<DelayBand, { fill: string; stroke: string }> = {
+  on_time: { fill: "#3fb950", stroke: "#7ee08f" },
   minor: { fill: "#e8c93a", stroke: "#f5de7a" },
   moderate: { fill: "#ec8a1c", stroke: "#f5ad5c" },
   severe: { fill: "#dc4a3d", stroke: "#ec7b70" },
 };
 
 export const DELAY_BAND_LABELS: Record<DelayBand, string> = {
+  on_time: "0–14 min late",
   minor: "15–29 min late",
   moderate: "30–59 min late",
   severe: "60+ min late",

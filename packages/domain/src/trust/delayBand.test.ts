@@ -9,9 +9,8 @@ const OFF_ROUTE = 3 << 3;
 
 describe("delayBandForMinutesLate", () => {
   it("uses the owner's 15 / 30 / 60 minute boundaries", () => {
-    expect(delayBandForMinutesLate(null)).toBe("none");
-    expect(delayBandForMinutesLate(0)).toBe("none");
-    expect(delayBandForMinutesLate(14)).toBe("none");
+    expect(delayBandForMinutesLate(0)).toBe("on_time");
+    expect(delayBandForMinutesLate(14)).toBe("on_time");
     expect(delayBandForMinutesLate(15)).toBe("minor");
     expect(delayBandForMinutesLate(29)).toBe("minor");
     expect(delayBandForMinutesLate(30)).toBe("moderate");
@@ -20,8 +19,9 @@ describe("delayBandForMinutesLate", () => {
     expect(delayBandForMinutesLate(240)).toBe("severe");
   });
 
-  it("never bands an early train", () => {
-    expect(delayBandForMinutesLate(-45)).toBe("none");
+  it("counts an early train as on time, and nothing known as no information", () => {
+    expect(delayBandForMinutesLate(-45)).toBe("on_time");
+    expect(delayBandForMinutesLate(null)).toBe("none");
   });
 });
 
@@ -30,13 +30,18 @@ describe("delayBandForMovement", () => {
     expect(delayBandForMovement(20, LATE | 1)).toBe("minor");
     expect(delayBandForMovement(45, LATE | 2)).toBe("moderate");
     expect(delayBandForMovement(75, LATE)).toBe("severe");
+    expect(delayBandForMovement(9, LATE)).toBe("on_time");
   });
 
-  it("leaves early, on-time, off-route and missing reports unbanded", () => {
-    // Garner stores the magnitude unsigned; direction comes only from the flags.
-    expect(delayBandForMovement(70, EARLY)).toBe("none");
-    expect(delayBandForMovement(0, ON_TIME)).toBe("none");
+  it("calls early and on-time reports on time (garner stores the minutes unsigned)", () => {
+    expect(delayBandForMovement(70, EARLY)).toBe("on_time");
+    expect(delayBandForMovement(0, ON_TIME)).toBe("on_time");
+    expect(delayBandForMovement(null, ON_TIME)).toBe("on_time");
+  });
+
+  it("gives no information for off route, or a late/early report missing its minutes", () => {
     expect(delayBandForMovement(90, OFF_ROUTE)).toBe("none");
     expect(delayBandForMovement(null, LATE)).toBe("none");
+    expect(delayBandForMovement(undefined, EARLY)).toBe("none");
   });
 });

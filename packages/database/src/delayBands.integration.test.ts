@@ -55,6 +55,7 @@ afterAll(async () => {
 
 const LATE = 2 << 3;
 const ON_TIME = 1 << 3;
+const OFF_ROUTE = 3 << 3;
 const MINUTE = 60_000;
 
 function uniqueArea(): string {
@@ -218,22 +219,26 @@ describe("trust delay bands (Milestone 82, integration)", () => {
   it("records a change only when a report moves the train into a different band", async () => {
     const now = Date.now();
     const trustId = newTrustId();
-    await seedMovement(trustId, new Date(now - 50 * MINUTE), 3, LATE); // none
+    await seedMovement(trustId, new Date(now - 60 * MINUTE), 3, LATE); // on time
+    await seedMovement(trustId, new Date(now - 50 * MINUTE), 5, LATE); // still on time
     await seedMovement(trustId, new Date(now - 40 * MINUTE), 18, LATE); // minor
     await seedMovement(trustId, new Date(now - 30 * MINUTE), 22, LATE); // still minor
     await seedMovement(trustId, new Date(now - 20 * MINUTE), 65, LATE); // severe
-    await seedMovement(trustId, new Date(now - 10 * MINUTE), 0, ON_TIME); // back to none
+    await seedMovement(trustId, new Date(now - 15 * MINUTE), 0, ON_TIME); // back to on time
+    await seedMovement(trustId, new Date(now - 10 * MINUTE), 40, OFF_ROUTE); // no information
     await catchUp();
 
     expect(await bandHistory(trustId)).toEqual([
+      { band: "on_time", minutesAgo: 60 },
       { band: "minor", minutesAgo: 40 },
       { band: "severe", minutesAgo: 20 },
+      { band: "on_time", minutesAgo: 15 },
       { band: "none", minutesAgo: 10 },
     ]);
 
     // Re-running over the same reports records nothing more.
     await catchUp();
-    expect(await bandHistory(trustId)).toHaveLength(3);
+    expect(await bandHistory(trustId)).toHaveLength(5);
   });
 
   it("records reports made under a new id after a Change of Identity against the original", async () => {
@@ -294,7 +299,7 @@ describe("trust delay bands (Milestone 82, integration)", () => {
     expect(await at(10)).toEqual([]); // the train had left the berth
   });
 
-  it("finds where a reported train is now, and leaves unlinked or on-time berths alone", async () => {
+  it("colours an on-time train green, and leaves unlinked or off-route berths alone", async () => {
     const area = uniqueArea();
     const now = Date.now();
     const occupancy = await seedOccupancy(area, "0005", "1A05", new Date(now - 5 * MINUTE), null);
@@ -306,25 +311,33 @@ describe("trust delay bands (Milestone 82, integration)", () => {
       new Date(now - 60 * MINUTE),
     );
     await seedOccupancy(area, "0006", "1A06", new Date(now - 5 * MINUTE), null); // no link
-    await seedMovement(trustId, new Date(now - 3 * MINUTE), 14, LATE); // under 15: none
+    await seedMovement(trustId, new Date(now - 3 * MINUTE), 14, LATE); // under 15: on time
     await catchUp();
 
     const berths = [
       { tdArea: area, berth: "0005" },
       { tdArea: area, berth: "0006" },
     ];
-    expect(await findMapDelaysAt(pool, berths, new Date())).toEqual([]);
-    // The push side still finds the train, with band `none`, so a stale colour can be removed.
+    const onTime = {
+      tdArea: area,
+      berth: "0005",
+      description: "1A05",
+      runKey,
+      matchConfidence: "solid",
+      band: "on_time",
+    };
+    expect(await findMapDelaysAt(pool, berths, new Date())).toEqual([onTime]);
     expect(await findOpenBerthsForTrustIds(pool, [trustId], berths)).toEqual([
-      {
-        trustId,
-        tdArea: area,
-        berth: "0005",
-        description: "1A05",
-        runKey,
-        matchConfidence: "solid",
-        band: "none",
-      },
+      { trustId, ...onTime },
+    ]);
+
+    // An off-route report is no information: dropped from the map, but still pushed as `none`
+    // so the colour is taken away.
+    await seedMovement(trustId, new Date(now - 1 * MINUTE), 30, OFF_ROUTE);
+    await catchUp();
+    expect(await findMapDelaysAt(pool, berths, new Date())).toEqual([]);
+    expect(await findOpenBerthsForTrustIds(pool, [trustId], berths)).toEqual([
+      { trustId, ...onTime, band: "none" },
     ]);
   });
 });

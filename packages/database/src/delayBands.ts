@@ -28,7 +28,10 @@ const OCCUPANCY_LOOKBACK = "24 hours";
 const MAX_IDENTITY_HOPS = 5;
 
 const PROJECTION_NAME = "trust-delay-bands";
-const PROJECTION_VERSION = 1;
+/** 2 (migration 0045, owner 2026-09-29): `on_time` split out of `none`. Bumping the version
+ * gives the projection a fresh checkpoint, so it re-fills the last 24 h under the new meaning
+ * after 0045 clears the version-1 rows. */
+const PROJECTION_VERSION = 2;
 
 /** A never-run projection starts this far back instead of at the beginning of the mirror — so it
  * fills in recent history for playback without grinding through every report ever mirrored. */

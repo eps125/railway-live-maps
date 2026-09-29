@@ -1262,7 +1262,7 @@ describe("MapRenderer", () => {
     });
   });
 
-  it("colours an occupied berth by its delay band and leaves the rest blue (Milestone 82)", () => {
+  it("colours an occupied berth by its delay band — green when on time — and leaves the rest blue (Milestone 82)", () => {
     const berthEl = (id: string, x: number) => ({
       id,
       layerId: "layer-visible",
@@ -1282,6 +1282,7 @@ describe("MapRenderer", () => {
         "b-severe": berthEl("b-severe", 50),
         "b-none": berthEl("b-none", 100),
         "b-empty": berthEl("b-empty", 150),
+        "b-green": berthEl("b-green", 200),
       },
     });
 
@@ -1293,15 +1294,21 @@ describe("MapRenderer", () => {
           "b-severe": { description: "1A02", enteredAt: null },
           "b-none": { description: "1A03", enteredAt: null },
           "b-empty": { description: null, enteredAt: null },
+          "b-green": { description: "1A04", enteredAt: null },
         }}
         signals={{}}
         // A band for an empty berth is ignored: there is no train to colour.
-        delayBands={{ "b-minor": "minor", "b-severe": "severe", "b-empty": "moderate" }}
+        delayBands={{
+          "b-minor": "minor",
+          "b-severe": "severe",
+          "b-empty": "moderate",
+          "b-green": "on_time",
+        }}
       />,
     );
 
     const fills = [...container.querySelectorAll("rect")].map((r) => r.getAttribute("fill"));
-    expect(fills).toEqual(["#e8c93a", "#dc4a3d", "#3d7fc4", "#161d27"]);
+    expect(fills).toEqual(["#e8c93a", "#dc4a3d", "#3d7fc4", "#161d27", "#3fb950"]);
   });
 
   it("renders a berth blank when its inhibiting berth shows the identical description (TD-area fringe pair)", () => {

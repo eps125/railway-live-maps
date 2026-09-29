@@ -4415,6 +4415,14 @@ First deploy: the projection's start-point query (`min(id)` over the last 24 h) 
 the map loads normally without delay colours and `ingest-garner` logs a failing projection each
 tick.
 
+- [x] Revision (owner, 2026-09-29): a report under 15 min late, or early, is its own band,
+      `on_time`, drawn **green**; blue now means only "no information" (no report, or off
+      route). A late/early report missing its minutes is no information, not on time. Migration
+      0045 replaces the rows recorded under the old meaning and allows the new band; the
+      projection runs as version 2 with a fresh checkpoint, re-filling the last 24 h. Green
+      `#3fb950` keeps the dark headcode at ~7.5:1. **Apply 0045 after the version-2 code is
+      deployed** (until then its `on_time` inserts are rejected and retried, losing nothing).
+
 Tests: band boundaries; the projection records only changes, is idempotent, follows a Change of
 Identity; `/delays` for live and playback (the minute, the cache, a bad `at`); linked, weak,
 unlinked and on-time berths; the push lookup; push message building; the renderer's colours; the

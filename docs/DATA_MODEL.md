@@ -578,8 +578,9 @@ auditable once retention pruning of the hot tables lands (Milestone 13).
 
 ### `trust_delay_band_change` (Milestone 82, migration 0044)
 
-One row per change in a TRUST train's lateness band (`none` / `minor` 15–29 min late /
-`moderate` 30–59 / `severe` 60+), appended by `ingest-garner` right after it mirrors TRUST: the
+One row per change in a TRUST train's lateness band (`none` no information / `on_time` under
+15 min late or early / `minor` 15–29 / `moderate` 30–59 / `severe` 60+; `on_time` added by
+migration 0045, which replaced the earlier rows), appended by `ingest-garner` right after it mirrors TRUST: the
 `trust-delay-bands` projection walks newly mirrored `trust_movement` rows (checkpointed by their
 `id`) and, per train, its reports since its last recorded change in report order. Keyed by the
 **activation** TRUST id — the root of any Change of Identity chain — since that is what a berth's

@@ -41,9 +41,10 @@ export const RouteStateSchema = z.object({
 });
 
 /** Milestone 82: a train's lateness band from its latest TRUST report — never a prediction.
- * `none` (under 15 min late, early, on time, off route, or no report) is only ever sent in a
- * `delay.updated`, to take a colour away; a snapshot simply omits unbanded berths. */
-export const DelayBandSchema = z.enum(["none", "minor", "moderate", "severe"]);
+ * `on_time` is under 15 min late or early; `minor` 15-29, `moderate` 30-59, `severe` 60+.
+ * `none` (no information: no report, or off route) is only ever sent in a `delay.updated`, to
+ * take a colour away; a snapshot simply omits those berths. */
+export const DelayBandSchema = z.enum(["none", "on_time", "minor", "moderate", "severe"]);
 
 /** Milestone 82: one berth coloured by delay. `runKey` identifies the run (RLM's own
  * `train_run` id — never a TRUST or CIF id, which stay out of the public view) so a later

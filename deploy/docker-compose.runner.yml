@@ -46,7 +46,13 @@ services:
     # runner — verify this tag still exists on Docker Hub before first use and adjust if not
     # (myoung34/github-runner doesn't publish the same strict semver-tag discipline this project
     # otherwise requires; pin whatever the current stable tag actually is).
-    image: myoung34/github-runner:2.319.1
+    #
+    # 2026-09-29: GitHub stops giving jobs to runners below its minimum version (2.329.0 at the
+    # time) — 2.319.1 still connected and listened, but deploys sat queued forever, and its
+    # _diag log said "Your runner version is out of date". Keep this at or near the current
+    # release (https://github.com/actions/runner/releases); the runner's in-place self-update
+    # doesn't survive a container restart.
+    image: myoung34/github-runner:2.337.0
     restart: unless-stopped
     network_mode: host
     environment:

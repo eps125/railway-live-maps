@@ -534,11 +534,14 @@ legend {
   margin-left: 0;
 }
 
-/* Milestone 82: the "Delay colours" key — a swatch per band, drawn like a berth box. */
+/* Milestone 82: the "Delay colours" key — a swatch per band, drawn like a berth box. Wraps
+   between items (never inside one) so it can't push the page wider than the screen. */
 .map-page__delay-key {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.2rem 0.5rem;
+  max-width: 100%;
   font-size: 0.72rem;
   color: var(--color-text-muted);
 }
@@ -573,6 +576,41 @@ legend {
 .map-page__btn:hover {
   color: var(--color-text);
   border-color: var(--color-accent);
+}
+
+/* Phones (owner report 2026-09-29, 360 px wide): the nav used to refuse to shrink, so an admin's
+   five links pushed the whole page ~770 px wide and squeezed the title onto four lines. On a
+   narrow screen the nav drops below the title and wraps, and the map toolbar stacks: title and
+   status first, then the toggles, then the delay key on its own line. */
+@media (max-width: 600px) {
+  .app-header {
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .app-nav {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 0.15rem;
+  }
+
+  .app-nav__link {
+    padding: 0.3rem 0.5rem;
+  }
+
+  .map-page__toolbar {
+    gap: 0.4rem 0.75rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .map-page__toggle {
+    margin-left: 0;
+  }
+
+  .map-page__delay-key {
+    flex-basis: 100%;
+  }
 }
 
 .map-frame {

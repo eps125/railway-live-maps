@@ -40,6 +40,26 @@ export const RouteStateSchema = z.object({
   state: z.enum(["blank", "set", "unset"]),
 });
 
+/** Milestone 82: a train's lateness band from its latest TRUST report — never a prediction.
+ * `none` (under 15 min late, early, on time, off route, or no report) is only ever sent in a
+ * `delay.updated`, to take a colour away; a snapshot simply omits unbanded berths. */
+export const DelayBandSchema = z.enum(["none", "minor", "moderate", "severe"]);
+
+/** Milestone 82: one berth coloured by delay. `runKey` identifies the run (RLM's own
+ * `train_run` id — never a TRUST or CIF id, which stay out of the public view) so a later
+ * `delay.updated` for the same run replaces this entry wherever the train now is. `description`
+ * is the headcode the band was given for; a client only colours a berth still showing it.
+ * `matchConfidence` is how sure RLM's berth-to-schedule match is (weak matches count too —
+ * owner, 2026-09-29). */
+export const BerthDelaySchema = z.object({
+  runKey: z.string(),
+  elementId: z.string(),
+  description: z.string(),
+  band: DelayBandSchema.exclude(["none"]),
+  matchConfidence: z.enum(["solid", "weak"]),
+});
+export type BerthDelay = z.infer<typeof BerthDelaySchema>;
+
 /** Same shape as the `state` body of `GET /api/v1/maps/{slug}/state` (docs/API_CONTRACT.md §1),
  * minus the envelope fields (`mapSlug`/`mapVersion`/`asOf`) which are implicit in the socket
  * connection itself. */
@@ -55,6 +75,9 @@ export const LiveSnapshotStateSchema = z.object({
   /** Milestone 64 / ADR 0016: each route's state. Optional for the same reason as `crossings`;
    * a missing record reads as "no routes set". */
   routes: z.record(z.string(), RouteStateSchema).optional(),
+  /** Milestone 82: every banded berth (at least 15 min late) at connect time. Optional for the
+   * same reason as `crossings`; missing reads as "no delays known". */
+  delays: z.array(BerthDelaySchema).optional(),
 });
 export type LiveSnapshotState = z.infer<typeof LiveSnapshotStateSchema>;
 
@@ -135,6 +158,22 @@ export const RouteUpdatedMessageSchema = z.object({
 });
 export type RouteUpdatedMessage = z.infer<typeof RouteUpdatedMessageSchema>;
 
+/** Milestone 82: openrail-eps reported something new for a run that is on this map now, so its
+ * band is re-stated (absolute, never a toggle — a duplicate is harmless). Published by
+ * `ingest-garner` only when a new TRUST report arrives, never per berth step. Like
+ * `resync.required` it has no `sequence`: it is not part of the TD berth stream, and a client
+ * applies it without touching that stream's ordering. `band: "none"` removes the run's colour. */
+export const DelayUpdatedMessageSchema = z.object({
+  type: z.literal("delay.updated"),
+  eventAt: z.string(),
+  runKey: z.string(),
+  elementId: z.string(),
+  description: z.string(),
+  band: DelayBandSchema,
+  matchConfidence: z.enum(["solid", "weak"]),
+});
+export type DelayUpdatedMessage = z.infer<typeof DelayUpdatedMessageSchema>;
+
 export const QualityUpdatedMessageSchema = z.object({
   type: z.literal("quality.updated"),
   sequence: z.number().int().nonnegative(),
@@ -176,6 +215,7 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   QualityUpdatedMessageSchema,
   HeartbeatMessageSchema,
   ResyncRequiredMessageSchema,
+  DelayUpdatedMessageSchema,
 ]);
 export type LiveWsMessage = z.infer<typeof LiveWsMessageSchema>;
 
@@ -192,5 +232,6 @@ export type LiveDeltaMessage =
   | QualityUpdatedMessage;
 
 /** Everything a `LiveDeltaSource` can hand the WS route: sequenced deltas, plus the
- * sequence-less `resync.required` (`feed_gap`) the route forwards and then closes on. */
-export type LiveSourceMessage = LiveDeltaMessage | ResyncRequiredMessage;
+ * sequence-less `resync.required` (`feed_gap`) the route forwards and then closes on, and the
+ * sequence-less `delay.updated` (Milestone 82) it forwards as-is. */
+export type LiveSourceMessage = LiveDeltaMessage | ResyncRequiredMessage | DelayUpdatedMessage;

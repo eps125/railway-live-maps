@@ -528,6 +528,36 @@ legend {
   cursor: pointer;
 }
 
+/* Only the first toggle pushes the group right; later ones sit beside it rather than splitting
+   the free space between them. */
+.map-page__toggle ~ .map-page__toggle {
+  margin-left: 0;
+}
+
+/* Milestone 82: the "Delay colours" key — a swatch per band, drawn like a berth box. */
+.map-page__delay-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.map-page__delay-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.map-page__delay-swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.6rem;
+  border: 1px solid;
+  border-radius: 2px;
+}
+
 .map-page__btn {
   appearance: none;
   border: 1px solid var(--color-border);

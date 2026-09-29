@@ -87,3 +87,11 @@ export {
   type RawSOverlayRow,
   type LiveSOverlay,
 } from "./signalFacts.js";
+export {
+  projectTrustDelayBands,
+  findMapDelaysAt,
+  findOpenBerthsForTrustIds,
+  type BerthDelayRow,
+  type TouchedTrain,
+  type DelayBandProjectionResult,
+} from "./delayBands.js";

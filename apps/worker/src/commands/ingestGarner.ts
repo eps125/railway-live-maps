@@ -1,3 +1,4 @@
+import { Redis } from "ioredis";
 import { createPool } from "@railway/database";
 import type { Pool } from "pg";
 import type { Config } from "../config.js";
@@ -10,6 +11,7 @@ import {
   runGarnerTrustSync,
 } from "../garner/bridge.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
+import { MapBindingsCache, projectAndPublishDelayBands } from "../garner/delayBandPublisher.js";
 
 const TICK_INTERVAL_MS = 20 * 1000;
 const REFERENCE_EVERY_N_TICKS = 15; // ~5 min
@@ -80,6 +82,21 @@ export async function runIngestGarner(config: Config): Promise<void> {
   });
   const garner = createGarnerPool(config);
 
+  // Milestone 82: pushes `delay.updated` to the live map when openrail-eps reports on a train
+  // that is on a map. Same gate as the berth delta publishers; without it the bands are still
+  // recorded, and the map picks them up from its snapshot on (re)connect.
+  const redisClient = config.LIVE_WS_REDIS_PUBSUB_ENABLED
+    ? new Redis(config.REDIS_URL, {
+        connectTimeout: 5000,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+      })
+    : null;
+  redisClient?.on("error", (error) => {
+    console.error("ingest-garner: redis client error (delay publish may be degraded):", error);
+  });
+  const mapBindings = new MapBindingsCache(pg);
+
   console.log(
     `ingest-garner: starting (garner ${config.GARNER_DB_HOST}:${config.GARNER_DB_PORT}/${config.GARNER_DB_NAME}, ` +
       `tick ${TICK_INTERVAL_MS / 1000}s, pauses schedule/reference sync while projector-td is ` +
@@ -115,6 +132,21 @@ export async function runIngestGarner(config: Config): Promise<void> {
       const trustTotal = Object.values(trust).reduce((sum, n) => sum + n, 0);
       if (trustTotal > 0) console.log("ingest-garner: trust sync", trust);
 
+      // Milestone 82: straight after TRUST, so a new report reaches the map this tick. Never
+      // allowed to stop the rest of the tick — schedule and allocation sync matter more than
+      // delay colours (and it fails every tick until migration 0044 is applied).
+      try {
+        const delays = await projectAndPublishDelayBands(pg, redisClient, mapBindings);
+        if (delays.changesRecorded > 0 || delays.published > 0) {
+          console.log("ingest-garner: delay bands", delays);
+        }
+      } catch (error) {
+        console.error(
+          "ingest-garner: delay band projection failed (rest of tick continues):",
+          error,
+        );
+      }
+
       // Owner request (2026-09-13): real unit/stock allocation for the popup. Same cadence as
       // TRUST (every tick, not the slower reference cycle) — allocation reports arrive live too.
       const allocationUpserted = await runGarnerTrainAllocationSync(
@@ -146,6 +178,7 @@ export async function runIngestGarner(config: Config): Promise<void> {
       }
     },
     onShutdown: async () => {
+      redisClient?.disconnect();
       await garner.end();
       await pg.end();
     },

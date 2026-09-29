@@ -187,6 +187,11 @@ export {
   type TrustMovementVariation,
 } from "./trust/garnerMovement.js";
 export {
+  delayBandForMinutesLate,
+  delayBandForMovement,
+  type DelayBand,
+} from "./trust/delayBand.js";
+export {
   TRUST_NORMALIZATION_VERSION,
   TRUST_PROJECTION_NAME,
   TRUST_PROJECTION_VERSION,

@@ -7,10 +7,13 @@ import {
   type ResyncRequiredMessage,
   type QualityUpdatedMessage,
   type LiveDeltaMessage,
+  type BerthDelay,
+  type DelayUpdatedMessage,
 } from "@railway/protocol";
 import { currentVersionForSlug, liveDataStatus, tdAreasFromBundle } from "../lib/mapVersion.js";
 import { feedGapWarnings } from "../lib/feedGaps.js";
 import { computeLiveState, type QualityState } from "../lib/liveState.js";
+import { computeDelayBands } from "../lib/delayBands.js";
 import type { LiveDeltaSource } from "../live/deltaSource.js";
 
 export interface LiveMapRoutesDeps {
@@ -58,6 +61,9 @@ export async function registerLiveMapRoutes(
       let lastSentSequence = 0;
       let buffering = true;
       const buffered: LiveDeltaMessage[] = [];
+      // Milestone 82: `delay.updated` has no sequence, so it can't go through the drain's
+      // sequence filter — held separately and sent, in arrival order, after the snapshot.
+      const bufferedDelays: DelayUpdatedMessage[] = [];
 
       const forward = (message: LiveDeltaMessage): void => {
         lastSentSequence = message.sequence;
@@ -77,6 +83,14 @@ export async function registerLiveMapRoutes(
           }
           return;
         }
+        if (message.type === "delay.updated") {
+          if (buffering) {
+            bufferedDelays.push(message);
+          } else if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify(message));
+          }
+          return;
+        }
         if (buffering) {
           buffered.push(message);
           return;
@@ -86,6 +100,14 @@ export async function registerLiveMapRoutes(
 
       const { sourceSequence, berths, signals, crossings, routes, quality } =
         await computeLiveState(pool, version.compiled_runtime_bundle, now);
+      // Milestone 82: the bands in force now. Best-effort — the map must still load if this
+      // fails (e.g. before migration 0044 is applied); it just shows no delay colours.
+      let delays: BerthDelay[] = [];
+      try {
+        delays = await computeDelayBands(pool, version.compiled_runtime_bundle, now);
+      } catch (error) {
+        request.log.error({ error, slug }, "liveMap: delay bands unavailable for snapshot");
+      }
       lastSentSequence = sourceSequence;
       const tdAreas = tdAreasFromBundle(version.compiled_runtime_bundle);
       let lastSentQuality = quality;
@@ -94,7 +116,7 @@ export async function registerLiveMapRoutes(
         type: "snapshot",
         protocolVersion: LIVE_PROTOCOL_VERSION,
         sequence: sourceSequence,
-        state: { mode: "live", quality, berths, signals, crossings, routes },
+        state: { mode: "live", quality, berths, signals, crossings, routes, delays },
       };
       socket.send(JSON.stringify(snapshot));
 
@@ -107,6 +129,8 @@ export async function registerLiveMapRoutes(
         }
       }
       buffered.length = 0;
+      for (const message of bufferedDelays) socket.send(JSON.stringify(message));
+      bufferedDelays.length = 0;
 
       const heartbeatTimer = setInterval(() => {
         if (socket.readyState !== socket.OPEN) return;

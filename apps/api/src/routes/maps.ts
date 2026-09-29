@@ -6,6 +6,7 @@ import type { LiveDeltaMessage } from "@railway/protocol";
 import { apiError, parseLimit, parseTimeRange } from "../lib/queryRange.js";
 import { currentVersionForSlug, tdAreasFromBundle, liveDataStatus } from "../lib/mapVersion.js";
 import { computeLiveState } from "../lib/liveState.js";
+import { computeDelayBands } from "../lib/delayBands.js";
 import { reconstructStateAt } from "../lib/reconstructState.js";
 import {
   fetchSignalPlaybackEvents,
@@ -31,6 +32,13 @@ interface MapVersionRow {
  * rather than float/clock-skew noise. Within the window → live state; outside (past) →
  * historical reconstruction (Milestone 10); outside (future) → 400. */
 const LIVE_STATE_TOLERANCE_MS = 5_000;
+
+/** Milestone 82: how long one map's live `/delays` answer is shared between viewers. */
+const DELAY_CACHE_MS = 10_000;
+/** A past minute's answer barely changes (links aren't rewritten after the fact), so it is kept
+ * longer; the bound on entries keeps playback from growing the cache without limit. */
+const DELAY_HISTORICAL_CACHE_MS = 5 * 60_000;
+const DELAY_CACHE_MAX_ENTRIES = 2_000;
 
 interface TdBerthEventRow {
   ingestion_sequence: string;
@@ -148,6 +156,69 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         crossings,
         routes,
       };
+    },
+  );
+
+  // Milestone 82 (docs/API_CONTRACT.md §1): the delay band of each occupied berth, for the public
+  // "Delay colours" toggle. Public by owner decision (2026-09-29) — a coarse band only, never
+  // minutes. `?at=` asks about a past moment for playback, like `/state?at=`.
+  //
+  // Every viewer with the toggle on polls this, so answers are shared: live per map for a few
+  // seconds (TRUST only reports at timing points, so nothing is lost), and playback per map per
+  // whole minute of `at`, which the query is then asked about exactly — so a playback clock that
+  // ticks every second still costs one query a minute however many people are watching.
+  const delayCache = new Map<string, { expiresAt: number; body: unknown }>();
+  app.get<{ Params: { slug: string }; Querystring: { at?: string } }>(
+    "/api/v1/maps/:slug/delays",
+    async (request, reply) => {
+      const now = new Date();
+      let at = now;
+      let historical = false;
+      if (request.query.at !== undefined) {
+        const parsed = new Date(request.query.at);
+        if (Number.isNaN(parsed.getTime())) {
+          reply.code(400);
+          return apiError("INVALID_TIME_RANGE", "at must be a valid ISO 8601 timestamp");
+        }
+        if (parsed.getTime() - now.getTime() > LIVE_STATE_TOLERANCE_MS) {
+          reply.code(400);
+          return apiError("INVALID_TIME_RANGE", "at must not be in the future");
+        }
+        historical = now.getTime() - parsed.getTime() > LIVE_STATE_TOLERANCE_MS;
+        if (historical) at = new Date(Math.floor(parsed.getTime() / 60_000) * 60_000);
+      }
+
+      const cacheKey = historical
+        ? `${request.params.slug}|${at.toISOString()}`
+        : request.params.slug;
+      const cached = delayCache.get(cacheKey);
+      if (cached && cached.expiresAt > now.getTime()) return cached.body;
+
+      const version = await currentVersionForSlug(pool, request.params.slug, at);
+      if (!version) {
+        reply.code(404);
+        return apiError(
+          "MAP_NOT_FOUND",
+          `No published version of "${request.params.slug}" is effective at ${at.toISOString()}`,
+        );
+      }
+      const body = {
+        mapSlug: version.slug,
+        mapVersion: version.version_number,
+        asOf: at.toISOString(),
+        mode: historical ? ("historical" as const) : ("live" as const),
+        delays: await computeDelayBands(pool, version.compiled_runtime_bundle, at),
+      };
+      // Bounded: drop the oldest entry rather than let many playback minutes accumulate.
+      if (delayCache.size >= DELAY_CACHE_MAX_ENTRIES) {
+        const oldest = delayCache.keys().next().value;
+        if (oldest !== undefined) delayCache.delete(oldest);
+      }
+      delayCache.set(cacheKey, {
+        expiresAt: now.getTime() + (historical ? DELAY_HISTORICAL_CACHE_MS : DELAY_CACHE_MS),
+        body,
+      });
+      return body;
     },
   );
 

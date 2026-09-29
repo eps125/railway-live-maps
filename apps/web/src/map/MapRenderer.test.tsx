@@ -1262,6 +1262,48 @@ describe("MapRenderer", () => {
     });
   });
 
+  it("colours an occupied berth by its delay band and leaves the rest blue (Milestone 82)", () => {
+    const berthEl = (id: string, x: number) => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "berth" as const,
+      x,
+      y: 10,
+      width: 40,
+      height: 20,
+      textAlign: "center" as const,
+      fontSize: 12,
+      displayName: id,
+    });
+    const doc = bundle({
+      elementsById: {
+        "b-minor": berthEl("b-minor", 0),
+        "b-severe": berthEl("b-severe", 50),
+        "b-none": berthEl("b-none", 100),
+        "b-empty": berthEl("b-empty", 150),
+      },
+    });
+
+    const { container } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "b-minor": { description: "1A01", enteredAt: null },
+          "b-severe": { description: "1A02", enteredAt: null },
+          "b-none": { description: "1A03", enteredAt: null },
+          "b-empty": { description: null, enteredAt: null },
+        }}
+        signals={{}}
+        // A band for an empty berth is ignored: there is no train to colour.
+        delayBands={{ "b-minor": "minor", "b-severe": "severe", "b-empty": "moderate" }}
+      />,
+    );
+
+    const fills = [...container.querySelectorAll("rect")].map((r) => r.getAttribute("fill"));
+    expect(fills).toEqual(["#e8c93a", "#dc4a3d", "#3d7fc4", "#161d27"]);
+  });
+
   it("renders a berth blank when its inhibiting berth shows the identical description (TD-area fringe pair)", () => {
     const berthEl = (id: string, x: number, inhibitedBy?: string) => ({
       id,

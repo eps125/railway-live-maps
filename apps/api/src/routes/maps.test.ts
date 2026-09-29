@@ -133,7 +133,7 @@ describe("map routes", () => {
   });
 
   it("joins a combined berth's occupied members into one element's state (owner request 2026-09-17)", async () => {
-    // Two tdBerth bindings ("PX|A001", "PX|B001") sharing one map element ("berth-combined") —
+    // Two tdBerth bindings ("PX|A001", "PX|B001") sharing one map element ("berth-combined") â€”
     // a split-berth group for permissive working. Both currently occupied; the join must show
     // both, in combinedOrder, not silently drop one (the exact regression this milestone fixed).
     const combinedBundle = {
@@ -312,5 +312,151 @@ describe("map routes", () => {
       },
     ]);
     expect(body.nextCursor).toBeNull();
+  });
+
+  describe("GET /api/v1/maps/:slug/delays (Milestone 82)", () => {
+    const bundleWithTwoBerths = {
+      ...compiledBundle,
+      elementsById: {
+        ...compiledBundle.elementsById,
+        "berth-2": { id: "berth-2", type: "berth" },
+      },
+      berthBindingIndex: { "PX|0512": "berth-1", "PX|0514": "berth-2" },
+    };
+    it("returns the recorded band of each linked berth, as a band and never minutes", async () => {
+      let delayQueryValues: unknown[] | undefined;
+      const pool = fakePool((text, values) => {
+        if (text.includes("from map_version mv")) {
+          return {
+            rows: [mapVersionRow({ id: "delays-1", compiled_runtime_bundle: bundleWithTwoBerths })],
+          };
+        }
+        if (text.includes("from trust_delay_band_change")) {
+          delayQueryValues = values;
+          return {
+            rows: [
+              {
+                td_area: "PX",
+                berth_code: "0512",
+                description: "1S99",
+                run_key: "41",
+                match_confidence: "weak",
+                band: "moderate",
+              },
+              // A berth not bound on this map is ignored rather than invented an element for.
+              {
+                td_area: "PX",
+                berth_code: "9999",
+                description: "5Z99",
+                run_key: "42",
+                match_confidence: "solid",
+                band: "severe",
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      });
+
+      const app = Fastify();
+      await registerMapRoutes(app, { pool });
+      const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays" });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.mapSlug).toBe("lancaster");
+      // A weak match is banded too (owner, 2026-09-29), with its confidence alongside.
+      expect(body.delays).toEqual([
+        {
+          runKey: "41",
+          elementId: "berth-1",
+          description: "1S99",
+          band: "moderate",
+          matchConfidence: "weak",
+        },
+      ]);
+      expect(body.mode).toBe("live");
+      // Asks about exactly the map's bound berths, in the TD berth projection.
+      expect(delayQueryValues?.[0]).toEqual(["PX", "PX"]);
+      expect(delayQueryValues?.[1]).toEqual(["0512", "0514"]);
+    });
+
+    it("404s for a map with no published version", async () => {
+      const pool = fakePool((text) => {
+        if (text.includes("from map_version mv")) return { rows: [] };
+        throw new Error(`unexpected query: ${text}`);
+      });
+      const app = Fastify();
+      await registerMapRoutes(app, { pool });
+      const response = await app.inject({ method: "GET", url: "/api/v1/maps/nowhere/delays" });
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.code).toBe("MAP_NOT_FOUND");
+    });
+
+    it("shares one answer per map between viewers for a few seconds", async () => {
+      let delayQueries = 0;
+      const pool = fakePool((text) => {
+        if (text.includes("from map_version mv")) {
+          return {
+            rows: [mapVersionRow({ id: "delays-2", compiled_runtime_bundle: bundleWithTwoBerths })],
+          };
+        }
+        if (text.includes("from trust_delay_band_change")) {
+          delayQueries += 1;
+          return { rows: [] };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      });
+      const app = Fastify();
+      await registerMapRoutes(app, { pool });
+      await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays" });
+      await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays" });
+      expect(delayQueries).toBe(1);
+    });
+
+    it("answers playback for the whole minute of `at`, shared across the minute", async () => {
+      const asked: unknown[] = [];
+      const pool = fakePool((text, values) => {
+        if (text.includes("from map_version mv")) {
+          return {
+            rows: [mapVersionRow({ id: "delays-3", compiled_runtime_bundle: bundleWithTwoBerths })],
+          };
+        }
+        if (text.includes("from trust_delay_band_change")) {
+          asked.push(values?.[3]);
+          return { rows: [] };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      });
+      const app = Fastify();
+      await registerMapRoutes(app, { pool });
+      const first = await app.inject({
+        method: "GET",
+        url: "/api/v1/maps/lancaster/delays?at=2026-05-01T10:15:42.500Z",
+      });
+      await app.inject({
+        method: "GET",
+        url: "/api/v1/maps/lancaster/delays?at=2026-05-01T10:15:05.000Z",
+      });
+      expect(first.statusCode).toBe(200);
+      expect(first.json().mode).toBe("historical");
+      expect(first.json().asOf).toBe("2026-05-01T10:15:00.000Z");
+      expect(asked).toEqual(["2026-05-01T10:15:00.000Z"]);
+    });
+
+    it("rejects an unparseable or future `at`", async () => {
+      const pool = fakePool((text) => {
+        throw new Error(`unexpected query: ${text}`);
+      });
+      const app = Fastify();
+      await registerMapRoutes(app, { pool });
+      const bad = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays?at=nope" });
+      const future = await app.inject({
+        method: "GET",
+        url: `/api/v1/maps/lancaster/delays?at=${new Date(Date.now() + 3_600_000).toISOString()}`,
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(future.statusCode).toBe(400);
+    });
   });
 });

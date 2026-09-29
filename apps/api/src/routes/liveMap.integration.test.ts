@@ -194,6 +194,8 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
           crossings: {},
           // Milestone 64 / ADR 0016: likewise for routes.
           routes: {},
+          // Milestone 82: no berth is linked to a late train here.
+          delays: [],
         },
       });
 

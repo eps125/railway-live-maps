@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { BerthDelay } from "@railway/protocol";
 import type { MapDefinitionResponse, MapStateResponse } from "./types.js";
 import { useLiveMapSocket, type LiveConnectionStatus } from "./useLiveMapSocket.js";
 
@@ -11,7 +12,11 @@ export interface UseMapDataResult {
   error: string | null;
   loading: boolean;
   connectionStatus: LiveConnectionStatus;
+  /** Milestone 82: delay-banded berths from the live socket (empty until its first snapshot). */
+  delays: BerthDelay[];
 }
+
+const NO_DELAYS: BerthDelay[] = [];
 
 /** Fetches the map definition once (structure/bindings, which only change on republish) and
  * sources live berth/signal/quality state from the WebSocket (Milestone 6) whenever it's
@@ -106,5 +111,13 @@ export function useMapData(slug: string): UseMapDataResult {
         }
       : restState;
 
-  return { definition, state, error, loading, connectionStatus: live.connectionStatus };
+  return {
+    definition,
+    state,
+    error,
+    loading,
+    connectionStatus: live.connectionStatus,
+    // Kept through a socket drop: the last known bands beat none while it reconnects.
+    delays: live.delays ?? NO_DELAYS,
+  };
 }

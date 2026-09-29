@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { useMapData } from "./useMapData.js";
 import { MapRenderer } from "./MapRenderer.js";
@@ -6,6 +6,8 @@ import { LiveStatusBanner } from "./LiveStatusBanner.js";
 import { PlaybackControls } from "./PlaybackControls.js";
 import { PLAYBACK_SPEEDS, usePlayback } from "./usePlayback.js";
 import { SClassMiniPanel } from "./SClassMiniPanel.js";
+import { DelayKey } from "./DelayKey.js";
+import { matchDelayBands, useDelayBands } from "./delayBands.js";
 
 export interface MapViewProps {
   slug: string;
@@ -95,6 +97,26 @@ function writeShowSignalNumbers(value: boolean): void {
   }
 }
 
+const DELAY_COLOURS_KEY = "rlm.delayColours";
+
+/** Milestone 82: a viewer's "Delay colours" choice, remembered in this browser. Off by default;
+ * open to every visitor (owner, 2026-09-29). */
+function readDelayColours(): boolean {
+  try {
+    return window.localStorage.getItem(DELAY_COLOURS_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeDelayColours(value: boolean): void {
+  try {
+    window.localStorage.setItem(DELAY_COLOURS_KEY, String(value));
+  } catch {
+    /* ignore — the toggle still works for this session via React state */
+  }
+}
+
 /** docs/PROJECT_SPEC.md §5: the public map shows live berth activity with a clear
  * connected/stale/data-gap status, and (Milestone 10) can switch to historical playback of a
  * chosen time. */
@@ -105,7 +127,7 @@ export function MapView({
   initialPlayback = null,
   isAdmin = false,
 }: MapViewProps): JSX.Element {
-  const { definition, state, error, loading, connectionStatus } = useMapData(slug);
+  const { definition, state, error, loading, connectionStatus, delays } = useMapData(slug);
   const [playbackFrom, setPlaybackFrom] = useState<number | null>(initialPlayback?.atMs ?? null);
   const [sClassOpen, setSClassOpen] = useState<boolean>(() => isAdmin && readPanelOpen());
   const [highlight, setHighlight] = useState<string[]>([]);
@@ -126,6 +148,23 @@ export function MapView({
     setSignalNumbersChosen((prev) => {
       const next = !prev;
       writeShowSignalNumbers(next);
+      return next;
+    });
+  }
+
+  const [delayColours, setDelayColours] = useState<boolean>(readDelayColours);
+  // Live bands arrive on the map's WebSocket (snapshot + pushes when openrail-eps reports);
+  // playback asks for its own moment inside PlaybackView.
+  const liveBerths = state?.berths;
+  const liveDelayBands = useMemo(
+    () => (delayColours ? matchDelayBands(delays, liveBerths ?? {}) : {}),
+    [delayColours, delays, liveBerths],
+  );
+
+  function toggleDelayColours(): void {
+    setDelayColours((prev) => {
+      const next = !prev;
+      writeDelayColours(next);
       return next;
     });
   }
@@ -187,6 +226,11 @@ export function MapView({
           <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
           Show empty berths
         </label>
+        <label className="map-page__toggle">
+          <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
+          Delay colours
+        </label>
+        {delayColours ? <DelayKey /> : null}
         {isAdmin ? (
           <label className="map-page__toggle">
             <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
@@ -224,6 +268,7 @@ export function MapView({
           routes={state?.routes ?? {}}
           showEmptyBerths={showEmptyBerths}
           showSignalNumbers={showSignalNumbers}
+          delayBands={liveDelayBands}
           centerElementId={resolvedCenterElementId}
           highlightElementIds={highlight}
         />
@@ -236,6 +281,7 @@ export function MapView({
           bundle={definition.definition}
           showEmptyBerths={showEmptyBerths}
           showSignalNumbers={showSignalNumbers}
+          delayColours={delayColours}
           centerElementId={resolvedCenterElementId}
           highlight={highlight}
           sClassPanel={
@@ -276,6 +322,7 @@ interface PlaybackViewProps {
   bundle: CompiledMapBundle;
   showEmptyBerths: boolean;
   showSignalNumbers: boolean;
+  delayColours: boolean;
   centerElementId: string | null;
   highlight: string[];
   /** The admin S-Class mini explorer, given the playback clock — or null when closed. */
@@ -291,6 +338,7 @@ function PlaybackView({
   bundle,
   showEmptyBerths,
   showSignalNumbers,
+  delayColours,
   centerElementId,
   highlight,
   sClassPanel,
@@ -299,6 +347,9 @@ function PlaybackView({
   // A speed carried in a URL is only honoured if it's one the controls offer.
   const speed = (PLAYBACK_SPEEDS as readonly number[]).includes(initialSpeed) ? initialSpeed : 1;
   const pb = usePlayback(slug, fromMs, { speed, playing: initialPlaying });
+  // Milestone 82: the bands as they stood at the playback clock's minute.
+  const delays = useDelayBands(slug, delayColours, pb.atIso);
+  const delayBands = useMemo(() => matchDelayBands(delays, pb.berths), [delays, pb.berths]);
   return (
     <>
       <PlaybackControls
@@ -329,6 +380,7 @@ function PlaybackView({
         routes={pb.routes}
         showEmptyBerths={showEmptyBerths}
         showSignalNumbers={showSignalNumbers}
+        delayBands={delayBands}
         atIso={pb.atIso}
         centerElementId={centerElementId}
         highlightElementIds={highlight}

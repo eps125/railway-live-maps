@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import type { LiveWsMessage } from "@railway/protocol";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { BerthDelay, LiveWsMessage } from "@railway/protocol";
 import type { BerthState, CrossingState, RouteState, SignalState } from "./types.js";
 
 export type LiveConnectionStatus = "connecting" | "live" | "stale" | "reconnecting";
@@ -12,6 +12,21 @@ export interface UseLiveMapSocketResult {
   crossings: Record<string, CrossingState> | null;
   routes: Record<string, RouteState> | null;
   quality: { status: "ok" | "stale" | "unknown"; gaps: string[] } | null;
+  /** Milestone 82: banded berths — the snapshot's list, kept current by `delay.updated` pushes
+   * (sent only when openrail-eps reports on a train on this map). Null until a snapshot. */
+  delays: BerthDelay[] | null;
+}
+
+/** Apply one `delay.updated`: it re-states a run's band wherever the train now is, so it
+ * replaces that run's entry; `none` removes it. Exported for tests. */
+export function applyDelayUpdate(
+  current: Record<string, BerthDelay>,
+  update: BerthDelay | { runKey: string; band: "none" },
+): Record<string, BerthDelay> {
+  const next = { ...current };
+  if (update.band === "none") delete next[update.runKey];
+  else next[update.runKey] = update;
+  return next;
 }
 
 /** Same shape/parameters as apps/worker/src/td/connection/backoff.ts's `computeBackoffDelayMs`
@@ -47,6 +62,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     status: "ok" | "stale" | "unknown";
     gaps: string[];
   } | null>(null);
+  const [delays, setDelays] = useState<Record<string, BerthDelay> | null>(null);
   const lastSequenceRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -78,6 +94,19 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
       if (message.type === "heartbeat") {
         return;
       }
+      // Milestone 82: not part of the TD berth stream — no sequence, applied as it arrives.
+      if (message.type === "delay.updated") {
+        const { runKey, elementId, description, band, matchConfidence } = message;
+        setDelays((current) =>
+          applyDelayUpdate(
+            current ?? {},
+            band === "none"
+              ? { runKey, band }
+              : { runKey, elementId, description, band, matchConfidence },
+          ),
+        );
+        return;
+      }
 
       if (lastSequenceRef.current !== null && message.sequence < lastSequenceRef.current) {
         // A sequence regression — this stream's guarantee is non-decreasing, so something
@@ -97,6 +126,8 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         // Likewise routes (Milestone 64): none recorded means none set.
         setRoutes(message.state.routes ?? {});
         setQuality(message.state.quality);
+        // A server without Milestone 82 sends none: no colours, never stale ones.
+        setDelays(Object.fromEntries((message.state.delays ?? []).map((d) => [d.runKey, d])));
         setConnectionStatus("live");
         return;
       }
@@ -170,5 +201,15 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     };
   }, [slug]);
 
-  return { connectionStatus, sequence, berths, signals, crossings, routes, quality };
+  const delayList = useMemo(() => (delays ? Object.values(delays) : null), [delays]);
+  return {
+    connectionStatus,
+    sequence,
+    berths,
+    signals,
+    crossings,
+    routes,
+    quality,
+    delays: delayList,
+  };
 }

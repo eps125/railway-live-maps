@@ -576,6 +576,19 @@ performs — never an independent source of truth (CLAUDE.md rule 3). Point-in-t
 reconstructs from `berth_occupancy` directly; snapshots exist so state stays reconstructable and
 auditable once retention pruning of the hot tables lands (Milestone 13).
 
+### `trust_delay_band_change` (Milestone 82, migration 0044)
+
+One row per change in a TRUST train's lateness band (`none` / `minor` 15–29 min late /
+`moderate` 30–59 / `severe` 60+), appended by `ingest-garner` right after it mirrors TRUST: the
+`trust-delay-bands` projection walks newly mirrored `trust_movement` rows (checkpointed by their
+`id`) and, per train, its reports since its last recorded change in report order. Keyed by the
+**activation** TRUST id — the root of any Change of Identity chain — since that is what a berth's
+run link reaches (`berth_occupancy_run_link` → `train_run.cif_schedule_id` →
+`trust_activation.trust_id`). `effective_at` is the report's `actual_timestamp`;
+`source_movement_id` (unique) is its lineage and makes the projection idempotent. Derived and
+rebuildable: delete the rows and reset the checkpoint, and it re-fills the last 24 h. Read by the
+WebSocket snapshot, `/delays` (live and playback) and the `delay.updated` push.
+
 ## 10. Projection/version tables
 
 ### `projection_definition`

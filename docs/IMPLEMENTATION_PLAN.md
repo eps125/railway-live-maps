@@ -4377,3 +4377,43 @@ No migration: one optional field on `trackPath`.
 Tests: route splitting (either side of a hidden piece, whole segments, bends, a hidden track
 that only crosses the route, rounding at the split); no welding of a hidden track; the public map
 draws neither the hidden track nor the route along it.
+
+## Milestone 82 — Delay colours (2026-09-29)
+
+Owner request: a tickbox, open to everyone, that colours each berth by its train's current delay
+— under 15 min / no information blue, 15–29 yellow, 30–59 amber, 60+ red — using any match to
+openrail-eps (weak ones too), updating only when openrail-eps reports, never per berth step.
+
+- [x] `ingest-garner`, right after it mirrors TRUST, walks the new `trust_movement` rows and
+      appends a `trust_delay_band_change` row whenever a train's band changes (migration 0044).
+      Change of Identity reports count against the original activation. A fresh projection
+      starts 24 h back, so playback has recent history from the first deploy (~27 min to catch
+      up at ~817k reports a day).
+- [x] Then, for each train that got a new report, it finds the mapped berth it is in now (via
+      the run-lineage links) and publishes `delay.updated` on that map's live channel — re-stated
+      on every report, so a train linked after its band last changed still gets coloured.
+- [x] The WebSocket snapshot carries `delays`; the browser keeps them current from the pushes and
+      carries a colour along with its headcode as the train steps, only when that headcode is on
+      exactly one berth on the map (CLAUDE.md rule 5).
+- [x] Playback asks `GET /maps/{slug}/delays?at=` once per playback minute, from the recorded
+      band changes.
+- [x] Only solid or weak run links are coloured — ambiguous and unmatched berths have no link
+      (rule 7). Only the band is public, never the minutes; the run key is RLM's own id.
+- [x] Colours keep the dark headcode at least as readable as on the existing blue (yellow
+      ~12:1, amber ~7.7:1, red ~4.7:1); a key shows beside the toggle.
+- [ ] Playback colours change on the minute, not at the exact moment of the report; band
+      changes could join the `/events` stream if that matters.
+
+Query plans checked against production (2026-09-29): the band walk for a full 5,000-report batch
+0.56 s cold; the push lookup starts from the few dozen occupied mapped berths (13–364 ms for all
+582); `/delays` 16 ms–1.3 s cold. Two slower shapes were rejected on the way (per-berth
+`left_at` filtering, 5–15 s; train-first push lookup, 20 s).
+
+**Production needs migration 0044 applied by hand** — the deploy doesn't migrate. Until it is,
+the map loads normally without delay colours and `ingest-garner` logs a failing projection each
+tick.
+
+Tests: band boundaries; the projection records only changes, is idempotent, follows a Change of
+Identity; `/delays` for live and playback (the minute, the cache, a bad `at`); linked, weak,
+unlinked and on-time berths; the push lookup; push message building; the renderer's colours; the
+browser's carry-forward and push handling.

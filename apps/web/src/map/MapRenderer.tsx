@@ -37,6 +37,7 @@ import {
   type WaterElement,
 } from "@railway/map-schema";
 import type { BerthState, SignalState } from "./types.js";
+import { DELAY_BAND_COLORS, type DelayBand } from "./delayBands.js";
 import { RunPopup } from "./RunPopup.js";
 import { navigate } from "../useRoute.js";
 
@@ -56,6 +57,9 @@ export interface MapRendererProps {
   /** ADR 0017: draw signal numbers. The public map passes this only for an admin who has ticked
    * "Signal numbers"; numbers are also hidden when zoomed out too far to read them. */
   showSignalNumbers?: boolean;
+  /** Milestone 82: berths to colour by their train's TRUST lateness band (the public "Delay
+   * colours" toggle). A berth absent here keeps the normal occupied colour. */
+  delayBands?: Record<string, DelayBand>;
   /** Milestone 31: jump to and centre the initial view on this element (a places-search
    * click-through) instead of the remembered/default view. Only evaluated on first mount —
    * subsequent identical prop values don't re-centre a view the visitor has since panned away
@@ -123,8 +127,12 @@ export function boundaryLinkUrl(
 /** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
  * removed with the berth-run resolver (ADR 0002) and there's no matched/ambiguous distinction
  * worth showing until run↔schedule correlation is rebuilt. */
-function berthColors(description: string | undefined): { fill: string; stroke: string } {
+function berthColors(
+  description: string | undefined,
+  delayBand: DelayBand | undefined,
+): { fill: string; stroke: string } {
   if (!description) return { fill: "#161d27", stroke: "#2d3644" };
+  if (delayBand) return DELAY_BAND_COLORS[delayBand];
   return { fill: "#3d7fc4", stroke: "#6aa4de" };
 }
 
@@ -974,16 +982,18 @@ const BerthNode = memo(function BerthNode({
   id,
   rect,
   description,
+  delayBand,
   fontSize,
   onSelect,
 }: {
   id: string;
   rect: { x: number; y: number; width: number; height: number };
   description: string | undefined;
+  delayBand: DelayBand | undefined;
   fontSize: number;
   onSelect: (id: string) => void;
 }): JSX.Element {
-  const colors = berthColors(description);
+  const colors = berthColors(description, delayBand);
   // An empty berth has nothing to show a popup for — only occupied berths respond to clicks
   // (docs/PROJECT_SPEC.md §5: "click a populated berth"). Re-enabled in Milestone 34 (ADR 0006).
   const isOccupied = Boolean(description);
@@ -1122,6 +1132,7 @@ export function MapRenderer({
   routes = EMPTY_RECORD,
   showEmptyBerths = true,
   showSignalNumbers = false,
+  delayBands = EMPTY_RECORD,
   centerElementId,
   atIso = null,
   highlightElementIds = EMPTY_IDS,
@@ -1491,6 +1502,7 @@ export function MapRenderer({
               id={element.id}
               rect={berthRects.get(element.id)!}
               description={description}
+              delayBand={description ? delayBands[element.id] : undefined}
               fontSize={element.fontSize}
               onSelect={selectBerth}
             />
@@ -1581,6 +1593,7 @@ export function MapRenderer({
       hidden,
       showEmptyBerths,
       showSignalNumbers,
+      delayBands,
       playbackLink?.atIso,
       playbackLink?.speed,
       playbackLink?.playing,

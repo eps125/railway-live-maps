@@ -73,6 +73,39 @@ Response outline:
 > is deferred to a later phase that will source it from the garner (openrail-eps) `trust_*`
 > mirror rather than a bespoke RLM resolver.
 
+### `GET /api/v1/maps/{slug}/delays?at={timestamp}` (Milestone 82)
+
+Public. The berths on this map whose train is at least 15 minutes late, by its latest TRUST
+report — for the "Delay colours" toggle. Without `at` it answers for now; with `at` (not in the
+future) for that moment, rounded down to the whole minute, for playback.
+
+```json
+{
+  "mapSlug": "carlisle-psb",
+  "mapVersion": 12,
+  "asOf": "2026-09-29T16:30:00.000Z",
+  "mode": "historical",
+  "delays": [
+    {
+      "runKey": "81234",
+      "elementId": "el-0455",
+      "description": "6M35",
+      "band": "moderate",
+      "matchConfidence": "weak"
+    }
+  ]
+}
+```
+
+`band` is `minor` (15–29 min late), `moderate` (30–59) or `severe` (60+); unlisted berths are
+under 15 minutes late, early, on time, off route or unknown. Only the band is published — never
+the minutes (owner, 2026-09-29). A berth is listed only when its occupancy carries a run link
+(solid or weak; ambiguous and unmatched berths have none) and the band comes from
+`trust_delay_band_change`, recorded by `ingest-garner` as openrail-eps reports — nothing is
+computed per request from TRUST movements. `runKey` is RLM's own run id, never a TRUST or CIF id.
+`description` is the headcode the band belongs to; a client colours only a berth still showing
+it. Answers are shared between viewers: 10 s live, 5 min per playback minute.
+
 ### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
 
 Compact map-relevant events for playback buffering (Milestone 10). Each entry is the **same
@@ -512,6 +545,13 @@ address, bit }`; `state` is the signal's absolute `blank` | `on` | `off`, only s
   changes. Published by the same two live publishers as berth deltas, in the same
   `sequence` order (a batch's berth and signal deltas are sorted by sequence before publishing).
 - `quality.updated`
+- `delay.updated` (Milestone 82) — `{ type, eventAt, runKey, elementId, description, band,
+matchConfidence }`, the same fields as `/delays` entries, plus `band: "none"` to take a colour
+  away. Published by `ingest-garner` only when openrail-eps reports on a train currently in a
+  berth on this map — never per berth step. Absolute state, so a duplicate is harmless. It has
+  **no `sequence`**: it is not part of the TD berth stream, and clients apply it without touching
+  their sequence tracking. The snapshot's `state.delays` (optional; missing means none known)
+  lists every banded berth at connect time.
 - `heartbeat`
 - `resync.required` — reasons `sequence_gap`, `map_version_changed`, `server_error_recovered`,
   and (Milestone 36b) `feed_gap`: the TD feed was silent for more than 5 minutes, so signals a

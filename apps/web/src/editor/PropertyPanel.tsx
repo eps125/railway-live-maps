@@ -423,6 +423,7 @@ function PlacedLabelFieldset({
         label="Label"
         value={label ?? ""}
         onCommit={(v) => setProp("label", v || undefined)}
+        multiline
       />
       {labelOffset === undefined ? (
         <>

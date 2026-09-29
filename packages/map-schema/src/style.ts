@@ -123,6 +123,9 @@ export const MAP_STYLE = {
     gap: 4,
     fill: "#c9d1d9",
     fontSize: 10,
+    /** Baseline-to-baseline spacing of a multi-line label, in ems (the SVG `dy` of each extra
+     * line and Konva's `lineHeight`). */
+    lineHeight: 1.2,
   },
   /** Milestone 55. Track in tunnel: a dark bore with a dashed portal outline — the schematic
    * convention, and it reads correctly painted *under* the rails (`zIndex: -1`). */

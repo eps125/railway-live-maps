@@ -116,6 +116,8 @@ export interface PlacedLabel {
 
 /** The label half of any piece of map furniture (see `placedLabelFields` in document.ts). */
 export interface PlacedLabelFields {
+  /** The caption itself; each `\n` starts a new line. Only its line count matters here. */
+  label?: string | undefined;
   labelPosition: "above" | "below" | "left" | "right";
   labelOffset?: { x: number; y: number } | undefined;
   fontSize: number;
@@ -140,6 +142,12 @@ export function pointsBounds(points: ReadonlyArray<{ x: number; y: number }>): R
  * that offset **from the centre of `bounds`**, so the label travels with its shape and
  * `labelPosition` no longer applies — the author placed it by hand.
  *
+ * A multi-line label (2026-09-29) still returns its **first** line's baseline; the lines stack
+ * downwards from it. An attached label is moved so the whole block keeps its side: an `above`
+ * label grows upwards away from the shape, and a `left`/`right` one stays vertically centred on
+ * it. A detached label is left exactly where the author put its first line, so dragging it and
+ * the "Detach label" button behave the same whatever the line count.
+ *
  * Pure and shared by the public SVG renderer and the editor canvas, so a label sits in the same
  * spot in both (CLAUDE.md rule 13).
  */
@@ -147,6 +155,8 @@ export function placedLabelAnchor(bounds: Rect, label: PlacedLabelFields): Place
   const gap = MAP_STYLE.placedLabel.gap;
   const centerX = bounds.x + bounds.width / 2;
   const centerY = bounds.y + bounds.height / 2;
+  const extraLines = label.label ? label.label.split("\n").length - 1 : 0;
+  const extraHeight = extraLines * label.fontSize * MAP_STYLE.placedLabel.lineHeight;
 
   if (label.labelOffset) {
     return {
@@ -158,13 +168,17 @@ export function placedLabelAnchor(bounds: Rect, label: PlacedLabelFields): Place
 
   switch (label.labelPosition) {
     case "above":
-      return { x: centerX, y: bounds.y - gap, anchor: "middle" };
+      return { x: centerX, y: bounds.y - gap - extraHeight, anchor: "middle" };
     case "left":
-      return { x: bounds.x - gap, y: centerY + label.fontSize * 0.35, anchor: "end" };
+      return {
+        x: bounds.x - gap,
+        y: centerY + label.fontSize * 0.35 - extraHeight / 2,
+        anchor: "end",
+      };
     case "right":
       return {
         x: bounds.x + bounds.width + gap,
-        y: centerY + label.fontSize * 0.35,
+        y: centerY + label.fontSize * 0.35 - extraHeight / 2,
         anchor: "start",
       };
     default:

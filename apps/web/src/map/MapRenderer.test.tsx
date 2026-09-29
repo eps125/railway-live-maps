@@ -767,6 +767,33 @@ describe("MapRenderer", () => {
     expect(board.getAttribute("y")).toBe("40");
   });
 
+  it("stacks a multi-line neutral section label, one tspan per line (2026-09-29)", () => {
+    const doc = bundle({
+      elementsById: {
+        "ns-1": {
+          id: "ns-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "neutralSection",
+          x: 100,
+          y: 50,
+          size: 20,
+          label: "Carnforth\nNS",
+          labelPosition: "below",
+          labelOffset: { x: -35, y: -15 },
+          fontSize: 10,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const tspans = container.querySelectorAll("text tspan");
+    expect([...tspans].map((t) => t.textContent)).toEqual(["Carnforth", "NS"]);
+    expect([...tspans].map((t) => t.getAttribute("x"))).toEqual(["65", "65"]);
+    expect([...tspans].map((t) => t.getAttribute("dy"))).toEqual(["0", "1.2em"]);
+    expect(container.querySelector("text")?.getAttribute("y")).toBe("35");
+  });
+
   it("renders a neutral section with no label at all when it has none", () => {
     const doc = bundle({
       elementsById: {

@@ -130,6 +130,25 @@ export function anchoredText(
   return { x, y, offsetY };
 }
 
+/** `anchoredText` for a placed label (neutral section, tunnel, viaduct, water, level crossing),
+ * which can run to several lines (2026-09-29). Konva centres each line in a `lineHeight`-tall
+ * box, so the first baseline drops by half the extra leading; `offsetY` takes that back out so
+ * the first line sits on `y`, and later lines are spaced like the public renderer's tspans. */
+export function placedLabelTextProps(
+  x: number,
+  y: number,
+  fontSize: number,
+  anchor: "start" | "middle" | "end",
+): ReturnType<typeof anchoredText> & { lineHeight: number } {
+  const lineHeight = MAP_STYLE.placedLabel.lineHeight;
+  const align = anchor === "middle" ? "center" : anchor === "end" ? "right" : "left";
+  return {
+    ...anchoredText(x, y, fontSize, align),
+    offsetY: fontSize * (0.8 + (lineHeight - 1) / 2),
+    lineHeight,
+  };
+}
+
 export interface Bounds {
   minX: number;
   minY: number;
@@ -1284,12 +1303,7 @@ export function EditorCanvas({
               const at = placedLabelAnchor(pointsBounds(shape.points), shape);
               return (
                 <Text
-                  {...anchoredText(
-                    at.x,
-                    at.y,
-                    shape.fontSize,
-                    at.anchor === "middle" ? "center" : at.anchor === "end" ? "right" : "left",
-                  )}
+                  {...placedLabelTextProps(at.x, at.y, shape.fontSize, at.anchor)}
                   text={shape.label}
                   fontSize={shape.fontSize}
                   fill={selected ? "#58a6ff" : MAP_STYLE.placedLabel.fill}
@@ -1824,15 +1838,11 @@ export function EditorCanvas({
                   ))}
                   {label ? (
                     <Text
-                      {...anchoredText(
+                      {...placedLabelTextProps(
                         geometry.label.x - element.x,
                         geometry.label.y - element.y,
                         element.fontSize,
-                        geometry.label.anchor === "middle"
-                          ? "center"
-                          : geometry.label.anchor === "end"
-                            ? "right"
-                            : "left",
+                        geometry.label.anchor,
                       )}
                       text={label}
                       fontSize={element.fontSize}
@@ -2101,15 +2111,11 @@ export function EditorCanvas({
                   ))}
                   {element.label ? (
                     <Text
-                      {...anchoredText(
+                      {...placedLabelTextProps(
                         geometry.label.x - element.x,
                         geometry.label.y - element.y,
                         element.fontSize,
-                        geometry.label.anchor === "middle"
-                          ? "center"
-                          : geometry.label.anchor === "end"
-                            ? "right"
-                            : "left",
+                        geometry.label.anchor,
                       )}
                       text={element.label}
                       fontSize={element.fontSize}

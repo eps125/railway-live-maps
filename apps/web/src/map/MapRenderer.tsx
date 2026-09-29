@@ -217,9 +217,11 @@ function renderPlatformNumber(element: PlatformNumberElement): JSX.Element {
 /** Milestone 55: the caption a piece of map furniture carries, at the anchor
  * `placedLabelAnchor` worked out (attached to a side, or detached to a free offset). One
  * implementation so a tunnel, viaduct, water body, neutral section and level crossing all label
- * identically. Returns nothing when the element has no label. */
+ * identically. Returns nothing when the element has no label. Each `\n` starts a new line
+ * (2026-09-29), like a plain label; `at` is the first line's baseline. */
 function placedLabelText(at: PlacedLabel, text: string | undefined, fontSize: number) {
   if (!text) return null;
+  const lines = text.split("\n");
   return (
     <text
       x={at.x}
@@ -228,7 +230,13 @@ function placedLabelText(at: PlacedLabel, text: string | undefined, fontSize: nu
       fontSize={fontSize}
       fill={MAP_STYLE.placedLabel.fill}
     >
-      {text}
+      {lines.length === 1
+        ? text
+        : lines.map((line, i) => (
+            <tspan key={i} x={at.x} dy={i === 0 ? 0 : `${MAP_STYLE.placedLabel.lineHeight}em`}>
+              {line}
+            </tspan>
+          ))}
     </text>
   );
 }

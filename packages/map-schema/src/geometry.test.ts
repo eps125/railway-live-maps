@@ -327,6 +327,31 @@ describe("placedLabelAnchor", () => {
     expect(moved.x).toBe(90 + 200);
     expect(moved.y).toBe(35);
   });
+
+  it("keeps a multi-line label's block on its side (2026-09-29)", () => {
+    // Three lines at fontSize 10 and lineHeight 1.2: two extra lines = 24 units of extra height.
+    const label = "Carnforth\nNeutral\nSection";
+    const at = (labelPosition: "above" | "below" | "left" | "right") =>
+      placedLabelAnchor(bounds, { ...base, label, labelPosition });
+    // Above grows upwards, so the last line stays where a single line would sit.
+    expect(at("above")).toEqual({ x: 120, y: 46 - 24, anchor: "middle" });
+    // Below grows downwards from the unchanged first line.
+    expect(at("below")).toEqual({ x: 120, y: 82, anchor: "middle" });
+    // Left/right stay vertically centred on the shape.
+    expect(at("left")).toEqual({ x: 96, y: 63.5 - 12, anchor: "end" });
+    expect(at("right")).toEqual({ x: 144, y: 63.5 - 12, anchor: "start" });
+  });
+
+  it("leaves a detached multi-line label's first line exactly at its offset", () => {
+    expect(
+      placedLabelAnchor(bounds, {
+        ...base,
+        label: "a\nb",
+        labelPosition: "above",
+        labelOffset: { x: -30, y: -25 },
+      }),
+    ).toEqual({ x: 90, y: 35, anchor: "middle" });
+  });
 });
 
 describe("viaductWidth", () => {

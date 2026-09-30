@@ -41,6 +41,17 @@ export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
         <span className="playback__badge" role="status">
           Historical playback
         </span>
+        {/* Play/Pause sits with "Return to live" rather than the step buttons (owner,
+            2026-09-30): the two controls used most, together at the top. */}
+        <button
+          type="button"
+          className="playback__btn"
+          onClick={props.playing ? props.onPause : props.onPlay}
+          disabled={props.loading || (props.atLiveEdge && !props.playing)}
+          aria-pressed={props.playing}
+        >
+          {props.playing ? "Pause" : "Play"}
+        </button>
         <button type="button" className="playback__btn" onClick={props.onReturnToLive}>
           Return to live
         </button>
@@ -72,15 +83,6 @@ export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
       </div>
 
       <div className="playback__row">
-        <button
-          type="button"
-          className="playback__btn"
-          onClick={props.playing ? props.onPause : props.onPlay}
-          disabled={props.loading || (props.atLiveEdge && !props.playing)}
-          aria-pressed={props.playing}
-        >
-          {props.playing ? "Pause" : "Play"}
-        </button>
         {PLAYBACK_STEPS_MS.map((s) => (
           <button
             key={s.label}

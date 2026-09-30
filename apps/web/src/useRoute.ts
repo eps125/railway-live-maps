@@ -55,6 +55,22 @@ export function useRoute(): Route {
 /** Client-side navigation without a full page reload — pushes history state and notifies
  * `useRoute` via a synthetic `popstate` event (the real event only fires on browser
  * back/forward, not on `pushState` itself). */
+/**
+ * Counts real navigations (`navigate()` and browser back/forward — both arrive as `popstate`).
+ * A page that rewrites its own query string with `replaceState` (the playback clock, 2026-09-30)
+ * doesn't count, so a component keyed on this remounts only when the visitor actually goes
+ * somewhere — not whenever something it wrote to the URL happens to be read back.
+ */
+export function useNavigationCount(): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    const onPopState = (): void => setCount((n) => n + 1);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  return count;
+}
+
 export function navigate(path: string): void {
   window.history.pushState(null, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));

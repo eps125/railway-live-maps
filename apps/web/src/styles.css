@@ -652,28 +652,6 @@ legend {
   display: none;
 }
 
-.map-frame__reset {
-  position: absolute;
-  right: 0.6rem;
-  bottom: 0.6rem;
-  z-index: 5;
-  appearance: none;
-  border: 1px solid var(--color-border);
-  background: rgba(13, 17, 23, 0.78);
-  backdrop-filter: blur(6px);
-  color: var(--color-text-muted);
-  font: inherit;
-  font-size: 0.72rem;
-  padding: 0.25rem 0.55rem;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.map-frame__reset:hover {
-  color: var(--color-text);
-  border-color: var(--color-accent);
-}
-
 .map-inspector {
   position: absolute;
   top: 12px;
@@ -1257,7 +1235,8 @@ legend {
   gap: 0.5rem;
   padding: 0.75rem;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  /* Square, like the toolbar and header it sits under (owner, 2026-09-30). */
+  border-radius: 0;
   background: var(--color-panel, #161c24);
 }
 
@@ -1312,6 +1291,72 @@ legend {
 .playback__gap {
   font-size: 0.82rem;
   color: #ffb4b4;
+}
+
+/* Phones (owner, 2026-09-30): a more compact map toolbar and playback box. After the rules above
+   on purpose, so these win at equal specificity. */
+@media (max-width: 600px) {
+  .map-page__title {
+    font-size: 0.75rem;
+  }
+
+  .status-banner {
+    gap: 0.35rem;
+    padding: 0.15rem 0.45rem;
+    font-size: 0.68rem;
+  }
+
+  .status-banner__dot {
+    width: 6px;
+    height: 6px;
+  }
+
+  .map-page__mode-btn,
+  .playback__btn {
+    padding: 0.2rem 0.45rem;
+    font-size: 0.7rem;
+  }
+
+  .map-page__toggle {
+    gap: 0.25rem;
+    font-size: 0.68rem;
+  }
+
+  .map-page__toggle input {
+    width: 0.8rem;
+    height: 0.8rem;
+    margin: 0;
+  }
+
+  .map-page__delay-key {
+    gap: 0.15rem 0.4rem;
+    font-size: 0.62rem;
+  }
+
+  .map-page__delay-swatch {
+    width: 0.7rem;
+    height: 0.5rem;
+  }
+
+  .playback {
+    gap: 0.35rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .playback__row {
+    gap: 0.3rem;
+  }
+
+  .playback__badge {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.45rem;
+  }
+
+  .playback__field,
+  .playback__clock,
+  .playback__gap {
+    font-size: 0.7rem;
+  }
 }
 
 /* ---------------------------------------------------------------------------------------------

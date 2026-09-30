@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MapView } from "./MapView.js";
+import { MapView, writePlaybackParams } from "./MapView.js";
 import type { MapDefinitionResponse, MapStateResponse } from "./types.js";
 
 const definition: MapDefinitionResponse = {
@@ -361,5 +361,40 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
       ).toBe(true),
     );
     expect(screen.queryByText("Live")).toBeNull();
+  });
+
+  it("uses the arrival speed only for the first playback, not after returning to live", async () => {
+    stubFetch();
+    const atMs = Date.parse("2026-09-20T10:00:00.000Z");
+    render(<MapView slug="lancaster" initialPlayback={{ atMs, speed: 5, playing: false }} />);
+    expect(await screen.findByLabelText("Playback speed")).toHaveValue("5");
+
+    fireEvent.click(screen.getByRole("button", { name: "Return to live" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Playback" }));
+    expect(await screen.findByLabelText("Playback speed")).toHaveValue("1");
+    window.history.replaceState(null, "", "/");
+  });
+});
+
+describe("writePlaybackParams (2026-09-30: playback survives a refresh)", () => {
+  afterEach(() => window.history.replaceState(null, "", "/"));
+
+  it("puts the playback clock, speed and play state in the URL, keeping other parameters", () => {
+    window.history.replaceState(null, "", "/map/preston-psb?boundary=To%20Carlisle");
+    writePlaybackParams({ atIso: "2026-09-29T13:32:41.750Z", speed: 5, playing: true });
+    const url = new URL(window.location.href);
+    expect(url.pathname).toBe("/map/preston-psb");
+    expect(url.searchParams.get("boundary")).toBe("To Carlisle");
+    expect(url.searchParams.get("at")).toBe("2026-09-29T13:32:41.000Z");
+    expect(url.searchParams.get("speed")).toBe("5");
+    expect(url.searchParams.get("play")).toBe("1");
+  });
+
+  it("drops `play` when paused, and adds no history entries", () => {
+    const before = window.history.length;
+    writePlaybackParams({ atIso: "2026-09-29T13:32:41Z", speed: 1, playing: true });
+    writePlaybackParams({ atIso: "2026-09-29T13:32:41Z", speed: 1, playing: false });
+    expect(new URL(window.location.href).searchParams.has("play")).toBe(false);
+    expect(window.history.length).toBe(before);
   });
 });

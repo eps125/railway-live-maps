@@ -1268,16 +1268,6 @@ export function MapRenderer({
     viewChanged();
   }
 
-  function resetView(): void {
-    try {
-      window.localStorage.removeItem(VIEW_KEY_PREFIX + bundle.mapId);
-    } catch {
-      /* ignore */
-    }
-    const { w, h } = windowSize();
-    setView(viewBoxToView(defaultView(bundle, w, h), w, h));
-  }
-
   // The wheel zooms towards the mouse pointer (2026-09-26: zooming round the middle of the window
   // made the map seem to jump about on a PC). Each event zooms in proportion to how far the wheel
   // or touchpad actually moved, and events are gathered into one zoom per animation frame, so a
@@ -1679,15 +1669,6 @@ export function MapRenderer({
           </svg>
         </div>
       </div>
-
-      <button
-        type="button"
-        className="map-frame__reset"
-        onClick={resetView}
-        title="Reset to the default view"
-      >
-        Reset view
-      </button>
 
       {selectedElementId && selectedMembers && selectedMembers.length > 0 ? (
         // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup".

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { MapView } from "./map/MapView.js";
 import { EditorApp } from "./editor/EditorApp.js";
 import { LandingPage } from "./LandingPage.js";
-import { navigate, useRoute } from "./useRoute.js";
+import { navigate, useNavigationCount, useRoute } from "./useRoute.js";
 import { useSession, roleAtLeast } from "./auth/useSession.js";
 import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
@@ -15,6 +15,7 @@ import { SClassExplorerPage } from "./auth/SClassExplorerPage.js";
 
 export function App(): JSX.Element {
   const route = useRoute();
+  const navigationCount = useNavigationCount();
   const { session, refresh, logout } = useSession();
 
   const isAuthenticated = session.status === "authenticated";
@@ -108,8 +109,10 @@ export function App(): JSX.Element {
     main = (
       <MapView
         // Remount per map and per arrival, so a boundary link starts the new map's own state
-        // (including its playback position) rather than inheriting the previous map's.
-        key={`${route.slug}|${searchParams.get("at") ?? ""}`}
+        // (including its playback position) rather than inheriting the previous map's. Keyed on
+        // navigations, not on `?at=`: playback rewrites `at` in place as it runs (2026-09-30), and
+        // any re-render of App must not remount the map mid-playback because of that.
+        key={`${route.slug}|${navigationCount}`}
         slug={route.slug}
         centerElementId={centerElementId}
         centerBoundaryName={centerBoundaryName}

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { useMapData } from "./useMapData.js";
 import { MapRenderer } from "./MapRenderer.js";
@@ -44,6 +44,34 @@ function writePanelOpen(open: boolean): void {
     /* ignore — the panel still works for this page */
   }
 }
+
+/** 2026-09-30 (owner): while playback is open, its clock, speed and play/pause live in the URL
+ * (`?at=&speed=&play=1` — the same parameters a boundary link carries, which App already reads
+ * on load), so a refresh reopens playback exactly where it was. Written with `replaceState`, so
+ * it adds no history entries, and only when something actually changed. */
+export function writePlaybackParams(state: {
+  atIso: string;
+  speed: number;
+  playing: boolean;
+}): void {
+  try {
+    const url = new URL(window.location.href);
+    const at = new Date(Math.floor(Date.parse(state.atIso) / 1000) * 1000).toISOString();
+    url.searchParams.set("at", at);
+    url.searchParams.set("speed", String(state.speed));
+    if (state.playing) url.searchParams.set("play", "1");
+    else url.searchParams.delete("play");
+    if (url.toString() !== window.location.href) {
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+  } catch {
+    /* ignore — playback still works, a refresh just returns to live */
+  }
+}
+
+/** How often the playback URL is refreshed — the clock runs continuously while playing, and
+ * browsers throttle a page that calls `replaceState` too often. */
+const PLAYBACK_URL_INTERVAL_MS = 1000;
 
 /** Drop the playback position from the URL, so a refresh after returning to live stays live. */
 function clearPlaybackParams(): void {
@@ -129,6 +157,10 @@ export function MapView({
 }: MapViewProps): JSX.Element {
   const { definition, state, error, loading, connectionStatus, delays } = useMapData(slug);
   const [playbackFrom, setPlaybackFrom] = useState<number | null>(initialPlayback?.atMs ?? null);
+  // The speed/play state this page arrived with (a boundary link or a refreshed playback URL)
+  // applies to that first playback only: once the visitor returns to live, the Playback button
+  // starts fresh at 1x, paused — not at whatever the page was loaded with.
+  const [arrivalPlayback, setArrivalPlayback] = useState(initialPlayback);
   const [sClassOpen, setSClassOpen] = useState<boolean>(() => isAdmin && readPanelOpen());
   const [highlight, setHighlight] = useState<string[]>([]);
   const onHighlight = useCallback((ids: string[]) => setHighlight(ids), []);
@@ -276,8 +308,8 @@ export function MapView({
         <PlaybackView
           slug={slug}
           fromMs={playbackFrom}
-          initialSpeed={initialPlayback?.speed ?? 1}
-          initialPlaying={initialPlayback?.playing ?? false}
+          initialSpeed={arrivalPlayback?.speed ?? 1}
+          initialPlaying={arrivalPlayback?.playing ?? false}
           bundle={definition.definition}
           showEmptyBerths={showEmptyBerths}
           showSignalNumbers={showSignalNumbers}
@@ -298,6 +330,7 @@ export function MapView({
           }
           onReturnToLive={() => {
             clearPlaybackParams();
+            setArrivalPlayback(null);
             setPlaybackFrom(null);
           }}
         />
@@ -347,6 +380,17 @@ function PlaybackView({
   // A speed carried in a URL is only honoured if it's one the controls offer.
   const speed = (PLAYBACK_SPEEDS as readonly number[]).includes(initialSpeed) ? initialSpeed : 1;
   const pb = usePlayback(slug, fromMs, { speed, playing: initialPlaying });
+  // Keep the URL in step with the playback box, at most once a second (see writePlaybackParams).
+  const latest = useRef({ atIso: pb.atIso, speed: pb.speed, playing: pb.playing });
+  latest.current = { atIso: pb.atIso, speed: pb.speed, playing: pb.playing };
+  useEffect(() => {
+    writePlaybackParams(latest.current);
+    const timer = window.setInterval(
+      () => writePlaybackParams(latest.current),
+      PLAYBACK_URL_INTERVAL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
   // Milestone 82: the bands as they stood at the playback clock's minute.
   const delays = useDelayBands(slug, delayColours, pb.atIso);
   const delayBands = useMemo(() => matchDelayBands(delays, pb.berths), [delays, pb.berths]);

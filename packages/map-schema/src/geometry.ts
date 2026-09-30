@@ -202,6 +202,100 @@ export interface NeutralSectionGeometry {
   label: PlacedLabel;
 }
 
+export interface PlatformNumberGeometry {
+  /** The white square. */
+  box: Rect;
+  /** Where the text is centred (alignment is centre / middle in both renderers). */
+  textArea: Rect;
+  /** The text size after shrinking to fit `textArea`. */
+  fontSize: number;
+  /** The arrow triangle's three corners (tip first), or null for no arrow. */
+  arrow: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }] | null;
+}
+
+/** Fraction of the box an arrow takes along its own axis, and how far its tip sits from the
+ * edge. The text takes the rest. */
+const PLATFORM_ARROW_BAND = 0.34;
+const PLATFORM_ARROW_INSET = 0.08;
+/** Half the arrow's base, as a fraction of the box. */
+const PLATFORM_ARROW_HALF_BASE = 0.2;
+/** Approximate advance of one bold digit/capital, in ems — used to fit up to three characters. */
+const PLATFORM_CHAR_WIDTH_EM = 0.62;
+
+/**
+ * Owner request 2026-09-30: a platform number is a square — 10 units by default (`size: "small"`),
+ * 16 at `size: "large"` — centred on its `x`/`y`, optionally carrying an arrow pointing at the
+ * platform it names (up = the track above, and so on). The arrow sits in a band along the side it
+ * points to and the text fills the rest; the text is shrunk (never grown past `fontSize`) until
+ * its characters fit, so "12A" or "RES" still fits a 10-unit square beside an arrow.
+ *
+ * Pure and shared by the public SVG renderer and the editor canvas (CLAUDE.md rule 13).
+ */
+export function platformNumberGeometry(element: {
+  x: number;
+  y: number;
+  text: string;
+  fontSize: number;
+  size?: "small" | "large" | undefined;
+  arrow?: "up" | "down" | "left" | "right" | undefined;
+}): PlatformNumberGeometry {
+  const side =
+    element.size === "large" ? MAP_STYLE.platform.numberBox : MAP_STYLE.platform.numberBoxSmall;
+  const left = element.x - side / 2;
+  const top = element.y - side / 2;
+  const box = { x: left, y: top, width: side, height: side };
+  const band = side * PLATFORM_ARROW_BAND;
+  const inset = side * PLATFORM_ARROW_INSET;
+  const half = side * PLATFORM_ARROW_HALF_BASE;
+
+  let textArea: Rect = box;
+  let arrow: PlatformNumberGeometry["arrow"] = null;
+  switch (element.arrow) {
+    case "up":
+      arrow = [
+        { x: element.x, y: top + inset },
+        { x: element.x - half, y: top + band },
+        { x: element.x + half, y: top + band },
+      ];
+      textArea = { x: left, y: top + band, width: side, height: side - band };
+      break;
+    case "down":
+      arrow = [
+        { x: element.x, y: top + side - inset },
+        { x: element.x - half, y: top + side - band },
+        { x: element.x + half, y: top + side - band },
+      ];
+      textArea = { x: left, y: top, width: side, height: side - band };
+      break;
+    case "left":
+      arrow = [
+        { x: left + inset, y: element.y },
+        { x: left + band, y: element.y - half },
+        { x: left + band, y: element.y + half },
+      ];
+      textArea = { x: left + band, y: top, width: side - band, height: side };
+      break;
+    case "right":
+      arrow = [
+        { x: left + side - inset, y: element.y },
+        { x: left + side - band, y: element.y - half },
+        { x: left + side - band, y: element.y + half },
+      ];
+      textArea = { x: left, y: top, width: side - band, height: side };
+      break;
+    default:
+      break;
+  }
+
+  const chars = Math.max(1, [...element.text].length);
+  const fontSize = Math.min(
+    element.fontSize,
+    textArea.height * 0.8,
+    (textArea.width * 0.92) / (chars * PLATFORM_CHAR_WIDTH_EM),
+  );
+  return { box, textArea, fontSize, arrow };
+}
+
 /**
  * Milestone 53: the on-screen geometry of a `neutralSection` sign, built from Sign AJ02 Issue
  * 1's own dimensions (see `MAP_STYLE.neutralSection`). The element's `x`/`y` is the **centre**

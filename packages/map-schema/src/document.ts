@@ -170,9 +170,18 @@ const PlatformNumberElementSchema = BaseElementSchema.extend({
   type: z.literal("platformNumber"),
   x: z.number(),
   y: z.number(),
+  /** Up to three characters in practice ("5", "12A", "RES") — the editor limits it; not enforced
+   * here so an older document can never fail to load over it. */
   text: z.string().min(1),
   platformId: z.string().optional(),
+  /** The largest the text may be; `platformNumberGeometry` shrinks it to fit the box. */
   fontSize: z.number().positive().default(10),
+  /** Owner request 2026-09-30: `small` (the default when absent) is a 10-unit square; `large`
+   * the original 16-unit box. */
+  size: z.enum(["small", "large"]).optional(),
+  /** Owner request 2026-09-30: which way the platform is from the number — e.g. an up arrow on
+   * "1A" means the platform on the track above. Absent means no arrow. */
+  arrow: z.enum(["up", "down", "left", "right"]).optional(),
 });
 
 /** ADR 0004 D6: a named station. Renders its `name` in the standard station-label style; the

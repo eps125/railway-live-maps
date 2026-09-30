@@ -1103,8 +1103,37 @@ describe("MapRenderer", () => {
         },
       },
     });
-    render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     expect(screen.getByText("4")).toBeInTheDocument();
+    // 2026-09-30: a 10-unit square by default, centred on x/y, with no arrow.
+    const box = container.querySelector("rect")!;
+    expect([box.getAttribute("x"), box.getAttribute("width")]).toEqual(["45", "10"]);
+    expect(container.querySelector("polygon")).toBeNull();
+  });
+
+  it("draws a large platform number with an up arrow above its text (2026-09-30)", () => {
+    const doc = bundle({
+      elementsById: {
+        "pn-1": {
+          id: "pn-1",
+          layerId: "layer-visible",
+          zIndex: 1,
+          type: "platformNumber",
+          x: 50,
+          y: 30,
+          text: "1A",
+          fontSize: 10,
+          size: "large",
+          arrow: "up",
+        },
+      },
+    });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    expect(container.querySelector("rect")!.getAttribute("width")).toBe("16");
+    const arrow = container.querySelector("polygon")!;
+    const tipY = Number(arrow.getAttribute("points")!.split(" ")[0]!.split(",")[1]);
+    const textY = Number(screen.getByText("1A").getAttribute("y"));
+    expect(tipY).toBeLessThan(textY);
   });
 
   it("draws a stem for an offset-mode signal, none for inline (ADR 0005 E4)", () => {

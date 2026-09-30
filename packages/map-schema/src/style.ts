@@ -79,8 +79,11 @@ export const MAP_STYLE = {
     height: 12,
     /** Gap from the bound track to the near edge of the bar. */
     offset: 12,
-    /** Side of the square white platform-number box. */
+    /** Side of the square white platform-number box at `size: "large"` (the original size; also
+     * the minimum width of a legacy 2-point platform bar). */
     numberBox: 16,
+    /** Side of the box at `size: "small"`, the default (owner, 2026-09-30). */
+    numberBoxSmall: 10,
     /** Konva has no CSS custom properties; the editor canvas uses this hex directly. The public
      * SVG renderer uses `var(--map-platform-fill, …)` with this as the fallback. */
     color: "#ffa500",

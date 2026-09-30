@@ -11,6 +11,7 @@ import {
   realisticLevelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
+  platformNumberGeometry,
   pointsBounds,
   findTrackCrossing,
   hiddenTracks,
@@ -1430,7 +1431,11 @@ export function EditorCanvas({
               );
             }
             if (element.type === "platformNumber") {
-              const box = MAP_STYLE.platform.numberBox;
+              // Same geometry as the public renderer (CLAUDE.md rule 13), drawn relative to the
+              // Group's own origin at the element's x/y so dragging moves it as one.
+              const g = platformNumberGeometry(element);
+              const dx = -element.x;
+              const dy = -element.y;
               return (
                 <Group
                   key={element.id}
@@ -1442,23 +1447,31 @@ export function EditorCanvas({
                   onDragEnd={(e) => handlePositionedDragEnd(e, element.id)}
                 >
                   <Rect
-                    x={-box / 2}
-                    y={-box / 2}
-                    width={box}
-                    height={box}
+                    x={g.box.x + dx}
+                    y={g.box.y + dy}
+                    width={g.box.width}
+                    height={g.box.height}
                     fill="#ffffff"
                     stroke={selected ? "#58a6ff" : "#2d3644"}
-                    strokeWidth={1}
+                    strokeWidth={g.box.width <= MAP_STYLE.platform.numberBoxSmall ? 0.6 : 1}
                   />
+                  {g.arrow ? (
+                    <Line
+                      points={g.arrow.flatMap((p) => [p.x + dx, p.y + dy])}
+                      closed
+                      fill="#04101f"
+                      listening={false}
+                    />
+                  ) : null}
                   <Text
                     text={element.text}
-                    x={-box / 2}
-                    y={-box / 2}
-                    width={box}
-                    height={box}
+                    x={g.textArea.x + dx}
+                    y={g.textArea.y + dy}
+                    width={g.textArea.width}
+                    height={g.textArea.height}
                     align="center"
                     verticalAlign="middle"
-                    fontSize={element.fontSize}
+                    fontSize={g.fontSize}
                     fontStyle="bold"
                     fill="#04101f"
                     listening={false}

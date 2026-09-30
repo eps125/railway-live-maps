@@ -4,6 +4,7 @@ import {
   berthRenderRect,
   levelCrossingGeometry,
   neutralSectionGeometry,
+  platformNumberGeometry,
   placedLabelAnchor,
   realisticLevelCrossingGeometry,
   pointOnPathAtX,
@@ -161,6 +162,52 @@ describe("berthRenderRect", () => {
     const byId = Object.fromEntries(doc.elements.map((e) => [e.id, e]));
     const b = doc.elements.find((e) => e.id === "b1") as BerthElement;
     expect(berthRenderRect(b, byId).y).toBe(90);
+  });
+});
+
+describe("platformNumberGeometry (owner request 2026-09-30)", () => {
+  const base = { x: 100, y: 50, text: "5", fontSize: 10 };
+
+  it("is a 10-unit square by default and the original 16 when large, centred on x/y", () => {
+    expect(platformNumberGeometry(base).box).toEqual({ x: 95, y: 45, width: 10, height: 10 });
+    expect(platformNumberGeometry({ ...base, size: "large" }).box).toEqual({
+      x: 92,
+      y: 42,
+      width: 16,
+      height: 16,
+    });
+  });
+
+  it("has no arrow unless asked, and then the text uses the whole box", () => {
+    const g = platformNumberGeometry(base);
+    expect(g.arrow).toBeNull();
+    expect(g.textArea).toEqual(g.box);
+  });
+
+  it("puts an arrow in a band on the side it points to, and the text in the rest", () => {
+    const up = platformNumberGeometry({ ...base, arrow: "up" });
+    expect(up.arrow![0]).toEqual({ x: 100, y: 45.8 }); // tip near the top edge
+    expect(up.textArea.y).toBeCloseTo(48.4);
+    expect(up.textArea.y + up.textArea.height).toBe(55);
+
+    const down = platformNumberGeometry({ ...base, arrow: "down" });
+    expect(down.arrow![0]).toEqual({ x: 100, y: 54.2 });
+    expect(down.textArea.y).toBe(45);
+
+    const left = platformNumberGeometry({ ...base, arrow: "left" });
+    expect(left.arrow![0].x).toBeCloseTo(95.8);
+    expect(left.textArea.x).toBeCloseTo(98.4);
+
+    const right = platformNumberGeometry({ ...base, arrow: "right" });
+    expect(right.arrow![0].x).toBeCloseTo(104.2);
+    expect(right.textArea.x + right.textArea.width).toBeCloseTo(101.6);
+  });
+
+  it("shrinks three characters to fit beside an arrow, but never grows past fontSize", () => {
+    const g = platformNumberGeometry({ ...base, text: "12A", arrow: "up" });
+    // Three bold characters must fit the 10-unit width.
+    expect(g.fontSize * 3 * 0.62).toBeLessThanOrEqual(10);
+    expect(platformNumberGeometry({ ...base, size: "large", fontSize: 4 }).fontSize).toBe(4);
   });
 });
 

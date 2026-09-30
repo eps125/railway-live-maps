@@ -10,6 +10,7 @@ import {
   realisticLevelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
+  platformNumberGeometry,
   pointOnPathAtX,
   pointsBounds,
   switchedDiamondGeometry,
@@ -136,37 +137,6 @@ function berthColors(
   return { fill: "#3d7fc4", stroke: "#6aa4de" };
 }
 
-/** The white bordered platform-number box (Traksy pattern), centred on `(cx, cy)`. Shared by
- * the legacy inline `platform.number` and the standalone `platformNumber` element (ADR 0005
- * E3). Colours come from `--map-platform-number-*` tokens with hard fallbacks. */
-function numberBox(cx: number, cy: number, text: string, fontSize: number): JSX.Element {
-  const box = MAP_STYLE.platform.numberBox;
-  return (
-    <>
-      <rect
-        x={cx - box / 2}
-        y={cy - box / 2}
-        width={box}
-        height={box}
-        fill="var(--map-platform-number-fill, #ffffff)"
-        stroke="var(--map-platform-number-border, #2d3644)"
-        strokeWidth={1}
-      />
-      <text
-        x={cx}
-        y={cy}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize={fontSize}
-        fontWeight={700}
-        fill="var(--map-platform-number-text, #04101f)"
-      >
-        {text}
-      </text>
-    </>
-  );
-}
-
 /** ADR 0004 D6 / ADR 0005 E2-E3 (rev. 2026-09-08): a platform is a **filled shape**, Traksy
  * orange (`#FFA500`). With 3+ points its `points` are the polygon outline, so vertices vary its
  * width and shape (L-shaped platforms, bays). A legacy 2-point platform is drawn as a bar of
@@ -217,9 +187,39 @@ function renderPlatform(
   );
 }
 
-/** ADR 0005 E3: standalone platform number — the author places it above its platform. */
+/** ADR 0005 E3: standalone platform number — the author places it near its platform. A square
+ * (10 units, or 16 at `size: "large"`) with an optional arrow towards the platform it names
+ * (owner, 2026-09-30); geometry shared with the editor via `platformNumberGeometry`. */
 function renderPlatformNumber(element: PlatformNumberElement): JSX.Element {
-  return <g key={element.id}>{numberBox(element.x, element.y, element.text, element.fontSize)}</g>;
+  const g = platformNumberGeometry(element);
+  const textColour = "var(--map-platform-number-text, #04101f)";
+  return (
+    <g key={element.id}>
+      <rect
+        x={g.box.x}
+        y={g.box.y}
+        width={g.box.width}
+        height={g.box.height}
+        fill="var(--map-platform-number-fill, #ffffff)"
+        stroke="var(--map-platform-number-border, #2d3644)"
+        strokeWidth={g.box.width <= MAP_STYLE.platform.numberBoxSmall ? 0.6 : 1}
+      />
+      {g.arrow ? (
+        <polygon points={g.arrow.map((p) => `${p.x},${p.y}`).join(" ")} fill={textColour} />
+      ) : null}
+      <text
+        x={g.textArea.x + g.textArea.width / 2}
+        y={g.textArea.y + g.textArea.height / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontSize={g.fontSize}
+        fontWeight={700}
+        fill={textColour}
+      >
+        {element.text}
+      </text>
+    </g>
+  );
 }
 
 /** Milestone 55: the caption a piece of map furniture carries, at the anchor

@@ -38,9 +38,11 @@ interface TextFieldProps {
    * multiple lines (each newline wraps in both renderers): a `label`'s text, and since
    * 2026-09-20 a `station`'s name. */
   multiline?: boolean;
+  /** Longest text the field accepts (single-line only). */
+  maxLength?: number;
 }
 
-function TextField({ label, value, onCommit, multiline }: TextFieldProps): JSX.Element {
+function TextField({ label, value, onCommit, multiline, maxLength }: TextFieldProps): JSX.Element {
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
   const commit = (): void => {
@@ -60,6 +62,7 @@ function TextField({ label, value, onCommit, multiline }: TextFieldProps): JSX.E
         <input
           type="text"
           value={local}
+          maxLength={maxLength}
           onChange={(e) => setLocal(e.target.value)}
           onBlur={commit}
         />
@@ -2013,11 +2016,44 @@ export function PropertyPanel(): JSX.Element {
 
       {element.type === "platformNumber" && (
         <>
-          <TextField label="Text" value={element.text} onCommit={(v) => setProp("text", v)} />
+          {/* Owner 2026-09-30: never more than three characters ("5", "12A", "RES"). An empty
+              box keeps the previous text rather than committing nothing. */}
+          <TextField
+            label="Text"
+            value={element.text}
+            maxLength={3}
+            onCommit={(v) => {
+              const text = v.trim().slice(0, 3);
+              if (text) setProp("text", text);
+            }}
+          />
+          <label className="field">
+            Size
+            <select
+              value={element.size ?? "small"}
+              onChange={(e) => setProp("size", e.target.value === "large" ? "large" : undefined)}
+            >
+              <option value="small">Small (10 × 10)</option>
+              <option value="large">Large (16 × 16)</option>
+            </select>
+          </label>
+          <label className="field">
+            Arrow
+            <select
+              value={element.arrow ?? ""}
+              onChange={(e) => setProp("arrow", e.target.value || undefined)}
+            >
+              <option value="">None</option>
+              <option value="up">Up (track above)</option>
+              <option value="down">Down (track below)</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </label>
           <NumberField label="X" value={element.x} onCommit={(v) => setProp("x", v)} />
           <NumberField label="Y" value={element.y} onCommit={(v) => setProp("y", v)} />
           <NumberField
-            label="Font size"
+            label="Max font size"
             value={element.fontSize}
             onCommit={(v) => setProp("fontSize", v)}
           />

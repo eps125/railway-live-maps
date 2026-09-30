@@ -1233,11 +1233,13 @@ legend {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 0.75rem;
-  border: 1px solid var(--color-border);
-  /* Square, like the toolbar and header it sits under (owner, 2026-09-30). */
+  /* Styled exactly like the map toolbar it sits under (owner, 2026-09-30): same background, same
+     padding, square, and only the toolbar's single bottom rule — no box of its own. */
+  padding: 0.5rem 1.25rem;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--color-panel, #161c24);
+  background: var(--color-bg-elevated);
 }
 
 .playback__row {

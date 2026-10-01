@@ -287,3 +287,11 @@ protects the STP tier not just the activation check, and every-candidate-already
 `unmatched`), `currentRun.integration.test.ts` (+2 integration cases: the real scenario end-to-end,
 and confirmation two activated candidates with no movement evidence either way still correctly
 stay ambiguous).
+
+## Addendum (2026-10-01): which date, and which schedule
+
+Probing both dates was not enough for a train running on consecutive nights: the schedule is valid
+on both, and the most recent date was always preferred. The date is now the occurrence whose
+origin departure is nearest to now (`ServiceDateChoice`). Separately, STP precedence is decided per
+train UID from every schedule of that UID, cancellations included (`governsDate`), and never across
+different trains sharing a headcode. See IMPLEMENTATION_PLAN Milestone 87.

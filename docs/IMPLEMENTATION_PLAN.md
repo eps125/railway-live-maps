@@ -4589,3 +4589,31 @@ and the delay colours, could show last month's facts.
 
 Tests: a live train whose trust id was used a month ago by a train already beyond the berth is
 matched; a reused id never shows last month's delay band.
+
+## Milestone 87 — Overnight trains and per-train STP precedence (2026-10-01)
+
+Owner report: delay colours missing for overnight trains (Caledonian Sleeper 1S25, 1S26, 1M11,
+1M16) and for "quite a lot" of other trains.
+
+- [x] Overnight trains on consecutive nights (`ServiceDateChoice`, `resolveStpPrecedence.ts`): a
+      schedule valid on both probed dates is matched to the occurrence whose origin departure is
+      nearest to now. Previously it always took today, so 1M11 (Glasgow 23:40) at Carlisle 00:30
+      was linked to tonight's run, missed its activation and got no delay colour.
+- [x] STP precedence per train UID (`governsDate`): below TRUST activation each train counts once,
+      as the schedule governing it that day, worked out from _every_ schedule of its UID
+      (`schedulesForTrainUids`) — cancellations carry no headcode (all but 76 of 131k current C
+      rows) and were invisible. Precedence is never compared across trains (an overlay of one
+      train used to beat another train's permanent schedule) and is applied before excluding
+      finished runs (a finished overlay used to bring its own P back: PX/M9 1N58, morning G89569's
+      P beat the evening G89571).
+- [x] `repair-run-links --correct`: a resolved link that now resolves to a different run is
+      replaced when TRUST activation confirms it, and links carried from the old run move with it.
+      Carried links are skipped by the link's own basis (the old check read the run's basis).
+- [x] Run on production over 2026-09-30 00:00 – 2026-10-01 21:52 UTC in 8 parallel 6-hour slices
+      (~4.5 min): 723 links corrected, 2,442 carried links moved, 270 missing links added; 502
+      unconfirmed mismatches left alone.
+
+Tests: overnight date choice (4 domain cases), per-UID precedence (4 domain cases: finished
+overlay, cross-train overlay, cancellation via UID, date-bounded cancellation),
+`repairRunLinks.integration.test.ts` (sleeper stored against the next day is corrected and its
+journey repointed; idempotent).

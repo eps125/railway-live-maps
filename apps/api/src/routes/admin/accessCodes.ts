@@ -9,6 +9,9 @@ import {
   listAccessCodes,
   MaxUsesBelowUseCountError,
   revokeAccessCode,
+  restoreAccessCode,
+  deleteAccessCode,
+  purgeAccessCode,
   revokeGrant,
   UnknownMapError,
   updateAccessCode,
@@ -356,6 +359,86 @@ export async function registerAccessCodeAdminRoutes(
       });
       siteAccess.invalidate();
       return codeResponse((await findAccessCode(pool, before.id))!);
+    },
+  );
+
+  // Owner request 2026-10-01: undo a revoke.
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/admin/access-codes/:id/restore",
+    async (request, reply) => {
+      const before = await findAccessCode(pool, request.params.id);
+      if (!before) {
+        reply.code(404);
+        return apiError("ACCESS_CODE_NOT_FOUND", `No access code with id "${request.params.id}"`);
+      }
+      if (!before.revokedAt) {
+        reply.code(409);
+        return apiError("NOT_REVOKED", "This code isn't revoked");
+      }
+      const restoredUses = await inTransaction(async (client) => {
+        const count = await restoreAccessCode(client, before.id);
+        await audit(
+          client,
+          request,
+          "access.code.restore",
+          { type: "access_code", id: before.id },
+          {
+            label: before.label,
+            restoredUses: count,
+          },
+        );
+        return count ?? 0;
+      });
+      siteAccess.invalidate();
+      return { ...codeResponse((await findAccessCode(pool, before.id))!), restoredUses };
+    },
+  );
+
+  // Owner request 2026-10-01: remove a code, its uses and their activity for good. The audit log
+  // keeps the record that it existed and who deleted it.
+  app.delete<{ Params: { id: string } }>(
+    "/api/v1/admin/access-codes/:id",
+    async (request, reply) => {
+      const before = await findAccessCode(pool, request.params.id);
+      if (!before) {
+        reply.code(404);
+        return apiError("ACCESS_CODE_NOT_FOUND", `No access code with id "${request.params.id}"`);
+      }
+      await inTransaction(async (client) => {
+        await deleteAccessCode(client, before.id);
+        await audit(
+          client,
+          request,
+          "access.code.delete",
+          { type: "access_code", id: before.id },
+          {
+            label: before.label,
+            scope: before.scope,
+            useCount: before.useCount,
+            activeGrants: before.activeGrants,
+          },
+        );
+      });
+      siteAccess.invalidate();
+      reply.code(204);
+      return null;
+    },
+  );
+
+  // Owner request 2026-10-01: purge — delete the code as above *and* remove every audit log entry
+  // about it and its uses; the purge itself is not recorded. Admin only (this whole scope is).
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/admin/access-codes/:id/purge",
+    async (request, reply) => {
+      const before = await findAccessCode(pool, request.params.id);
+      if (!before) {
+        reply.code(404);
+        return apiError("ACCESS_CODE_NOT_FOUND", `No access code with id "${request.params.id}"`);
+      }
+      await inTransaction((client) => purgeAccessCode(client, before.id));
+      siteAccess.invalidate();
+      reply.code(204);
+      return null;
     },
   );
 

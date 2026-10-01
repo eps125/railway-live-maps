@@ -661,6 +661,14 @@ requestCount, flags, activity: [{ hour, ip, userAgent, requestCount }] }]`. Flag
   the uses so far), `accessSeconds` (future uses), `validUntil`, `notes`. The code text cannot change.
 - `POST /api/v1/admin/access-codes/{id}/revoke` — the code can't be entered again and every use of
   it ends.
+- `POST /api/v1/admin/access-codes/{id}/restore` (2026-10-01) — undo a revoke: the code can be
+  entered again and the uses the revoke ended come back (if not expired); uses ended one at a time
+  stay ended. `409 NOT_REVOKED` for a code that isn't revoked. Returns the code plus
+  `restoredUses`.
+- `DELETE /api/v1/admin/access-codes/{id}` (2026-10-01) — delete the code, its uses and their
+  activity for good; recorded in the audit log (`access.code.delete`).
+- `POST /api/v1/admin/access-codes/{id}/purge` (2026-10-01) — the same, and every audit log entry
+  about the code and its uses is removed too; the purge itself is not recorded.
 - `PATCH /api/v1/admin/access-grants/{id}` `{ expiresAt }` — change one use's end (earlier or
   later). `POST /api/v1/admin/access-grants/{id}/revoke` — end one use now.
 

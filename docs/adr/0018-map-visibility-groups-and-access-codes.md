@@ -95,6 +95,10 @@ site-mode changes. Admin › Audit log lists it, newest first, filterable by act
   hour. Admins see a code's uses and activity; a grant seen from several IPs, or a code used from
   several networks, is flagged.
 - Code entry is rate-limited per IP. Activity older than 90 days is deleted.
+- **Amended 2026-10-01 (owner):** a revoked code can be re-enabled (the uses its revoke ended come
+  back); a code can be deleted for good (audited); and an admin can **purge** a code, which also
+  removes every audit entry about it, unrecorded. Migration 0049 lets the audit log accept that one
+  kind of delete; it stays append-only for everything else.
 
 ## Consequences
 

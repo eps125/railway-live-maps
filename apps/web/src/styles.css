@@ -1852,6 +1852,13 @@ legend {
   flex: 1;
 }
 
+/* A field's own bottom margin would sit the button below the input in these one-line rows. */
+.region-list__add .field,
+.group-list__add .field,
+.modules-panel__add .field {
+  margin-bottom: 0;
+}
+
 .users-table__groups {
   display: flex;
   flex-direction: column;
@@ -2080,6 +2087,21 @@ legend {
 
 .access-code__status--revoked {
   color: var(--color-danger);
+}
+
+.access-code__delete {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(248, 81, 73, 0.08);
+}
+
+.access-code__delete p {
+  margin: 0;
+  font-size: 0.85rem;
 }
 
 .access-code__uses {

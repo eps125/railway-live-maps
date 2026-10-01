@@ -383,6 +383,162 @@ describe("access codes (integration)", () => {
     expect(tooLow.statusCode).toBe(400);
   });
 
+  it("re-enabling a revoked code brings back the uses the revoke ended, not ones ended singly", async () => {
+    const created = await createCode({
+      label: `Restore ${suffix}`,
+      scope: "site",
+      maxUses: null,
+      accessSeconds: 3600,
+    });
+    const keptCookie = cookieFrom(await redeem(created.code), "rlm_access");
+    const endedCookie = cookieFrom(await redeem(created.code), "rlm_access");
+    const detail = (
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/admin/access-codes/${created.id}`,
+        headers: { cookie: adminCookie },
+      })
+    ).json();
+    // Grants are newest first: end the second use on its own.
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-grants/${detail.grants[0].id}/revoke`,
+      headers: { cookie: adminCookie },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-codes/${created.id}/revoke`,
+      headers: { cookie: adminCookie },
+    });
+
+    const restored = await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-codes/${created.id}/restore`,
+      headers: { cookie: adminCookie },
+    });
+    expect(restored.json()).toMatchObject({ status: "active", restoredUses: 1 });
+    const status = (cookie: string) =>
+      app
+        .inject({ method: "GET", url: "/api/v1/access/status", headers: { cookie } })
+        .then((r) => r.json().access);
+    expect(await status(keptCookie)).toBe("code");
+    expect(await status(endedCookie)).toBe("none");
+    expect((await redeem(created.code)).statusCode).toBe(200);
+
+    const again = await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-codes/${created.id}/restore`,
+      headers: { cookie: adminCookie },
+    });
+    expect(again.statusCode).toBe(409);
+  });
+
+  it("deleting a code removes it and its uses for good, and is audited", async () => {
+    const created = await createCode({
+      label: `Delete ${suffix}`,
+      scope: "maps",
+      mapIds: [restrictedMapId],
+      maxUses: null,
+      accessSeconds: 3600,
+    });
+    const cookie = cookieFrom(await redeem(created.code), "rlm_access");
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/admin/access-codes/${created.id}`,
+      headers: { cookie: adminCookie },
+    });
+    expect(deleted.statusCode).toBe(204);
+    expect(
+      (
+        await app.inject({ method: "GET", url: "/api/v1/access/status", headers: { cookie } })
+      ).json().access,
+    ).toBe("none");
+    expect((await redeem(created.code)).json().error.details.reason).toBe("unknown");
+    const left = await pool.query(`select 1 from access_grant where code_id = $1`, [created.id]);
+    expect(left.rows).toHaveLength(0);
+    const log = (
+      await app.inject({
+        method: "GET",
+        url: "/api/v1/admin/audit-log?action=access.code.delete",
+        headers: { cookie: adminCookie },
+      })
+    ).json();
+    expect(log.entries.some((e: { targetId: string }) => e.targetId === created.id)).toBe(true);
+  });
+
+  it("purging a code removes it and every audit entry about it, unrecorded", async () => {
+    const created = await createCode({
+      label: `Purge ${suffix}`,
+      scope: "site",
+      maxUses: null,
+      accessSeconds: 3600,
+    });
+    await redeem(created.code);
+    const grantId = (
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/admin/access-codes/${created.id}`,
+        headers: { cookie: adminCookie },
+      })
+    ).json().grants[0].id as string;
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-grants/${grantId}/revoke`,
+      headers: { cookie: adminCookie },
+    });
+    const before = await pool.query(
+      `select 1 from admin_audit_log
+        where (target_type = 'access_code' and target_id = $1)
+           or (target_type = 'access_grant' and details ->> 'codeId' = $1)`,
+      [created.id],
+    );
+    expect(before.rows.length).toBeGreaterThanOrEqual(2);
+
+    const purged = await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-codes/${created.id}/purge`,
+      headers: { cookie: adminCookie },
+    });
+    expect(purged.statusCode).toBe(204);
+    const after = await pool.query(
+      `select 1 from admin_audit_log
+        where (target_type = 'access_code' and target_id = $1)
+           or (target_type = 'access_grant' and details ->> 'codeId' = $1)
+           or action like 'access.code.purge%'`,
+      [created.id],
+    );
+    expect(after.rows).toHaveLength(0);
+    expect((await redeem(created.code)).json().error.details.reason).toBe("unknown");
+
+    // Everything else in the log is still append-only.
+    await expect(
+      pool.query(`delete from admin_audit_log where id = (select min(id) from admin_audit_log)`),
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it("purge is admin only", async () => {
+    const editor = `codes-editor-${suffix}`;
+    await createUser(pool, { username: editor, password: PASSWORD, role: "editor" });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: editor, password: PASSWORD },
+    });
+    const editorCookie = cookieFrom(login, "rlm_session");
+    const created = await createCode({
+      label: `Not yours ${suffix}`,
+      scope: "site",
+      maxUses: null,
+      accessSeconds: 3600,
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/admin/access-codes/${created.id}/purge`,
+      headers: { cookie: editorCookie },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
   it("every code change is in the audit log", async () => {
     const log = (
       await app.inject({

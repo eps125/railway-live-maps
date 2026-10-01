@@ -203,4 +203,67 @@ describe("AdminAccessPage", () => {
       ).toBe(true),
     );
   });
+
+  it("re-enables a revoked code", async () => {
+    const fetchMock = stub((url, init) => {
+      if (url === "/api/v1/admin/access-codes" && !init?.method) {
+        return jsonResponse({
+          codes: [{ ...CODE, status: "revoked", revokedAt: "2026-10-01T12:00:00Z" }],
+        });
+      }
+      if (url === "/api/v1/admin/access-codes/3/restore") return jsonResponse(CODE);
+      return undefined;
+    });
+    render(<AdminAccessPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Re-enable" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => url === "/api/v1/admin/access-codes/3/restore"),
+      ).toBe(true),
+    );
+  });
+
+  it("purges a code (out of the audit log too) only after confirming", async () => {
+    const fetchMock = stub((url, init) =>
+      url === "/api/v1/admin/access-codes/3/purge" && init?.method === "POST"
+        ? jsonResponse(null, 204)
+        : undefined,
+    );
+    render(<AdminAccessPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Purge" }));
+    expect(screen.getByText(/purge isn't recorded/i)).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/purge"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Purge for good" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => url === "/api/v1/admin/access-codes/3/purge"),
+      ).toBe(true),
+    );
+  });
+
+  it("deletes a code for good only after the second confirmation", async () => {
+    const fetchMock = stub((url, init) =>
+      url === "/api/v1/admin/access-codes/3" && init?.method === "DELETE"
+        ? jsonResponse(null, 204)
+        : undefined,
+    );
+    render(<AdminAccessPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(false);
+    expect(screen.getByText(/keeps a note that it was deleted/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete for good" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            url === "/api/v1/admin/access-codes/3" &&
+            (init as RequestInit | undefined)?.method === "DELETE",
+        ),
+      ).toBe(true),
+    );
+  });
 });

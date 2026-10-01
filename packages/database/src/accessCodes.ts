@@ -304,6 +304,68 @@ export async function revokeAccessCode(
   return true;
 }
 
+/**
+ * Owner request 2026-10-01: undo a revoke. The code can be entered again, and the uses that were
+ * ended *by the code's revoke* come back (those still within their own expiry are live again at
+ * once). A revoke stamps the code and those uses with the same transaction time, which is how they
+ * are told apart from uses an admin ended one at a time — those stay ended. Returns the number of
+ * uses restored, or null for an unknown or not-revoked code.
+ */
+export async function restoreAccessCode(db: Queryable, id: string): Promise<number | null> {
+  if (!/^\d+$/.test(id)) return null;
+  const { rows } = await db.query<{ id: string }>(
+    `select id::text from access_code where id = $1 and revoked_at is not null for update`,
+    [id],
+  );
+  if (rows.length === 0) return null;
+  // Compared in SQL: a JavaScript Date keeps only milliseconds, so the revoke time round-tripped
+  // through it would never equal the microsecond timestamp stored on the uses.
+  const restored = await db.query<{ id: string }>(
+    `update access_grant g set revoked_at = null, revoked_by = null
+       from access_code c
+      where c.id = $1 and g.code_id = c.id and g.revoked_at = c.revoked_at
+      returning g.id`,
+    [id],
+  );
+  await db.query(`update access_code set revoked_at = null, revoked_by = null where id = $1`, [id]);
+  return restored.rows.length;
+}
+
+/**
+ * Owner request 2026-10-01: remove a code completely — its uses, their activity (FK cascade) and
+ * its map list (FK cascade). The admin audit log keeps the record that it existed. Returns false
+ * for an unknown code.
+ */
+export async function deleteAccessCode(db: Queryable, id: string): Promise<boolean> {
+  if (!/^\d+$/.test(id)) return false;
+  await db.query(`delete from access_grant where code_id = $1`, [id]);
+  const { rows } = await db.query<{ id: string }>(
+    `delete from access_code where id = $1 returning id`,
+    [id],
+  );
+  return rows.length === 1;
+}
+
+/**
+ * Owner request 2026-10-01: **purge** a code — delete it (as `deleteAccessCode`) and remove every
+ * audit log entry about it and its uses, leaving no record. Admin only. Must run inside a
+ * transaction: `set local` opens the audit log to deletes (migration 0049) for that transaction
+ * alone. Returns false for an unknown code.
+ */
+export async function purgeAccessCode(db: Queryable, id: string): Promise<boolean> {
+  if (!/^\d+$/.test(id)) return false;
+  if (!(await deleteAccessCode(db, id))) return false;
+  await db.query(`set local rlm.audit_purge = 'on'`);
+  await db.query(
+    `delete from admin_audit_log
+      where (target_type = 'access_code' and target_id = $1)
+         or (target_type = 'access_grant' and details ->> 'codeId' = $1)`,
+    [id],
+  );
+  await db.query(`set local rlm.audit_purge = 'off'`);
+  return true;
+}
+
 export type RedeemResult =
   | {
       ok: true;

@@ -4547,3 +4547,17 @@ browser against the disposable database: assembled map, editing a module inside 
 publish cascade, public map.
 
 **Production needs migration 0048 applied by hand before this code deploys** (after 0046, 0047).
+
+### Milestone 84 follow-up — re-enable, delete and purge access codes; login page (2026-10-01)
+
+- [x] Re-enable a revoked code: the uses the revoke ended come back (unless expired); uses ended
+      one at a time stay ended.
+- [x] Delete a code for good (its uses and activity too), recorded in the audit log.
+- [x] Purge (admin only): delete and remove every audit entry about the code and its uses,
+      unrecorded. Migration 0049: the audit log allows deletes only when the transaction sets
+      `rlm.audit_purge = on`.
+- [x] The access code and staff sign-in pages are matching cards; the code box and login boxes are
+      drawn like a berth; no login link on the code page.
+
+**Production needs migration 0049 applied before this deploys** (until then a purge fails;
+nothing else depends on it).

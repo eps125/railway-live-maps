@@ -673,7 +673,9 @@ The migration seeds an **Editors** group containing every user that existed at t
 Who changed what: `occurred_at`, `actor_user_id` + `actor_username` (no foreign key — deleting a
 user never rewrites history), `action` (`map.publish`, `user.update`, ...), `target_type`,
 `target_id`, `details` jsonb (before/after where useful; never a password), `client_ip`.
-**Append-only:** a trigger rejects every `update` and `delete`.
+**Append-only:** a trigger rejects every `update` and `delete` — except (migration 0049, owner
+request 2026-10-01) a delete in a transaction that has set `rlm.audit_purge = on`, which only the
+admin "purge access code" route does.
 
 ### `access_code`, `access_code_map`, `access_grant`, `access_grant_activity` (Milestone 84, migration 0047)
 

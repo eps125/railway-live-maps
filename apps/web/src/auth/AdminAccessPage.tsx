@@ -111,6 +111,9 @@ export function AdminAccessPage(): JSX.Element {
   const [openCodeId, setOpenCodeId] = useState<string | null>(null);
   const [editingCodeId, setEditingCodeId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // Owner request 2026-10-01: delete or purge a code for good (asks first). Delete keeps the
+  // audit trail; purge removes it too.
+  const [removing, setRemoving] = useState<{ id: string; mode: "delete" | "purge" } | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -297,7 +300,7 @@ export function AdminAccessPage(): JSX.Element {
                 >
                   Uses and activity
                 </button>
-                {code.status !== "revoked" && (
+                {code.status !== "revoked" ? (
                   <>
                     <button
                       type="button"
@@ -313,7 +316,7 @@ export function AdminAccessPage(): JSX.Element {
                       onClick={() => {
                         if (
                           window.confirm(
-                            `Revoke "${code.label}"? It can't be entered again, and everyone using it loses access within a minute.`,
+                            `Revoke "${code.label}"? It can't be entered again, and everyone using it loses access within a minute. You can re-enable it later.`,
                           )
                         ) {
                           void act(
@@ -326,8 +329,74 @@ export function AdminAccessPage(): JSX.Element {
                       Revoke
                     </button>
                   </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() =>
+                      void act(
+                        sendJson(`/api/v1/admin/access-codes/${code.id}/restore`, "POST"),
+                        "Failed to re-enable code.",
+                      )
+                    }
+                  >
+                    Re-enable
+                  </button>
                 )}
+                <button
+                  type="button"
+                  className="btn"
+                  aria-expanded={removing?.id === code.id && removing.mode === "delete"}
+                  onClick={() => setRemoving({ id: code.id, mode: "delete" })}
+                >
+                  Delete
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  aria-expanded={removing?.id === code.id && removing.mode === "purge"}
+                  onClick={() => setRemoving({ id: code.id, mode: "purge" })}
+                >
+                  Purge
+                </button>
               </div>
+              {removing?.id === code.id ? (
+                <div
+                  className="access-code__delete"
+                  role="group"
+                  aria-label={removing.mode === "purge" ? "Purge this code" : "Delete this code"}
+                >
+                  <p>
+                    {removing.mode === "purge" ? "Purge" : "Delete"} <strong>{code.label}</strong>{" "}
+                    for good? Its uses and their activity go with it, and anyone using it loses
+                    access within a minute. This can&apos;t be undone.{" "}
+                    {removing.mode === "purge"
+                      ? "Every audit log entry about it goes too, and the purge isn't recorded."
+                      : "The audit log keeps a note that it was deleted."}
+                  </p>
+                  <div className="admin-map-row__actions">
+                    <button
+                      type="button"
+                      className="btn btn--danger"
+                      onClick={() =>
+                        void act(
+                          removing.mode === "purge"
+                            ? sendJson(`/api/v1/admin/access-codes/${code.id}/purge`, "POST")
+                            : sendJson(`/api/v1/admin/access-codes/${code.id}`, "DELETE"),
+                          removing.mode === "purge"
+                            ? "Failed to purge code."
+                            : "Failed to delete code.",
+                        ).then((ok) => ok && setRemoving(null))
+                      }
+                    >
+                      {removing.mode === "purge" ? "Purge for good" : "Delete for good"}
+                    </button>
+                    <button type="button" className="btn" onClick={() => setRemoving(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {editingCodeId === code.id && (
                 <CodeForm
                   maps={maps}

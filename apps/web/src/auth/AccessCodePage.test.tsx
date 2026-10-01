@@ -43,7 +43,7 @@ describe("AccessCodePage", () => {
 
     render(<AccessCodePage onAccepted={onAccepted} />);
     fireEvent.change(screen.getByLabelText("Access code"), { target: { value: "k7qm-3xrp" } });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     await waitFor(() => expect(onAccepted).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith(
@@ -61,7 +61,7 @@ describe("AccessCodePage", () => {
     );
     render(<AccessCodePage onAccepted={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("Access code"), { target: { value: "OLD1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("That code has expired.");
   });
 });
@@ -85,17 +85,16 @@ describe("App with an access code required", () => {
     );
 
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Enter your access code" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Got a code?" })).toBeVisible();
     expect(screen.queryByRole("link", { name: "Maps" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Staff login" })).toHaveAttribute("href", "/rlm-login");
+    // Owner request: no login link on the code page.
+    expect(screen.queryByRole("link", { name: /login/i })).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Access code"), { target: { value: "K7QM3XRP" } });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     await waitFor(() =>
-      expect(
-        screen.queryByRole("heading", { name: "Enter your access code" }),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByRole("heading", { name: "Got a code?" })).not.toBeInTheDocument(),
     );
     expect(window.location.pathname).toBe("/map/lancaster");
     expect(window.location.search).toContain("at=");
@@ -116,7 +115,7 @@ describe("App with an access code required", () => {
     );
     render(<App />);
     expect(await screen.findByText("No maps published yet.")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Enter your access code" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Got a code?" })).toBeNull();
   });
 });
 

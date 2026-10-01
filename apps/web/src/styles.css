@@ -1920,30 +1920,72 @@ legend {
 
 /* Milestone 84: the access code page, the header's access note, and Admin › Access codes. */
 .access-code-page {
-  padding: 3rem 1rem;
+  padding: 14vh 1rem 3rem;
   display: flex;
   justify-content: center;
 }
 
-.access-code-page__card {
+.access-code-page__form {
   width: 100%;
-  max-width: 380px;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+  max-width: 420px;
+  padding: 1.5rem 1.6rem 1.6rem;
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 }
 
-.access-code-page__card input {
+.access-code-page__form h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.access-code-page__form > p {
+  margin: 0 0 1.5rem;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.access-code-page__entry {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* The code box is drawn like a train describer berth: black, square-edged, amber characters. */
+.access-code-page__entry input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  background: #000;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  color: #ffbf00;
   font-family: var(--font-mono);
-  font-size: 1.1rem;
-  letter-spacing: 0.08em;
+  font-size: 1.25rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-.access-code-page__login {
-  align-self: flex-start;
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
+.access-code-page__entry input:focus {
+  outline: none;
+  border-color: #ffbf00;
+}
+
+.access-code-page__entry .btn {
+  padding-inline: 1.1rem;
+}
+
+/* Spans the same width as the code box and button, on the card's own spacing. */
+.access-code-page__form .access-code-page__error {
+  margin: 1rem 0 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  border-radius: 2px;
+  background: rgba(248, 81, 73, 0.1);
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  line-height: 1.4;
 }
 
 .app-nav__access {

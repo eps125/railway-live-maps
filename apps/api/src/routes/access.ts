@@ -20,10 +20,10 @@ export interface AccessRoutesDeps extends ViewerDeps {
 }
 
 const REDEEM_ERRORS = {
-  unknown: "That code isn't recognised. Check it and try again.",
-  revoked: "That code has been withdrawn.",
+  unknown: "That code isn't one of ours — check it and try again.",
+  revoked: "That code has been cancelled.",
   expired: "That code has expired.",
-  used_up: "That code has already been used as many times as it allows.",
+  used_up: "That code has been used up.",
 } as const;
 
 /**

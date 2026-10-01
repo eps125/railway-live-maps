@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
-import { navigate } from "../useRoute.js";
 
 interface ErrorBody {
   error?: { message?: string };
@@ -46,43 +45,34 @@ export function AccessCodePage({ onAccepted }: AccessCodePageProps): JSX.Element
 
   return (
     <div className="access-code-page">
-      <form className="panel-card access-code-page__card" onSubmit={(e) => void submit(e)}>
-        <h2>Enter your access code</h2>
-        <p className="field-hint">
-          This site is currently available by access code. If you were given one, enter it below.
+      <form className="access-code-page__form" onSubmit={(e) => void submit(e)}>
+        <h2>Got a code?</h2>
+        <p>
+          The maps are only open to people with an access code at the moment. If you&apos;ve been
+          given one, type it in below.
         </p>
-        {error && (
-          <p role="alert" className="login-form__error">
-            {error}
-          </p>
-        )}
-        <label className="field">
-          Access code
+        <div className="access-code-page__entry">
           <input
             type="text"
+            aria-label="Access code"
             value={code}
             onChange={(e) => setCode(e.target.value)}
             autoComplete="one-time-code"
             autoCapitalize="characters"
             spellCheck={false}
-            placeholder="e.g. K7QM-3XRP"
+            maxLength={40}
             required
             autoFocus
           />
-        </label>
-        <button type="submit" className="btn btn--primary" disabled={submitting || !code.trim()}>
-          {submitting ? "Checking…" : "Continue"}
-        </button>
-        <a
-          className="access-code-page__login"
-          href="/rlm-login"
-          onClick={(e) => {
-            e.preventDefault();
-            navigate("/rlm-login");
-          }}
-        >
-          Staff login
-        </a>
+          <button type="submit" className="btn btn--primary" disabled={submitting || !code.trim()}>
+            {submitting ? "Checking…" : "Go"}
+          </button>
+        </div>
+        {error && (
+          <p role="alert" className="access-code-page__error">
+            {error}
+          </p>
+        )}
       </form>
     </div>
   );

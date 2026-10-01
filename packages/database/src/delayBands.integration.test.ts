@@ -349,6 +349,59 @@ describe("trust delay bands (Milestone 82, integration)", () => {
     createdTrainRunIds.push(link!.trainRunId);
   });
 
+  it("keeps one run per train when it is resolved again further on (2026-10-01)", async () => {
+    // Owner report: trains lost their delay colour as they stepped. Each fresh resolution of an
+    // unlinked berth made a new run, so the band's runKey changed along the journey.
+    const area = uniqueArea();
+    const now = Date.now();
+    const first = await seedOccupancy(area, "0011", "1A11", new Date(now - 3 * MINUTE), null);
+    const { runKey } = await seedLinkedRun(first, area, "0011", "weak", new Date());
+    const schedule = (
+      await pool.query<{ cif_schedule_id: string; cif_train_uid: string }>(
+        `select cif_schedule_id::text, cif_train_uid from train_run where id = $1`,
+        [runKey],
+      )
+    ).rows[0]!;
+    const resolved = {
+      cifScheduleId: schedule.cif_schedule_id,
+      cifTrainUid: schedule.cif_train_uid,
+      trafficDay: londonTodayDateString(),
+      tdArea: area,
+    };
+
+    // The step chain broke (an interpose): the next berth is resolved again, same train, weak.
+    const second = await seedOccupancy(area, "0013", "1A11", new Date(now - 2 * MINUTE), null);
+    const secondRef = { id: second.id, enteredAt: second.enteredAt };
+    await upsertResolvedLink(pool, secondRef, {
+      ...resolved,
+      matchBasis: "headcode_only",
+      matchConfidence: "weak",
+      berth: "0013",
+    });
+    expect((await findOccupancyLink(pool, secondRef))!.trainRunId).toBe(runKey);
+
+    // Further on it is confirmed by TRUST: one upgraded run, and the whole journey moves to it.
+    const third = await seedOccupancy(area, "0015", "1A11", new Date(now - MINUTE), null);
+    const thirdRef = { id: third.id, enteredAt: third.enteredAt };
+    await upsertResolvedLink(pool, thirdRef, {
+      ...resolved,
+      matchBasis: "trust_activation",
+      matchConfidence: "solid",
+      berth: "0015",
+    });
+    const upgraded = (await findOccupancyLink(pool, thirdRef))!;
+    createdTrainRunIds.push(upgraded.trainRunId);
+    expect(upgraded.trainRunId).not.toBe(runKey);
+    expect(upgraded.matchConfidence).toBe("solid");
+    for (const occupancy of [first, second]) {
+      const link = await findOccupancyLink(pool, {
+        id: occupancy.id,
+        enteredAt: occupancy.enteredAt,
+      });
+      expect(link!.trainRunId).toBe(upgraded.trainRunId);
+    }
+  });
+
   it("never shows last month's band for a train whose trust id has been reused (2026-10-01)", async () => {
     // TRUST ids end in the day of the month: a month ago another train had this exact id and ran
     // an hour late. Today's run under the same id has no reports yet — it must stay uncoloured.

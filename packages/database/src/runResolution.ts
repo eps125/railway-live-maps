@@ -1126,46 +1126,34 @@ export async function upsertResolvedLink(
   const client = await pool.connect();
   try {
     await client.query("begin");
-    if (existing) {
-      // One round trip: insert the corrected run, then mark the old one superseded by it —
-      // a data-modifying CTE, not a scalar subquery (Postgres doesn't allow INSERT there).
-      const result = await client.query<{ new_run_id: string }>(
-        `with new_run as (
-           insert into train_run (
-             cif_schedule_id, cif_train_uid, traffic_day, match_basis, match_confidence,
-             established_td_area, established_berth
-           ) values ($1, $2, $3::date, $4, $5, $6, $7)
-           returning id
-         )
-         update train_run set superseded_by = new_run.id
-         from new_run
-         where train_run.id = $8
-         returning new_run.id as new_run_id`,
-        [
-          resolved.cifScheduleId,
-          resolved.cifTrainUid,
-          resolved.trafficDay,
-          resolved.matchBasis,
-          resolved.matchConfidence,
-          resolved.tdArea,
-          resolved.berth,
-          existing.trainRunId,
-        ],
-      );
-      const newRunId = result.rows[0]!.new_run_id;
-      await client.query(
-        `update berth_occupancy_run_link
-         set train_run_id = $1, link_basis = 'resolved', updated_at = now()
-         where berth_occupancy_id = $2 and occupancy_entered_at = $3`,
-        [newRunId, occupancy.id, occupancy.enteredAt],
-      );
+    // One run per real train (2026-10-01, owner report: "as trains are stepping they are losing
+    // delay status"). Linking used to insert a new run every time, so a train got a fresh run —
+    // a fresh delay `runKey` — at every berth where its step chain broke and it was resolved
+    // again (1J91 had 16 in three hours). The browser holds bands by run key and won't carry a
+    // band when one headcode has two, so the colour dropped as the train stepped. Now the
+    // train's live run of the same identity is reused; serialised per identity so the live
+    // sweep and the popup can't each create one.
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+      `train_run|${resolved.cifScheduleId}|${resolved.cifTrainUid}|${resolved.trafficDay}`,
+    ]);
+    const live = await client.query<{ id: string; match_confidence: "solid" | "weak" }>(
+      `select id::text as id, match_confidence from train_run
+        where cif_schedule_id = $1 and cif_train_uid = $2 and traffic_day = $3::date
+          and superseded_by is null
+        order by id desc limit 1`,
+      [resolved.cifScheduleId, resolved.cifTrainUid, resolved.trafficDay],
+    );
+    const liveRun = live.rows[0];
+    let targetRunId: string;
+    if (liveRun && !(liveRun.match_confidence === "weak" && resolved.matchConfidence === "solid")) {
+      targetRunId = liveRun.id;
     } else {
-      const runResult = await client.query<{ id: string }>(
+      const inserted = await client.query<{ id: string }>(
         `insert into train_run (
            cif_schedule_id, cif_train_uid, traffic_day, match_basis, match_confidence,
            established_td_area, established_berth
          ) values ($1, $2, $3::date, $4, $5, $6, $7)
-         returning id`,
+         returning id::text as id`,
         [
           resolved.cifScheduleId,
           resolved.cifTrainUid,
@@ -1176,17 +1164,38 @@ export async function upsertResolvedLink(
           resolved.berth,
         ],
       );
-      // `findOccupancyLink` hides a link whose run was later superseded, but the row itself is
-      // still there (2026-10-01: `repair-run-links` hit a duplicate key on exactly this) — so
-      // replace it rather than insert a second link for the same occupancy.
+      targetRunId = inserted.rows[0]!.id;
+      if (liveRun) {
+        // A confidence upgrade of the same train: the whole journey moves to the upgraded run,
+        // rather than only this berth (the rest would be hidden behind a superseded run).
+        await client.query(`update train_run set superseded_by = $1 where id = $2`, [
+          targetRunId,
+          liveRun.id,
+        ]);
+        await client.query(
+          `update berth_occupancy_run_link set train_run_id = $1, updated_at = now()
+            where train_run_id = $2`,
+          [targetRunId, liveRun.id],
+        );
+      }
+    }
+    if (existing && existing.trainRunId !== targetRunId && !sameIdentity) {
+      // A correction to a different train: the old identification is withdrawn.
       await client.query(
-        `insert into berth_occupancy_run_link (berth_occupancy_id, occupancy_entered_at, train_run_id, link_basis)
-         values ($1, $2, $3, 'resolved')
-         on conflict (berth_occupancy_id, occupancy_entered_at) do update
-           set train_run_id = excluded.train_run_id, link_basis = 'resolved', updated_at = now()`,
-        [occupancy.id, occupancy.enteredAt, runResult.rows[0]!.id],
+        `update train_run set superseded_by = $1 where id = $2 and superseded_by is null`,
+        [targetRunId, existing.trainRunId],
       );
     }
+    // `findOccupancyLink` hides a link whose run was later superseded, but the row itself is
+    // still there (2026-10-01: `repair-run-links` hit a duplicate key on exactly this) — so
+    // replace it rather than insert a second link for the same occupancy.
+    await client.query(
+      `insert into berth_occupancy_run_link (berth_occupancy_id, occupancy_entered_at, train_run_id, link_basis)
+       values ($1, $2, $3, 'resolved')
+       on conflict (berth_occupancy_id, occupancy_entered_at) do update
+         set train_run_id = excluded.train_run_id, link_basis = 'resolved', updated_at = now()`,
+      [occupancy.id, occupancy.enteredAt, targetRunId],
+    );
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");

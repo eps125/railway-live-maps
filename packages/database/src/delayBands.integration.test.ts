@@ -299,6 +299,31 @@ describe("trust delay bands (Milestone 82, integration)", () => {
     expect(await at(10)).toEqual([]); // the train had left the berth
   });
 
+  it("never shows last month's band for a train whose trust id has been reused (2026-10-01)", async () => {
+    // TRUST ids end in the day of the month: a month ago another train had this exact id and ran
+    // an hour late. Today's run under the same id has no reports yet — it must stay uncoloured.
+    const area = uniqueArea();
+    const now = Date.now();
+    const occupancy = await seedOccupancy(area, "0007", "1A07", new Date(now - 5 * MINUTE), null);
+    const { trustId } = await seedLinkedRun(
+      occupancy,
+      area,
+      "0007",
+      "solid",
+      new Date(now - 30 * MINUTE),
+    );
+    await pool.query(
+      `insert into trust_delay_band_change (trust_id, band, effective_at, source_movement_id)
+       values ($1, 'severe', now() - interval '30 days', $2)`,
+      [trustId, -Math.floor(Math.random() * 1e12)],
+    );
+
+    const berths = [{ tdArea: area, berth: "0007" }];
+    expect(await findMapDelaysAt(pool, berths, new Date(now))).toEqual([]);
+    const pushed = await findOpenBerthsForTrustIds(pool, [trustId], berths);
+    expect(pushed.map((row) => row.band)).toEqual(["none"]);
+  });
+
   it("colours an on-time train green, and leaves unlinked or off-route berths alone", async () => {
     const area = uniqueArea();
     const now = Date.now();

@@ -20,6 +20,7 @@ export const ONE_SHOT_COMMAND_NAMES = [
   "prune-partitions",
   "snapshot-maps",
   "repair-open-occupancies",
+  "repair-run-links",
   "manage-users",
   "reconcile-garner-schedules",
   "backfill-trust-movement-events",

@@ -311,7 +311,7 @@ interface ForwardOccupancyRow {
  * = the step's raw event), under the same `evaluateStepChain` rules, and stops at the first
  * occupancy that already has a link of its own.
  */
-async function propagateLinkForward(
+export async function propagateLinkForward(
   client: PoolClient,
   start: OccupancyRef,
   trainRunId: string,

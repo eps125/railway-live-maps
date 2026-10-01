@@ -26,6 +26,7 @@ describe("parseCommand", () => {
     "snapshot-maps",
     "snapshot-maps-daemon",
     "repair-open-occupancies",
+    "repair-run-links",
     "reconcile-garner-schedules",
     "backfill-trust-movement-events",
   ])("accepts the known command %s", (name) => {

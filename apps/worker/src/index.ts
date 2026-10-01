@@ -26,6 +26,7 @@ import { runPrunePartitions } from "./commands/prunePartitions.js";
 import { runIngestGarner } from "./commands/ingestGarner.js";
 import { runSnapshotMapsCommand, runSnapshotMapsDaemon } from "./commands/snapshotMaps.js";
 import { runRepairOpenOccupancies } from "./commands/repairOpenOccupancies.js";
+import { runRepairRunLinks } from "./commands/repairRunLinks.js";
 import { runManageUsers } from "./commands/manageUsers.js";
 import { runReconcileGarnerSchedules } from "./commands/reconcileGarnerSchedules.js";
 import { runBackfillTrustMovementEvents } from "./commands/backfillTrustMovementEvents.js";
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
       return runSnapshotMapsCommand(config);
     case "repair-open-occupancies":
       return runRepairOpenOccupancies(config, argvRest);
+    case "repair-run-links":
+      return runRepairRunLinks(config, argvRest);
     case "manage-users":
       return runManageUsers(config, argvRest);
     case "reconcile-garner-schedules":

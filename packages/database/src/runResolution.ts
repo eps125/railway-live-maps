@@ -24,6 +24,26 @@ import type { Queryable } from "./checkpoint.js";
  * `PoolClient` too.
  */
 
+/**
+ * TRUST train ids are only unique for about a month: the last two characters are the day of the
+ * month the run started, so Network Rail reuses every id on the same date the following month
+ * (`292N84MY01` was a 2N84 on 1 September *and* on 1 October). Every lookup of TRUST data by
+ * trust id must therefore also be bounded to that run's own time — from a little before its
+ * activation to a few days after (no run reports for longer).
+ *
+ * Real incident, 2026-10-01: the first time the mirror held a full month, the "already passed"
+ * check found 1 September's 2N84 having reached Preston and threw out 1 October's live 2N84 at
+ * Cherry Tree, leaving the berth `unmatched` — PX link rate fell from ~88% to ~68% from 15:00 UTC,
+ * when the 1 September mirror data starts.
+ */
+export const TRUST_RUN_LEAD_SQL = "interval '12 hours'";
+export const TRUST_RUN_SPAN_SQL = "interval '4 days'";
+
+/** SQL: `column` falls within the run activated at `activatedAt` (a timestamptz expression). */
+export function withinTrustRun(column: string, activatedAt: string): string {
+  return `(${column} >= ${activatedAt} - ${TRUST_RUN_LEAD_SQL} and ${column} < ${activatedAt} + ${TRUST_RUN_SPAN_SQL})`;
+}
+
 export interface CandidateScheduleRow {
   id: string;
   cif_train_uid: string;
@@ -182,25 +202,32 @@ export async function findSchedulesByIdentityHeadcodeChange(
   headcode: string,
   sinceDate: string,
   tiplocs: string[],
+  /** Ignore identity changes recorded after this moment (see `resolveFreshRunMatch`). */
+  asOf?: Date | undefined,
 ): Promise<string[]> {
   const positionScoped = tiplocs.length > 0;
   const result = await pool.query<{ cif_schedule_id: string }>(
     `select distinct ta.cif_schedule_id::text as cif_schedule_id
      from trust_changeid tci
      join trust_activation ta on ta.trust_id = tci.trust_id
+       -- The activation of *this* run, not last month's reuse of the same id.
+       and ${withinTrustRun("tci.created", "ta.created")}
      where ta.cif_schedule_id is not null
        and length(tci.new_trust_id) = 10
        and substring(tci.new_trust_id from 3 for 4) = $1
        and tci.created >= ($2::date)::timestamp at time zone 'Europe/London'
+       and ($3::timestamptz is null or tci.created <= $3::timestamptz)
        ${
          positionScoped
            ? `and exists (
                 select 1 from cif_schedule_locations l
-                where l.cif_schedule_id = ta.cif_schedule_id and l.tiploc_code = any($3::text[])
+                where l.cif_schedule_id = ta.cif_schedule_id and l.tiploc_code = any($4::text[])
               )`
            : ""
        }`,
-    positionScoped ? [headcode, sinceDate, tiplocs] : [headcode, sinceDate],
+    positionScoped
+      ? [headcode, sinceDate, asOf ?? null, tiplocs]
+      : [headcode, sinceDate, asOf ?? null],
   );
   return result.rows.map((row) => row.cif_schedule_id);
 }
@@ -301,6 +328,9 @@ const MAX_IDENTITY_CHAIN_HOPS = 8;
 export async function fetchTrustChanges(
   pool: Queryable,
   activationTrustId: string,
+  /** When this run was activated — every lookup is bounded to this run (`withinTrustRun`), since
+   * the same trust id is reused a month later. */
+  activatedAt: Date,
   originTiploc: string | null,
   destinationTiploc: string | null,
 ): Promise<TrustChangeSummary> {
@@ -309,8 +339,10 @@ export async function fetchTrustChanges(
   let current = activationTrustId;
   for (let hop = 0; hop < MAX_IDENTITY_CHAIN_HOPS; hop++) {
     const result = await pool.query<{ created: Date; new_trust_id: string }>(
-      `select created, new_trust_id from trust_changeid where trust_id = $1 order by created desc limit 1`,
-      [current],
+      `select created, new_trust_id from trust_changeid
+       where trust_id = $1 and ${withinTrustRun("created", "$2::timestamptz")}
+       order by created desc limit 1`,
+      [current, activatedAt],
     );
     const row = result.rows[0];
     if (!row || chain.includes(row.new_trust_id)) break;
@@ -324,8 +356,9 @@ export async function fetchTrustChanges(
   const [originResult, cancellationResult, locationResult] = await Promise.all([
     pool.query<{ created: Date; reason: string | null; loc_stanox: string | null }>(
       `select created, reason, loc_stanox from trust_changeorigin
-       where trust_id = any($1::text[]) order by created desc limit 1`,
-      [chain],
+       where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+       order by created desc limit 1`,
+      [chain, activatedAt],
     ),
     pool.query<{
       created: Date;
@@ -334,13 +367,15 @@ export async function fetchTrustChanges(
       reinstate: number;
     }>(
       `select created, reason, loc_stanox, reinstate from trust_cancellation
-       where trust_id = any($1::text[]) order by created desc limit 1`,
-      [chain],
+       where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+       order by created desc limit 1`,
+      [chain, activatedAt],
     ),
     pool.query<{ created: Date; original_stanox: string; stanox: string }>(
       `select created, original_stanox, stanox from trust_changelocation
-       where trust_id = any($1::text[]) order by created asc`,
-      [chain],
+       where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+       order by created asc`,
+      [chain, activatedAt],
     ),
   ]);
 
@@ -579,14 +614,24 @@ export async function callingTimeMinutesByScheduleId(
  */
 export async function findAlreadyPassedScheduleIds(
   pool: Queryable,
-  candidates: ReadonlyArray<{ scheduleId: string; trustId: string; resolvedToYesterday?: boolean }>,
+  candidates: ReadonlyArray<{
+    scheduleId: string;
+    trustId: string;
+    /** That activation's own time: only this run's movements count (`withinTrustRun`) — the same
+     * trust id a month earlier is a different train (incident 2026-10-01). */
+    activatedAt: Date;
+    resolvedToYesterday?: boolean;
+  }>,
   tiplocs: string[],
+  /** Ignore movements recorded after this moment (see `resolveFreshRunMatch`). */
+  asOf?: Date | undefined,
 ): Promise<Set<string>> {
   if (candidates.length === 0 || tiplocs.length === 0) return new Set();
   const result = await pool.query<{ schedule_id: string; passed: boolean }>(
     `with pairs as (
        select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id,
-              unnest($4::boolean[]) as resolved_to_yesterday
+              unnest($4::boolean[]) as resolved_to_yesterday,
+              unnest($5::timestamptz[]) as activated_at
      ),
      berth_seq as (
        select l.cif_schedule_id, max(l.seq_no) as last_berth_seq_no
@@ -599,6 +644,8 @@ export async function findAlreadyPassedScheduleIds(
               select 1
               from trust_movement m
               where m.trust_id = p.trust_id
+                and ${withinTrustRun("m.created", "p.activated_at")}
+                and ($6::timestamptz is null or m.created <= $6::timestamptz)
                 -- Earliest schedule position this report's STANOX could refer to (one STANOX can
                 -- cover several TIPLOCs, each possibly visited more than once). NULL — no match
                 -- in this schedule at all — compares false, so it's never evidence.
@@ -618,6 +665,8 @@ export async function findAlreadyPassedScheduleIds(
               and exists (
                 select 1 from trust_movement m
                 where m.trust_id = p.trust_id
+                  and ${withinTrustRun("m.created", "p.activated_at")}
+                  and ($6::timestamptz is null or m.created <= $6::timestamptz)
                   and ((m.flags & 3) = 3 or (m.flags & 64) <> 0)
               )
             ) as passed
@@ -627,6 +676,8 @@ export async function findAlreadyPassedScheduleIds(
       candidates.map((c) => c.trustId),
       tiplocs,
       candidates.map((c) => c.resolvedToYesterday ?? false),
+      candidates.map((c) => c.activatedAt),
+      asOf ?? null,
     ],
   );
   return new Set(result.rows.filter((row) => row.passed).map((row) => row.schedule_id));
@@ -659,9 +710,20 @@ export interface FreshResolutionResult {
  */
 export async function resolveFreshRunMatch(
   pool: Queryable,
-  args: { tdArea: string; berth: string; headcode: string; today: string; nowMinutes: number },
+  args: {
+    tdArea: string;
+    berth: string;
+    headcode: string;
+    today: string;
+    nowMinutes: number;
+    /** Resolve as it would have been at this moment: TRUST activations, identity changes and
+     * movements recorded after it are ignored. For playback and for repairing past links — with
+     * today's data a past train is often already "beyond" the berth it was in at the time.
+     * Omitted = now. */
+    asOf?: Date | undefined;
+  },
 ): Promise<FreshResolutionResult> {
-  const { tdArea, berth, headcode, today, nowMinutes } = args;
+  const { tdArea, berth, headcode, today, nowMinutes, asOf } = args;
   // Traffic-day-boundary fix (docs/adr/0008): probe both today and yesterday (London), ordered
   // most-preferred first, throughout — never just `today` alone. See resolveRunMatch.ts's own
   // doc comment for why a single shared date was the actual root cause of the overnight-train
@@ -683,6 +745,7 @@ export async function resolveFreshRunMatch(
     headcode,
     yesterday,
     tiplocs,
+    asOf,
   );
   const headcodeMatchedIds = new Set(headcodeMatchedRows.map((row) => row.id));
   const extraIdentityChangeIds = identityChangeScheduleIds.filter(
@@ -709,8 +772,9 @@ export async function resolveFreshRunMatch(
            from trust_activation
            where cif_schedule_id = any($1::bigint[])
              and created >= ($2::date)::timestamp at time zone 'Europe/London'
+             and ($3::timestamptz is null or created <= $3::timestamptz)
            order by created desc`,
-          [scheduleIds, yesterday],
+          [scheduleIds, yesterday, asOf ?? null],
         )
       ).rows
     : [];
@@ -760,10 +824,10 @@ export async function resolveFreshRunMatch(
   // per schedule id is its most recent).
   let alreadyPassedScheduleIds: Set<string> | undefined;
   if (positionScoped && activatedDatesByScheduleId.size > 1) {
-    const latestTrustIdByScheduleId = new Map<string, string>();
+    const latestActivationByScheduleId = new Map<string, ActivationRow>();
     for (const row of activationRows) {
-      if (!latestTrustIdByScheduleId.has(row.cif_schedule_id)) {
-        latestTrustIdByScheduleId.set(row.cif_schedule_id, row.trust_id);
+      if (!latestActivationByScheduleId.has(row.cif_schedule_id)) {
+        latestActivationByScheduleId.set(row.cif_schedule_id, row);
       }
     }
     // Each candidate's own resolved traffic day (docs/adr/0008) — a yesterday-resolved one may be
@@ -776,12 +840,14 @@ export async function resolveFreshRunMatch(
     );
     alreadyPassedScheduleIds = await findAlreadyPassedScheduleIds(
       pool,
-      [...latestTrustIdByScheduleId].map(([scheduleId, trustId]) => ({
+      [...latestActivationByScheduleId].map(([scheduleId, activation]) => ({
         scheduleId,
-        trustId,
+        trustId: activation.trust_id,
+        activatedAt: activation.created,
         resolvedToYesterday: resolvedDateByScheduleId.get(scheduleId) === yesterday,
       })),
       tiplocs,
+      asOf,
     );
   }
   const matchResult = resolveRunMatch(

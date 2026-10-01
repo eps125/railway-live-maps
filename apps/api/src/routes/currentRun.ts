@@ -18,6 +18,7 @@ import {
   londonToday,
   londonMinutesSinceMidnight,
   fetchTrustChanges,
+  withinTrustRun,
   type CandidateScheduleRow,
   type ActivationRow,
 } from "@railway/database";
@@ -450,6 +451,9 @@ export async function registerCurrentRunRoutes(
           headcode,
           today,
           nowMinutes,
+          // Playback: what was known at that moment, not what TRUST reported afterwards (a past
+          // train is usually "beyond" the berth it was in by now). 2026-10-01.
+          asOf: at ? referenceNow : undefined,
         });
         matchStatus = fresh.matchStatus;
         matchBasis = fresh.matchBasis;
@@ -528,6 +532,7 @@ export async function registerCurrentRunRoutes(
           ? await fetchTrustChanges(
               pool,
               activation.trust_id,
+              activation.created,
               effectiveRow.origin_tiploc,
               effectiveRow.destination_tiploc,
             )
@@ -539,19 +544,22 @@ export async function registerCurrentRunRoutes(
           activationExtra = (
             await pool.query<ActivationExtraRow>(
               `select trust_id, train_uid, toc_id, schedule_wtt_id, schedule_type, origin_dep_timestamp
-               from trust_activation_extra where trust_id = $1 order by created desc limit 1`,
-              [activation.trust_id],
+               from trust_activation_extra
+               where trust_id = $1 and ${withinTrustRun("created", "$2::timestamptz")}
+               order by created desc limit 1`,
+              [activation.trust_id, activation.created],
             )
           ).rows[0];
+          // Bounded to this run: the same trust id is reused a month later (2026-10-01 incident).
           latestMovement = (
             await pool.query<MovementRow>(
               `select trust_id, loc_stanox, platform, actual_timestamp, planned_timestamp,
                       gbtt_timestamp, timetable_variation, flags, next_report_stanox
                from trust_movement
-               where trust_id = any($1::text[])
+               where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
                order by actual_timestamp desc nulls last, created desc
                limit 1`,
-              [trustChanges?.trustIdChain ?? [activation.trust_id]],
+              [trustChanges?.trustIdChain ?? [activation.trust_id], activation.created],
             )
           ).rows[0];
         }

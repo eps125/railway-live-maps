@@ -1522,6 +1522,57 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     });
 
+    it("ignores last month's run under the same reused trust id — the PX 0473 / 2N84 real case (2026-10-01)", async () => {
+      // TRUST ids end in the day of the month, so 1 October's live 2N84 had the very same id as
+      // 1 September's. That old run's reports beyond Cherry Tree counted as "already passed" and
+      // threw the live train out, leaving both candidates excluded and the berth unmatched.
+      const area = uniqueArea();
+      const tiploc = `RU${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      const beyond = `RB${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const beyondStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Reuse Station", stanox);
+      await seedLocationReference(beyond, "Reuse Beyond", beyondStanox);
+      await seedSmartBerthStep(area, "0037", stanox);
+      await seedOccupiedBerth(area, "0037", "2X37");
+
+      // This morning's run: genuinely finished, reported beyond this station today.
+      const morningId = await seedSchedule("2X37", "P");
+      await seedScheduleLocation(morningId, 1, tiploc, "LI", { departure: "0900" });
+      await seedScheduleLocation(morningId, 2, beyond, "LT", { arrival: "0930" });
+      const morningTrustId = await seedActivation(morningId, "2X37");
+      await seedMovement(morningTrustId, beyondStanox, 0x01, 0);
+
+      // The train actually here now. Its trust id was used a month ago by another 2X37, whose
+      // reports (also beyond this station) are still in the mirror.
+      const liveId = await seedSchedule("2X37", "P");
+      await seedScheduleLocation(liveId, 1, tiploc, "LI", { departure: "1900" });
+      await seedScheduleLocation(liveId, 2, beyond, "LT", { arrival: "1930" });
+      const liveTrustId = await seedActivation(liveId, "2X37");
+      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      await pool.query(
+        `insert into trust_movement (trust_id, created, platform, loc_stanox, actual_timestamp, timetable_variation, flags)
+         values ($1, $2, '1', $3, $2, 0, 1)`,
+        [liveTrustId, monthAgo, beyondStanox],
+      );
+
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0037/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.matchBasis).toBe("trust_activation");
+        expect(body.effective.scheduleId).toBe(String(liveId));
+      } finally {
+        await app.close();
+      }
+    });
+
     it("drops yesterday's identical run once TRUST reported it terminated, keeping today's train standing at the same terminus (5Z01 S23329 vs S23328)", async () => {
       // Daily ECS terminating at this berth's station. Yesterday's run is still inside the
       // docs/adr/0008 [today, yesterday] probe; its "arrival at destination + terminated" report

@@ -4561,3 +4561,31 @@ publish cascade, public map.
 
 **Production needs migration 0049 applied before this deploys** (until then a purge fails;
 nothing else depends on it).
+
+## Milestone 86 — TRUST ids are reused every month (incident 2026-10-01)
+
+Owner report: "loads of trains on the Preston map not schedule resolving recently". PX link rate
+fell from ~88% to ~68% from 15:00 UTC on 1 October.
+
+Cause: a TRUST train id ends in the day of the month, so Network Rail reuses it on the same date
+the next month. The garner mirror started on 1 September (ADR 0002), so 1 October was the first day
+ids collided — from 15:00 UTC, where the mirror's 1 September data begins. Lookups by trust id
+alone then mixed two different trains: the resolver's "already passed" check saw last month's train
+beyond the berth and threw the live one out (`unmatched`); the popup's changes and latest movement,
+and the delay colours, could show last month's facts.
+
+- [x] `withinTrustRun` (`packages/database/src/runResolution.ts`): every lookup of TRUST data by
+      trust id is bounded to that run — from 12 hours before its activation to 4 days after. Applied
+      to the "already passed" check, identity-change candidates, the popup's changes, activation
+      detail and latest movement, the delay band projection and both band lookups.
+- [x] `resolveFreshRunMatch` takes `asOf`: activations, identity changes and movements recorded
+      after that moment are ignored. Playback popups use it (a past train is otherwise usually
+      "beyond" the berth it was in by now).
+- [x] `repair-run-links --from <iso> [--to <iso>] [--dry-run]` (worker console command): re-runs
+      matching for the mapped areas' occupancies over a past window as of each one's own time,
+      writes the missing links and carries each forward, so playback shows the right trains.
+- [x] Verified on production before deploying: today's live 2N84 at Cherry Tree was "already
+      passed" under the old rule and is not under the new one; the morning run still is.
+
+Tests: a live train whose trust id was used a month ago by a train already beyond the berth is
+matched; a reused id never shows last month's delay band.

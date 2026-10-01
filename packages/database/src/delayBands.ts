@@ -6,6 +6,7 @@ import {
   getOrCreateProjectionDefinition,
   type Queryable,
 } from "./checkpoint.js";
+import { TRUST_RUN_SPAN_SQL, withinTrustRun } from "./runResolution.js";
 
 /**
  * Milestone 82: the public map's "Delay colours" — each TRUST train's lateness band, recorded
@@ -113,13 +114,16 @@ export async function projectTrustDelayBands(
     await advanceCheckpoint(pool, defId, String(after));
   }
 
-  const batch = await pool.query<{ id: string; trust_id: string }>(
-    `select id::text as id, trust_id from trust_movement where id > $1 order by id limit $2`,
+  const batch = await pool.query<{ id: string; trust_id: string; created: Date }>(
+    `select id::text as id, trust_id, created from trust_movement where id > $1 order by id limit $2`,
     [after, batchSize],
   );
   if (batch.rows.length === 0) return { movementsRead: 0, changesRecorded: 0, touched: [] };
   const lastId = batch.rows[batch.rows.length - 1]!.id;
   const reportingIds = [...new Set(batch.rows.map((row) => row.trust_id))];
+  // TRUST ids are reused every month (see `withinTrustRun`): everything below is bounded to the
+  // last few days before this batch, so last month's run under the same id never joins in.
+  const since = new Date(Math.min(...batch.rows.map((row) => row.created.getTime())));
 
   // Each reporting id's activation root (walking Change of Identity links backwards), then every
   // id in each root's chain (forwards), so a train's reports under old and new ids are one walk.
@@ -129,10 +133,10 @@ export async function projectTrustDelayBands(
        union all
        select up.trust_id, c.trust_id, up.depth + 1
        from up join trust_changeid c on c.new_trust_id = up.root
-       where up.depth < $2
+       where up.depth < $2 and c.created >= $3::timestamptz - ${TRUST_RUN_SPAN_SQL}
      )
      select distinct on (trust_id) trust_id, root from up order by trust_id, depth desc`,
-    [reportingIds, MAX_IDENTITY_HOPS],
+    [reportingIds, MAX_IDENTITY_HOPS, since],
   );
   const roots = [...new Set(rootsResult.rows.map((row) => row.root))];
 
@@ -142,7 +146,7 @@ export async function projectTrustDelayBands(
        union all
        select down.root, c.new_trust_id, down.depth + 1
        from down join trust_changeid c on c.trust_id = down.trust_id
-       where down.depth < $2
+       where down.depth < $2 and c.created >= $3::timestamptz - ${TRUST_RUN_SPAN_SQL}
      ),
      chains as (
        select root, array_agg(distinct trust_id) as ids from down group by root
@@ -150,7 +154,7 @@ export async function projectTrustDelayBands(
      last as (
        select distinct on (trust_id) trust_id as root, band, effective_at
        from trust_delay_band_change
-       where trust_id = any($1::text[])
+       where trust_id = any($1::text[]) and effective_at >= $3::timestamptz - ${TRUST_RUN_SPAN_SQL}
        order by trust_id, effective_at desc, id desc
      )
      select c.root, last.band as last_band, last.effective_at as last_effective_at,
@@ -159,9 +163,10 @@ export async function projectTrustDelayBands(
      left join last on last.root = c.root
      join trust_movement m on m.trust_id = any(c.ids)
      where m.actual_timestamp is not null
+       and m.created >= $3::timestamptz - ${TRUST_RUN_SPAN_SQL}
        and (last.effective_at is null or m.actual_timestamp >= last.effective_at)
      order by c.root, m.actual_timestamp, m.created, m.id`,
-    [roots, MAX_IDENTITY_HOPS],
+    [roots, MAX_IDENTITY_HOPS, since],
   );
 
   const changes: Array<{ trustId: string; band: DelayBand; at: Date; sourceId: string }> = [];
@@ -283,15 +288,17 @@ export async function findMapDelaysAt(
             runs.match_confidence, b.band
      from runs
      cross join lateral (
-       select ta.trust_id from trust_activation ta
+       select ta.trust_id, ta.created from trust_activation ta
        where ta.cif_schedule_id = runs.cif_schedule_id
          and ta.created >= (runs.traffic_day)::timestamp at time zone 'Europe/London'
          and ta.created <= $4::timestamptz
        order by ta.created desc limit 1
      ) a
      cross join lateral (
+       -- This run's bands only: the same trust id a month earlier was another train.
        select c.band from trust_delay_band_change c
        where c.trust_id = a.trust_id and c.effective_at <= $4::timestamptz
+         and ${withinTrustRun("c.effective_at", "a.created")}
        order by c.effective_at desc, c.id desc limit 1
      ) b
      where b.band <> 'none'`,
@@ -358,14 +365,14 @@ export async function findOpenBerthsForTrustIds(
             runs.match_confidence, a.trust_id, coalesce(b.band, 'none') as band
      from runs
      cross join lateral (
-       select ta.trust_id from trust_activation ta
+       select ta.trust_id, ta.created from trust_activation ta
        where ta.cif_schedule_id = runs.cif_schedule_id
          and ta.created >= (runs.traffic_day)::timestamp at time zone 'Europe/London'
        order by ta.created desc limit 1
      ) a
      left join lateral (
        select c.band from trust_delay_band_change c
-       where c.trust_id = a.trust_id
+       where c.trust_id = a.trust_id and ${withinTrustRun("c.effective_at", "a.created")}
        order by c.effective_at desc, c.id desc limit 1
      ) b on true
      where a.trust_id = any($1::text[])`,

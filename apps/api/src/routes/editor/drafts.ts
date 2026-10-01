@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { MapDocumentSchema } from "@railway/map-schema";
 import { apiError, parseLimit } from "../../lib/queryRange.js";
 import { getOrSeedDraft, getDraft } from "../../editor/draftStore.js";
+import { mapKindForSlug } from "../../editor/modules.js";
 
 /** 2026-09-26 (owner: "saving is taking absolutely ages"): the editor gzips a draft save —
  * nearly all of a ~3 s Carlisle save was uploading ~300 KB of JSON, and map JSON compresses about
@@ -82,7 +83,11 @@ export async function registerEditorDraftRoutes(
 
   app.get<{ Params: { slug: string } }>("/api/v1/editor/maps/:slug/draft", async (request) => {
     const draft = await getOrSeedDraft(pool, request.params.slug);
-    return draftResponse(draft);
+    // Milestone 85: the editor shows module tools for a module.
+    return {
+      ...draftResponse(draft),
+      kind: (await mapKindForSlug(pool, request.params.slug)) ?? "map",
+    };
   });
 
   app.put<{ Params: { slug: string }; Body: PutDraftBody }>(

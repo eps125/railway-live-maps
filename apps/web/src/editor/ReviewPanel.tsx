@@ -15,7 +15,14 @@ interface DocumentDiff {
 export type PublishOutcome =
   | { status: "idle" }
   | { status: "publishing" }
-  | { status: "published"; versionNumber: number; effectiveFrom: string }
+  | {
+      status: "published";
+      versionNumber: number;
+      effectiveFrom: string;
+      /** Milestone 85: after a module publish, every map assembled from it was republished. */
+      kind: "map" | "module";
+      cascade: CascadeOutcome[];
+    }
   | { status: "validationFailed"; errors: Array<{ code: string; message: string }> }
   | { status: "conflict"; currentRevision: number | null }
   | { status: "error"; message: string };
@@ -35,6 +42,14 @@ function toDatetimeLocal(date: Date): string {
  * draft vs currently published version" (both `fromVersion`/`toRevision` query params omitted,
  * per `apps/api/src/routes/editor/diff.ts`'s own documented default), and publish sends the
  * `expectedRevision` the draft-sync hook last confirmed the server has — never a stale one. */
+/** Milestone 85: one map republished after a module publish. */
+interface CascadeOutcome {
+  slug: string;
+  ok: boolean;
+  versionNumber?: number;
+  errors?: Array<{ code: string; message: string }>;
+}
+
 export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelProps): JSX.Element {
   const [diff, setDiff] = useState<DocumentDiff | null>(null);
   // Default: apply retroactively to all playback (owner decision 2026-09-11, see
@@ -78,6 +93,8 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         message?: string;
         versionNumber?: number;
         effectiveFrom?: string;
+        kind?: "map" | "module";
+        cascade?: CascadeOutcome[];
       }>(response);
       if (response.status === 409) {
         setOutcome({
@@ -102,8 +119,12 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         status: "published",
         versionNumber: body.versionNumber ?? 0,
         effectiveFrom: body.effectiveFrom ?? "",
+        kind: body.kind ?? "map",
+        cascade: body.cascade ?? [],
       });
-      onPublished();
+      // Milestone 85: after a module publish, stay here so the author sees which maps were
+      // republished (and any that couldn't be).
+      if (body.kind !== "module") onPublished();
     } catch (error) {
       setOutcome({
         status: "error",
@@ -173,10 +194,32 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         </button>
       </fieldset>
 
-      {outcome.status === "published" ? (
+      {outcome.status === "published" && outcome.kind === "map" ? (
         <p className="publish-result publish-result--success">
           Published version {outcome.versionNumber}, effective from {outcome.effectiveFrom}.
         </p>
+      ) : null}
+      {outcome.status === "published" && outcome.kind === "module" ? (
+        <div className="publish-result publish-result--success">
+          <p>
+            Published module version {outcome.versionNumber}.
+            {outcome.cascade.length === 0
+              ? " No published map uses this module yet."
+              : " Maps using it were republished:"}
+          </p>
+          {outcome.cascade.length > 0 ? (
+            <ul className="cascade-list">
+              {outcome.cascade.map((map) => (
+                <li key={map.slug} className={map.ok ? "" : "cascade-list__failed"}>
+                  <strong>{map.slug}</strong>{" "}
+                  {map.ok
+                    ? `— now version ${map.versionNumber}`
+                    : `— not republished: ${(map.errors ?? []).map((e) => e.message).join("; ")}`}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {outcome.status === "validationFailed" ? (
         <div role="alert" className="publish-result publish-result--error">

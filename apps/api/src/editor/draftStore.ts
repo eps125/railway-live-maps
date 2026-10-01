@@ -61,6 +61,27 @@ export async function getOrSeedDraft(pool: Pool, slug: string): Promise<DraftRow
   const version = await currentVersionForSlug(pool, slug, new Date());
   let mapId = version?.map_id ?? null;
   let doc = version?.canonical_document;
+  if (version) {
+    // Milestone 85: an assembled map's draft is its source (modules + local elements), never the
+    // flattened document it published.
+    const source = await pool.query<{ source_document: MapDocument | null }>(
+      `select source_document from map_version where id = $1`,
+      [version.id],
+    );
+    doc = source.rows[0]?.source_document ?? doc;
+  } else {
+    // A module has no map_version: seed from its latest published module version, if any.
+    const module = await pool.query<{ map_id: string; canonical_document: MapDocument }>(
+      `select mmv.map_id::text, mmv.canonical_document
+         from map_module_version mmv join map m on m.id = mmv.map_id
+        where m.slug = $1 order by mmv.version_number desc limit 1`,
+      [slug],
+    );
+    if (module.rows[0]) {
+      mapId = module.rows[0].map_id;
+      doc = module.rows[0].canonical_document;
+    }
+  }
 
   if (!doc) {
     const mapRow = await pool.query<{ id: string; name: string }>(

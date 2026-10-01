@@ -1,5 +1,12 @@
 import { routesFollowingSignal } from "./routeEnds.js";
-import type { MapDocument, MapElement, MapBinding, TopologyEdge } from "@railway/map-schema";
+import type {
+  MapDocument,
+  MapElement,
+  MapBinding,
+  MapJoin,
+  ModuleUse,
+  TopologyEdge,
+} from "@railway/map-schema";
 
 type Layer = MapDocument["layers"][number];
 
@@ -44,7 +51,12 @@ export type EditorCommand =
       layerId: string;
       property: "name" | "visible" | "locked";
       value: unknown;
-    };
+    }
+  /** Milestone 85: a module's joins, replaced whole (draw, move, rename, delete are all one
+   * replacement, so each is one undo step). */
+  | { type: "setJoins"; joins: MapJoin[] }
+  /** Milestone 85: the modules an assembled map uses and how each is placed, replaced whole. */
+  | { type: "setModules"; modules: ModuleUse[] };
 
 export interface ApplyCommandResult {
   doc: MapDocument;
@@ -414,6 +426,16 @@ export function applyCommand(doc: MapDocument, command: EditorCommand): ApplyCom
       return applyReorderLayer(doc, command.layerId, command.newOrder);
     case "setLayerProperty":
       return applySetLayerProperty(doc, command.layerId, command.property, command.value);
+    case "setJoins":
+      return {
+        doc: { ...doc, joins: command.joins },
+        inverse: { type: "setJoins", joins: doc.joins ?? [] },
+      };
+    case "setModules":
+      return {
+        doc: { ...doc, modules: command.modules },
+        inverse: { type: "setModules", modules: doc.modules ?? [] },
+      };
   }
 }
 

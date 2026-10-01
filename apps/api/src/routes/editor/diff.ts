@@ -29,8 +29,10 @@ export async function registerEditorDiffRoutes(
 
       let fromDoc: MapDocument | undefined;
       if (fromVersion !== undefined) {
+        // Milestone 85: an assembled map is compared source-to-source (what the author edits).
         const result = await pool.query<{ canonical_document: MapDocument }>(
-          `select mv.canonical_document from map_version mv join map m on m.id = mv.map_id
+          `select coalesce(mv.source_document, mv.canonical_document) as canonical_document
+             from map_version mv join map m on m.id = mv.map_id
            where m.slug = $1 and mv.version_number = $2`,
           [slug, Number(fromVersion)],
         );
@@ -38,6 +40,20 @@ export async function registerEditorDiffRoutes(
       } else {
         const version = await currentVersionForSlug(pool, slug, new Date());
         fromDoc = version?.canonical_document;
+        if (version) {
+          const source = await pool.query<{ source_document: MapDocument | null }>(
+            `select source_document from map_version where id = $1`,
+            [version.id],
+          );
+          fromDoc = source.rows[0]?.source_document ?? fromDoc;
+        } else {
+          const module = await pool.query<{ canonical_document: MapDocument }>(
+            `select mmv.canonical_document from map_module_version mmv join map m on m.id = mmv.map_id
+              where m.slug = $1 order by mmv.version_number desc limit 1`,
+            [slug],
+          );
+          fromDoc = module.rows[0]?.canonical_document;
+        }
       }
       if (!fromDoc) {
         reply.code(404);

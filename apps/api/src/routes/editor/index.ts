@@ -8,6 +8,7 @@ import { registerEditorBindingDiagnosticsRoutes } from "./bindingDiagnostics.js"
 import { registerEditorStateRoutes } from "./state.js";
 import { registerEditorBerthActionRoutes } from "./berthActions.js";
 import { registerEditorMapListRoutes } from "./mapList.js";
+import { registerEditorModuleRoutes } from "./moduleRoutes.js";
 
 export interface EditorRoutesDeps {
   pool: Pool;
@@ -31,4 +32,5 @@ export async function registerEditorRoutes(
   await registerEditorStateRoutes(app, deps);
   await registerEditorBerthActionRoutes(app, deps);
   await registerEditorMapListRoutes(app, deps);
+  await registerEditorModuleRoutes(app, deps);
 }

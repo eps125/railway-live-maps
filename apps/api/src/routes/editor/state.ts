@@ -4,6 +4,7 @@ import { compileMapDocument, type CompiledMapBundle } from "@railway/map-schema"
 import { apiError } from "../../lib/queryRange.js";
 import { computeLiveState } from "../../lib/liveState.js";
 import { getDraft } from "../../editor/draftStore.js";
+import { previewDocument } from "../../editor/modules.js";
 
 /** 2026-09-26: the compiled draft, by slug, for the revision it was compiled from. The editor
  * polls this endpoint every few seconds, and compiling Carlisle takes ~2 s of CPU on the API's
@@ -85,7 +86,8 @@ export async function registerEditorStateRoutes(
         cached = {
           draftId: draft.id,
           revision: draft.revision,
-          bundle: compileMapDocument(draft.canonical_document),
+          // Milestone 85: an assembled map previews with its modules' drafts.
+          bundle: compileMapDocument(await previewDocument(pool, draft.canonical_document)),
         };
         compiledDrafts.delete(slug);
         compiledDrafts.set(slug, cached);

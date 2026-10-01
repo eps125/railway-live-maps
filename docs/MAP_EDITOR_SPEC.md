@@ -34,6 +34,13 @@ The same canonical document drives:
 
 Published compilation removes editor-only metadata and precomputes lookup indexes and bounds.
 
+**Modules (Milestone 85, docs/adr/0019).** Two optional fields: a module's `joins`
+(`[{ id, name, points: [p, q] }]` — a line across the track ends where another module meets it),
+and an assembled map's `modules` (`[{ slug, placement }]`, placement `{ kind: "at", x, y }` or
+`{ kind: "attached", join, to, toJoin }`). An assembled map publishes the flattened document
+(`flattenAssembledMap`): module ids become `<module>/<id>`; joins and the module list are not
+published.
+
 ## 3. Element types for MVP
 
 ### `trackPath`

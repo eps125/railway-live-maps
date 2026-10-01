@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { assertGroupsExist, findRegionById, UnknownGroupError } from "@railway/database";
 import { apiError } from "../../lib/queryRange.js";
 import { audit } from "../../lib/audit.js";
+import { draftsUsingModule, mapsUsingModule } from "../../editor/modules.js";
 
 export interface ManageMapRouteDeps {
   pool: Pool;
@@ -240,8 +241,8 @@ export async function registerManageMapRoutes(
     try {
       await client.query("begin");
 
-      const mapRow = await client.query<{ id: string; name: string }>(
-        `select id, name from map where slug = $1`,
+      const mapRow = await client.query<{ id: string; name: string; kind: string }>(
+        `select id, name, kind from map where slug = $1`,
         [slug],
       );
       const mapId = mapRow.rows[0]?.id;
@@ -249,6 +250,24 @@ export async function registerManageMapRoutes(
         await client.query("rollback");
         reply.code(404);
         return apiError("MAP_NOT_FOUND", `No map with slug "${slug}" exists`);
+      }
+      // Milestone 85: a module still part of a map can't be deleted out from under it.
+      if (mapRow.rows[0]!.kind === "module") {
+        const users = [
+          ...new Set([
+            ...(await mapsUsingModule(client, slug)),
+            ...(await draftsUsingModule(client, slug)),
+          ]),
+        ];
+        if (users.length > 0) {
+          await client.query("rollback");
+          reply.code(409);
+          return apiError(
+            "MODULE_IN_USE",
+            `This module is used by ${users.join(", ")} — remove it from those maps first`,
+            { maps: users },
+          );
+        }
       }
 
       // Manual cascade in dependency order — none of these FKs are ON DELETE CASCADE (deletion
@@ -274,6 +293,7 @@ export async function registerManageMapRoutes(
       );
       await client.query(`delete from map_draft where map_id = $1`, [mapId]);
       await client.query(`delete from map_version where map_id = $1`, [mapId]);
+      await client.query(`delete from map_module_version where map_id = $1`, [mapId]);
       // Milestone 83: visibility groups go with the map (FK cascade); the audit entry stays.
       await client.query(`delete from map where id = $1`, [mapId]);
       await audit(

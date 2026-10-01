@@ -36,6 +36,10 @@ export interface UseDraftSyncResult {
   /** Discards local unsaved changes and reloads the draft from the server — the recovery
    * path out of a conflict. */
   reloadFromServer: () => void;
+  /** Milestone 85: save any unsaved edits now and wait for it — before leaving the editor for
+   * another map or module, or asking the server to change this draft. Resolves to the revision
+   * the server holds, or null if the draft couldn't be saved (a conflict or an error). */
+  flush: () => Promise<number | null>;
 }
 
 interface DraftResponse {
@@ -60,6 +64,10 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
   // large Carlisle draft) raced it into a 409 against our own first save.
   const docRef = useRef(doc);
   docRef.current = doc;
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  /** The document the server is known to hold (set on load and on each successful save). */
+  const savedRef = useRef<MapDocument | null>(dirty ? null : doc);
   const inFlight = useRef(false);
   const conflicted = useRef(false);
   const lastFailed = useRef(false);
@@ -124,6 +132,7 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
       // Clean only if nothing changed since this document was sent; a newer edit stays dirty and
       // is saved next, against the revision just returned.
       dispatch({ type: "markSynced", document: sent });
+      savedRef.current = sent;
       settled = sent === docRef.current;
       setStatus(settled ? "saved" : "saving");
     } catch {
@@ -146,11 +155,27 @@ export function useDraftSync(slug: string, initialRevision: number): UseDraftSyn
         revisionRef.current = body.revision;
         setSyncedRevision(body.revision);
         dispatch({ type: "setDocument", document: body.canonicalDocument });
+        savedRef.current = body.canonicalDocument;
         setStatus("idle");
         setConflictRevision(null);
       })
       .catch(() => setStatus("error"));
   }
 
-  return { status, syncedRevision, conflictRevision, reloadFromServer };
+  async function flush(): Promise<number | null> {
+    const waitForInFlight = async (): Promise<void> => {
+      while (inFlight.current) await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    await waitForInFlight();
+    const unsaved = (): boolean => dirtyRef.current && docRef.current !== savedRef.current;
+    // Two passes: an edit made while the first save was out is saved by the second.
+    for (let pass = 0; pass < 2 && unsaved() && !conflicted.current; pass += 1) {
+      await save();
+      await waitForInFlight();
+    }
+    if (conflicted.current || unsaved()) return null;
+    return revisionRef.current;
+  }
+
+  return { status, syncedRevision, conflictRevision, reloadFromServer, flush };
 }

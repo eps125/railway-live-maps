@@ -29,6 +29,7 @@ interface PlaceSearchResult {
 interface EditorMapEntry {
   slug: string;
   name: string;
+  kind?: "map" | "module";
   publishedVersion: number | null;
 }
 
@@ -118,7 +119,10 @@ export function LandingPage({ canEdit, isAdmin }: LandingPageProps): JSX.Element
         const response = await fetch("/api/v1/editor/maps");
         if (!response.ok) return;
         const body = await readApiJson<{ maps: EditorMapEntry[] }>(response);
-        setUnpublished(body.maps.filter((map) => map.publishedVersion === null));
+        // Modules are never published as maps (Milestone 85); they live in Admin › Maps.
+        setUnpublished(
+          body.maps.filter((map) => map.publishedVersion === null && map.kind !== "module"),
+        );
       } catch {
         // The public list still works; the unpublished list just stays empty.
       }

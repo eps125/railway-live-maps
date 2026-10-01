@@ -294,6 +294,26 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  // Milestone 85 / ADR 0019: a module's joins are attached by id and shown by name — both must be
+  // unique, and a join needs a length to have a direction.
+  const joinIds = new Set<string>();
+  const joinNames = new Set<string>();
+  for (const join of doc.joins ?? []) {
+    if (joinIds.has(join.id)) {
+      errors.push({ code: "duplicate_join_id", message: `Duplicate join id "${join.id}"` });
+    }
+    joinIds.add(join.id);
+    const name = join.name.trim().toLowerCase();
+    if (joinNames.has(name)) {
+      errors.push({ code: "duplicate_join_name", message: `Two joins are called "${join.name}"` });
+    }
+    joinNames.add(name);
+    const [a, b] = join.points;
+    if (a.x === b.x && a.y === b.y) {
+      errors.push({ code: "join_zero_length", message: `Join "${join.name}" has no length` });
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 

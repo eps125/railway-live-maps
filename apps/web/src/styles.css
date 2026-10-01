@@ -969,6 +969,7 @@ legend {
   flex-direction: column;
   gap: 0.75rem;
   overflow-y: auto;
+  max-height: calc(100vh - 12rem);
 }
 
 .tool-palette {
@@ -1060,6 +1061,9 @@ legend {
   flex-direction: column;
   gap: 0.75rem;
   overflow-y: auto;
+  /* Milestone 85: the side columns scroll rather than growing the page — a long panel (the
+   * Modules list) otherwise stretched the canvas far below the screen and centred the map there. */
+  max-height: calc(100vh - 12rem);
 }
 
 .panel-card {
@@ -1954,6 +1958,10 @@ legend {
   max-width: 1000px;
 }
 
+.admin-access-page > .btn {
+  align-self: flex-start;
+}
+
 .admin-access-page__mode {
   border: none;
   margin: 0;
@@ -2098,6 +2106,92 @@ legend {
 
 .access-code-form__number {
   width: 5rem;
+}
+
+/* Milestone 85: modules in the editor — the Modules/Joins panels, the "inside map" note, and the
+ * list of maps republished after a module publish. */
+.editor-header__context {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.modules-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.modules-panel__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.modules-panel__item--selected {
+  border-color: var(--color-accent);
+}
+
+.modules-panel__item .field-hint {
+  margin: 0;
+}
+
+.modules-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.modules-panel__placement {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.modules-panel__attach {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding-left: 1.4rem;
+}
+
+.modules-panel__buttons,
+.modules-panel__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+.modules-panel__add {
+  margin-top: 0.6rem;
+}
+
+.modules-panel__used-by ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+}
+
+.cascade-list {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+}
+
+.cascade-list__failed {
+  color: var(--color-danger);
 }
 
 /* Milestone 36c: admin S-Class explorer — a wide bit grid with a side column for the selected

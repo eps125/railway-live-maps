@@ -37,6 +37,9 @@ import {
 import { RouteTraceBar } from "./RouteTraceBar.js";
 import { nearestTrackEnd } from "./bufferStops.js";
 import { KonvaPrimitives } from "./KonvaPrimitives.js";
+import { ModuleBackdrop } from "./ModuleBackdrop.js";
+import { JoinsOverlay } from "./JoinsOverlay.js";
+import { newJoinAt, type BackdropItem } from "./modulesSupport.js";
 
 /** Perpendicular distance from a point to a line segment — picks which segment of a polyline a
  * double-click lands on for vertex insertion (ADR 0005 E2). */
@@ -477,6 +480,8 @@ function defaultElementForTool(
       };
     case "select":
     case "multiselect":
+    case "join":
+      // Milestone 85: a join is not an element (see `placeJoin`).
       // Multiselect places nothing on click — it's consumed by a drag (see
       // handleStageMouseDown/Move/Up's rubber-band-select handling), same as a plain click
       // with no drag distance doing nothing useful for it either.
@@ -511,12 +516,18 @@ export interface EditorCanvasProps {
   /** Milestone 64: live state of each bound route. A route that is live-set is drawn whether or
    * not its signal is selected, exactly as the public map would show it right now. */
   routeStates?: Record<string, "blank" | "set" | "unset"> | undefined;
+  /** Milestone 85: other parts of an assembled map, drawn dimmed behind the document. */
+  backdrop?: BackdropItem[] | undefined;
+  /** Milestone 85: a freely placed module was dragged to (x, y). */
+  onMoveModule?: ((slug: string, x: number, y: number) => void) | undefined;
 }
 
 export function EditorCanvas({
   previewState,
   signalStates,
   routeStates,
+  backdrop,
+  onMoveModule,
 }: EditorCanvasProps = {}): JSX.Element {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
@@ -527,6 +538,10 @@ export function EditorCanvas({
     width: FALLBACK_CANVAS_VIEW_WIDTH,
     height: FALLBACK_CANVAS_VIEW_HEIGHT,
   });
+  /** Milestone 85: the first fit waits for the real canvas size — fitting to the fallback size
+   * (when the map's modules arrived before the first measurement) zoomed in far too close. Where
+   * there is no ResizeObserver (tests) the fallback size is all there will ever be. */
+  const [measured, setMeasured] = useState(() => typeof ResizeObserver === "undefined");
   // Rubber-band select (Multiselect tool): world-space drag start/current-point while active,
   // null otherwise. Kept separate from the Stage's own draggable-when-Select pan (see the
   // `draggable={toolMode === "select"}` prop below) rather than folded into Select mode itself —
@@ -549,13 +564,14 @@ export function EditorCanvas({
       // size rather than collapsing the canvas.
       if (width > 0 && height > 0) {
         setStageSize({ width, height });
+        setMeasured(true);
       }
     });
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
 
-  const { document: doc, selection, toolMode, viewport, routeTrace } = state;
+  const { document: doc, selection, toolMode, viewport, routeTrace, selectedJoinId } = state;
   const gridSize = doc.map.canvas.gridSize;
 
   // Fit the initial view to the document's content, once, the same way the public renderer
@@ -565,14 +581,34 @@ export function EditorCanvas({
   const didFitRef = useRef(false);
   useEffect(() => {
     if (didFitRef.current) return;
+    if (!measured) return;
     if (stageSize.width < 2 || stageSize.height < 2) return;
     // If something already moved the viewport (a restored draft, a prior fit), don't fight it.
     if (viewport.x !== 0 || viewport.y !== 0 || viewport.scale !== 1) {
       didFitRef.current = true;
       return;
     }
-    const bb = computeBoundingBox(doc.elements);
-    if (!(bb.maxX > bb.minX) || !(bb.maxY > bb.minY)) {
+    // Milestone 85: an assembled map is mostly its modules, which arrive a moment later — wait for
+    // them, then fit everything.
+    if ((doc.modules ?? []).length > 0 && !backdrop?.length) return;
+    const parts = doc.elements.length > 0 ? [computeBoundingBox(doc.elements)] : [];
+    for (const item of backdrop ?? []) {
+      if (item.elements.length === 0) continue;
+      const b = computeBoundingBox(item.elements);
+      parts.push({
+        minX: b.minX + item.dx,
+        minY: b.minY + item.dy,
+        maxX: b.maxX + item.dx,
+        maxY: b.maxY + item.dy,
+      });
+    }
+    const bb = {
+      minX: Math.min(...parts.map((b) => b.minX)),
+      minY: Math.min(...parts.map((b) => b.minY)),
+      maxX: Math.max(...parts.map((b) => b.maxX)),
+      maxY: Math.max(...parts.map((b) => b.maxY)),
+    };
+    if (parts.length === 0 || !(bb.maxX > bb.minX) || !(bb.maxY > bb.minY)) {
       didFitRef.current = true;
       return;
     }
@@ -596,7 +632,7 @@ export function EditorCanvas({
       },
     });
     didFitRef.current = true;
-  }, [stageSize, viewport, doc.elements, dispatch]);
+  }, [stageSize, measured, viewport, doc.elements, doc.modules, backdrop, dispatch]);
 
   function toWorldPoint(stage: Konva.Stage): { x: number; y: number } {
     const pointer = stage.getPointerPosition();
@@ -720,6 +756,17 @@ export function EditorCanvas({
     dispatch({ type: "endRouteTrace" });
   }
 
+  /** Milestone 85: the Join tool puts a default join (vertical, centred on the click, snapped)
+   * where it is clicked — usually across track ends, so a click on a track counts too. */
+  function placeJoin(stage: Konva.Stage): void {
+    const point = toWorldPoint(stage);
+    const joins = doc.joins ?? [];
+    const join = newJoinAt({ x: snap(point.x, gridSize), y: snap(point.y, gridSize) }, joins);
+    dispatch({ type: "dispatchCommand", command: { type: "setJoins", joins: [...joins, join] } });
+    dispatch({ type: "selectJoin", joinId: join.id });
+    dispatch({ type: "setToolMode", mode: "select" });
+  }
+
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>): void {
     const stage = e.target.getStage();
     if (!stage) return;
@@ -730,8 +777,16 @@ export function EditorCanvas({
       return;
     }
 
+    if (toolMode === "join") {
+      placeJoin(stage);
+      return;
+    }
+
     if (toolMode === "select") {
-      if (clickedOnEmpty) dispatch({ type: "setSelection", ids: [] });
+      if (clickedOnEmpty) {
+        dispatch({ type: "setSelection", ids: [] });
+        if (selectedJoinId) dispatch({ type: "selectJoin", joinId: null });
+      }
       return;
     }
     if (toolMode === "switchedDiamond") {
@@ -783,6 +838,11 @@ export function EditorCanvas({
     if (toolMode === "bufferStop") {
       const stage = e.target.getStage();
       if (stage) placeBufferStop(stage);
+      return;
+    }
+    if (toolMode === "join") {
+      const stage = e.target.getStage();
+      if (stage) placeJoin(stage);
       return;
     }
     if (toolMode !== "select") return;
@@ -1288,6 +1348,16 @@ export function EditorCanvas({
           />
           {gridLines}
         </Layer>
+        {backdrop && backdrop.length > 0 ? (
+          <Layer>
+            <ModuleBackdrop
+              items={backdrop}
+              gridSize={gridSize}
+              scale={viewport.scale}
+              onMove={onMoveModule}
+            />
+          </Layer>
+        ) : null}
         <Layer>
           {paintOrderedElements.map((element) => {
             const layer = layersById.get(element.layerId)!;
@@ -2170,6 +2240,20 @@ export function EditorCanvas({
             );
           })}
           {traceResult ? renderTracePreview(traceResult, routeTrace?.waypoints ?? []) : null}
+          {(doc.joins ?? []).length > 0 ? (
+            <JoinsOverlay
+              joins={doc.joins ?? []}
+              elements={doc.elements}
+              selectedJoinId={selectedJoinId}
+              editable={toolMode === "select" && !routeTrace}
+              gridSize={gridSize}
+              scale={viewport.scale}
+              onSelect={(joinId) => dispatch({ type: "selectJoin", joinId })}
+              onChange={(joins) =>
+                dispatch({ type: "dispatchCommand", command: { type: "setJoins", joins } })
+              }
+            />
+          ) : null}
           {selectedBerthId ? (
             <Transformer
               ref={transformerRef}

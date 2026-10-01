@@ -4,6 +4,9 @@ export {
   MapElementSchema,
   MapBindingSchema,
   type MapDocument,
+  type MapJoin,
+  type ModulePlacement,
+  type ModuleUse,
   type MapElement,
   type Layer,
   type TrackPathElement,
@@ -108,3 +111,20 @@ export {
   type PlacedDrawing,
 } from "./drawing.js";
 export { hiddenTracks, visibleRouteRuns } from "./hiddenTrack.js";
+export {
+  extractModule,
+  flattenAssembledMap,
+  fitJoin,
+  isAssembledMap,
+  joinTrackEnds,
+  moduleSlugs,
+  qualifyId,
+  resolvePlacements,
+  JOIN_MATCH_TOLERANCE,
+  JOIN_TRACK_END_TOLERANCE,
+  type ExtractResult,
+  type FlattenResult,
+  type JoinFit,
+  type ModuleIssue,
+  type ResolvedPlacement,
+} from "./modules.js";

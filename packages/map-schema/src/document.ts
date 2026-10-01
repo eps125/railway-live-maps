@@ -568,6 +568,38 @@ export const MapBindingSchema = z.discriminatedUnion("type", [
   TdSBitRouteBindingSchema,
 ]);
 
+/**
+ * Milestone 85 / ADR 0019: a join — a short line the author draws across the track ends at a
+ * module's edge. Another module attaches by laying one of its joins onto this one; the track ends
+ * on each must meet. Authoring only: never published (an assembled map is flattened without them).
+ */
+const JoinSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  points: z.tuple([PointSchema, PointSchema]),
+});
+
+/** Milestone 85: where a module goes in an assembled map — at a point (the first module, or one
+ * the author drags into place), or attached by one of its joins to a join of a module already
+ * placed. An attached module's position is always calculated, never stored. */
+const ModulePlacementSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("at"), x: z.number(), y: z.number() }),
+  z.object({
+    kind: z.literal("attached"),
+    /** This module's join id. */
+    join: z.string().min(1),
+    /** The slug of the module it attaches to. */
+    to: z.string().min(1),
+    /** That module's join id. */
+    toJoin: z.string().min(1),
+  }),
+]);
+
+const ModuleUseSchema = z.object({
+  slug: z.string().min(1),
+  placement: ModulePlacementSchema,
+});
+
 export const MapDocumentSchema = z.object({
   schemaVersion: z.literal(1),
   map: MapMetaSchema,
@@ -577,9 +609,16 @@ export const MapDocumentSchema = z.object({
   bindings: z.array(MapBindingSchema).default([]),
   /** Stripped at publication time (docs/MAP_EDITOR_SPEC.md §11) — never part of the compiled bundle. */
   editorMetadata: z.record(z.unknown()).default({}),
+  /** Milestone 85: a module's joins. Optional so every existing document is unchanged. */
+  joins: z.array(JoinSchema).optional(),
+  /** Milestone 85: the modules an assembled map is made from. Absent or empty = a plain map. */
+  modules: z.array(ModuleUseSchema).optional(),
 });
 
 export type MapDocument = z.infer<typeof MapDocumentSchema>;
+export type MapJoin = z.infer<typeof JoinSchema>;
+export type ModulePlacement = z.infer<typeof ModulePlacementSchema>;
+export type ModuleUse = z.infer<typeof ModuleUseSchema>;
 export type Layer = z.infer<typeof LayerSchema>;
 export type MapElement = z.infer<typeof MapElementSchema>;
 export type TrackPathElement = z.infer<typeof TrackPathElementSchema>;

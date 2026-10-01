@@ -11,6 +11,8 @@ export interface CreateMapRouteDeps {
 interface CreateMapBody {
   slug?: unknown;
   name?: unknown;
+  /** Milestone 85: `module` creates a module (never shown on its own). Default `map`. */
+  kind?: unknown;
 }
 
 /** Lowercase, hyphen-separated, matching every slug already in use (`lancaster`) — no leading/
@@ -34,7 +36,11 @@ export async function registerCreateMapRoute(
   const { pool } = deps;
 
   app.post<{ Body: CreateMapBody }>("/api/v1/editor/maps", async (request, reply) => {
-    const { slug, name } = request.body ?? {};
+    const { slug, name, kind = "map" } = request.body ?? {};
+    if (kind !== "map" && kind !== "module") {
+      reply.code(400);
+      return apiError("VALIDATION_ERROR", 'kind must be "map" or "module"');
+    }
 
     if (typeof slug !== "string" || !SLUG_PATTERN.test(slug)) {
       reply.code(400);
@@ -49,10 +55,10 @@ export async function registerCreateMapRoute(
     }
 
     const inserted = await pool.query<{ id: string }>(
-      `insert into map (slug, name) values ($1, $2)
+      `insert into map (slug, name, kind) values ($1, $2, $3)
        on conflict (slug) do nothing
        returning id`,
-      [slug, name],
+      [slug, name, kind],
     );
     const mapId = inserted.rows[0]?.id;
     if (!mapId) {
@@ -64,9 +70,18 @@ export async function registerCreateMapRoute(
     // "create a map" a single, complete admin action (the editor's own draft-seeding still works
     // the same way for every other slug, so this is just calling it a beat earlier).
     const draft = await getOrSeedDraft(pool, slug);
-    await audit(pool, request, "map.create", { type: "map", id: mapId }, { slug, name });
+    await audit(
+      pool,
+      request,
+      kind === "module" ? "module.create" : "map.create",
+      {
+        type: "map",
+        id: mapId,
+      },
+      { slug, name },
+    );
 
     reply.code(201);
-    return { slug, name, mapId, draftRevision: draft.revision };
+    return { slug, name, kind, mapId, draftRevision: draft.revision };
   });
 }

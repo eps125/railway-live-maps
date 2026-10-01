@@ -209,4 +209,68 @@ describe("AdminMapsPage", () => {
       expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ ids: ["6", "5"] });
     });
   });
+
+  it("Milestone 85: lists modules on their own tab with the maps using them, and creates a module", async () => {
+    const withModule = [
+      ...MAPS,
+      {
+        ...MAPS[0],
+        id: "12",
+        slug: "grand-junction",
+        name: "Grand Junction",
+        kind: "module",
+        usedBy: ["lancaster", "wolverhampton"],
+      },
+    ];
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/editor/maps" && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ slug: "west-coast", kind: "module" }, 201));
+      }
+      if (url === "/api/v1/editor/maps") return Promise.resolve(jsonResponse({ maps: withModule }));
+      if (url === "/api/v1/admin/regions") return Promise.resolve(jsonResponse({ regions: [] }));
+      if (url === "/api/v1/admin/groups") return Promise.resolve(jsonResponse({ groups: GROUPS }));
+      if (url === "/api/v1/admin/settings") {
+        return Promise.resolve(jsonResponse({ settings: { map_list_region_grouping: false } }));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminMapsPage />);
+
+    await screen.findByText("Lancaster");
+    expect(screen.queryByText("Grand Junction")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Modules (1)" }));
+    expect(screen.getByText("Grand Junction")).toBeInTheDocument();
+    expect(screen.getByText("lancaster, wolverhampton")).toBeInTheDocument();
+    expect(screen.queryByText("Lancaster")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "West Coast" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create module" }));
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(JSON.parse((post![1] as RequestInit).body as string)).toEqual({
+        slug: "west-coast",
+        name: "West Coast",
+        kind: "module",
+      });
+    });
+  });
+
+  it("Milestone 85: republishes all maps after confirming, and shows the outcome", async () => {
+    stubAdminFetch((url) =>
+      url === "/api/v1/admin/maps/republish-all"
+        ? jsonResponse({
+            maps: [
+              { slug: "lancaster", ok: true, versionNumber: 4 },
+              { slug: "carlisle", ok: false, errors: [{ message: "join mismatch" }] },
+            ],
+          })
+        : undefined,
+    );
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<AdminMapsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Republish all maps" }));
+    expect(await screen.findByText("— now version 4")).toBeInTheDocument();
+    expect(screen.getByText(/not republished: join mismatch/)).toBeInTheDocument();
+  });
 });

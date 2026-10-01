@@ -94,7 +94,14 @@ export function App(): JSX.Element {
       sessionLoading || !canEdit ? (
         <p className="app-loading">Loading…</p>
       ) : (
-        <EditorApp slug={route.slug} />
+        <EditorApp
+          // Milestone 85: moving between a map and its modules is a navigation between editors —
+          // remount so each starts from its own draft.
+          key={`${route.slug}|${navigationCount}`}
+          slug={route.slug}
+          isAdmin={isAdmin}
+          contextSlug={new URLSearchParams(window.location.search).get("in")}
+        />
       );
   } else if (route.name === "adminHub") {
     main = sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminHubPage />;

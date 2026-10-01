@@ -18,7 +18,9 @@ export type ToolMode =
   | "water"
   | "levelCrossing"
   | "bufferStop"
-  | "switchedDiamond";
+  | "switchedDiamond"
+  /** Milestone 85: draw a join across a module's track ends. */
+  | "join";
 
 export interface Viewport {
   x: number;
@@ -53,9 +55,12 @@ export interface EditorState {
   /** Milestone 64: the route trace in progress, or null. While set, canvas clicks add waypoints
    * and clicking a signal finishes the route there. */
   routeTrace: RouteTrace | null;
+  /** Milestone 85: the selected join (joins are not elements, so not in `selection`). */
+  selectedJoinId: string | null;
 }
 
 export type EditorAction =
+  | { type: "selectJoin"; joinId: string | null }
   | { type: "dispatchCommand"; command: EditorCommand }
   | { type: "undo" }
   | { type: "redo" }
@@ -131,7 +136,17 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       };
     }
     case "setSelection":
-      return { ...state, selection: action.ids };
+      return {
+        ...state,
+        selection: action.ids,
+        selectedJoinId: action.ids.length > 0 ? null : state.selectedJoinId,
+      };
+    case "selectJoin":
+      return {
+        ...state,
+        selectedJoinId: action.joinId,
+        selection: action.joinId ? [] : state.selection,
+      };
     case "setToolMode":
       return { ...state, toolMode: action.mode };
     case "setViewport":
@@ -162,6 +177,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
     case "setDocument":
       return {
         ...state,
+        selectedJoinId: null,
         routeTrace: null,
         document: action.document,
         past: [],
@@ -208,6 +224,7 @@ function initialState(document: MapDocument): EditorState {
     viewport: { x: 0, y: 0, scale: 1 },
     dirty: false,
     routeTrace: null,
+    selectedJoinId: null,
   };
 }
 

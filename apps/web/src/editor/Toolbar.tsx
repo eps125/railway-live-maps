@@ -20,10 +20,13 @@ function cloneWithNewId<T extends { id: string }>(item: T): T {
 export function Toolbar({
   onImportError,
   onOpenSignalTool,
+  onMakeModule,
 }: {
   onImportError: (message: string) => void;
   /** ADR 0017: opens the bulk "Name and orient signals" tool. */
   onOpenSignalTool?: () => void;
+  /** Milestone 85: make a module from the selection (admins, maps only). */
+  onMakeModule?: (() => void) | undefined;
 }): JSX.Element {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
@@ -129,6 +132,14 @@ export function Toolbar({
         });
         return;
       }
+      // Milestone 85: a selected join deletes the same way.
+      if ((e.key === "Delete" || e.key === "Backspace") && state.selectedJoinId) {
+        e.preventDefault();
+        const joins = (state.document.joins ?? []).filter((j) => j.id !== state.selectedJoinId);
+        dispatch({ type: "dispatchCommand", command: { type: "setJoins", joins } });
+        dispatch({ type: "selectJoin", joinId: null });
+        return;
+      }
 
       const meta = e.ctrlKey || e.metaKey;
       if (!meta) return;
@@ -151,7 +162,7 @@ export function Toolbar({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [state.selection, clipboard, state.document, state.routeTrace]);
+  }, [state.selection, clipboard, state.document, state.routeTrace, state.selectedJoinId]);
 
   function exportJson(): void {
     const blob = new Blob([JSON.stringify(state.document, null, 2)], { type: "application/json" });
@@ -258,6 +269,17 @@ export function Toolbar({
         {onOpenSignalTool ? (
           <button type="button" className="btn" onClick={onOpenSignalTool}>
             Signals…
+          </button>
+        ) : null}
+        {onMakeModule ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={state.selection.length === 0}
+            title="Move the selected elements into a new module, placed exactly where they are"
+            onClick={onMakeModule}
+          >
+            Make module…
           </button>
         ) : null}
         <input

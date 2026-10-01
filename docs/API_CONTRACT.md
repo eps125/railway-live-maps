@@ -792,6 +792,24 @@ gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/
   named after the new map instead of the slug) in one step, returning
   `{ slug, name, mapId, draftRevision }`. The map has no published version yet, so it does not
   appear in `GET /api/v1/maps` until its first publish.
+- `POST /api/v1/editor/maps` also takes `kind: "map" | "module"` (Milestone 85; default `map`).
+- `GET /api/v1/editor/maps/{slug}/draft` also returns `kind` (Milestone 85).
+- `POST /api/v1/editor/maps/{slug}/publish` (Milestone 85): for a **module**, records a module
+  version and then republishes every map currently assembled from it, returning
+  `{ kind: "module", versionNumber, cascade: [{ slug, ok, versionNumber?, errors? }] }`. For an
+  **assembled map**, publishes the flattened document built from each module's latest published
+  version (`422` with the module problems if they don't fit, or a module was never published);
+  `{ kind: "map", ... }` as before. `validate` checks an assembled map the same way and warns about
+  modules with unpublished changes.
+- `GET /api/v1/editor/modules?slugs=a,b` (Milestone 85) — `{ modules: [{ slug, name, draft,
+draftRevision, published, publishedVersion }] }` for the editor's preview.
+- `POST /api/v1/editor/maps/{slug}/extract-module` (**admin only**, Milestone 85) —
+  `{ elementIds, moduleSlug, moduleName, expectedRevision }`: moves those elements into a new
+  module placed so nothing moves; returns `{ moduleSlug, movedElements, keptInMap, revision,
+canonicalDocument }`. `409` for a taken slug or a stale revision.
+- `DELETE /api/v1/editor/maps/{slug}` of a module still used by a map: `409 MODULE_IN_USE`.
+- `POST /api/v1/admin/maps/republish-all` (**admin only**, Milestone 85) — republishes every
+  published map from what it last published; `{ maps: [{ slug, ok, versionNumber?, errors? }] }`.
 - `GET /api/v1/editor/maps` (Milestone 83) — every map the signed-in user may see, published or
   not: `{ maps: [{ id, slug, name, description, visibility, groupIds, region, publishedVersion,
 publishedAt, draftUpdatedAt, hasUnpublishedChanges }] }`. `publishedVersion` is `null` for a map

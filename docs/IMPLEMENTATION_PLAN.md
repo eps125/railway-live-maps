@@ -4505,3 +4505,45 @@ revoked codes, revocation ending existing uses, changing a use's end both ways, 
 validation, the activity count and same-hour flag, and the audit entries.
 
 **Production needs migration 0047 applied by hand before this code deploys** (after 0046).
+
+## Milestone 85 — Map modules (2026-10-01)
+
+Owner request (docs/adr/0019): draw a stretch of railway once and use it on several maps; joins
+drawn with a tool and positions worked out from them (no typed offsets); a module change appears
+on every published map using it without republishing each by hand.
+
+- [x] Migration 0048: `map.kind`, `map_module_version`, `map_version.source_document` and
+      `module_versions`.
+- [x] `@railway/map-schema`: `joins` and `modules` on the document; `fitJoin` (joins either way
+      round, track ends lined up and checked), `resolvePlacements`, `flattenAssembledMap` (ids
+      qualified `<module>/<id>`, cross-module references kept, topology nodes merged where modules
+      meet), `extractModule`; join validation (unique names, no zero length).
+- [x] Publishing: a module records a module version, then republishes every map assembled from
+      it (each in its own transaction; a map that no longer fits is left and reported); an
+      assembled map publishes its flattened document and keeps its source. Drafts, diff and test
+      mode use the source / module drafts. Republish all maps (admin). A module in use can't be
+      deleted.
+- [x] Editor: Join tool and Joins panel (modules); modules drawn dimmed behind an assembled map,
+      free ones draggable; Modules panel (add, attach by joins, free, remove, problems); "Edit
+      module here" with the rest of the map around it; "Make module…" from a selection (admins);
+      module publish shows which maps were republished. The editor saves before leaving for
+      another map or module.
+- [x] Admin › Maps: Maps / Modules tabs, create a module, "used by", Republish all maps.
+- [x] Editor layout: side columns scroll instead of stretching the canvas; the first fit waits for
+      the canvas's real size and includes the modules.
+- [ ] Drawing a new element that spans modules by clicking across them (today: type the
+      qualified id where a reference is entered).
+- [ ] Live/test state on the dimmed modules in the editor (the public map has it).
+
+Tests: joins, attachment (either way round, growth, mismatched counts/spacing, missing join,
+loops, duplicates, nesting), flattening (positions, qualified ids and references, bindings,
+topology merge, local elements), extraction; editor helpers (backdrops, context offsets following
+live edits, new-module placement, join naming, undo of join/module changes); Modules and Joins
+panels; Admin › Maps tabs, module creation and republish-all. Integration (disposable Postgres):
+module publish (never public), assembled publish (flattened + source kept), cascade moving
+attached modules, a breaking module change reported and the map left alone, unpublished module
+rejected, delete guard, module listing, extraction then publish, republish-all. Checked in a
+browser against the disposable database: assembled map, editing a module inside it, module
+publish cascade, public map.
+
+**Production needs migration 0048 applied by hand before this code deploys** (after 0046, 0047).

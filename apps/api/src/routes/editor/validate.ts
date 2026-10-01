@@ -1,7 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import { MapDocumentSchema } from "@railway/map-schema";
+import { isAssembledMap, MapDocumentSchema, moduleSlugs } from "@railway/map-schema";
 import { validateDraftInContext } from "../../editor/validateWithContext.js";
+import {
+  assembleFromPublished,
+  loadModuleDrafts,
+  loadPublishedModules,
+  moduleIssuesAsValidation,
+} from "../../editor/modules.js";
 
 export interface EditorValidateRoutesDeps {
   pool: Pool;
@@ -39,8 +45,35 @@ export async function registerEditorValidateRoutes(
         };
       }
 
-      const result = await validateDraftInContext(pool, parsed.data);
-      return result;
+      // Milestone 85: an assembled map is checked exactly as it would publish — flattened with
+      // each module's latest published version — plus whether its modules fit together, and a
+      // warning for each module with changes not yet published (they won't be included).
+      if (!isAssembledMap(parsed.data)) return validateDraftInContext(pool, parsed.data);
+      const assembly = await assembleFromPublished(pool, parsed.data);
+      const result = await validateDraftInContext(pool, assembly.flattened);
+      const slugs = moduleSlugs(parsed.data);
+      const [published, drafts] = await Promise.all([
+        loadPublishedModules(pool, slugs),
+        loadModuleDrafts(pool, slugs),
+      ]);
+      const unpublished = slugs.filter((slug) => {
+        const draft = drafts.get(slug);
+        const live = published.get(slug);
+        return draft && live && JSON.stringify(draft) !== JSON.stringify(live.doc);
+      });
+      const errors = [...moduleIssuesAsValidation(assembly.issues), ...result.errors];
+      return {
+        ...result,
+        valid: errors.length === 0,
+        errors,
+        warnings: [
+          ...unpublished.map((slug) => ({
+            code: "module_unpublished_changes",
+            message: `Module ${slug} has changes that aren't published yet — publish the module to include them`,
+          })),
+          ...result.warnings,
+        ],
+      };
     },
   );
 }

@@ -7,6 +7,9 @@ interface AdminMap {
   id: string;
   slug: string;
   name: string;
+  /** Milestone 85. */
+  kind?: "map" | "module";
+  usedBy?: string[];
   description: string | null;
   visibility: "public" | "restricted";
   groupIds: string[];
@@ -82,6 +85,15 @@ export function AdminMapsPage(): JSX.Element {
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [confirmDeleteSlug, setConfirmDeleteSlug] = useState<string | null>(null);
 
+  // Milestone 85: maps and modules are listed separately.
+  const [tab, setTab] = useState<"map" | "module">("map");
+  const [republishing, setRepublishing] = useState(false);
+  const [republished, setRepublished] = useState<Array<{
+    slug: string;
+    ok: boolean;
+    versionNumber?: number;
+    errors?: { message: string }[];
+  }> | null>(null);
   const [newName, setNewName] = useState("");
   const [newSlug, setNewSlug] = useState("");
   const [slugEdited, setSlugEdited] = useState(false);
@@ -140,6 +152,7 @@ export function AdminMapsPage(): JSX.Element {
       const response = await sendJson("/api/v1/editor/maps", "POST", {
         slug: newSlug,
         name: newName,
+        kind: tab,
       });
       if (!response.ok) {
         setActionError(await extractError(response, "Failed to create map."));
@@ -160,6 +173,32 @@ export function AdminMapsPage(): JSX.Element {
     );
   }
   if (!maps) return <p className="app-loading">Loading maps…</p>;
+  const shown = maps.filter((map) => (map.kind ?? "map") === tab);
+  const moduleCount = maps.filter((map) => map.kind === "module").length;
+
+  async function republishAll(): Promise<void> {
+    if (
+      !window.confirm(
+        "Republish every published map from what it last published? Maps made from modules " +
+          "pick up each module's latest published version. Drafts are not touched.",
+      )
+    ) {
+      return;
+    }
+    setRepublishing(true);
+    setActionError(null);
+    try {
+      const response = await sendJson("/api/v1/admin/maps/republish-all", "POST");
+      if (!response.ok) {
+        setActionError(await extractError(response, "Failed to republish."));
+        return;
+      }
+      setRepublished((await readApiJson<{ maps: NonNullable<typeof republished> }>(response)).maps);
+      await load();
+    } finally {
+      setRepublishing(false);
+    }
+  }
 
   return (
     <div className="admin-users-page admin-maps-page">
@@ -190,8 +229,42 @@ export function AdminMapsPage(): JSX.Element {
         <p className="field-hint">When off, the list is A–Z only.</p>
       </section>
 
+      <div className="btn-group" role="tablist" aria-label="Maps or modules">
+        <button
+          type="button"
+          role="tab"
+          className="btn"
+          aria-selected={tab === "map"}
+          aria-pressed={tab === "map"}
+          onClick={() => setTab("map")}
+        >
+          Maps ({maps.length - moduleCount})
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className="btn"
+          aria-selected={tab === "module"}
+          aria-pressed={tab === "module"}
+          onClick={() => setTab("module")}
+        >
+          Modules ({moduleCount})
+        </button>
+      </div>
+      {tab === "module" ? (
+        <p className="field-hint">
+          A module is drawn once and used in any number of maps; it never appears on its own.
+          Publishing a module republishes every map made from it.
+        </p>
+      ) : null}
+
       <ul className="admin-map-list">
-        {maps.map((map) => (
+        {shown.length === 0 ? (
+          <li className="panel-card panel-card--empty">
+            {tab === "module" ? "No modules yet." : "No maps yet."}
+          </li>
+        ) : null}
+        {shown.map((map) => (
           <li key={map.slug} className="admin-map-row">
             <div className="admin-map-row__head">
               <div className="admin-map-row__title">
@@ -259,6 +332,14 @@ export function AdminMapsPage(): JSX.Element {
                     : `Published v${map.publishedVersion}${map.hasUnpublishedChanges ? " · unpublished changes" : ""}`}
                 </dd>
               </div>
+              {map.kind === "module" ? (
+                <div>
+                  <dt>Used by</dt>
+                  <dd>
+                    {map.usedBy && map.usedBy.length > 0 ? map.usedBy.join(", ") : "No maps yet"}
+                  </dd>
+                </div>
+              ) : null}
               <div>
                 <dt>Visible to</dt>
                 <dd>{visibilitySummary(map, groups)}</dd>
@@ -295,7 +376,7 @@ export function AdminMapsPage(): JSX.Element {
       </ul>
 
       <form className="panel-card" onSubmit={(e) => void handleCreate(e)}>
-        <h3>New map</h3>
+        <h3>{tab === "module" ? "New module" : "New map"}</h3>
         <label className="field">
           Name
           <input
@@ -322,9 +403,37 @@ export function AdminMapsPage(): JSX.Element {
           />
         </label>
         <button type="submit" className="btn btn--primary" disabled={creating}>
-          {creating ? "Creating…" : "Create map"}
+          {creating ? "Creating…" : tab === "module" ? "Create module" : "Create map"}
         </button>
       </form>
+
+      <section className="panel-card">
+        <h3>Republish all maps</h3>
+        <p className="field-hint">
+          Normally not needed — publishing a module republishes the maps made from it. Use this
+          after a change to how maps are drawn, so every published map is rebuilt.
+        </p>
+        <button
+          type="button"
+          className="btn"
+          disabled={republishing}
+          onClick={() => void republishAll()}
+        >
+          {republishing ? "Republishing…" : "Republish all maps"}
+        </button>
+        {republished ? (
+          <ul className="cascade-list">
+            {republished.map((map) => (
+              <li key={map.slug} className={map.ok ? "" : "cascade-list__failed"}>
+                <strong>{map.slug}</strong>{" "}
+                {map.ok
+                  ? `— now version ${map.versionNumber}`
+                  : `— not republished: ${(map.errors ?? []).map((e) => e.message).join("; ")}`}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
 
       <section className="panel-card">
         <h3>Regions</h3>

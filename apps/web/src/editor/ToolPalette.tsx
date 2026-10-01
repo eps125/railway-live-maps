@@ -31,13 +31,15 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
  * click on empty canvas (`EditorCanvas.tsx`) places a default-sized element of that type and
  * switches back to Select — except Multiselect, armed the same way but consumed by a drag
  * (rubber-band select) rather than a click, also switching back to Select once released. */
-export function ToolPalette(): JSX.Element {
+export function ToolPalette({ showJoinTool = false }: { showJoinTool?: boolean }): JSX.Element {
   const { toolMode } = useEditorState();
   const dispatch = useEditorDispatch();
+  // Milestone 85: joins only mean something in a module.
+  const tools = showJoinTool ? [...TOOLS, { mode: "join" as const, label: "Join" }] : TOOLS;
 
   return (
     <nav aria-label="Editor tools" className="tool-palette">
-      {TOOLS.map((tool) => (
+      {tools.map((tool) => (
         <button
           key={tool.mode}
           type="button"

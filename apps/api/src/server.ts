@@ -34,6 +34,7 @@ import {
 import { createSiteAccess } from "./lib/siteAccess.js";
 import { registerAccessRoutes } from "./routes/access.js";
 import { registerAccessCodeAdminRoutes } from "./routes/admin/accessCodes.js";
+import { registerAdminModuleRoutes } from "./routes/editor/moduleRoutes.js";
 import { createPollingDeltaSource } from "./live/pollingDeltaSource.js";
 import { createRedisDeltaSource } from "./live/redisDeltaSource.js";
 import type { LiveDeltaSource } from "./live/deltaSource.js";
@@ -194,6 +195,8 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
     await registerCreateMapRoute(adminMapScope, { pool });
     // Owner request (2026-09-13): rename (name/slug) and delete a map, same admin gate.
     await registerManageMapRoutes(adminMapScope, { pool });
+    // Milestone 85: make a module from a selection; republish every map.
+    await registerAdminModuleRoutes(adminMapScope, { pool });
   });
 
   const close = async (): Promise<void> => {

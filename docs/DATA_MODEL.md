@@ -691,3 +691,14 @@ change it), `revoked_at`/`revoked_by`, first IP and user agent, last seen time a
 written by the API in 30-second batches and deleted after 90 days.
 
 `app_setting.site_access_mode` (`open` / `code_required`) is seeded `open` by the same migration.
+
+### Map modules (Milestone 85, migration 0048, docs/adr/0019)
+
+- `map.kind` — `map` or `module`.
+- `map_module_version` — a module's immutable published versions (`version_number`,
+  `canonical_document`, `published_by`, `published_at`, `checksum`). A module never has a
+  `map_version`, so nothing reading published maps sees it on its own.
+- `map_version.source_document` — for a map assembled from modules, the document the author edits
+  (local elements + `modules`); `canonical_document` is the flattened map. `module_versions` lists
+  the module versions it was built from (`[{ slug, moduleVersionId, versionNumber }]`). A GIN
+  index on `source_document -> 'modules'` finds the maps using a module.

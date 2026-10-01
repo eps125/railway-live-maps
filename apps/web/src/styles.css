@@ -1369,25 +1369,6 @@ legend {
  * Milestone 29 — login and admin user management
  * ------------------------------------------------------------------------------------------- */
 
-.login-page {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-}
-
-.login-form {
-  width: 100%;
-  max-width: 320px;
-  display: flex;
-  flex-direction: column;
-}
-
-.login-form h2 {
-  margin-bottom: 0.75rem;
-}
-
 .login-form__error {
   color: var(--color-danger);
   font-size: 0.8rem;
@@ -1952,8 +1933,10 @@ legend {
   gap: 0.5rem;
 }
 
-/* The code box is drawn like a train describer berth: black, square-edged, amber characters. */
-.access-code-page__entry input {
+/* The code box (and the staff login boxes) are drawn like a train describer berth: black,
+ * square-edged, amber characters. */
+.access-code-page__entry input,
+.berth-input {
   flex: 1;
   min-width: 0;
   padding: 0.55rem 0.7rem;
@@ -1967,9 +1950,31 @@ legend {
   text-transform: uppercase;
 }
 
-.access-code-page__entry input:focus {
+.access-code-page__entry input:focus,
+.berth-input:focus {
   outline: none;
   border-color: #ffbf00;
+}
+
+.login-card__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.85rem;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+/* Usernames are matched case-insensitively (the API lowercases them), so the berth-style
+ * capitals are display only and safe. */
+.login-card__field .berth-input {
+  font-size: 1.05rem;
+}
+
+.login-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.25rem;
 }
 
 .access-code-page__entry .btn {

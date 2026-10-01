@@ -52,37 +52,46 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): JSX.Element {
     }
   }
 
+  // Owner request 2026-10-01: the same card as the access code page, with the boxes drawn like
+  // a train describer berth.
   return (
-    <div className="login-page">
-      <form className="login-form panel-card" onSubmit={(e) => void handleSubmit(e)}>
-        <h2>Sign in</h2>
-        <label className="field">
+    <div className="access-code-page">
+      <form className="access-code-page__form" onSubmit={(e) => void handleSubmit(e)}>
+        <h2>Signing in?</h2>
+        <p>This login is for authorised users to access the Live Map backend.</p>
+        <label className="login-card__field">
           Username
           <input
             type="text"
+            className="berth-input"
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoFocus
           />
         </label>
-        <label className="field">
+        <label className="login-card__field">
           Password
           <input
             type="password"
+            className="berth-input"
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
         </label>
+        <div className="login-card__actions">
+          <button type="submit" className="btn btn--primary" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
+          </button>
+        </div>
         {error && (
-          <p role="alert" className="login-form__error">
+          <p role="alert" className="access-code-page__error">
             {error}
           </p>
         )}
-        <button type="submit" className="btn btn--primary" disabled={submitting}>
-          {submitting ? "Signing in…" : "Sign in"}
-        </button>
       </form>
     </div>
   );

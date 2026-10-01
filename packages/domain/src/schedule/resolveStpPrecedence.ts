@@ -66,17 +66,64 @@ export interface DatedCandidate<T> {
 export function candidatesRunningOnAny<T extends ScheduleCandidate>(
   candidates: T[],
   serviceDates: readonly string[],
+  dateChoice?: ServiceDateChoice<T>,
 ): DatedCandidate<T>[] {
   const result: DatedCandidate<T>[] = [];
   for (const candidate of candidates) {
-    for (const serviceDate of serviceDates) {
-      if (runsOnDate(candidate, serviceDate)) {
-        result.push({ candidate, serviceDate });
-        break;
-      }
-    }
+    const dates = serviceDates.filter((serviceDate) => runsOnDate(candidate, serviceDate));
+    const first = dates[0];
+    if (first === undefined) continue;
+    result.push({
+      candidate,
+      serviceDate: chooseServiceDate(candidate, dates, serviceDates, dateChoice),
+    });
   }
   return result;
+}
+
+/**
+ * Overnight fix (2026-10-01, owner report: Caledonian Sleeper 1S25/1S26/1M11/1M16 never coloured
+ * by delay): which of the probed dates a schedule valid on *more than one* of them is running for
+ * right now. Preferring the most recent date was wrong for any overnight train that runs on
+ * consecutive days: the Tue-Thu 1M11 (Glasgow 23:40) seen at Carlisle at 00:30 on Thursday was
+ * resolved to Thursday's run — which hadn't left yet — instead of Wednesday's, so it missed its
+ * TRUST activation (dated Wednesday) and the delay lookup found nothing all night.
+ *
+ * `originDepartureMinutes` is the schedule's departure from its origin (minutes after midnight
+ * of its own traffic day). The occurrence chosen is the one whose departure is nearest to now,
+ * earlier or later: 50 minutes after Wednesday's 23:40 beats 23 hours before Thursday's. A
+ * same-headcode run from yesterday that has actually finished is still excluded separately, by
+ * TRUST movement evidence (`alreadyPassedScheduleIds`).
+ */
+export interface ServiceDateChoice<T> {
+  originDepartureMinutes: (candidate: T) => number | null;
+  /** Now, in minutes after midnight of `serviceDates[0]` (today). */
+  nowMinutes: number;
+}
+
+/** `serviceDates` are consecutive days going back from today: index = days before today. A
+ * candidate running on one date, or with no known departure, keeps the most recent date. */
+function chooseServiceDate<T>(
+  candidate: T,
+  runningDates: readonly string[],
+  serviceDates: readonly string[],
+  dateChoice: ServiceDateChoice<T> | undefined,
+): string {
+  const first = runningDates[0] as string;
+  if (runningDates.length === 1 || !dateChoice) return first;
+  const departure = dateChoice.originDepartureMinutes(candidate);
+  if (departure === null) return first;
+  let best = first;
+  let bestDistance = Infinity;
+  for (const date of runningDates) {
+    const daysBack = serviceDates.indexOf(date);
+    const distance = Math.abs(dateChoice.nowMinutes + daysBack * 1440 - departure);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = date;
+    }
+  }
+  return best;
 }
 
 /** Multi-date counterpart to `selectEffectiveSchedule` — same STP precedence rule, applied across
@@ -84,8 +131,9 @@ export function candidatesRunningOnAny<T extends ScheduleCandidate>(
 export function selectEffectiveScheduleAcrossDates<T extends ScheduleCandidate>(
   candidates: T[],
   serviceDates: readonly string[],
+  dateChoice?: ServiceDateChoice<T>,
 ): StpPrecedenceResult<DatedCandidate<T>> {
-  const running = candidatesRunningOnAny(candidates, serviceDates);
+  const running = candidatesRunningOnAny(candidates, serviceDates, dateChoice);
   if (running.length === 0) return { outcome: "none" };
 
   const highestRank = Math.max(...running.map((r) => PRECEDENCE_RANK[r.candidate.stpIndicator]));

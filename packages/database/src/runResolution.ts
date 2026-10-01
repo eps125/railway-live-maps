@@ -8,6 +8,7 @@ import {
   parseCifTimeToMinutes,
   resolveRunMatch,
   type RunMatchCandidate,
+  type ServiceDateChoice,
 } from "@railway/domain";
 import type { Queryable } from "./checkpoint.js";
 
@@ -531,6 +532,28 @@ export function normalizeStp(value: string): "C" | "N" | "O" | "P" {
   return STP.has(value) ? (value as "C" | "N" | "O" | "P") : "P";
 }
 
+/** Each schedule's departure from its origin (its first location), in minutes after midnight of
+ * its own traffic day — WTT departure, else public. Missing or unparseable: absent. */
+export async function originDepartureMinutesByScheduleId(
+  pool: Queryable,
+  scheduleIds: string[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (scheduleIds.length === 0) return result;
+  const { rows } = await pool.query<{ cif_schedule_id: string; departure: string | null }>(
+    `select distinct on (cif_schedule_id) cif_schedule_id::text, coalesce(departure, public_departure) as departure
+       from cif_schedule_locations
+      where cif_schedule_id = any($1::bigint[])
+      order by cif_schedule_id, seq_no`,
+    [scheduleIds],
+  );
+  for (const row of rows) {
+    const minutes = parseCifTimeToMinutes(row.departure);
+    if (minutes !== null) result.set(row.cif_schedule_id, minutes);
+  }
+  return result;
+}
+
 /** Milestone 35: for each candidate schedule, its best (closest-to-now) parseable calling time
  * at any of the position-scoped `tiplocs` — a schedule can call at more than one of them (rare
  * but possible), and each calling row itself may carry more than one time field, so every
@@ -812,6 +835,15 @@ export async function resolveFreshRunMatch(
       row,
     }),
   );
+  // Overnight fix (2026-10-01): each candidate's departure from its origin, so a schedule valid
+  // on both probed dates is matched to the occurrence that's actually out — see
+  // `ServiceDateChoice` (Caledonian Sleeper 1M11 at Carlisle 00:30 was Wednesday's run, not
+  // Thursday's).
+  const originDepartures = await originDepartureMinutesByScheduleId(pool, scheduleIds);
+  const dateChoice: ServiceDateChoice<RunMatchCandidate> = {
+    originDepartureMinutes: (candidate) => originDepartures.get(candidate.scheduleId) ?? null,
+    nowMinutes,
+  };
   // Milestone 35: only a position-scoped berth is a known "station" to time-match against — an
   // unscoped (headcode_only) search has no station to tie a calling time to.
   const callingTimes = positionScoped
@@ -833,10 +865,9 @@ export async function resolveFreshRunMatch(
     // Each candidate's own resolved traffic day (docs/adr/0008) — a yesterday-resolved one may be
     // excluded as finished; see findAlreadyPassedScheduleIds.
     const resolvedDateByScheduleId = new Map(
-      candidatesRunningOnAny(matchCandidates, serviceDates).map(({ candidate, serviceDate }) => [
-        candidate.scheduleId,
-        serviceDate,
-      ]),
+      candidatesRunningOnAny(matchCandidates, serviceDates, dateChoice).map(
+        ({ candidate, serviceDate }) => [candidate.scheduleId, serviceDate],
+      ),
     );
     alreadyPassedScheduleIds = await findAlreadyPassedScheduleIds(
       pool,
@@ -858,6 +889,7 @@ export async function resolveFreshRunMatch(
       ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
       : undefined,
     alreadyPassedScheduleIds,
+    dateChoice,
   );
 
   const matchBasis =
@@ -892,7 +924,7 @@ export async function resolveFreshRunMatch(
   const runningNationwideTrainCount = positionScoped
     ? null
     : new Set(
-        candidatesRunningOnAny(matchCandidates, serviceDates).map(
+        candidatesRunningOnAny(matchCandidates, serviceDates, dateChoice).map(
           (dated) => dated.candidate.row.cif_train_uid,
         ),
       ).size;
@@ -935,6 +967,9 @@ export interface OccupancyLink {
   trafficDay: string;
   matchBasis: "step_chain" | "boundary_correlated" | string;
   matchConfidence: "solid" | "weak";
+  /** How this occupancy got the run: `resolved` here, or carried (`step_chain`,
+   * `boundary_correlated`) from an earlier berth of the same train. */
+  linkBasis: string;
 }
 
 export async function findOpenOccupancy(
@@ -966,9 +1001,10 @@ export async function findOccupancyLink(
     traffic_day: string;
     match_basis: string;
     match_confidence: "solid" | "weak";
+    link_basis: string;
   }>(
     `select l.train_run_id, r.cif_schedule_id::text as cif_schedule_id, r.cif_train_uid,
-            r.traffic_day::text as traffic_day, r.match_basis, r.match_confidence
+            r.traffic_day::text as traffic_day, r.match_basis, r.match_confidence, l.link_basis
      from berth_occupancy_run_link l
      join train_run r on r.id = l.train_run_id
      where l.berth_occupancy_id = $1 and l.occupancy_entered_at = $2 and r.superseded_by is null`,
@@ -983,6 +1019,7 @@ export async function findOccupancyLink(
         trafficDay: row.traffic_day,
         matchBasis: row.match_basis,
         matchConfidence: row.match_confidence,
+        linkBasis: row.link_basis,
       }
     : null;
 }

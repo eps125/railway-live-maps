@@ -113,6 +113,68 @@ describe("resolveRunMatch (Milestone 34, docs/adr/0006)", () => {
     });
   });
 
+  describe("overnight trains running on consecutive days (2026-10-01, Caledonian Sleeper)", () => {
+    // 1M11, Glasgow Central 23:40, runs Tuesday to Thursday: valid on both probed dates.
+    const sleeper = candidate({ scheduleId: "1M11", stpIndicator: "O" });
+    const departs2340 = (nowMinutes: number) => ({
+      originDepartureMinutes: () => 23 * 60 + 40,
+      nowMinutes,
+    });
+
+    it("after midnight it is last night's run, and matches that night's activation", () => {
+      const result = resolveRunMatch(
+        [sleeper],
+        activatedOn(["1M11", SUNDAY_BEFORE]),
+        [A_MONDAY, SUNDAY_BEFORE],
+        undefined,
+        undefined,
+        departs2340(30), // 00:30: 50 minutes after last night's departure
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "trust_activation",
+        selected: sleeper,
+        trafficDay: SUNDAY_BEFORE,
+      });
+    });
+
+    it("before its departure the same evening it is tonight's run", () => {
+      const result = resolveRunMatch(
+        [sleeper],
+        activatedOn(["1M11", SUNDAY_BEFORE], ["1M11", A_MONDAY]),
+        [A_MONDAY, SUNDAY_BEFORE],
+        undefined,
+        undefined,
+        departs2340(23 * 60), // 23:00, being made ready
+      );
+      expect(result).toMatchObject({ basis: "trust_activation", trafficDay: A_MONDAY });
+    });
+
+    it("a day train standing at its origin early is still today's", () => {
+      const result = resolveRunMatch(
+        [candidate()],
+        activatedOn(),
+        [A_MONDAY, SUNDAY_BEFORE],
+        undefined,
+        undefined,
+        { originDepartureMinutes: () => 9 * 60, nowMinutes: 6 * 60 + 30 },
+      );
+      expect(result).toMatchObject({ basis: "stp_precedence", trafficDay: A_MONDAY });
+    });
+
+    it("without a known departure keeps the most recent date, as before", () => {
+      const result = resolveRunMatch(
+        [sleeper],
+        activatedOn(["1M11", SUNDAY_BEFORE]),
+        [A_MONDAY, SUNDAY_BEFORE],
+        undefined,
+        undefined,
+        { originDepartureMinutes: () => null, nowMinutes: 30 },
+      );
+      expect(result).toMatchObject({ basis: "stp_precedence", trafficDay: A_MONDAY });
+    });
+  });
+
   describe("traffic-day boundary (docs/adr/0008): probing more than one serviceDate", () => {
     it("matches a schedule valid only on yesterday's date when today is also probed — the overnight-train case", () => {
       // Real scenario this fixes (2026-09-14 incident): PX 0052, headcode 5F05, schedule dated

@@ -2,6 +2,7 @@ import {
   candidatesRunningOnAny,
   selectEffectiveScheduleAcrossDates,
   type ScheduleCandidate,
+  type ServiceDateChoice,
 } from "./resolveStpPrecedence.js";
 import { closestToNow } from "./stationBerthTiming.js";
 
@@ -100,11 +101,14 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
   serviceDates: readonly string[],
   timing?: StationTiming<T>,
   alreadyPassedScheduleIds?: ReadonlySet<string>,
+  /** Overnight fix (2026-10-01): which probed date a schedule valid on several is running for —
+   * see `ServiceDateChoice`. Omitted: the most recent date, as before. */
+  dateChoice?: ServiceDateChoice<T>,
 ): RunMatchResult<T> {
   const eligible = alreadyPassedScheduleIds
     ? candidates.filter((candidate) => !alreadyPassedScheduleIds.has(candidate.scheduleId))
     : candidates;
-  const running = candidatesRunningOnAny(eligible, serviceDates);
+  const running = candidatesRunningOnAny(eligible, serviceDates, dateChoice);
   if (running.length === 0) return { status: "unmatched" };
 
   const activated = running.filter((dated) =>
@@ -127,7 +131,7 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
     };
   }
 
-  const stpOutcome = selectEffectiveScheduleAcrossDates(eligible, serviceDates);
+  const stpOutcome = selectEffectiveScheduleAcrossDates(eligible, serviceDates, dateChoice);
   if (stpOutcome.outcome === "matched") {
     return {
       status: "matched",

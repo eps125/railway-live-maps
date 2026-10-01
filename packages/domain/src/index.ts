@@ -118,6 +118,7 @@ export {
   type ScheduleCandidate,
   type StpPrecedenceResult,
   type DatedCandidate,
+  type ServiceDateChoice,
 } from "./schedule/resolveStpPrecedence.js";
 export {
   resolveRunMatch,

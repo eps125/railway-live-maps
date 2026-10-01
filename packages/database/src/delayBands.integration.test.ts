@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { createPool } from "./pool.js";
+import { findOccupancyLink, upsertResolvedLink } from "./runResolution.js";
 import {
   findMapDelaysAt,
   findOpenBerthsForTrustIds,
@@ -297,6 +298,55 @@ describe("trust delay bands (Milestone 82, integration)", () => {
     ]);
     expect((await at(22)).map((row) => row.band)).toEqual(["severe"]);
     expect(await at(10)).toEqual([]); // the train had left the berth
+  });
+
+  it("upsertResolvedLink replaces a link whose run was superseded instead of failing (2026-10-01)", async () => {
+    // findOccupancyLink hides a link to a superseded run, but the row is still there; writing a
+    // fresh resolution for that occupancy used to hit a duplicate key (repair-run-links did).
+    const area = uniqueArea();
+    const occupancy = await seedOccupancy(
+      area,
+      "0009",
+      "1A09",
+      new Date(Date.now() - MINUTE),
+      null,
+    );
+    const { runKey } = await seedLinkedRun(occupancy, area, "0009", "weak", new Date());
+    const schedule = (
+      await pool.query<{ cif_schedule_id: string; cif_train_uid: string }>(
+        `select cif_schedule_id::text, cif_train_uid from train_run where id = $1`,
+        [runKey],
+      )
+    ).rows[0]!;
+    const replacement = await pool.query<{ id: string }>(
+      `insert into train_run (cif_schedule_id, cif_train_uid, traffic_day, match_basis,
+                              match_confidence, established_td_area, established_berth)
+       values ($1, $2, $3::date, 'headcode_only', 'weak', $4, '0009') returning id::text as id`,
+      [schedule.cif_schedule_id, schedule.cif_train_uid, londonTodayDateString(), area],
+    );
+    createdTrainRunIds.push(replacement.rows[0]!.id);
+    await pool.query(`update train_run set superseded_by = $1 where id = $2`, [
+      replacement.rows[0]!.id,
+      runKey,
+    ]);
+    const ref = { id: occupancy.id, enteredAt: occupancy.enteredAt };
+    expect(await findOccupancyLink(pool, ref)).toBeNull();
+
+    await upsertResolvedLink(pool, ref, {
+      cifScheduleId: schedule.cif_schedule_id,
+      cifTrainUid: schedule.cif_train_uid,
+      trafficDay: londonTodayDateString(),
+      matchBasis: "trust_activation",
+      matchConfidence: "solid",
+      tdArea: area,
+      berth: "0009",
+    });
+    const link = await findOccupancyLink(pool, ref);
+    expect(link).toMatchObject({
+      matchConfidence: "solid",
+      cifScheduleId: schedule.cif_schedule_id,
+    });
+    createdTrainRunIds.push(link!.trainRunId);
   });
 
   it("never shows last month's band for a train whose trust id has been reused (2026-10-01)", async () => {

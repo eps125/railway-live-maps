@@ -1095,9 +1095,14 @@ export async function upsertResolvedLink(
           resolved.berth,
         ],
       );
+      // `findOccupancyLink` hides a link whose run was later superseded, but the row itself is
+      // still there (2026-10-01: `repair-run-links` hit a duplicate key on exactly this) — so
+      // replace it rather than insert a second link for the same occupancy.
       await client.query(
         `insert into berth_occupancy_run_link (berth_occupancy_id, occupancy_entered_at, train_run_id, link_basis)
-         values ($1, $2, $3, 'resolved')`,
+         values ($1, $2, $3, 'resolved')
+         on conflict (berth_occupancy_id, occupancy_entered_at) do update
+           set train_run_id = excluded.train_run_id, link_basis = 'resolved', updated_at = now()`,
         [occupancy.id, occupancy.enteredAt, runResult.rows[0]!.id],
       );
     }

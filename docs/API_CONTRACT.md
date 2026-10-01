@@ -4,9 +4,33 @@ All public endpoints are versioned under `/api/v1`. Times are ISO 8601 UTC in re
 
 ## 1. Public REST
 
+**Site access mode (Milestone 84, docs/adr/0018 §6).** When an admin sets the site to
+`code_required`, every API request from a guest without a valid access code — except
+`/api/v1/auth/*`, `/api/v1/access/*` and `/health/*` — answers `401 ACCESS_CODE_REQUIRED`, and the
+WebSocket upgrade is refused. Logged-in users are never asked. A live socket whose viewer loses
+access (code expired or revoked, or the site switched) is closed (`1008`) within 30 s.
+
+### `GET /api/v1/access/status`, `POST /api/v1/access/redeem`, `POST /api/v1/access/leave` (Milestone 84)
+
+Always reachable. `status` → `{ mode: "open" | "code_required", access: "user" | "code" | "none",
+allowed, expiresAt, scope: "site" | "maps" | null, maps: [{ slug, name }] }` (`maps` lists a
+maps-only code's maps). `redeem` with `{ code }` — case, spaces and dashes ignored — sets the
+HttpOnly `rlm_access` cookie (an opaque token; only its hash is stored) and returns the same status
+shape; `401 INVALID_ACCESS_CODE` with `details.reason` `unknown` / `revoked` / `expired` / `used_up`;
+`429 RATE_LIMITED` per IP with the login limits. `leave` clears the cookie (`204`).
+
 ### `GET /api/v1/maps`
 
-List published maps and live-data status.
+List published maps the viewer may see, with live-data status. Milestone 83 (docs/adr/0018):
+`{ maps: [{ slug, name, description, visibility, region: { id, name, sortOrder } | null,
+publishedAt, mapVersion, liveDataStatus }], regionGrouping }`, maps by name. `regionGrouping` is the
+admin setting that groups the landing page by region.
+
+**Map visibility (Milestone 83).** A map is `public` or `restricted`. A restricted map is visible
+to admins, to members of the groups it is shared with, and (Milestone 84) to access codes naming
+it; to anyone else every `/api/v1/maps/{slug}/*` route (including the WebSocket) and every
+`/api/v1/editor/maps/{slug}/*` route answers `404 MAP_NOT_FOUND`, exactly as for a map that does not
+exist. An open WebSocket is closed (`1008`) within 30 s of its map becoming hidden from the viewer.
 
 ### `GET /api/v1/maps/{slug}/definition?at={timestamp}`
 
@@ -160,10 +184,11 @@ Nationwide place search, public/no session required. Matches `q` against `locati
 (CORPUS-sourced) by name/CRS/TIPLOC/STANOX, left-joined against `map_place_index` restricted to
 each map's currently-effective version. `400 VALIDATION_ERROR` for a missing/blank `q`; `limit`
 optional (default 20, max 50). Returns
-`{ results: [{ tiploc, stanox, crs, name, mapSlug, elementId }] }` — `mapSlug`/`elementId` are
-`null` when nothing currently published covers that place (inert, not an error). A result with a
-map jumps straight to `/map/{mapSlug}?center={elementId}` in the web app, which centers the public
-renderer's initial view on that element.
+`{ results: [{ tiploc, stanox, crs, name, maps: [{ slug, name, elementId }] }] }` — Milestone 83:
+`maps` lists every currently published map with the place that the viewer may see, by name
+(empty when none — inert, not an error). The web app links straight to
+`/map/{slug}?center={elementId}` when there is one map, and lists the maps to choose from when
+there are several.
 
 ### `GET /api/v1/status`
 
@@ -583,15 +608,61 @@ Milestone 29. Roles: `admin`, `editor` (`admin` satisfies any `editor`-gated rou
 - `POST /api/v1/auth/logout` — clears the session (idempotent; `204` even with no session).
 - `GET /api/v1/auth/me` — `{ username, role }` for the current session, `401` if not logged in.
   Used by the frontend to decide whether to show the Editor/Users nav links at all.
-- `GET /api/v1/admin/users` (admin only) — `{ users: [...] }`, no password hashes.
-- `POST /api/v1/admin/users` (admin only) — body `{ username, password, role }`. `400` for a
-  missing/short (<8 char) password or invalid role; `409 DUPLICATE_USERNAME` for an existing one.
+- `GET /api/v1/admin/users` (admin only) — `{ users: [...] }`, no password hashes. Each user
+  carries `groupIds` (Milestone 83).
+- `POST /api/v1/admin/users` (admin only) — body `{ username, password, role, groupIds? }`. `400`
+  for a missing/short (<8 char) password, invalid role or unknown group; `409 DUPLICATE_USERNAME`
+  for an existing one.
 - `PATCH /api/v1/admin/users/{id}` (admin only) — body may include any of `role`, `isActive`,
-  `password`; only the given fields change. `409 LAST_ADMIN` if the change would leave the system
+  `password`, `groupIds` (replaces the user's groups); only the given fields change. `409 LAST_ADMIN` if the change would leave the system
   with no active admin at all (demoting, deactivating, or — via `DELETE` below — removing the last
   one). `404` for an unknown id.
 - `DELETE /api/v1/admin/users/{id}` (admin only) — `204` on success, `404` if already gone, same
   `409 LAST_ADMIN` guard as `PATCH`.
+
+**Groups, regions, settings and the audit log (Milestone 83, docs/adr/0018), admin only.** Every
+change below, and every user, map-settings, map create/delete and publish change, writes an
+`admin_audit_log` entry (append-only; the database rejects update and delete).
+
+- `GET /api/v1/admin/groups` — `{ groups: [{ id, name, description, memberCount, createdAt }] }`.
+  `POST` `{ name, description? }` (`409 DUPLICATE_NAME`, case-insensitive), `PATCH /{id}`
+  `{ name?, description? }`, `DELETE /{id}` (`204`; memberships and map shares go with it — a map
+  shared only with it becomes admins-only).
+- `GET /api/v1/admin/regions` — `{ regions: [{ id, name, sortOrder, mapCount }] }` in display
+  order. `POST` `{ name }` (added last), `PATCH /{id}` `{ name }`, `DELETE /{id}` (its maps become
+  region-less), `PUT /api/v1/admin/regions/order` `{ ids }` — every region id exactly once, first to
+  last.
+- `GET /api/v1/admin/settings` — `{ settings: { map_list_region_grouping, site_access_mode } }`. `PATCH` with any of
+  the keys; `400` for an unknown key or a value of the wrong type.
+- `GET /api/v1/admin/audit-log?action=&user=&before=&limit=` — newest first. `action` is exact or a
+  prefix ending in `.` (`map.`); `user` is a username; `before` is the previous page's
+  `nextCursor`; `limit` default 50, max 200. `{ entries: [{ id, occurredAt, actorUsername, action,
+targetType, targetId, details, clientIp }], nextCursor }`.
+
+**Access codes (Milestone 84, docs/adr/0018 §6), admin only.** Every change is audited
+(`access.code.create` / `update` / `revoke`, `access.grant.update` / `revoke`); the site mode is the
+`site_access_mode` setting (`open` / `code_required`) on `PATCH /api/v1/admin/settings`.
+
+- `GET /api/v1/admin/access-codes` — `{ codes: [{ id, label, code, scope, mapIds, maxUses,
+useCount, accessSeconds, validUntil, notes, createdBy, createdAt, revokedAt, activeGrants,
+lastUsedAt, status }] }`, newest first. `status` is `active`, `revoked`, `expired` (past
+  `validUntil`) or `used_up`. Codes stay viewable (owner decision).
+- `POST /api/v1/admin/access-codes` — `{ label, code?, scope, mapIds?, maxUses, accessSeconds,
+validUntil?, notes? }`. Without `code` one is generated (`XXXX-XXXX`, no 0/O/1/I/L); a custom
+  code is 4-32 letters/digits once spaces and dashes are removed (`409 DUPLICATE_CODE` if taken).
+  `scope: "maps"` needs at least one map. `maxUses` `null` = unlimited. `accessSeconds` is how long
+  each use lasts (a minute to a year), fixed from entry.
+- `GET /api/v1/admin/access-codes/{id}` — the code plus `flags` and `grants: [{ id, createdAt,
+expiresAt, revokedAt, revokedBy, firstIp, firstUserAgent, lastSeenAt, lastIp, distinctIps,
+requestCount, flags, activity: [{ hour, ip, userAgent, requestCount }] }]`. Flags:
+  `many_ips` (one use from 3+ addresses), `simultaneous_ips` (2+ addresses in one hour),
+  code-level `many_networks` (uses from 3+ IPv4 /24 or IPv6 /48 networks).
+- `PATCH /api/v1/admin/access-codes/{id}` — any of `label`, `scope`, `mapIds`, `maxUses` (not below
+  the uses so far), `accessSeconds` (future uses), `validUntil`, `notes`. The code text cannot change.
+- `POST /api/v1/admin/access-codes/{id}/revoke` — the code can't be entered again and every use of
+  it ends.
+- `PATCH /api/v1/admin/access-grants/{id}` `{ expiresAt }` — change one use's end (earlier or
+  later). `POST /api/v1/admin/access-grants/{id}/revoke` — end one use now.
 
 There is no self-registration and no password-reset flow — the first admin account is created via
 the worker's `manage-users create --role admin` one-shot CLI (no bootstrap row, no env-var
@@ -721,15 +792,22 @@ gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/
   named after the new map instead of the slug) in one step, returning
   `{ slug, name, mapId, draftRevision }`. The map has no published version yet, so it does not
   appear in `GET /api/v1/maps` until its first publish.
-- `PATCH /api/v1/editor/maps/{slug}` (**admin only**, owner request 2026-09-13) — rename a map's
-  `name` and/or `slug`. Body `{ name?, slug? }`, at least one required; `400 VALIDATION_ERROR` for
+- `GET /api/v1/editor/maps` (Milestone 83) — every map the signed-in user may see, published or
+  not: `{ maps: [{ id, slug, name, description, visibility, groupIds, region, publishedVersion,
+publishedAt, draftUpdatedAt, hasUnpublishedChanges }] }`. `publishedVersion` is `null` for a map
+  never published; `hasUnpublishedChanges` means the draft was saved after the current publish.
+- `PATCH /api/v1/editor/maps/{slug}` (**admin only**, owner request 2026-09-13; settings added in
+  Milestone 83) — change a map's `name`, `slug`, `description` (`null` clears; at most 280
+  characters), `regionId` (`null` clears), `visibility` (`public` / `restricted`) and `groupIds`
+  (the groups a restricted map is shared with; replaces the list). Body has at least one of them; `400 VALIDATION_ERROR` for
   neither given or an invalid one, `404 MAP_NOT_FOUND` for an unknown slug, `409 DUPLICATE_SLUG` if
   the new slug is already taken (original left untouched). Also updates the map's `map_draft` row
   (its own denormalized `slug` column, plus `canonical_document.map.id`/`map.name`) so the next
   draft save/publish — and the editor's own Properties panel, if open — see the new values.
   Renaming the slug changes the map's public URL; anything that already linked to the old
   `/map/{slug}` (bookmarks, a `label`'s `adjacentMapSlug` cross-reference from another map) is not
-  rewritten. Returns `{ mapId, slug, name }`.
+  rewritten. Returns `{ mapId, slug, name, description, regionId, visibility, groupIds }`. An
+  unknown region or group is `400`.
 - `DELETE /api/v1/editor/maps/{slug}` (**admin only**, owner request 2026-09-13) — permanently
   deletes the map row, every published `map_version`, its `map_draft` and draft revision history,
   and the derived `map_binding_index`/`map_place_index`/`map_state_snapshot` rows for those

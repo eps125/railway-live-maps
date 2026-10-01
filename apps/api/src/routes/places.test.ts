@@ -27,9 +27,11 @@ describe("place routes", () => {
     expect(blank.statusCode).toBe(400);
   });
 
-  it("maps a covering-map result and an inert (no-map) result", async () => {
+  it("returns every covering map, and an empty list for an inert (no-map) result", async () => {
     const pool = fakePool((text, values) => {
       expect(text).toContain("from location_reference lr");
+      // A guest sees public maps only — no extra parameter for the visibility predicate.
+      expect(text).toContain("m.visibility = 'public'");
       expect(values).toEqual(["%lancaster%", 20]);
       return {
         rows: [
@@ -38,16 +40,17 @@ describe("place routes", () => {
             stanox: "12345",
             crs: "LAN",
             name: "Lancaster",
-            map_slug: "lancaster",
-            element_id: "station-1",
+            maps: [
+              { slug: "lancaster", name: "Lancaster", elementId: "station-1" },
+              { slug: "wcml-north", name: "WCML North", elementId: "station-9" },
+            ],
           },
           {
             tiploc: "BAYHORS",
             stanox: null,
             crs: null,
             name: "Bay Horse Jn (Lancaster area)",
-            map_slug: null,
-            element_id: null,
+            maps: null,
           },
         ],
       };
@@ -64,16 +67,17 @@ describe("place routes", () => {
           stanox: "12345",
           crs: "LAN",
           name: "Lancaster",
-          mapSlug: "lancaster",
-          elementId: "station-1",
+          maps: [
+            { slug: "lancaster", name: "Lancaster", elementId: "station-1" },
+            { slug: "wcml-north", name: "WCML North", elementId: "station-9" },
+          ],
         },
         {
           tiploc: "BAYHORS",
           stanox: null,
           crs: null,
           name: "Bay Horse Jn (Lancaster area)",
-          mapSlug: null,
-          elementId: null,
+          maps: [],
         },
       ],
     });

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import {
   LIVE_PROTOCOL_VERSION,
@@ -23,7 +23,14 @@ export interface LiveMapRoutesDeps {
   /** How often to check whether a newer map_version has opened for this slug while a socket
    * is connected. Reuses the delta poll cadence — no need for a separate, faster timer. */
   versionCheckIntervalMs: number;
+  /** Milestone 83: re-checked while a socket is open; false closes it (the map was made
+   * restricted, or — Milestone 84 — the viewer's access ended). Omitted in unit tests. */
+  stillVisible?: (request: FastifyRequest, slug: string) => Promise<boolean>;
+  /** How often `stillVisible` runs per socket. */
+  accessCheckIntervalMs?: number;
 }
+
+const DEFAULT_ACCESS_CHECK_INTERVAL_MS = 30_000;
 
 /**
  * Milestone 6 (docs/API_CONTRACT.md §2): `GET /api/v1/maps/{slug}/live` — snapshot on connect,
@@ -35,7 +42,8 @@ export async function registerLiveMapRoutes(
   app: FastifyInstance,
   deps: LiveMapRoutesDeps,
 ): Promise<void> {
-  const { pool, deltaSource, heartbeatIntervalMs, versionCheckIntervalMs } = deps;
+  const { pool, deltaSource, heartbeatIntervalMs, versionCheckIntervalMs, stillVisible } = deps;
+  const accessCheckIntervalMs = deps.accessCheckIntervalMs ?? DEFAULT_ACCESS_CHECK_INTERVAL_MS;
 
   app.get<{ Params: { slug: string } }>(
     "/api/v1/maps/:slug/live",
@@ -199,11 +207,26 @@ export async function registerLiveMapRoutes(
           });
       }, versionCheckIntervalMs);
 
+      const accessCheckTimer = stillVisible
+        ? setInterval(() => {
+            stillVisible(request, slug)
+              .then((visible) => {
+                if (!visible && socket.readyState === socket.OPEN) {
+                  socket.close(1008, "map no longer available");
+                }
+              })
+              .catch((error: unknown) => {
+                request.log.error({ error, slug }, "liveMap: access check failed");
+              });
+          }, accessCheckIntervalMs)
+        : undefined;
+
       const cleanup = (): void => {
         unsubscribe();
         clearInterval(heartbeatTimer);
         clearInterval(versionCheckTimer);
         clearInterval(qualityCheckTimer);
+        if (accessCheckTimer) clearInterval(accessCheckTimer);
       };
       socket.on("close", cleanup);
       socket.on("error", cleanup);

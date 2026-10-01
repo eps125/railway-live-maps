@@ -109,9 +109,36 @@ describe("place routes (integration)", () => {
       stanox: null,
       crs,
       name,
-      mapSlug: slug,
-      elementId: "station-1",
+      maps: [{ slug, name: slug, elementId: "station-1" }],
     });
+    await app.close();
+  });
+
+  it("Milestone 83: lists every map with the place, by name, and hides a restricted one from a guest", async () => {
+    const tiploc = uniqueCode("M");
+    const name = `Multi Map Place ${uniqueCode("N")}`;
+    await seedLocation({ tiploc, name });
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 8);
+    const slugB = `b-test-place-${suffix}`;
+    const slugA = `a-test-place-${suffix}`;
+    const slugHidden = `c-test-place-${suffix}`;
+    await publishMapWithPlace(slugB, "station-b", tiploc, new Date(0), null);
+    await publishMapWithPlace(slugA, "station-a", tiploc, new Date(0), null);
+    await publishMapWithPlace(slugHidden, "station-c", tiploc, new Date(0), null);
+    await pool.query(`update map set visibility = 'restricted' where slug = $1`, [slugHidden]);
+
+    const app = await buildApp();
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/places/search?q=${encodeURIComponent(name)}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const results = response.json().results as Array<Record<string, unknown>>;
+    const match = results.find((r) => r.tiploc === tiploc);
+    expect(match?.maps).toEqual([
+      { slug: slugA, name: slugA, elementId: "station-a" },
+      { slug: slugB, name: slugB, elementId: "station-b" },
+    ]);
     await app.close();
   });
 
@@ -133,8 +160,7 @@ describe("place routes (integration)", () => {
       stanox: null,
       crs: null,
       name,
-      mapSlug: null,
-      elementId: null,
+      maps: [],
     });
     await app.close();
   });
@@ -161,8 +187,7 @@ describe("place routes (integration)", () => {
     expect(response.statusCode).toBe(200);
     const results = response.json().results as Array<Record<string, unknown>>;
     const match = results.find((r) => r.tiploc === tiploc);
-    expect(match?.mapSlug).toBeNull();
-    expect(match?.elementId).toBeNull();
+    expect(match?.maps).toEqual([]);
     await app.close();
   });
 

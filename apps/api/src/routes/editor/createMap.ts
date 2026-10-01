@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import { apiError } from "../../lib/queryRange.js";
 import { getOrSeedDraft } from "../../editor/draftStore.js";
+import { audit } from "../../lib/audit.js";
 
 export interface CreateMapRouteDeps {
   pool: Pool;
@@ -63,6 +64,7 @@ export async function registerCreateMapRoute(
     // "create a map" a single, complete admin action (the editor's own draft-seeding still works
     // the same way for every other slug, so this is just calling it a beat earlier).
     const draft = await getOrSeedDraft(pool, slug);
+    await audit(pool, request, "map.create", { type: "map", id: mapId }, { slug, name });
 
     reply.code(201);
     return { slug, name, mapId, draftRevision: draft.revision };

@@ -471,6 +471,15 @@ unlinked (ambiguous), exactly as any other tier. See docs/adr/0007 for the full 
 - stable map ID/slug
 - name and description
 - owner metadata
+- `visibility` — `public` or `restricted` (Milestone 83, migration 0046, docs/adr/0018); a
+  restricted map is visible to admins and to the groups in `map_visibility_group`
+- `region_id` — optional `map_region` (`on delete set null`)
+
+### `map_region`, `map_visibility_group` (Milestone 83, migration 0046)
+
+`map_region` (name unique case-insensitively, `sort_order`) groups the public map list.
+`map_visibility_group (map_id, group_id)` lists the groups a restricted map is shared with; both
+foreign keys cascade on delete.
 
 ### `map_draft`
 
@@ -647,3 +656,38 @@ which is a Redis-only opaque session token (§1 principle: Redis is cache/coordi
 source of truth for anything that must survive a restart; losing a session just forces a
 re-login). No table seeds an initial row: the first admin is created via the worker's
 `manage-users create --role admin` CLI, run once by hand — see `docs/ARCHITECTURE.md` §12.
+
+### `user_group`, `app_user_group` (Milestone 83, migration 0046)
+
+Groups decide which restricted maps a user can see; roles still decide what they can do. Group
+names are unique case-insensitively. Membership `(user_id, group_id)` cascades from both sides.
+The migration seeds an **Editors** group containing every user that existed at the time.
+
+### `app_setting` (Milestone 83, migration 0046)
+
+`key` → jsonb `value`, with `updated_at` / `updated_by`. Known keys and their defaults live in
+`packages/database/src/siteSettings.ts`; a missing or wrongly-typed value reads as the default.
+
+### `admin_audit_log` (Milestone 83, migration 0046)
+
+Who changed what: `occurred_at`, `actor_user_id` + `actor_username` (no foreign key — deleting a
+user never rewrites history), `action` (`map.publish`, `user.update`, ...), `target_type`,
+`target_id`, `details` jsonb (before/after where useful; never a password), `client_ip`.
+**Append-only:** a trigger rejects every `update` and `delete`.
+
+### `access_code`, `access_code_map`, `access_grant`, `access_grant_activity` (Milestone 84, migration 0047)
+
+`access_code`: `label`, `code` (kept viewable — owner decision) and `code_normalized` (upper case,
+no spaces/dashes; unique; what entry matches), `scope` (`site` / `maps`), `max_uses` (null =
+unlimited) and `use_count` (constraint: never above the limit), `access_seconds`, `valid_until`,
+`notes`, created/revoked by and when. `access_code_map` lists a maps-only code's maps (cascades
+both ways).
+
+`access_grant`: one entry of a code — `token_hash` (SHA-256 of the browser's opaque `rlm_access`
+token; the token itself is never stored), `expires_at` (entry + `access_seconds`; an admin may
+change it), `revoked_at`/`revoked_by`, first IP and user agent, last seen time and IP.
+
+`access_grant_activity`: request counts per grant per UTC hour per IP (with the last user agent),
+written by the API in 30-second batches and deleted after 90 days.
+
+`app_setting.site_access_mode` (`open` / `code_required`) is seeded `open` by the same migration.

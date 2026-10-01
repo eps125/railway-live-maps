@@ -22,7 +22,18 @@ import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
 import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
 import { registerBerthExplorerRoutes } from "./routes/admin/berthExplorer.js";
 import { registerSClassAdminRoutes, registerSClassEditorRoutes } from "./routes/admin/sClass.js";
+import { registerSiteAdminRoutes } from "./routes/admin/siteAdmin.js";
 import { requireRole } from "./auth/requireRole.js";
+import {
+  mapAccessForSlug,
+  mapVisibilityHook,
+  resolveViewer,
+  siteAccessHook,
+  viewerMayUseSite,
+} from "./lib/viewer.js";
+import { createSiteAccess } from "./lib/siteAccess.js";
+import { registerAccessRoutes } from "./routes/access.js";
+import { registerAccessCodeAdminRoutes } from "./routes/admin/accessCodes.js";
 import { createPollingDeltaSource } from "./live/pollingDeltaSource.js";
 import { createRedisDeltaSource } from "./live/redisDeltaSource.js";
 import type { LiveDeltaSource } from "./live/deltaSource.js";
@@ -47,9 +58,18 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   // Populated by requireRole's preHandler once a valid session is found; null for every other
   // request (an unauthenticated one, or a route with no auth gate at all).
   app.decorateRequest("authSession", null);
+  // Milestone 83: who is looking, for map visibility (lib/viewer.ts).
+  app.decorateRequest("viewer", null);
 
   const sessionTtlSeconds = config.SESSION_TTL_SECONDS;
   const cookieSecure = resolveCookieSecure(config);
+
+  // Milestone 84 (docs/adr/0018 §6): the site access mode and guest access codes. The root hook
+  // runs for every request, so in `code_required` mode nothing past `/api/v1/auth/*`,
+  // `/api/v1/access/*` and the health checks answers a guest without a valid code.
+  const siteAccess = createSiteAccess(pool);
+  const visibilityDeps = { pool, redis, sessionTtlSeconds, siteAccess };
+  app.addHook("onRequest", siteAccessHook(visibilityDeps));
 
   await registerHealthRoutes(app, { pool, redis });
   await registerAuthRoutes(app, {
@@ -62,9 +82,18 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
       windowSeconds: config.LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     },
   });
+  await registerAccessRoutes(app, {
+    pool,
+    redis,
+    siteAccess,
+    sessionTtlSeconds,
+    cookieSecure,
+    rateLimit: {
+      maxAttempts: config.LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
+      windowSeconds: config.LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    },
+  });
   await registerTdRoutes(app, { pool });
-  await registerMapRoutes(app, { pool });
-  await registerPlaceRoutes(app, { pool });
   await registerScheduleRoutes(app, { pool });
   await registerVstpRoutes(app, { pool });
   await registerCurrentRunRoutes(app, { pool, redis, sessionTtlSeconds });
@@ -85,11 +114,27 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
     deltaSource = createPollingDeltaSource(pool, config.LIVE_WS_POLL_INTERVAL_MS);
   }
 
-  await registerLiveMapRoutes(app, {
-    pool,
-    deltaSource,
-    heartbeatIntervalMs: config.LIVE_WS_HEARTBEAT_INTERVAL_MS,
-    versionCheckIntervalMs: config.LIVE_WS_POLL_INTERVAL_MS,
+  // Milestone 83 (docs/adr/0018): every public map route, the map list and place search sit in
+  // one scope whose hook resolves the viewer and hides a map they may not see (404, before any
+  // cache or WebSocket upgrade). Anything reading a map by slug must be registered in here.
+  await app.register(async (publicMapScope) => {
+    publicMapScope.addHook("preHandler", mapVisibilityHook(visibilityDeps));
+    await registerMapRoutes(publicMapScope, { pool });
+    await registerPlaceRoutes(publicMapScope, { pool });
+    await registerLiveMapRoutes(publicMapScope, {
+      pool,
+      deltaSource,
+      heartbeatIntervalMs: config.LIVE_WS_HEARTBEAT_INTERVAL_MS,
+      versionCheckIntervalMs: config.LIVE_WS_POLL_INTERVAL_MS,
+      // A map made restricted while someone is watching it closes their socket; so does the end
+      // of the viewer's access code (expired, revoked, or the site switched to needing one).
+      stillVisible: async (request, slug) => {
+        const viewer = await resolveViewer(request, visibilityDeps, { fresh: true });
+        return (
+          viewerMayUseSite(viewer) && (await mapAccessForSlug(pool, viewer, slug)) !== "hidden"
+        );
+      },
+    });
   });
 
   // Milestone 29: editor routes are now always registered (the old `EDITOR_ENABLED` env-var gate
@@ -98,6 +143,8 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   // adds inside it and nothing outside it (docs/ARCHITECTURE.md §12).
   await app.register(async (editorScope) => {
     editorScope.addHook("preHandler", requireRole("editor", { redis, sessionTtlSeconds }));
+    // Milestone 83: an editor cannot open a map they may not see (admins see every map).
+    editorScope.addHook("preHandler", mapVisibilityHook(visibilityDeps));
     await registerEditorRoutes(editorScope, { pool });
     // Milestone 36c: read-only S-Class areas/definitions for binding signals in the editor.
     await registerSClassEditorRoutes(editorScope, { pool });
@@ -107,6 +154,13 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (adminScope) => {
     adminScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerAdminUserRoutes(adminScope, { pool });
+    // Milestone 83: groups, regions, site settings and the audit log.
+    await registerSiteAdminRoutes(adminScope, {
+      pool,
+      onSettingsChanged: () => siteAccess.invalidate(),
+    });
+    // Milestone 84: access codes.
+    await registerAccessCodeAdminRoutes(adminScope, { pool, siteAccess });
   });
 
   // Milestone 39 (docs/adr/0007): admin-only TD-area boundary curation — same gate as user
@@ -144,6 +198,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
 
   const close = async (): Promise<void> => {
     await app.close();
+    await siteAccess.close();
     await pool.end();
     redis.disconnect();
     deltaSubscriberRedis?.disconnect();

@@ -12,16 +12,49 @@ import { BerthQueryPage } from "./auth/BerthQueryPage.js";
 import { BerthStepsPage } from "./auth/BerthStepsPage.js";
 import { BerthExplorerPage } from "./auth/BerthExplorerPage.js";
 import { SClassExplorerPage } from "./auth/SClassExplorerPage.js";
+import { AdminHubPage } from "./auth/AdminHubPage.js";
+import { AdminMapsPage } from "./auth/AdminMapsPage.js";
+import { AdminAuditLogPage } from "./auth/AdminAuditLogPage.js";
+import { AdminAccessPage } from "./auth/AdminAccessPage.js";
+import { AccessCodePage } from "./auth/AccessCodePage.js";
+import { useAccess } from "./auth/useAccess.js";
+
+const accessUntil = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** Every admin-only route — a visit without an admin session redirects. */
+const ADMIN_ROUTES = new Set([
+  "adminHub",
+  "adminMaps",
+  "adminAuditLog",
+  "adminAccess",
+  "adminUsers",
+  "adminTdBoundaries",
+  "adminBerths",
+  "adminBerthQuery",
+  "adminBerthSteps",
+  "adminBerthExplorer",
+  "adminSClass",
+]);
 
 export function App(): JSX.Element {
   const route = useRoute();
   const navigationCount = useNavigationCount();
   const { session, refresh, logout } = useSession();
+  // Milestone 84: whether the site needs an access code, and whether this visitor has one.
+  const { access, refresh: refreshAccess } = useAccess();
 
   const isAuthenticated = session.status === "authenticated";
   const canEdit = isAuthenticated && roleAtLeast(session.user.role, "editor");
   const isAdmin = isAuthenticated && roleAtLeast(session.user.role, "admin");
   const sessionLoading = session.status === "loading";
+  const accessStatus = access.status === "ready" ? access.access : null;
+  const needsCode =
+    accessStatus !== null && !accessStatus.allowed && !isAuthenticated && !sessionLoading;
 
   // Milestone 29: a logged-out (or under-privileged) visit to a gated route redirects to the
   // login page instead of showing whatever the API's 401/403 looks like — the route itself is
@@ -34,16 +67,7 @@ export function App(): JSX.Element {
       navigate("/rlm-login");
     } else if (route.name === "editorPicker") {
       navigate("/");
-    } else if (
-      (route.name === "adminUsers" ||
-        route.name === "adminTdBoundaries" ||
-        route.name === "adminBerths" ||
-        route.name === "adminBerthQuery" ||
-        route.name === "adminBerthSteps" ||
-        route.name === "adminBerthExplorer" ||
-        route.name === "adminSClass") &&
-      !isAdmin
-    ) {
+    } else if (ADMIN_ROUTES.has(route.name) && !isAdmin) {
       navigate(isAuthenticated ? "/" : "/rlm-login");
     }
   }, [route.name, sessionLoading, canEdit, isAdmin, isAuthenticated]);
@@ -54,10 +78,17 @@ export function App(): JSX.Element {
       <LoginPage
         onLoggedIn={() => {
           void refresh();
+          void refreshAccess();
           navigate("/");
         }}
       />
     );
+  } else if (access.status === "loading") {
+    main = <p className="app-loading">Loading…</p>;
+  } else if (needsCode) {
+    // Milestone 84: every address shows the code page; the address itself is kept, so the page
+    // asked for appears once a code is accepted.
+    main = <AccessCodePage onAccepted={() => void refreshAccess()} />;
   } else if (route.name === "editor") {
     main =
       sessionLoading || !canEdit ? (
@@ -65,6 +96,16 @@ export function App(): JSX.Element {
       ) : (
         <EditorApp slug={route.slug} />
       );
+  } else if (route.name === "adminHub") {
+    main = sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminHubPage />;
+  } else if (route.name === "adminMaps") {
+    main = sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminMapsPage />;
+  } else if (route.name === "adminAuditLog") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminAuditLogPage />;
+  } else if (route.name === "adminAccess") {
+    main =
+      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminAccessPage />;
   } else if (route.name === "adminUsers") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminUsersPage />;
@@ -121,7 +162,7 @@ export function App(): JSX.Element {
       />
     );
   } else {
-    main = <LandingPage canCreateMap={isAdmin} canEdit={canEdit} />;
+    main = <LandingPage isAdmin={isAdmin} canEdit={canEdit} />;
   }
 
   return (
@@ -131,70 +172,60 @@ export function App(): JSX.Element {
           <h1>Matts TD Mapping Project</h1>
         </div>
         <nav className="app-nav" aria-label="Primary">
-          <a
-            className="app-nav__link"
-            href="/"
-            aria-current={route.name === "landing" ? "page" : undefined}
-            onClick={(e) => {
-              e.preventDefault();
-              navigate("/");
-            }}
-          >
-            Maps
-          </a>
-          {isAdmin && (
+          {!needsCode && (
             <a
               className="app-nav__link"
-              href="/admin/users"
-              aria-current={route.name === "adminUsers" ? "page" : undefined}
+              href="/"
+              aria-current={route.name === "landing" ? "page" : undefined}
               onClick={(e) => {
                 e.preventDefault();
-                navigate("/admin/users");
+                navigate("/");
               }}
             >
-              Users
+              Maps
             </a>
           )}
           {isAdmin && (
             <a
               className="app-nav__link"
-              href="/admin/td-boundaries"
-              aria-current={route.name === "adminTdBoundaries" ? "page" : undefined}
+              href="/admin"
+              aria-current={ADMIN_ROUTES.has(route.name) ? "page" : undefined}
               onClick={(e) => {
                 e.preventDefault();
-                navigate("/admin/td-boundaries");
+                navigate("/admin");
               }}
             >
-              TD boundaries
+              Admin
             </a>
           )}
-          {isAdmin && (
-            <a
-              className="app-nav__link"
-              href="/admin/berths"
-              aria-current={
-                route.name === "adminBerths" ||
-                route.name === "adminBerthQuery" ||
-                route.name === "adminBerthSteps" ||
-                route.name === "adminBerthExplorer" ||
-                route.name === "adminSClass"
-                  ? "page"
-                  : undefined
-              }
-              onClick={(e) => {
-                e.preventDefault();
-                navigate("/admin/berths");
-              }}
+          {!isAuthenticated && accessStatus?.access === "code" && accessStatus.expiresAt && (
+            <span
+              className="app-nav__access"
+              title="You are using an access code. Forget it to return to the code page."
             >
-              Berths
-            </a>
+              Access until {accessUntil.format(new Date(accessStatus.expiresAt))}
+              <button
+                type="button"
+                className="app-nav__link"
+                onClick={() => {
+                  void fetch("/api/v1/access/leave", { method: "POST" }).then(() =>
+                    refreshAccess(),
+                  );
+                }}
+              >
+                Forget code
+              </button>
+            </span>
           )}
           {isAuthenticated ? (
             <button
               type="button"
               className="app-nav__link"
               onClick={() => {
-                void logout().then(() => navigate("/"));
+                void logout().then(() => {
+                  void refreshAccess();
+                  navigate("/");
+                });
               }}
             >
               Log out ({session.user.username})

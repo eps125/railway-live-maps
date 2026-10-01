@@ -29,11 +29,10 @@ describe("App", () => {
     // Milestone 30: the "Editor" nav link is gone entirely (editing now requires a map slug —
     // reached via a per-map "Edit" link on the landing page), so it's never present at all.
     expect(screen.queryByRole("link", { name: "Editor" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Users" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Berths" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
   });
 
-  it("shows the Users nav link and a log-out control for a logged-in admin", async () => {
+  it("shows the Admin nav link and a log-out control for a logged-in admin", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
@@ -49,8 +48,8 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("link", { name: "Users" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Berths" })).toBeInTheDocument();
+    // Milestone 83: one "Admin" link to the admin hub, so the header fits a phone.
+    expect(await screen.findByRole("link", { name: "Admin" })).toHaveAttribute("href", "/admin");
     expect(screen.getByRole("button", { name: /log out \(boss\)/i })).toBeInTheDocument();
   });
 

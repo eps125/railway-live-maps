@@ -1488,83 +1488,126 @@ legend {
   min-width: 280px;
 }
 
-.landing-page__maps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.landing-page__map-row {
+/* Milestone 83: the map list as cards, optionally grouped by region. */
+.landing-page__list-header {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-panel);
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
-.landing-page__map-row a {
-  color: inherit;
-  text-decoration: none;
+.landing-page__list-header h2 {
+  margin: 0;
+  margin-right: auto;
 }
 
-.landing-page__map-row > a:first-child {
+.landing-page__manage-link {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.map-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.map-group__title {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
   font-weight: 600;
-  flex: 1;
-}
-
-.landing-page__status {
-  font-size: 0.72rem;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
   color: var(--color-text-faint);
 }
 
-.landing-page__status--ok {
-  color: var(--color-success, #3ecf6b);
-}
-
-.landing-page__status--stale {
-  color: var(--color-danger);
-}
-
-.landing-page__edit-link {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-}
-
-/* Owner request (2026-09-13): per-row Rename/Delete, admin-only. Buttons rather than links
-   (they're actions, not navigation) but styled to sit inline with the row like the Edit link. */
-.landing-page__rename-link,
-.landing-page__delete-link {
-  appearance: none;
-  background: none;
-  border: none;
+.map-cards {
+  list-style: none;
+  margin: 0;
   padding: 0;
-  font: inherit;
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-  cursor: pointer;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.5rem;
 }
 
-.landing-page__rename-link:hover,
-.landing-page__delete-link:hover {
-  text-decoration: underline;
+.map-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+  transition: border-color 0.15s ease;
 }
 
-.landing-page__delete-link {
+.map-card:hover {
+  border-color: var(--color-accent);
+}
+
+.map-card--draft {
+  border-style: dashed;
+}
+
+.map-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.map-card__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--color-text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.map-card__name:hover {
+  color: var(--color-accent-hover);
+}
+
+.map-card__status {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+
+.map-card__status--ok {
+  color: var(--color-success);
+}
+
+.map-card__status--stale {
   color: var(--color-danger);
 }
 
-.landing-page__rename-form {
+.map-card__description {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.map-card__meta {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.6rem;
-  flex: 1;
+  font-size: 0.75rem;
+}
+
+.map-card__badge {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  color: var(--color-warning);
+  font-size: 0.68rem;
+}
+
+.map-card__edit {
+  margin-left: auto;
+  color: var(--color-text-muted);
 }
 
 .btn--danger {
@@ -1589,13 +1632,19 @@ legend {
 
 .landing-page__place-row {
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.25rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-bg-panel);
+}
+
+.landing-page__place-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .landing-page__place-row a,
@@ -1605,16 +1654,450 @@ legend {
   text-decoration: none;
 }
 
+.landing-page__place-row a:hover {
+  color: var(--color-accent-hover);
+}
+
 .landing-page__place-identifiers {
   font-size: 0.75rem;
   color: var(--color-text-faint);
   letter-spacing: 0.02em;
 }
 
+.landing-page__place-maps-label {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.landing-page__place-maps ul {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.landing-page__place-maps li a {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--color-accent);
+}
+
+.landing-page__place-maps li a:hover {
+  border-color: var(--color-accent);
+}
+
 .landing-page__place-inert {
   font-size: 0.72rem;
   color: var(--color-text-faint);
   font-style: italic;
+}
+
+/* Milestone 83: Admin › Maps, groups on Admin › Users, and the audit log. */
+.admin-maps-page {
+  max-width: 900px;
+}
+
+.admin-map-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.admin-map-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+}
+
+.admin-map-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-map-row__title {
+  flex: 1 1 200px;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.admin-map-row__slug {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-faint);
+}
+
+.admin-map-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.admin-map-row__actions a.btn {
+  text-decoration: none;
+}
+
+.admin-map-row__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.admin-map-row__facts dt {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-map-row__facts dd {
+  margin: 0;
+}
+
+.admin-map-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.6rem 1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.admin-map-settings textarea {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.35rem 0.5rem;
+  background: var(--color-bg-inset);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  resize: vertical;
+}
+
+.admin-map-settings__visibility,
+.users-form__groups {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.admin-map-settings__visibility legend,
+.users-form__groups legend {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  padding: 0 0.25rem;
+}
+
+.admin-map-settings__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-left: 1.4rem;
+}
+
+.admin-map-settings__buttons {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.region-list,
+.group-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.region-list__row,
+.group-list__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.region-list__name,
+.group-list__name {
+  flex: 1 1 140px;
+  font-weight: 600;
+}
+
+.region-list__count,
+.group-list__count {
+  font-size: 0.75rem;
+  color: var(--color-text-faint);
+  margin-right: 0.5rem;
+}
+
+.region-list__rename,
+.group-list__rename,
+.region-list__add,
+.group-list__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.users-table__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.audit-log-page {
+  max-width: 1000px;
+}
+
+.audit-log-page__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.audit-log-page__row {
+  cursor: pointer;
+}
+
+.audit-log-page__row:hover td {
+  background: var(--color-bg-hover);
+}
+
+.audit-log-page__details {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem;
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Milestone 84: the access code page, the header's access note, and Admin › Access codes. */
+.access-code-page {
+  padding: 3rem 1rem;
+  display: flex;
+  justify-content: center;
+}
+
+.access-code-page__card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.access-code-page__card input {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.access-code-page__login {
+  align-self: flex-start;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.app-nav__access {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.admin-access-page {
+  max-width: 1000px;
+}
+
+.admin-access-page__mode {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.access-code-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.access-code {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+}
+
+.access-code--revoked,
+.access-code--expired,
+.access-code--used_up {
+  opacity: 0.75;
+}
+
+.access-code__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.access-code__title {
+  flex: 1 1 240px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.access-code__code {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.45rem;
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-sm);
+}
+
+.access-code__status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-faint);
+}
+
+.access-code__status--active {
+  color: var(--color-success);
+}
+
+.access-code__status--revoked {
+  color: var(--color-danger);
+}
+
+.access-code__uses {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.access-code__flag {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-warning);
+}
+
+.access-code__flag-mark {
+  color: var(--color-warning);
+  cursor: help;
+}
+
+.access-code__grant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.access-code__expiry-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.access-code__activity h4 {
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+}
+
+.access-code__agent {
+  max-width: 320px;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.access-code-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.6rem 1rem;
+}
+
+.access-code-form h3 {
+  grid-column: 1 / -1;
+}
+
+.access-code-form__group {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.access-code-form__group legend {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  padding: 0 0.25rem;
+}
+
+.access-code-form__number {
+  width: 5rem;
 }
 
 /* Milestone 36c: admin S-Class explorer — a wide bit grid with a side column for the selected

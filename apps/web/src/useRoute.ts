@@ -7,6 +7,10 @@ export type Route =
   // A bare `/editor` with no slug — nothing to load; App.tsx redirects this to the landing page.
   | { name: "editorPicker" }
   | { name: "login" }
+  | { name: "adminHub" }
+  | { name: "adminMaps" }
+  | { name: "adminAuditLog" }
+  | { name: "adminAccess" }
   | { name: "adminUsers" }
   | { name: "adminTdBoundaries" }
   | { name: "adminBerths" }
@@ -33,6 +37,11 @@ export function useRoute(): Route {
 
   if (pathname.startsWith("/rlm-login")) return { name: "login" };
   if (pathname.startsWith("/admin/users")) return { name: "adminUsers" };
+  // Milestone 83.
+  if (pathname.startsWith("/admin/maps")) return { name: "adminMaps" };
+  if (pathname.startsWith("/admin/audit-log")) return { name: "adminAuditLog" };
+  // Milestone 84.
+  if (pathname.startsWith("/admin/access")) return { name: "adminAccess" };
   if (pathname.startsWith("/admin/td-boundaries")) return { name: "adminTdBoundaries" };
   if (pathname.startsWith("/admin/berths/query")) return { name: "adminBerthQuery" };
   if (pathname.startsWith("/admin/berths/steps")) return { name: "adminBerthSteps" };
@@ -41,6 +50,7 @@ export function useRoute(): Route {
   // Milestone 36c: the S-Class explorer, under the same admin "Berths" hub.
   if (pathname.startsWith("/admin/berths/s-class")) return { name: "adminSClass" };
   if (pathname.startsWith("/admin/berths")) return { name: "adminBerths" };
+  if (pathname === "/admin" || pathname === "/admin/") return { name: "adminHub" };
 
   const editorMatch = /^\/editor\/([^/]+)\/?$/.exec(pathname);
   if (editorMatch) return { name: "editor", slug: decodeURIComponent(editorMatch[1]!) };

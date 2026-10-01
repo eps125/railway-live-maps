@@ -50,3 +50,13 @@ export async function checkLoginRateLimit(
     options.windowSeconds,
   );
 }
+
+/** Milestone 84: access-code entry, limited per client IP with the login limits — a code is a
+ * shorter secret than a password, so guessing must be just as slow. */
+export async function checkAccessCodeRateLimit(
+  redis: Redis,
+  ip: string,
+  options: { maxAttempts: number; windowSeconds: number },
+): Promise<LoginRateLimitResult> {
+  return checkWindow(redis, `access-rate:ip:${ip}`, options.maxAttempts, options.windowSeconds);
+}

@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
+import { getSiteSettings } from "@railway/database";
 import { berthChangesForEvent } from "@railway/domain";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import type { LiveDeltaMessage } from "@railway/protocol";
 import { apiError, parseLimit, parseTimeRange } from "../lib/queryRange.js";
 import { currentVersionForSlug, tdAreasFromBundle, liveDataStatus } from "../lib/mapVersion.js";
 import { computeLiveState } from "../lib/liveState.js";
+import { GUEST_VIEWER, mapVisibilitySql } from "../lib/viewer.js";
 import { computeDelayBands } from "../lib/delayBands.js";
 import { reconstructStateAt } from "../lib/reconstructState.js";
 import {
@@ -18,14 +20,20 @@ export interface MapRoutesDeps {
   pool: Pool;
 }
 
-interface MapVersionRow {
+interface MapListRow {
   id: string;
   slug: string;
   name: string;
+  description?: string | null;
+  visibility?: "public" | "restricted";
   version_number: number;
   compiled_runtime_bundle: CompiledMapBundle;
   effective_from: Date;
   effective_to: Date | null;
+  published_at?: Date | null;
+  region_id?: string | null;
+  region_name?: string | null;
+  region_sort_order?: number | null;
 }
 
 /** How far `at` may drift from "now" before /state treats it as a real point-in-time request
@@ -57,21 +65,36 @@ interface TdBerthEventRow {
 export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDeps): Promise<void> {
   const { pool } = deps;
 
-  app.get("/api/v1/maps", async () => {
+  // Milestone 83 (docs/adr/0018): only maps the viewer may see; each carries what the landing
+  // page needs to sort and group it (region, description, visibility), plus the admin's
+  // region-grouping setting and the regions in their order.
+  app.get("/api/v1/maps", async (request) => {
     const now = new Date();
-    const result = await pool.query<MapVersionRow>(
-      `select mv.id, m.slug, m.name, mv.version_number, mv.compiled_runtime_bundle, mv.effective_from, mv.effective_to
+    const viewer = request.viewer ?? GUEST_VIEWER;
+    const visible = mapVisibilitySql(viewer, "m", 2);
+    const result = await pool.query<MapListRow>(
+      `select mv.id, m.slug, m.name, m.description, m.visibility, mv.version_number,
+              mv.compiled_runtime_bundle, mv.effective_from, mv.effective_to, mv.published_at,
+              r.id::text as region_id, r.name as region_name, r.sort_order as region_sort_order
        from map_version mv
        join map m on m.id = mv.map_id
+       left join map_region r on r.id = m.region_id
        where mv.effective_from <= $1 and (mv.effective_to is null or mv.effective_to > $1)
-       order by m.slug`,
-      [now],
+         and ${visible.sql}
+       order by lower(m.name), m.slug`,
+      [now, ...visible.params],
     );
 
     const maps = await Promise.all(
       result.rows.map(async (row) => ({
         slug: row.slug,
         name: row.name,
+        description: row.description ?? null,
+        visibility: row.visibility ?? "public",
+        region: row.region_id
+          ? { id: row.region_id, name: row.region_name!, sortOrder: row.region_sort_order! }
+          : null,
+        publishedAt: row.published_at ? row.published_at.toISOString() : null,
         mapVersion: row.version_number,
         liveDataStatus: await liveDataStatus(
           pool,
@@ -81,7 +104,8 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
       })),
     );
 
-    return { maps };
+    const settings = await getSiteSettings(pool);
+    return { maps, regionGrouping: settings.map_list_region_grouping };
   });
 
   app.get<{ Params: { slug: string }; Querystring: { at?: string } }>(

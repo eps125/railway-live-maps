@@ -5,6 +5,7 @@ import { publishMapVersion, EFFECTIVE_FROM_ALL_TIME } from "@railway/map-publish
 import { apiError } from "../../lib/queryRange.js";
 import { validateDraftInContext } from "../../editor/validateWithContext.js";
 import { getDraft } from "../../editor/draftStore.js";
+import { audit } from "../../lib/audit.js";
 
 export interface EditorPublishRoutesDeps {
   pool: Pool;
@@ -107,12 +108,25 @@ export async function registerEditorPublishRoutes(
           slug,
           doc: parsed.data,
           effectiveFrom,
-          publishedBy: body.publishedBy ?? "editor",
+          // Milestone 83: the signed-in user, so the version and the audit log agree.
+          publishedBy: request.authSession?.username ?? body.publishedBy ?? "editor",
         });
 
         await client.query(
           `update map_draft set map_id = $1, base_map_version_id = $2 where slug = $3`,
           [result.mapId, result.mapVersionId, slug],
+        );
+        await audit(
+          client,
+          request,
+          "map.publish",
+          { type: "map", id: result.mapId },
+          {
+            slug,
+            versionNumber: result.versionNumber,
+            draftRevision: body.expectedRevision,
+            effectiveFrom: effectiveFrom.toISOString(),
+          },
         );
 
         await client.query("commit");

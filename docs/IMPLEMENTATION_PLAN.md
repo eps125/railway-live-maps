@@ -4427,3 +4427,81 @@ Tests: band boundaries; the projection records only changes, is idempotent, foll
 Identity; `/delays` for live and playback (the minute, the cache, a bad `at`); linked, weak,
 unlinked and on-time berths; the push lookup; push message building; the renderer's colours; the
 browser's carry-forward and push handling.
+
+## Milestone 83 — Map visibility, user groups, regions, map list, place search, audit log (2026-10-01)
+
+Owner request (docs/adr/0018): maps visible only to chosen groups and switchable back from
+public, user groups rather than a fixed "staff" flag, the map list A–Z with optional region
+grouping (an admin setting), a place on several maps with the visitor choosing, and an admin
+audit log.
+
+- [x] Migration 0046: `user_group` + `app_user_group` (seeded **Editors** group with every
+      existing user), `map.visibility` + `map_visibility_group`, `map_region` + `map.region_id`,
+      `app_setting` (`map_list_region_grouping`), and the append-only `admin_audit_log`.
+- [x] One visibility predicate (`apps/api/src/lib/viewer.ts`) used by the map list, place search
+      and editor map list, and one hook on every public and editor route with a `:slug` — a map
+      the viewer may not see is `404 MAP_NOT_FOUND`, the same as a missing map, checked before the
+      `/delays` cache and before a WebSocket upgrade. Admins see every map. An open live socket
+      closes within 30 s of its map becoming hidden.
+- [x] An editor outside a restricted map's groups cannot open it in the editor either.
+- [x] Admin › Maps: create, name/address/description/region/visibility (Everyone, or chosen
+      groups; none = admins only), delete; the region list with reordering; the region-grouping
+      setting. Admin › Users: each user's groups, and a Groups section. Admin › Audit log.
+      The header has one "Admin" link to a hub, so it still fits a phone.
+- [x] Landing page: map cards sorted by name; when grouping is on, grouped by region (region
+      order, then Other) with an A–Z toggle remembered per browser; a filter box once there are
+      more than 8 maps; "Not public" badge; editors also see never-published maps.
+- [x] Place search returns every visible map with the place; one map links straight there,
+      several are listed to choose from.
+- [x] Audit entries for map create/settings/delete/publish, user create/update/delete, group,
+      region and setting changes, written in the change's own transaction. Publishes now record
+      the signed-in user as `published_by`.
+
+Tests: visibility predicate and hook (guest/member/outsider/admin, 404 not 403, unknown slug
+passes); map list and place search shapes; landing-page ordering, grouping, toggle, filter and
+place choice; Admin › Maps settings, reordering, grouping setting, create, delete. Integration
+(disposable Postgres): visibility end to end through the real server for each kind of viewer,
+public ↔ restricted ↔ admins-only with audit entries, group and region lifecycles, settings
+validation, and the audit log rejecting update/delete.
+
+**Production needs migration 0046 applied by hand before this code deploys** — the map list
+queries `map.visibility`.
+
+## Milestone 84 — Access codes and the code-required site mode (2026-10-01)
+
+Owner request (docs/adr/0018 §6): switch the site from open to needing a temporary access code;
+codes generated in the admin area with a use limit or unlimited, a fixed access period per use,
+revocation, and a log of every use and its activity to spot sharing; the code page as the default
+page when the setting is on.
+
+- [x] Migration 0047: `access_code`, `access_code_map`, `access_grant`, `access_grant_activity`,
+      and the `site_access_mode` setting (seeded `open`).
+- [x] A root `onRequest` hook: in `code_required` mode a guest without a valid grant gets
+      `401 ACCESS_CODE_REQUIRED` on every API route except login, access and health (WebSocket
+      upgrade included). Logged-in users are never asked. Requests made with a grant are counted
+      per hour per IP, written every 30 s; activity older than 90 days is pruned hourly.
+- [x] Entering a code (rate-limited per IP) counts the use and creates the grant atomically, so
+      a last remaining use can't be taken twice. The browser gets an opaque token in an HttpOnly
+      cookie; only its hash is stored. Codes are matched ignoring case, spaces and dashes.
+- [x] Whole-site codes see public maps. Maps-only codes add their maps — restricted ones too —
+      on an open site, and give exactly those maps when a code is required.
+- [x] Revoking a code ends every use of it at once (cached grants are dropped); an admin can
+      change one use's end or end it. A live socket closes within 30 s of losing access.
+- [x] Web: every address shows the code page while a code is needed, keeping the address so a
+      shared map or playback link opens once the code is accepted; staff login link; the header
+      shows "Access until …" and "Forget code" for code holders; access is re-checked every
+      minute. Admin › Access codes: site mode (with confirmation), create (generated or custom;
+      whole site or chosen maps; uses; access period presets or custom hours; last-entry date;
+      notes), edit, copy, revoke, and each code's uses with sharing flags and hourly activity.
+- [x] Flags: one use from 3+ addresses, or from 2+ addresses in the same hour; a code's uses from
+      3+ networks (IPv4 /24, IPv6 /48).
+
+Tests: visibility predicate with grants for both site modes; the gate (guest, code holder counted,
+user, open site, always-open paths); code page, app gating keeping the address, header note;
+admin page (list, mode switch, create, uses and flags, change/end a use, revoke); formatting.
+Integration (disposable Postgres): open vs code-required, whole-site and maps-only codes (including
+a restricted map, and only-those-maps when required), use limits, last-entry date, unknown and
+revoked codes, revocation ending existing uses, changing a use's end both ways, custom/duplicate
+validation, the activity count and same-hour flag, and the audit entries.
+
+**Production needs migration 0047 applied by hand before this code deploys** (after 0046).

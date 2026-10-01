@@ -55,6 +55,9 @@ describe("map routes", () => {
       if (text.includes("from td_heartbeat")) {
         return { rows: [{ last_activity_at: new Date() }] };
       }
+      if (text.includes("from app_setting")) {
+        return { rows: [{ key: "map_list_region_grouping", value: true }] };
+      }
       throw new Error(`unexpected query: ${text}`);
     });
 
@@ -64,7 +67,59 @@ describe("map routes", () => {
     const response = await app.inject({ method: "GET", url: "/api/v1/maps" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      maps: [{ slug: "lancaster", name: "Lancaster", mapVersion: 1, liveDataStatus: "ok" }],
+      maps: [
+        {
+          slug: "lancaster",
+          name: "Lancaster",
+          description: null,
+          visibility: "public",
+          region: null,
+          publishedAt: null,
+          mapVersion: 1,
+          liveDataStatus: "ok",
+        },
+      ],
+      regionGrouping: true,
+    });
+  });
+
+  it("Milestone 83: GET /api/v1/maps shows a guest public maps only, and carries the region", async () => {
+    let listQuery = "";
+    const pool = fakePool((text) => {
+      if (text.includes("from map_version mv")) {
+        listQuery = text;
+        return {
+          rows: [
+            mapVersionRow({
+              region_id: "4",
+              region_name: "North West",
+              region_sort_order: 10,
+              published_at: new Date("2026-09-30T12:00:00Z"),
+            }),
+          ],
+        };
+      }
+      if (text.includes("from td_heartbeat")) return { rows: [{ last_activity_at: null }] };
+      if (text.includes("exists(select 1 from td_heartbeat"))
+        return { rows: [{ observed: false }] };
+      if (text.includes("from app_setting")) return { rows: [] };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const app = Fastify();
+    await registerMapRoutes(app, { pool });
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/maps" });
+    expect(listQuery).toContain("m.visibility = 'public'");
+    expect(response.json()).toMatchObject({
+      maps: [
+        {
+          region: { id: "4", name: "North West", sortOrder: 10 },
+          publishedAt: "2026-09-30T12:00:00.000Z",
+          liveDataStatus: "unknown",
+        },
+      ],
+      regionGrouping: false,
     });
   });
 

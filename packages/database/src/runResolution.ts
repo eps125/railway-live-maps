@@ -8,6 +8,7 @@ import {
   parseCifTimeToMinutes,
   resolveRunMatch,
   type RunMatchCandidate,
+  type ScheduleCandidate,
   type ServiceDateChoice,
 } from "@railway/domain";
 import type { Queryable } from "./checkpoint.js";
@@ -532,6 +533,40 @@ export function normalizeStp(value: string): "C" | "N" | "O" | "P" {
   return STP.has(value) ? (value as "C" | "N" | "O" | "P") : "P";
 }
 
+/** Every live schedule of `trainUids` covering any of `serviceDates`, whatever its headcode or
+ * route — the input to per-UID STP precedence (`governsDate`). */
+export async function schedulesForTrainUids(
+  pool: Queryable,
+  trainUids: string[],
+  serviceDates: readonly string[],
+): Promise<ScheduleCandidate[]> {
+  if (trainUids.length === 0) return [];
+  const maxDate = serviceDates.reduce((a, b) => (a > b ? a : b));
+  const minDate = serviceDates.reduce((a, b) => (a < b ? a : b));
+  const { rows } = await pool.query<{
+    cif_train_uid: string;
+    cif_stp_indicator: string;
+    days_runs_bitmask: string | null;
+    schedule_start_date: string;
+    schedule_end_date: string;
+  }>(
+    `select s.cif_train_uid, s.cif_stp_indicator, s.days_runs_bitmask,
+            s.schedule_start_date::text as schedule_start_date,
+            s.schedule_end_date::text as schedule_end_date
+       from cif_schedules s
+      where s.cif_train_uid = any($1::text[]) and s.deleted is null
+        and s.schedule_start_date <= $2::date and s.schedule_end_date >= $3::date`,
+    [trainUids, maxDate, minDate],
+  );
+  return rows.map((row) => ({
+    trainUid: row.cif_train_uid,
+    stpIndicator: normalizeStp(row.cif_stp_indicator),
+    scheduleStartDate: row.schedule_start_date,
+    scheduleEndDate: row.schedule_end_date,
+    daysRunsBitmask: row.days_runs_bitmask,
+  }));
+}
+
 /** Each schedule's departure from its origin (its first location), in minutes after midnight of
  * its own traffic day — WTT departure, else public. Missing or unparseable: absent. */
 export async function originDepartureMinutesByScheduleId(
@@ -832,8 +867,16 @@ export async function resolveFreshRunMatch(
       scheduleStartDate: row.schedule_start_date,
       scheduleEndDate: row.schedule_end_date,
       daysRunsBitmask: row.days_runs_bitmask,
+      trainUid: row.cif_train_uid,
       row,
     }),
+  );
+  // STP fix (2026-10-01): every schedule of these trains, so precedence is decided per train
+  // UID with cancellations and re-routed overlays included — see `governsDate`.
+  const sameUidSchedules = await schedulesForTrainUids(
+    pool,
+    [...new Set(candidateRows.map((row) => row.cif_train_uid))],
+    serviceDates,
   );
   // Overnight fix (2026-10-01): each candidate's departure from its origin, so a schedule valid
   // on both probed dates is matched to the occurrence that's actually out — see
@@ -890,6 +933,7 @@ export async function resolveFreshRunMatch(
       : undefined,
     alreadyPassedScheduleIds,
     dateChoice,
+    sameUidSchedules,
   );
 
   const matchBasis =

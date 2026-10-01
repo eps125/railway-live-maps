@@ -407,8 +407,8 @@ describe("resolveRunMatch (Milestone 34, docs/adr/0006)", () => {
       // Neither candidate is activated, so this falls straight to STP precedence — an
       // already-gone candidate must never win there either, since it's confirmed physically
       // absent regardless of which tier would otherwise have picked it.
-      const wouldWinStp = candidate({ scheduleId: "1", stpIndicator: "O" }); // already gone
-      const fallback = candidate({ scheduleId: "2", stpIndicator: "P" });
+      const wouldWinStp = candidate({ scheduleId: "1", stpIndicator: "O", trainUid: "A1" }); // already gone
+      const fallback = candidate({ scheduleId: "2", stpIndicator: "P", trainUid: "B2" });
       const result = resolveRunMatch(
         [wouldWinStp, fallback],
         activatedOn(),
@@ -435,6 +435,104 @@ describe("resolveRunMatch (Milestone 34, docs/adr/0006)", () => {
         new Set(["1", "2"]),
       );
       expect(result).toEqual({ status: "unmatched" });
+    });
+  });
+
+  describe("STP precedence within one train UID only (2026-10-01, PX/M9 1N58)", () => {
+    // 1N58 is two trains on this line: G89569 (Manchester Airport 09:17, overlaid this week by
+    // an O) and G89571 (19:17, its P). Seen at 20:30, the morning overlay's run is finished.
+    const morningP = candidate({ scheduleId: "34568", stpIndicator: "P", trainUid: "G89569" });
+    const morningO = candidate({ scheduleId: "250898", stpIndicator: "O", trainUid: "G89569" });
+    const eveningP = candidate({ scheduleId: "34569", stpIndicator: "P", trainUid: "G89571" });
+    const timing = {
+      callingTimeMinutes: (c: RunMatchCandidate) =>
+        c.trainUid === "G89569" ? 9 * 60 + 50 : 19 * 60 + 50,
+      nowMinutes: 20 * 60 + 30,
+    };
+
+    it("a finished overlay does not bring back its own permanent schedule", () => {
+      const result = resolveRunMatch(
+        [morningP, morningO, eveningP],
+        activatedOn(),
+        [A_MONDAY],
+        timing,
+        new Set(["250898"]),
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "stp_precedence",
+        selected: eveningP,
+        trafficDay: A_MONDAY,
+      });
+    });
+
+    it("an overlay of one train never outranks another train's permanent schedule", () => {
+      // Neither run passed or activated: the overlay is G89569's governing schedule and the P is
+      // G89571's — two trains, so it falls to the station timing, not to "O beats P".
+      const result = resolveRunMatch(
+        [morningP, morningO, eveningP],
+        activatedOn(),
+        [A_MONDAY],
+        timing,
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "station_berth_timetable",
+        selected: eveningP,
+        trafficDay: A_MONDAY,
+      });
+      // Without a station to time against, two trains is ambiguous — never a guess.
+      const unscoped = resolveRunMatch([morningP, morningO, eveningP], activatedOn(), [A_MONDAY]);
+      expect(unscoped).toEqual({
+        status: "ambiguous",
+        basis: "stp_precedence",
+        candidates: [morningO, eveningP],
+      });
+    });
+
+    it("a cancellation that never matched by headcode still removes its train", () => {
+      // CIF cancellations carry no headcode or calling points: they only arrive via the UID.
+      const cancelled = candidate({ scheduleId: "9", stpIndicator: "C", trainUid: "G89571" });
+      const result = resolveRunMatch(
+        [morningP, eveningP],
+        activatedOn(),
+        [A_MONDAY],
+        undefined,
+        undefined,
+        undefined,
+        [morningP, eveningP, cancelled],
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "stp_precedence",
+        selected: morningP,
+        trafficDay: A_MONDAY,
+      });
+    });
+
+    it("a cancellation only applies to the dates it covers", () => {
+      const cancelledYesterday = candidate({
+        scheduleId: "9",
+        stpIndicator: "C",
+        trainUid: "G89571",
+        scheduleStartDate: SUNDAY_BEFORE,
+        scheduleEndDate: SUNDAY_BEFORE,
+      });
+      const result = resolveRunMatch(
+        [eveningP],
+        activatedOn(),
+        [A_MONDAY, SUNDAY_BEFORE],
+        undefined,
+        undefined,
+        undefined,
+        [eveningP, cancelledYesterday],
+      );
+      expect(result).toEqual({
+        status: "matched",
+        basis: "stp_precedence",
+        selected: eveningP,
+        trafficDay: A_MONDAY,
+      });
     });
   });
 });

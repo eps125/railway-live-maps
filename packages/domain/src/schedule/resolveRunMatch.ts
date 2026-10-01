@@ -1,6 +1,5 @@
 import {
   candidatesRunningOnAny,
-  selectEffectiveScheduleAcrossDates,
   type ScheduleCandidate,
   type ServiceDateChoice,
 } from "./resolveStpPrecedence.js";
@@ -104,6 +103,10 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
   /** Overnight fix (2026-10-01): which probed date a schedule valid on several is running for —
    * see `ServiceDateChoice`. Omitted: the most recent date, as before. */
   dateChoice?: ServiceDateChoice<T>,
+  /** STP fix (2026-10-01): every schedule of the candidates' train UIDs, including ones that
+   * didn't match by headcode/position (cancellations, re-routed overlays) — see `governsDate`.
+   * Omitted: the candidates themselves. */
+  sameUidSchedules?: readonly ScheduleCandidate[],
 ): RunMatchResult<T> {
   const eligible = alreadyPassedScheduleIds
     ? candidates.filter((candidate) => !alreadyPassedScheduleIds.has(candidate.scheduleId))
@@ -131,24 +134,31 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
     };
   }
 
-  const stpOutcome = selectEffectiveScheduleAcrossDates(eligible, serviceDates, dateChoice);
-  if (stpOutcome.outcome === "matched") {
+  // Below TRUST activation, each train counts once, as the schedule that governs it that day
+  // (STP precedence within its own UID). Precedence is never compared across different trains,
+  // and it is applied before excluding finished runs: a train whose overlay has already run is
+  // gone, not running to its permanent schedule instead (PX/M9 1N58, 2026-10-01 — the morning
+  // G89569 overlay's finished run brought its P back, which then beat the evening G89571).
+  const governing = candidatesRunningOnAny(
+    eligible,
+    serviceDates,
+    dateChoice,
+    sameUidSchedules ?? candidates,
+  );
+  if (governing.length === 0) return { status: "unmatched" };
+  if (governing.length === 1) {
+    const only = governing[0] as (typeof governing)[number];
     return {
       status: "matched",
       basis: "stp_precedence",
-      selected: stpOutcome.selected.candidate,
-      trafficDay: stpOutcome.selected.serviceDate,
+      selected: only.candidate,
+      trafficDay: only.serviceDate,
     };
-  }
-  if (stpOutcome.outcome === "none") {
-    // Can't actually happen: `running` (which `selectEffectiveScheduleAcrossDates` re-derives
-    // internally) is already non-empty at this point — kept only so TS can narrow below.
-    return { status: "unmatched" };
   }
 
   if (timing) {
     const closest = closestToNow(
-      stpOutcome.candidates,
+      governing,
       (dated) => timing.callingTimeMinutes(dated.candidate),
       timing.nowMinutes,
     );
@@ -173,6 +183,6 @@ export function resolveRunMatch<T extends RunMatchCandidate>(
   return {
     status: "ambiguous",
     basis: "stp_precedence",
-    candidates: stpOutcome.candidates.map((dated) => dated.candidate),
+    candidates: governing.map((dated) => dated.candidate),
   };
 }

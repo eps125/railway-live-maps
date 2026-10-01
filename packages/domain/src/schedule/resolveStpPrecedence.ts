@@ -17,6 +17,10 @@ export interface ScheduleCandidate {
    * known" (matches every day) rather than silently excluding the candidate — the absence of
    * data is not evidence the schedule doesn't run that day. */
   daysRunsBitmask: string | null;
+  /** CIF train UID. STP precedence only ever compares schedules of the same UID: an overlay of
+   * one train says nothing about another train that happens to share its headcode. Omitted (as
+   * in older tests) = every candidate counts as the same train. */
+  trainUid?: string | undefined;
 }
 
 export type StpPrecedenceResult<T> =
@@ -40,6 +44,32 @@ export function runsOnDate(candidate: ScheduleCandidate, serviceDate: string): b
   const utcDay = new Date(`${serviceDate}T00:00:00Z`).getUTCDay(); // 0 = Sunday
   const mondayIndexedDay = (utcDay + 6) % 7; // 0 = Monday .. 6 = Sunday
   return candidate.daysRunsBitmask.charAt(mondayIndexedDay) === "1";
+}
+
+/**
+ * STP fix (2026-10-01, owner report: delay colours missing; PX/M9 1N58). Whether `candidate` is
+ * the schedule its own train actually runs to on `serviceDate`: it runs that day, is not itself a
+ * cancellation, and no other schedule of the same train UID with higher precedence (C > O > N >
+ * P) also covers that day. `sameUid` should hold *every* schedule of the candidates' UIDs, not
+ * just the ones that matched by headcode and position: a cancellation usually carries no headcode
+ * or calling points (131k of 131k current C rows on 2026-10-01, bar 76), and an overlay may run a
+ * different route. Two same-UID schedules of equal precedence both govern — conflicting input is
+ * left for the caller to report, never picked between.
+ */
+export function governsDate(
+  candidate: ScheduleCandidate,
+  serviceDate: string,
+  sameUid: readonly ScheduleCandidate[],
+): boolean {
+  if (candidate.stpIndicator === "C" || !runsOnDate(candidate, serviceDate)) return false;
+  const rank = PRECEDENCE_RANK[candidate.stpIndicator];
+  const uid = candidate.trainUid ?? null;
+  return !sameUid.some(
+    (other) =>
+      (other.trainUid ?? null) === uid &&
+      PRECEDENCE_RANK[other.stpIndicator] > rank &&
+      runsOnDate(other, serviceDate),
+  );
 }
 
 /** One candidate paired with whichever `serviceDate` it was actually found running on — see
@@ -67,10 +97,14 @@ export function candidatesRunningOnAny<T extends ScheduleCandidate>(
   candidates: T[],
   serviceDates: readonly string[],
   dateChoice?: ServiceDateChoice<T>,
+  /** Given: only dates on which the candidate governs its train (see `governsDate`). */
+  sameUid?: readonly ScheduleCandidate[],
 ): DatedCandidate<T>[] {
   const result: DatedCandidate<T>[] = [];
   for (const candidate of candidates) {
-    const dates = serviceDates.filter((serviceDate) => runsOnDate(candidate, serviceDate));
+    const dates = serviceDates.filter((serviceDate) =>
+      sameUid ? governsDate(candidate, serviceDate, sameUid) : runsOnDate(candidate, serviceDate),
+    );
     const first = dates[0];
     if (first === undefined) continue;
     result.push({

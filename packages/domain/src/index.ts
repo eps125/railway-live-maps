@@ -114,6 +114,7 @@ export {
   candidatesRunningOn,
   runsOnDate,
   candidatesRunningOnAny,
+  governsDate,
   selectEffectiveScheduleAcrossDates,
   type ScheduleCandidate,
   type StpPrecedenceResult,

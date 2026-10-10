@@ -185,7 +185,7 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
         sequence: 0,
         state: {
           mode: "live",
-          quality: { status: "unknown", gaps: [] },
+          quality: { status: "unknown", gaps: [], incomplete: false },
           berths: { "berth-a": { description: null, enteredAt: null } },
           signals: {},
           // Milestone 55 / ADR 0014: present and empty for a map with no level crossings — the

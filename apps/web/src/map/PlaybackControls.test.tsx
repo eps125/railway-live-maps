@@ -74,5 +74,22 @@ describe("PlaybackControls", () => {
       />,
     );
     expect(screen.getByLabelText("Feed gap warnings")).toHaveTextContent("feed gap 10:00–10:05");
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+  });
+
+  it("shows a non-admin only a small note, with no outage details (owner, 2026-10-10)", () => {
+    render(
+      <PlaybackControls {...setup({ quality: { status: "stale", gaps: [], incomplete: true } })} />,
+    );
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Some data around this time may be incomplete.",
+    );
+    expect(screen.queryByLabelText("Feed gap warnings")).not.toBeInTheDocument();
+  });
+
+  it("shows nothing about outages when there were none", () => {
+    render(<PlaybackControls {...setup()} />);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Feed gap warnings")).not.toBeInTheDocument();
   });
 });

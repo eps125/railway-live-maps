@@ -31,7 +31,7 @@ export interface MapStateResponse {
   asOf: string;
   sourceSequence: number;
   mode: "live" | "historical" | string;
-  quality: { status: "ok" | "stale" | "unknown"; gaps: string[] };
+  quality: { status: "ok" | "stale" | "unknown"; gaps: string[]; incomplete?: boolean | undefined };
   berths: Record<string, BerthState>;
   signals: Record<string, SignalState>;
   /** Absent from a response produced before crossings existed; read as "no crossings". */

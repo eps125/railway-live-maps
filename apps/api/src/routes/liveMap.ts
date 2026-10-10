@@ -11,7 +11,7 @@ import {
   type DelayUpdatedMessage,
 } from "@railway/protocol";
 import { currentVersionForSlug, liveDataStatus, tdAreasFromBundle } from "../lib/mapVersion.js";
-import { feedGapWarnings } from "../lib/feedGaps.js";
+import { feedGapWarnings, qualityForViewer } from "../lib/feedGaps.js";
 import { computeLiveState, type QualityState } from "../lib/liveState.js";
 import { computeDelayBands } from "../lib/delayBands.js";
 import type { LiveDeltaSource } from "../live/deltaSource.js";
@@ -106,8 +106,10 @@ export async function registerLiveMapRoutes(
         forward(message);
       });
 
-      const { sourceSequence, berths, signals, crossings, routes, quality } =
-        await computeLiveState(pool, version.compiled_runtime_bundle, now);
+      const live = await computeLiveState(pool, version.compiled_runtime_bundle, now);
+      const { sourceSequence, berths, signals, crossings, routes } = live;
+      // Outage details are admin-only (owner, 2026-10-10): redacted once here, for this socket.
+      const quality = qualityForViewer(live.quality, request.viewer);
       // Milestone 82: the bands in force now. Best-effort — the map must still load if this
       // fails (e.g. before migration 0044 is applied); it just shows no delay colours.
       let delays: BerthDelay[] = [];
@@ -183,11 +185,15 @@ export async function registerLiveMapRoutes(
       const qualityCheckTimer = setInterval(() => {
         const at = new Date();
         Promise.all([liveDataStatus(pool, tdAreas, at), feedGapWarnings(pool, tdAreas, at)])
-          .then(([status, { gaps }]) => {
+          .then(([status, { gaps, incomplete }]) => {
             if (socket.readyState !== socket.OPEN) return;
-            const next: QualityState = { status, gaps };
+            const next: QualityState = qualityForViewer(
+              { status, gaps, incomplete },
+              request.viewer,
+            );
             if (
               next.status === lastSentQuality.status &&
+              next.incomplete === lastSentQuality.incomplete &&
               next.gaps.length === lastSentQuality.gaps.length &&
               next.gaps.every((gap, i) => gap === lastSentQuality.gaps[i])
             ) {

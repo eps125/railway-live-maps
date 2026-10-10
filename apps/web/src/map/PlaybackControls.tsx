@@ -7,7 +7,7 @@ export interface PlaybackControlsProps {
   speed: number;
   loading: boolean;
   atLiveEdge: boolean;
-  quality: { status: "ok" | "stale" | "unknown"; gaps: string[] };
+  quality: { status: "ok" | "stale" | "unknown"; gaps: string[]; incomplete?: boolean | undefined };
   onPlay: () => void;
   onPause: () => void;
   onSpeed: (speed: number) => void;
@@ -29,7 +29,11 @@ function toLocalInputValue(iso: string): string {
 /**
  * docs/PROJECT_SPEC.md §5 "Playback": choose a date/time and jump to it, pause/resume, step
  * ±10s/±1m/±10m, pick a speed, a persistent "Historical playback" indicator, return to live, and
- * a visible warning wherever the recorder had a feed gap.
+ * a warning wherever the recorder had a feed gap.
+ *
+ * Owner, 2026-10-10: the list of outages is for admins only (the API sends `gaps` to no one
+ * else); everyone else sees one small line saying data may be incomplete, with no details. On a
+ * computer the controls sit on one line (see `.playback` in styles.css); phones keep the rows.
  */
 export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
   const [pending, setPending] = useState<string | null>(null);
@@ -115,6 +119,11 @@ export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
         {props.atLiveEdge ? " — caught up to live" : ""}
       </div>
 
+      {props.quality.gaps.length === 0 && props.quality.incomplete && (
+        <p className="playback__note" role="note">
+          Some data around this time may be incomplete.
+        </p>
+      )}
       {props.quality.gaps.length > 0 && (
         <ul className="playback__gaps" aria-label="Feed gap warnings">
           {props.quality.gaps.map((gap) => (

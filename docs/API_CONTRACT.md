@@ -43,7 +43,10 @@ Return a complete state snapshot at the requested time. `at` within ~5 s of now 
 reconstruction from `berth_occupancy` (Milestone 10) using the map version **effective at
 `at`**; repeated identical requests return byte-identical `berths`/`signals`/`sourceSequence`.
 `at` in the future → `400 INVALID_TIME_RANGE`. `quality.gaps` lists `feed_gap` warnings
-overlapping/near `at`; `quality.status` is `"stale"` when a gap actually covers `at`.
+overlapping/near `at` — **for admins only**; every other viewer (guest, access code, editor)
+always gets `[]`. `quality.incomplete` (everyone) is `true` when a gap covers `at` or closed within
+30 minutes before it. `quality.status` is `"stale"` when a gap actually covers `at`. The same
+applies to the WebSocket snapshot and `quality.updated`.
 
 `signals` (Milestone 36b, docs/adr/0013): each signal element's `state` is `blank` | `on` | `off`
 — only ever its bound `tdSBit` bit read through the binding's `activeMeans` (red = on, green =

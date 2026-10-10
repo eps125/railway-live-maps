@@ -213,7 +213,20 @@ describe("GET /api/v1/maps/:slug/state?at= (integration)", () => {
         })
       ).json();
       expect(during.quality.status).toBe("stale");
-      expect(during.quality.gaps.join(" ")).toContain("feed gap");
+      // Owner, 2026-10-10: a guest is told only that data may be incomplete — never the outage
+      // list (times, areas, reasons), which is for admins.
+      expect(during.quality.incomplete).toBe(true);
+      expect(during.quality.gaps).toEqual([]);
+      // The gap closed at 10:07: 13 minutes later still counts, 38 minutes later does not.
+      const soonAfter = (
+        await app.inject({
+          method: "GET",
+          url: `/api/v1/maps/${SLUG}/state?at=2026-05-01T10:20:00Z`,
+        })
+      ).json();
+      expect(soonAfter.quality.incomplete).toBe(true);
+      expect(after.quality.incomplete).toBe(false);
+      expect(after.quality.gaps).toEqual([]);
     } finally {
       await app.close();
     }

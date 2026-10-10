@@ -11,7 +11,11 @@ export interface UseLiveMapSocketResult {
   signals: Record<string, SignalState> | null;
   crossings: Record<string, CrossingState> | null;
   routes: Record<string, RouteState> | null;
-  quality: { status: "ok" | "stale" | "unknown"; gaps: string[] } | null;
+  quality: {
+    status: "ok" | "stale" | "unknown";
+    gaps: string[];
+    incomplete?: boolean | undefined;
+  } | null;
   /** Milestone 82: banded berths — the snapshot's list, kept current by `delay.updated` pushes
    * (sent only when openrail-eps reports on a train on this map). Null until a snapshot. */
   delays: BerthDelay[] | null;
@@ -61,6 +65,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
   const [quality, setQuality] = useState<{
     status: "ok" | "stale" | "unknown";
     gaps: string[];
+    incomplete?: boolean | undefined;
   } | null>(null);
   const [delays, setDelays] = useState<Record<string, BerthDelay> | null>(null);
   const lastSequenceRef = useRef<number | null>(null);

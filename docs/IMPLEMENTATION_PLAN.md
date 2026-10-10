@@ -4617,3 +4617,22 @@ Tests: overnight date choice (4 domain cases), per-UID precedence (4 domain case
 overlay, cross-train overlay, cancellation via UID, date-bounded cancellation),
 `repairRunLinks.integration.test.ts` (sleeper stored against the next day is corrected and its
 journey repointed; idempotent).
+
+## Milestone 88 — Outage details admin-only; playback controls on one line (2026-10-10)
+
+Owner request: outages must not be shown to non-admins beyond a small note, and the playback
+controls should sit on one line on computers (phones unchanged).
+
+- [x] `qualityForViewer` (`apps/api/src/lib/feedGaps.ts`): `quality.gaps` is sent to admins only —
+      `/state`, `/state?at=`, the WebSocket snapshot and `quality.updated`, and the editor preview
+      state. Everyone else gets `[]`.
+- [x] `quality.incomplete`: a gap covers the moment or closed within 30 minutes before it. Playback
+      shows a non-admin one small muted line ("Some data around this time may be incomplete.").
+- [x] Playback controls: one line at 900px and wider; the stacked rows below that.
+
+Investigation (2026-10-08 outages, the only ones recorded since 26 Sep): nine nationwide TD
+silences of ~6 minutes each between 02:53 and 04:54 UTC, about 10.5 minutes apart. The STOMP
+connection stayed up (one session 1–9 Oct, broker heartbeats kept arriving, so the stall watchdog
+never fired), `ingest-td` logged `0 frames` with no errors, and TRUST kept flowing on the same host
+throughout — so Network Rail stopped publishing TD, not this system. The durable subscription
+recovered nothing: the missing minutes never arrived.

@@ -43,7 +43,11 @@ type Berths = Record<string, BerthState>;
 type Signals = Record<string, SignalState>;
 type Crossings = Record<string, CrossingState>;
 type Routes = Record<string, RouteState>;
-type Quality = { status: "ok" | "stale" | "unknown"; gaps: string[] };
+type Quality = {
+  status: "ok" | "stale" | "unknown";
+  gaps: string[];
+  incomplete?: boolean | undefined;
+};
 
 /** Pure: apply one compact event to a berth map (same semantics as the live WS client). Signal
  * events don't touch berths. */

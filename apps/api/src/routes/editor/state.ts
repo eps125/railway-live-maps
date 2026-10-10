@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { compileMapDocument, type CompiledMapBundle } from "@railway/map-schema";
 import { apiError } from "../../lib/queryRange.js";
 import { computeLiveState } from "../../lib/liveState.js";
+import { qualityForViewer } from "../../lib/feedGaps.js";
 import { getDraft } from "../../editor/draftStore.js";
 import { previewDocument } from "../../editor/modules.js";
 
@@ -108,7 +109,11 @@ export async function registerEditorStateRoutes(
         asOf: now.toISOString(),
         sourceSequence,
         mode: "live" as const,
-        quality,
+        // Outage details are admin-only (owner, 2026-10-10) — editors included.
+        quality: qualityForViewer(
+          quality,
+          request.authSession ? { user: { role: request.authSession.role } } : null,
+        ),
         berths,
         signals,
       };

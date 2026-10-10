@@ -34,7 +34,10 @@ export interface SignalState {
 
 export interface QualityState {
   status: "ok" | "stale" | "unknown";
+  /** Outage details — admins only once it leaves the API (`qualityForViewer`). */
   gaps: string[];
+  /** A feed gap covers this moment or closed shortly before it. */
+  incomplete: boolean;
 }
 
 export interface LiveState {
@@ -124,11 +127,11 @@ export async function computeLiveState(
   const { signals, crossings, routes } = await sClassStatesForBundle(pool, bundle, now, true);
 
   const areas = tdAreasFromBundle(bundle);
-  const [status, { gaps }] = await Promise.all([
+  const [status, { gaps, incomplete }] = await Promise.all([
     liveDataStatus(pool, areas, now),
     feedGapWarnings(pool, areas, now),
   ]);
-  const quality: QualityState = { status, gaps };
+  const quality: QualityState = { status, gaps, incomplete };
 
   return { sourceSequence, berths, signals, crossings, routes, quality };
 }

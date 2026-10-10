@@ -23,7 +23,11 @@ const SignalStateSchema = z.object({
 /** Matches apps/api/src/lib/mapVersion.ts's `liveDataStatus` return values exactly. */
 const QualityStateSchema = z.object({
   status: z.enum(["ok", "stale", "unknown"]),
+  /** Outage details: sent to admins only; empty for everyone else. */
   gaps: z.array(z.string()),
+  /** A feed gap covers this moment or closed shortly before it — all a non-admin is told.
+   * Optional so an older server or client keeps working. */
+  incomplete: z.boolean().optional(),
 });
 
 /** Milestone 55 / ADR 0014: a level crossing's barrier position. A barrier position is not a

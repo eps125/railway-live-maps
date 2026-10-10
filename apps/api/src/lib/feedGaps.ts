@@ -6,6 +6,12 @@ import type { Pool } from "pg";
  * freshness/'gap' thresholds as a later setting). */
 const GAP_LOOKBACK = "6 hours";
 
+/** How long after a gap closes the view is still flagged as possibly incomplete to everyone
+ * (owner, 2026-10-10): trains described during the gap stay missing or stale until they next
+ * step, which on these maps is a matter of minutes — not the six hours the admin list looks
+ * back. */
+const INCOMPLETE_AFTER_GAP = "30 minutes";
+
 interface FeedGapRow {
   td_area: string | null;
   window_start: Date;
@@ -13,6 +19,7 @@ interface FeedGapRow {
   detection_reason: string;
   recoverability: "recoverable" | "unrecoverable" | "unknown";
   covers_at: boolean;
+  near_at: boolean;
 }
 
 export interface FeedGapWarnings {
@@ -21,6 +28,22 @@ export interface FeedGapWarnings {
   /** True when a gap's affected range actually contains `at` — the state at that instant is
    * suspect, so callers mark `quality.status = "stale"`. */
   coversAt: boolean;
+  /** True when a gap covers `at` or closed within `INCOMPLETE_AFTER_GAP` before it — all a
+   * non-admin viewer is ever told (see `qualityForViewer`). */
+  incomplete: boolean;
+}
+
+/**
+ * Owner, 2026-10-10: outage details are for admins only. Everyone else gets `status` and the
+ * bare `incomplete` flag — never the list (times, areas, reasons). Applied where a response is
+ * built for a particular viewer, so the details are not sent at all rather than merely hidden.
+ */
+export function qualityForViewer<Q extends { gaps: string[]; incomplete?: boolean }>(
+  quality: Q,
+  viewer: { user: { role: string } | null } | null | undefined,
+): Q {
+  if (viewer?.user?.role === "admin") return quality;
+  return { ...quality, gaps: [] };
 }
 
 function describe(row: FeedGapRow): string {
@@ -48,7 +71,9 @@ export async function feedGapWarnings(
             detection_reason, recoverability,
             (coalesce(affected_time_start, detected_start) <= $2
              and (coalesce(affected_time_end, detected_end) is null
-                  or coalesce(affected_time_end, detected_end) > $2)) as covers_at
+                  or coalesce(affected_time_end, detected_end) > $2)) as covers_at,
+            (coalesce(affected_time_end, detected_end) is null
+             or coalesce(affected_time_end, detected_end) >= $2 - interval '${INCOMPLETE_AFTER_GAP}') as near_at
        from feed_gap
       where feed_name = 'TD'
         and (td_area is null or td_area = any($1::text[]))
@@ -63,5 +88,6 @@ export async function feedGapWarnings(
   return {
     gaps: rows.map(describe),
     coversAt: rows.some((row) => row.covers_at),
+    incomplete: rows.some((row) => row.near_at),
   };
 }

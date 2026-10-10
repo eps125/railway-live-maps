@@ -23,7 +23,7 @@ export async function reconstructStateAt(
     .filter((element) => element.type === "signal")
     .map((element) => element.id);
 
-  const [{ sourceSequence, berths }, sClass, { gaps, coversAt }] = await Promise.all([
+  const [{ sourceSequence, berths }, sClass, { gaps, coversAt, incomplete }] = await Promise.all([
     reconstructMapStateAt(pool, {
       berthBindingIndex: bundle.berthBindingIndex,
       berthBindingOrder: bundle.berthBindingOrder ?? {},
@@ -41,6 +41,6 @@ export async function reconstructStateAt(
     signals: sClass.signals,
     crossings: sClass.crossings,
     routes: sClass.routes,
-    quality: { status: coversAt ? "stale" : "ok", gaps },
+    quality: { status: coversAt ? "stale" : "ok", gaps, incomplete },
   };
 }

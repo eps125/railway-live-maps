@@ -10,6 +10,7 @@ import { computeLiveState } from "../lib/liveState.js";
 import { GUEST_VIEWER, mapVisibilitySql } from "../lib/viewer.js";
 import { computeDelayBands } from "../lib/delayBands.js";
 import { reconstructStateAt } from "../lib/reconstructState.js";
+import { qualityForViewer } from "../lib/feedGaps.js";
 import {
   fetchSignalPlaybackEvents,
   type EventSource,
@@ -174,7 +175,8 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         asOf: at.toISOString(),
         sourceSequence,
         mode: historical ? ("historical" as const) : ("live" as const),
-        quality,
+        // Outage details are admin-only (owner, 2026-10-10).
+        quality: qualityForViewer(quality, request.viewer),
         berths,
         signals,
         crossings,

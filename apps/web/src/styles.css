@@ -1299,6 +1299,39 @@ legend {
   color: #ffb4b4;
 }
 
+/* Owner, 2026-10-10: all a non-admin sees of an outage — small, quiet, no details. */
+.playback__note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+/* Computers (owner, 2026-10-10): the playback controls on one line. The three rows become
+   groups side by side, the clock sits at the end, and any outage text takes its own line below.
+   Narrower screens keep the stacked rows above. */
+@media (min-width: 900px) {
+  .playback {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1.25rem;
+  }
+
+  .playback__row {
+    flex-wrap: nowrap;
+  }
+
+  .playback__clock {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  .playback__gaps,
+  .playback__note {
+    flex-basis: 100%;
+  }
+}
+
 /* Phones (owner, 2026-09-30): a more compact map toolbar and playback box. After the rules above
    on purpose, so these win at equal specificity. */
 @media (max-width: 600px) {
@@ -1362,6 +1395,10 @@ legend {
   .playback__clock,
   .playback__gap {
     font-size: 0.7rem;
+  }
+
+  .playback__note {
+    font-size: 0.62rem;
   }
 }
 

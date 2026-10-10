@@ -5,6 +5,7 @@ import { createPool, ensureMonthlyPartitions } from "@railway/database";
 import { TD_S_STATE_PROJECTION_VERSION } from "@railway/domain";
 import { recordFrame, markFrameAcked, type InboundFrame } from "./recorder.js";
 import {
+  classifyReceiveSilences,
   runProjectTd,
   TD_PROJECTION_VERSION,
   TD_PROJECTION_NAME,
@@ -504,6 +505,55 @@ describe("runProjectTd (integration)", () => {
       [TD_S_STATE_PROJECTION_VERSION, area],
     );
     expect(state.rows[0]?.n).toBe(0);
+  });
+
+  it("classifies a recorded silence by whether its data ever arrived (2026-10-10)", async () => {
+    // Two silences. After the first, nothing for those minutes is ever received (the source sent
+    // nothing — the 2026-10-08 outages). After the second, a row from inside it turns up late (a
+    // durable subscription redelivering after a reconnect).
+    const area = uniqueArea();
+    const t = Date.now();
+    const MIN = 60_000;
+    await record([ct(area, t)], new Date(t));
+    await record([ct(area, t + 6 * MIN)], new Date(t + 6 * MIN));
+    await record([ct(area, t + 9 * MIN)], new Date(t + 12 * MIN + 1000)); // late: from the gap
+    await record([ct(area, t + 12 * MIN)], new Date(t + 12 * MIN + 2000));
+    // (received order = ingestion order: the 12-minute row is the first after the second silence)
+    expect((await runProjectTd(pool)).feedSilences).toBe(2);
+
+    const starts = [new Date(t), new Date(t + 6 * MIN)];
+    const read = async () =>
+      (
+        await pool.query<{ recoverability: string; operator_note: string | null }>(
+          `select recoverability, operator_note from feed_gap
+            where detection_reason = 'td_receive_silence' and detected_start = any($1::timestamptz[])
+            order by detected_start`,
+          [starts],
+        )
+      ).rows;
+    // Just recorded: left alone until the rows after it are certain to be in.
+    await classifyReceiveSilences(pool);
+    expect((await read()).map((r) => r.recoverability)).toEqual(["unknown", "unknown"]);
+
+    await pool.query(
+      `update feed_gap set created_at = now() - interval '10 minutes'
+        where detection_reason = 'td_receive_silence' and detected_start = any($1::timestamptz[])`,
+      [starts],
+    );
+    await classifyReceiveSilences(pool);
+    const rows = await read();
+    expect(rows.map((r) => r.recoverability)).toEqual(["unrecoverable", "recoverable"]);
+    expect(rows[0]!.operator_note).toMatch(/was ever received/);
+    expect(rows[1]!.operator_note).toMatch(/arrived late/);
+
+    await pool.query(
+      "delete from feed_gap where detection_reason = 'td_receive_silence' and detected_start = any($1::timestamptz[])",
+      [starts],
+    );
+    // As below: later tests replay every row, so this test's rows go too.
+    await pool.query("delete from td_heartbeat where td_area = $1", [area]);
+    await pool.query("delete from td_area_summary where td_area = $1", [area]);
+    await pool.query("delete from raw_feed_event where feed_name = 'TD' and td_area = $1", [area]);
   });
 
   it("records a TD receive silence over 5 minutes as a feed_gap, once (Milestone 36b)", async () => {

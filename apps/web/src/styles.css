@@ -1295,15 +1295,49 @@ legend {
 }
 
 .playback__gap {
-  font-size: 0.82rem;
-  color: #ffb4b4;
+  font-size: 0.78rem;
+  color: #ffcf99;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Owner, 2026-10-10: all a non-admin sees of an outage — small, quiet, no details. */
-.playback__note {
+/* Owner, 2026-10-10: the outage warning — an orange pill with a warning triangle. For a
+   non-admin it is the whole message (no details); for an admin it is the toggle that shows or
+   minimises the list. */
+.playback__warning {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.35rem;
   margin: 0;
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
+  padding: 0.15rem 0.6rem;
+  border: 1px solid rgba(240, 150, 40, 0.45);
+  border-radius: 999px;
+  background: rgba(240, 150, 40, 0.12);
+  color: #ffb454;
+  font: inherit;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.playback__warning-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+}
+
+.playback__warning--toggle {
+  cursor: pointer;
+}
+
+.playback__warning--toggle:hover {
+  border-color: #ffb454;
+}
+
+.playback__warning-action {
+  margin-left: 0.2rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid rgba(240, 150, 40, 0.45);
+  font-weight: 600;
 }
 
 /* Computers (owner, 2026-10-10): the playback controls on one line. The three rows become
@@ -1326,8 +1360,12 @@ legend {
     white-space: nowrap;
   }
 
-  .playback__gaps,
-  .playback__note {
+  .playback__warning {
+    align-self: center;
+    white-space: nowrap;
+  }
+
+  .playback__gaps {
     flex-basis: 100%;
   }
 }
@@ -1397,8 +1435,9 @@ legend {
     font-size: 0.7rem;
   }
 
-  .playback__note {
-    font-size: 0.62rem;
+  .playback__warning {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.45rem;
   }
 }
 

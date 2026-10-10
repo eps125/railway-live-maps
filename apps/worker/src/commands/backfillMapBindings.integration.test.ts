@@ -28,6 +28,7 @@ const testConfig: Config = {
   TD_LIVE_ENABLED: false,
   NR_TD_DURABLE_SUBSCRIPTION: false,
   NR_TD_DURABLE_SUBSCRIPTION_NAME: "railway-live-maps-td",
+  NR_TD_MESSAGE_SILENCE_SECONDS: 90,
   NR_CORPUS_DOWNLOAD_URL: "https://example.invalid/corpus",
   NR_SMART_DOWNLOAD_URL: "https://example.invalid/smart",
   SCHEDULE_DOWNLOAD_ENABLED: false,

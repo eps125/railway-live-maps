@@ -31,6 +31,14 @@ export interface StompConnectionConfig {
    * `error` nor `close` ever fires and the feed just goes dead with the container still "Up"
    * (observed twice, 2026-09-01). Defaults to `max(heartbeatMs * 3, 90s)`. */
   staleTimeoutMs?: number;
+  /** Once CONNECTED, if no MESSAGE arrives for this long — broker heartbeats don't count — the
+   * socket is force-closed so the reconnect loop takes over. For a feed that is never quiet (TD
+   * nationwide). Incident 2026-10-08: nine ~6-minute TD silences while the connection stayed up
+   * and heartbeats kept arriving, so `staleTimeoutMs` never fired. A reconnect costs nothing with
+   * a durable subscription, and gets us off a broker node that has stopped delivering. Each
+   * reconnect that still brings no message doubles the wait (up to 8x), so a long outage at the
+   * source doesn't turn into a reconnect every 90 seconds. Unset or 0: off. */
+  messageSilenceTimeoutMs?: number;
   /** Durable subscription identity. When set, CONNECT carries `client-id` and SUBSCRIBE names
    * the subscription, so the broker keeps queuing messages while we're disconnected (Network
    * Rail holds them for five minutes) and redelivers anything sent but not yet ACKed once we
@@ -64,6 +72,8 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
   private socket: Socket | null = null;
   private stopped = false;
   private attempt = 0;
+  /** Message-silence reconnects in a row with no MESSAGE since — see `messageSilenceTimeoutMs`. */
+  private silenceStrikes = 0;
 
   constructor(private readonly config: StompConnectionConfig) {}
 
@@ -95,6 +105,9 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       const heartbeatMs = this.config.heartbeatMs ?? 15_000;
       const connectTimeoutMs = this.config.connectTimeoutMs ?? 20_000;
       const staleTimeoutMs = this.config.staleTimeoutMs ?? Math.max(heartbeatMs * 3, 90_000);
+      const messageSilenceTimeoutMs = this.config.messageSilenceTimeoutMs ?? 0;
+      let lastMessageAt = Date.now();
+      let closeReason = "connection closed";
       let sessionId: string | null = null;
       let settled = false;
       let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -170,9 +183,14 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             sessionId = id;
           },
           onFatalError: finish,
+          onMessage: () => {
+            lastMessageAt = Date.now();
+            this.silenceStrikes = 0;
+          },
           onConnected: () => {
             clearTimeout(connectTimer);
             lastInboundAt = Date.now();
+            lastMessageAt = Date.now();
             // Silent-stall watchdog: NR's broker promised bidirectional heartbeats in the
             // CONNECT frame, so *something* (a MESSAGE, an ACK receipt, or a bare LF) must
             // arrive well within `heartbeatMs`. If nothing does for `staleTimeoutMs`, the feed
@@ -188,9 +206,26 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
                   );
                   this.state = "reconnecting";
                   socket.destroy();
+                  return;
+                }
+                if (messageSilenceTimeoutMs <= 0 || socket.destroyed) return;
+                const silentMs = Date.now() - lastMessageAt;
+                const limitMs = messageSilenceTimeoutMs * 2 ** Math.min(this.silenceStrikes, 3);
+                if (silentMs > limitMs) {
+                  console.error(
+                    `${this.config.feedName} feed silent: connected, but no message for ` +
+                      `${silentMs}ms (> ${limitMs}ms) — forcing reconnect`,
+                  );
+                  this.silenceStrikes += 1;
+                  closeReason = "message silence";
+                  this.state = "reconnecting";
+                  socket.destroy();
                 }
               },
-              Math.max(1000, Math.floor(staleTimeoutMs / 3)),
+              Math.max(
+                1000,
+                Math.floor(Math.min(staleTimeoutMs, messageSilenceTimeoutMs || staleTimeoutMs) / 3),
+              ),
             );
             // STOMP 1.2 heartbeat: a lone LF on the wire. The CONNECT frame above promised
             // `heartbeatMs` via the heart-beat header, but nothing was actually sending one —
@@ -218,7 +253,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             try {
               await options.onSessionEnd({
                 sessionId,
-                disconnectReason: "connection closed",
+                disconnectReason: closeReason,
                 at: new Date(),
               });
             } catch (error) {
@@ -242,6 +277,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       setSessionId: (id: string) => void;
       onFatalError: (error?: Error) => void;
       onConnected: () => void;
+      onMessage: () => void;
     },
   ): Promise<void> {
     for (const frame of decoder.push(chunk)) {
@@ -288,6 +324,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       }
 
       if (frame.command === "MESSAGE") {
+        session.onMessage();
         const messageId = frame.headers["message-id"] ?? "";
         const ackId = frame.headers.ack ?? messageId;
         const handle: BrokerFrameHandle<InboundBrokerFrame> = {

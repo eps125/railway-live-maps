@@ -77,6 +77,7 @@ export async function runIngestTd(config: Config): Promise<never> {
     username: config.NR_USERNAME,
     password: config.NR_PASSWORD,
     ...(durable ? { durable } : {}),
+    messageSilenceTimeoutMs: config.NR_TD_MESSAGE_SILENCE_SECONDS * 1000,
   });
   console.log(
     durable

@@ -39,6 +39,9 @@ const baseSchema = z.object({
     .string()
     .regex(/^[A-Za-z0-9._-]+$/, "NR_TD_DURABLE_SUBSCRIPTION_NAME may only use A-Z a-z 0-9 . _ -")
     .default("railway-live-maps-td"),
+  // Reconnect when TD is connected but has sent no message for this long (2026-10-08 incident:
+  // six-minute silences with the connection up). Nationwide TD is never this quiet. 0 = off.
+  NR_TD_MESSAGE_SILENCE_SECONDS: z.coerce.number().int().min(0).default(90),
   // VSTP_LIVE_ENABLED / TRUST_LIVE_ENABLED / NR_VSTP_TOPIC / NR_TRUST_TOPIC / NR_SCHEDULE_DOWNLOAD_URL
   // were removed with ADR 0002 (2026-09-01): RLM no longer subscribes to NR for VSTP/TRUST/SCHEDULE.
   // That data is mirrored from openrail-eps via the GARNER_* config below.

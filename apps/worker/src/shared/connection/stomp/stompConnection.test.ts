@@ -260,6 +260,93 @@ describe("StompConnection stale-feed watchdog", () => {
 
     await stopAndAdvance(connection);
   });
+
+  it("reconnects when only heartbeats arrive — connected, but no message — for messageSilenceTimeoutMs (2026-10-08)", async () => {
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      staleTimeoutMs: 9000,
+      messageSilenceTimeoutMs: 30_000,
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The broker keeps heartbeating (so the stale watchdog stays quiet) but sends no MESSAGE.
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(4000);
+      socket.emit("data", Buffer.from("\n"));
+    }
+    expect(socket.destroy).not.toHaveBeenCalled(); // 24s: not yet
+    for (let i = 0; i < 3; i++) {
+      await vi.advanceTimersByTimeAsync(4000);
+      socket.emit("data", Buffer.from("\n"));
+    }
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith(expect.stringMatching(/feed silent/i));
+
+    socket.emit("close");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(options.onSessionEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ disconnectReason: "message silence" }),
+    );
+    consoleError.mockRestore();
+    await stopAndAdvance(connection);
+  });
+
+  it("does not reconnect for message silence while messages keep arriving", async () => {
+    vi.useFakeTimers();
+    const connection = new StompConnection({
+      feedName: "TD",
+      host: "example.invalid",
+      port: 1,
+      topic: "/topic/x",
+      username: "u",
+      password: "p",
+      connectTimeoutMs: 5000,
+      staleTimeoutMs: 9000,
+      messageSilenceTimeoutMs: 30_000,
+    });
+    const options = baseOptions();
+    void connection.start(options);
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit(
+      "data",
+      encodeFrame({ command: "CONNECTED", headers: { session: "sess-1" }, body: Buffer.alloc(0) }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let i = 0; i < 12; i++) {
+      await vi.advanceTimersByTimeAsync(5000);
+      socket.emit(
+        "data",
+        encodeFrame({
+          command: "MESSAGE",
+          headers: { "message-id": `m-${i}`, destination: "/topic/x" },
+          body: Buffer.from("[]"),
+        }),
+      );
+    }
+    expect(socket.destroy).not.toHaveBeenCalled();
+
+    await stopAndAdvance(connection);
+  });
 });
 
 /** Production incident 2026-09-23: a pg connection timeout thrown from onFrame surfaced as an

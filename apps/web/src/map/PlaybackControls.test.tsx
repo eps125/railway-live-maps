@@ -62,22 +62,33 @@ describe("PlaybackControls", () => {
     expect(screen.getByRole("option", { name: "10×" })).toBeInTheDocument();
   });
 
-  it("renders feed-gap warnings when present", () => {
-    render(
-      <PlaybackControls
-        {...setup({
-          quality: {
-            status: "stale",
-            gaps: ["TD PX feed gap 10:00–10:05 (unrecoverable; heartbeat lost)"],
-          },
-        })}
-      />,
-    );
+  it("shows an admin the outage list, which they can minimise and which stays minimised", () => {
+    window.localStorage.clear();
+    const quality = {
+      status: "stale" as const,
+      gaps: ["TD PX feed gap 10:00–10:05 (unrecoverable; heartbeat lost)"],
+      incomplete: true,
+    };
+    const { unmount } = render(<PlaybackControls {...setup({ quality })} />);
     expect(screen.getByLabelText("Feed gap warnings")).toHaveTextContent("feed gap 10:00–10:05");
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole("button", { name: /1 outage warning/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(screen.queryByLabelText("Feed gap warnings")).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    // Remembered in this browser.
+    unmount();
+    render(<PlaybackControls {...setup({ quality })} />);
+    expect(screen.queryByLabelText("Feed gap warnings")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /1 outage warning/ }));
+    expect(screen.getByLabelText("Feed gap warnings")).toBeInTheDocument();
+    window.localStorage.clear();
   });
 
-  it("shows a non-admin only a small note, with no outage details (owner, 2026-10-10)", () => {
+  it("shows a non-admin only a small warning, with no outage details (owner, 2026-10-10)", () => {
     render(
       <PlaybackControls {...setup({ quality: { status: "stale", gaps: [], incomplete: true } })} />,
     );
@@ -85,6 +96,7 @@ describe("PlaybackControls", () => {
       "Some data around this time may be incomplete.",
     );
     expect(screen.queryByLabelText("Feed gap warnings")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /outage/ })).not.toBeInTheDocument();
   });
 
   it("shows nothing about outages when there were none", () => {

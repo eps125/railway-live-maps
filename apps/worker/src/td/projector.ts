@@ -469,6 +469,75 @@ async function recordReceiveSilences(
   return recorded;
 }
 
+/** Rows received straight after a silence that are checked for late delivery of its data. */
+const SILENCE_LATE_ROWS = 20_000;
+
+/**
+ * Says what a recorded TD receive silence cost (owner, 2026-10-10 — they were all left
+ * `unknown`). Looks at the rows received straight after it: if any carries an event time from
+ * inside the silence, its data was only delayed (`recoverable` — a durable subscription
+ * redelivering after a reconnect); if none does, nothing for that period was ever sent
+ * (`unrecoverable` — the 2026-10-08 Network Rail outages: connection up, no messages, and the
+ * missing minutes never arrived). Counted from the row that ended the silence, which is where a
+ * redelivered backlog starts. The edges are left out, since the last rows before a silence
+ * and the burst that ends it carry event times a little inside it either way.
+ *
+ * Waits five minutes after a silence is recorded, so the rows after it are all in. The rows are
+ * found by ingestion sequence behind a `materialized` fence: left to itself the planner filters
+ * on event time through the BRIN index and takes minutes (checked on production).
+ */
+export async function classifyReceiveSilences(client: Pool | PoolClient): Promise<number> {
+  const pending = await client.query<{
+    id: string;
+    affected_sequence_end: string;
+    affected_time_start: Date;
+    affected_time_end: Date;
+  }>(
+    `select id::text as id, affected_sequence_end::text as affected_sequence_end,
+            affected_time_start, affected_time_end
+       from feed_gap
+      where feed_name = 'TD' and detection_reason = $1 and recoverability = 'unknown'
+        and affected_sequence_end is not null and affected_time_start is not null
+        and affected_time_end is not null and created_at < now() - interval '5 minutes'
+      order by id
+      limit 20`,
+    [TD_RECEIVE_SILENCE_REASON],
+  );
+  for (const gap of pending.rows) {
+    const late = await client.query<{ late: boolean }>(
+      `with after as materialized (
+         select e.normalized_event_at_utc as event_at from raw_feed_event e
+          where e.feed_name = 'TD' and e.ingestion_sequence >= $1::bigint
+            and e.ingestion_sequence <= $1::bigint + $4::bigint
+       )
+       select exists (
+         select 1 from after
+          where event_at > $2::timestamptz + interval '15 seconds'
+            and event_at < $3::timestamptz - interval '90 seconds'
+       ) as late`,
+      [
+        gap.affected_sequence_end,
+        gap.affected_time_start,
+        gap.affected_time_end,
+        SILENCE_LATE_ROWS,
+      ],
+    );
+    const delivered = late.rows[0]?.late === true;
+    await client.query(
+      `update feed_gap set recoverability = $2, operator_note = $3
+        where id = $1 and recoverability = 'unknown'`,
+      [
+        gap.id,
+        delivered ? "recoverable" : "unrecoverable",
+        delivered
+          ? "auto: data for this period arrived late, after the silence"
+          : "auto: nothing for this period was ever received (not sent by the source)",
+      ],
+    );
+  }
+  return pending.rows.length;
+}
+
 /** Bulk-reads the currently-open `berth_occupancy` row (if any) for every distinct (td_area,
  * berth) pair a batch's newly-projected C-Class rows touch — one round trip instead of up to two
  * `select`s per row. Reads `berth_occupancy` directly, NOT `berth_current_state.occupancy_id`:
@@ -1075,6 +1144,7 @@ export async function runProjectTd(
           batch.rows,
           previousReceived,
         );
+        await classifyReceiveSilences(client);
 
         await upsertAreaSummary(client, areaSummary);
         await advanceCheckpoint(client, definitionId, maxSequence.toString());

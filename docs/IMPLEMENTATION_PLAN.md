@@ -4636,3 +4636,16 @@ connection stayed up (one session 1–9 Oct, broker heartbeats kept arriving, so
 never fired), `ingest-td` logged `0 frames` with no errors, and TRUST kept flowing on the same host
 throughout — so Network Rail stopped publishing TD, not this system. The durable subscription
 recovered nothing: the missing minutes never arrived.
+
+### Milestone 88 follow-up (2026-10-10)
+
+- [x] Message-silence watchdog (`messageSilenceTimeoutMs`, `NR_TD_MESSAGE_SILENCE_SECONDS`, default
+      90): TD connected but sending no MESSAGE (heartbeats don't count) forces a reconnect; each
+      reconnect that still brings nothing doubles the wait, up to 8x. The session row records
+      `message silence` as its disconnect reason.
+- [x] `classifyReceiveSilences`: five minutes after a TD receive silence is recorded it is marked
+      `unrecoverable` (nothing for that period was ever received) or `recoverable` (its data
+      arrived late), from the rows received straight after it, with an `auto:` operator note. The
+      nine 2026-10-08 silences are classified on the first projector batch after deploy.
+- [x] Playback: the non-admin warning is an orange pill with a warning triangle; an admin's
+      outage list sits behind a show/hide toggle, remembered in the browser.

@@ -680,7 +680,7 @@ admin "purge access code" route does.
 ### `access_code`, `access_code_map`, `access_grant`, `access_grant_activity` (Milestone 84, migration 0047)
 
 `access_code`: `label`, `code` (kept viewable — owner decision) and `code_normalized` (upper case,
-no spaces/dashes; unique; what entry matches), `scope` (`site` / `maps`), `max_uses` (null =
+no spaces/dashes; unique; what entry matches), `scope` (`site` = every public map / `all_maps` = every map, public or not / `maps` = only the maps named; a module can never be named — migration 0050), `max_uses` (null =
 unlimited) and `use_count` (constraint: never above the limit), `access_seconds`, `valid_until`,
 `notes`, created/revoked by and when. `access_code_map` lists a maps-only code's maps (cascades
 both ways).

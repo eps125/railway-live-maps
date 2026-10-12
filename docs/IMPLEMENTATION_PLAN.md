@@ -4649,3 +4649,18 @@ recovered nothing: the missing minutes never arrived.
       nine 2026-10-08 silences are classified on the first projector batch after deploy.
 - [x] Playback: the non-admin warning is an orange pill with a warning triangle; an admin's
       outage list sits behind a show/hide toggle, remembered in the browser.
+
+## Milestone 89 — "All maps" access codes; modules are never on a code (2026-10-12)
+
+Owner request.
+
+- [x] Migration 0050: `access_code.scope` gains `all_maps`; modules already attached to a code are
+      detached.
+- [x] `all_maps`: every map, public or not, including maps added later — also while the site needs
+      a code. `site` is unchanged (every public map), as is `maps` (only the maps named).
+- [x] A code can no longer name a module: the form lists real maps only, the API rejects a module
+      id, and no code scope makes a module visible (`mapVisibilitySql`).
+- [x] The form's choices: All public maps / All maps (including ones that are not public) / Only
+      these maps.
+
+Not changed: an editor can still open a module shared with one of their groups in the editor.

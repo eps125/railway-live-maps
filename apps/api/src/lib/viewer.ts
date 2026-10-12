@@ -76,7 +76,9 @@ export function viewerMayUseSite(viewer: Viewer): boolean {
  * - Admins: every map.
  * - Public maps: everyone — except a guest whose code names specific maps while the site needs a
  *   code (that code gives exactly its maps).
- * - Restricted maps: members of a group they are shared with, and holders of a code naming them.
+ * - Restricted maps: members of a group they are shared with, and holders of a code naming them
+ *   or of an "all maps" code.
+ * - A code never opens a module (owner, 2026-10-12): modules are parts of maps, not maps.
  */
 export function mapVisibilitySql(
   viewer: Viewer,
@@ -100,10 +102,11 @@ export function mapVisibilitySql(
   }
   if (viewer.grant?.scope === "maps") {
     params.push(viewer.grant.codeId);
-    clauses.push(`exists (
+    clauses.push(`(${alias}.kind = 'map' and exists (
               select 1 from access_code_map acm
-               where acm.map_id = ${alias}.id and acm.code_id = $${nextParam + params.length - 1}::bigint)`);
+               where acm.map_id = ${alias}.id and acm.code_id = $${nextParam + params.length - 1}::bigint))`);
   }
+  if (viewer.grant?.scope === "all_maps") clauses.push(`${alias}.kind = 'map'`);
   if (clauses.length === 0) return { sql: "false", params: [] };
   return { sql: clauses.length === 1 ? clauses[0]! : `(${clauses.join(" or ")})`, params };
 }

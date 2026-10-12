@@ -7,7 +7,9 @@ import type { Queryable } from "./checkpoint.js";
  * only an opaque random token per grant; this module stores and looks up its SHA-256 hash.
  */
 
-export type AccessCodeScope = "site" | "maps";
+/** `site`: every public map. `all_maps`: every map, public or not (owner, 2026-10-12).
+ * `maps`: only the maps the code names. A module is never a map for any of them. */
+export type AccessCodeScope = "site" | "all_maps" | "maps";
 
 /** No 0/O, 1/I/L: a generated code is read aloud or copied by hand. */
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -168,7 +170,8 @@ async function assertMapsExist(db: Queryable, mapIds: string[]): Promise<void> {
   if (mapIds.length === 0) return;
   if (mapIds.some((id) => !/^\d+$/.test(id))) throw new UnknownMapError(mapIds);
   const { rows } = await db.query<{ id: string }>(
-    `select id::text from map where id = any($1::bigint[])`,
+    // Modules are not maps a viewer opens (owner, 2026-10-12): naming one is an unknown map.
+    `select id::text from map where id = any($1::bigint[]) and kind = 'map'`,
     [mapIds],
   );
   const found = new Set(rows.map((row) => row.id));
@@ -475,7 +478,7 @@ export async function mapsForAccessCode(
 ): Promise<{ slug: string; name: string }[]> {
   const { rows } = await db.query<{ slug: string; name: string }>(
     `select m.slug, m.name from access_code_map acm join map m on m.id = acm.map_id
-      where acm.code_id = $1 order by lower(m.name)`,
+      where acm.code_id = $1 and m.kind = 'map' order by lower(m.name)`,
     [codeId],
   );
   return rows;

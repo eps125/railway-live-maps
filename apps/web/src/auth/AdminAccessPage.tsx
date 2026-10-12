@@ -10,7 +10,7 @@ import {
   toDateTimeLocal,
 } from "./accessCodeFormat.js";
 
-type Scope = "site" | "maps";
+type Scope = "site" | "all_maps" | "maps";
 
 interface AccessCode {
   id: string;
@@ -56,6 +56,8 @@ interface MapOption {
   id: string;
   slug: string;
   name: string;
+  /** The editor's list has modules too; a code can only name real maps. */
+  kind?: "map" | "module";
 }
 
 interface ErrorBody {
@@ -84,7 +86,8 @@ const STATUS_TEXT: Record<AccessCode["status"], string> = {
 };
 
 function scopeText(code: Pick<AccessCode, "scope" | "mapIds">, maps: MapOption[]): string {
-  if (code.scope === "site") return "Whole site (public maps)";
+  if (code.scope === "site") return "All public maps";
+  if (code.scope === "all_maps") return "All maps (public or not)";
   const names = code.mapIds
     .map((id) => maps.find((map) => map.id === id)?.name)
     .filter((name): name is string => Boolean(name));
@@ -136,7 +139,12 @@ export function AdminAccessPage(): JSX.Element {
         ).settings.site_access_mode,
       );
       setCodes((await readApiJson<{ codes: AccessCode[] }>(codesRes)).codes);
-      setMaps((await readApiJson<{ maps: MapOption[] }>(mapsRes)).maps.sort(compareMapNames));
+      // Modules are parts of maps, not something a code opens (owner, 2026-10-12).
+      setMaps(
+        (await readApiJson<{ maps: MapOption[] }>(mapsRes)).maps
+          .filter((map) => map.kind !== "module")
+          .sort(compareMapNames),
+      );
       setLoadError(null);
     } catch {
       setLoadError("Failed to load access codes.");
@@ -529,7 +537,15 @@ function CodeForm({
         <legend>Gives access to</legend>
         <label className="field field--checkbox">
           <input type="radio" checked={scope === "site"} onChange={() => setScope("site")} />
-          The whole site (public maps)
+          All public maps
+        </label>
+        <label className="field field--checkbox">
+          <input
+            type="radio"
+            checked={scope === "all_maps"}
+            onChange={() => setScope("all_maps")}
+          />
+          All maps (including ones that are not public)
         </label>
         <label className="field field--checkbox">
           <input type="radio" checked={scope === "maps"} onChange={() => setScope("maps")} />

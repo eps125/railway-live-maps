@@ -13,7 +13,7 @@ access (code expired or revoked, or the site switched) is closed (`1008`) within
 ### `GET /api/v1/access/status`, `POST /api/v1/access/redeem`, `POST /api/v1/access/leave` (Milestone 84)
 
 Always reachable. `status` → `{ mode: "open" | "code_required", access: "user" | "code" | "none",
-allowed, expiresAt, scope: "site" | "maps" | null, maps: [{ slug, name }] }` (`maps` lists a
+allowed, expiresAt, scope: "site" | "all_maps" | "maps" | null, maps: [{ slug, name }] }` (`maps` lists a
 maps-only code's maps). `redeem` with `{ code }` — case, spaces and dashes ignored — sets the
 HttpOnly `rlm_access` cookie (an opaque token; only its hash is stored) and returns the same status
 shape; `401 INVALID_ACCESS_CODE` with `details.reason` `unknown` / `revoked` / `expired` / `used_up`;
@@ -653,7 +653,7 @@ lastUsedAt, status }] }`, newest first. `status` is `active`, `revoked`, `expire
 - `POST /api/v1/admin/access-codes` — `{ label, code?, scope, mapIds?, maxUses, accessSeconds,
 validUntil?, notes? }`. Without `code` one is generated (`XXXX-XXXX`, no 0/O/1/I/L); a custom
   code is 4-32 letters/digits once spaces and dashes are removed (`409 DUPLICATE_CODE` if taken).
-  `scope: "maps"` needs at least one map. `maxUses` `null` = unlimited. `accessSeconds` is how long
+  `scope` is `"site"` (every public map), `"all_maps"` (every map, public or not) or `"maps"`; `"maps"` needs at least one map, and a module id is rejected (`400`). `maxUses` `null` = unlimited. `accessSeconds` is how long
   each use lasts (a minute to a year), fixed from entry.
 - `GET /api/v1/admin/access-codes/{id}` — the code plus `flags` and `grants: [{ id, createdAt,
 expiresAt, revokedAt, revokedBy, firstIp, firstUserAgent, lastSeenAt, lastIp, distinctIps,

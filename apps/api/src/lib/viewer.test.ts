@@ -52,9 +52,30 @@ describe("mapVisibilitySql", () => {
 
   it("Milestone 84: a code naming maps adds them (restricted too) on an open site", () => {
     const { sql, params } = mapVisibilitySql({ ...GUEST, grant: MAPS_GRANT }, "m", 2);
-    expect(sql).toContain("m.visibility = 'public' or exists");
+    expect(sql).toContain("m.visibility = 'public' or (m.kind = 'map' and exists");
     expect(sql).toContain("acm.code_id = $2::bigint");
     expect(params).toEqual(["5"]);
+  });
+
+  it("an all-maps code sees every map, public or not, but never a module (2026-10-12)", () => {
+    const ALL_MAPS_GRANT = { ...SITE_GRANT, scope: "all_maps" as const };
+    expect(mapVisibilitySql({ ...GUEST, grant: ALL_MAPS_GRANT }, "m", 1)).toEqual({
+      sql: "(m.visibility = 'public' or m.kind = 'map')",
+      params: [],
+    });
+    // The same while the site needs a code: it is not a "named maps only" code.
+    expect(
+      mapVisibilitySql({ ...GUEST, grant: ALL_MAPS_GRANT, siteMode: "code_required" }, "m", 1).sql,
+    ).toContain("m.kind = 'map'");
+  });
+
+  it("a code naming maps never opens a module, even if one is attached to it (2026-10-12)", () => {
+    const { sql } = mapVisibilitySql(
+      { ...GUEST, grant: MAPS_GRANT, siteMode: "code_required" },
+      "m",
+      1,
+    );
+    expect(sql).toContain("m.kind = 'map' and exists");
   });
 
   it("Milestone 84: while the site needs a code, a code naming maps gives exactly those maps", () => {

@@ -7,7 +7,7 @@ export interface AccessStatus {
   /** False only when the site needs a code and this visitor has neither a login nor a code. */
   allowed: boolean;
   expiresAt: string | null;
-  scope: "site" | "maps" | null;
+  scope: "site" | "all_maps" | "maps" | null;
   maps: { slug: string; name: string }[];
 }
 

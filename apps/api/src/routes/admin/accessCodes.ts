@@ -116,8 +116,8 @@ function parseCodeFields(
     out.code = code;
   }
   if (scope !== undefined || requireAll) {
-    if (scope !== "site" && scope !== "maps") {
-      return { ok: false, message: 'scope must be "site" or "maps"' };
+    if (scope !== "site" && scope !== "all_maps" && scope !== "maps") {
+      return { ok: false, message: 'scope must be "site", "all_maps" or "maps"' };
     }
     out.scope = scope as AccessCodeScope;
   }

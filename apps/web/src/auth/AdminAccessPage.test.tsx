@@ -153,6 +153,41 @@ describe("AdminAccessPage", () => {
     );
   });
 
+  it("offers all public maps, all maps, or chosen maps — and never a module (2026-10-12)", async () => {
+    const fetchMock = stub((url, init) => {
+      if (url === "/api/v1/editor/maps") {
+        return jsonResponse({
+          maps: [
+            { id: "10", slug: "lancaster", name: "Lancaster", kind: "map" },
+            { id: "11", slug: "carnforth-jn", name: "Carnforth Junction module", kind: "module" },
+          ],
+        });
+      }
+      return url === "/api/v1/admin/access-codes" && init?.method === "POST"
+        ? jsonResponse({ ...CODE, scope: "all_maps", mapIds: [] }, 201)
+        : undefined;
+    });
+    const { container } = render(<AdminAccessPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New access code" }));
+    const form = within(container.querySelector<HTMLElement>(".access-code-form")!);
+
+    expect(form.getByLabelText("All public maps")).toBeInTheDocument();
+    fireEvent.click(form.getByLabelText(/only these maps/i));
+    expect(form.getByLabelText("Lancaster")).toBeInTheDocument();
+    expect(form.queryByLabelText("Carnforth Junction module")).not.toBeInTheDocument();
+
+    fireEvent.change(form.getByLabelText(/label/i), { target: { value: "Staff visit" } });
+    fireEvent.click(form.getByLabelText(/^all maps/i));
+    fireEvent.click(form.getByRole("button", { name: "Create code" }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/api/v1/admin/access-codes", "POST")).toMatchObject({
+        label: "Staff visit",
+        scope: "all_maps",
+        mapIds: [],
+      }),
+    );
+  });
+
   it("shows a code's uses with sharing flags, and changes or ends one use", async () => {
     const fetchMock = stub((url, init) => {
       if (url === "/api/v1/admin/access-grants/77" && init?.method === "PATCH") {

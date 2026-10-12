@@ -207,6 +207,67 @@ describe("access codes (integration)", () => {
     }
   });
 
+  it("an all-maps code shows every map, public or not, also when the site needs a code (2026-10-12)", async () => {
+    const created = await createCode({
+      label: `All maps code ${suffix}`,
+      scope: "all_maps",
+      mapIds: [],
+      maxUses: 5,
+      accessSeconds: 3600,
+    });
+    const cookie = cookieFrom(await redeem(created.code), "rlm_access");
+
+    await setMode("code_required");
+    try {
+      const listed = await app.inject({ method: "GET", url: "/api/v1/maps", headers: { cookie } });
+      expect(listed.json().maps.map((m: { slug: string }) => m.slug)).toEqual(
+        expect.arrayContaining([publicSlug, restrictedSlug]),
+      );
+      for (const slug of [publicSlug, restrictedSlug]) {
+        expect(
+          (
+            await app.inject({
+              method: "GET",
+              url: `/api/v1/maps/${slug}/definition`,
+              headers: { cookie },
+            })
+          ).statusCode,
+        ).toBe(200);
+      }
+      const status = (
+        await app.inject({ method: "GET", url: "/api/v1/access/status", headers: { cookie } })
+      ).json();
+      expect(status).toMatchObject({ access: "code", allowed: true, scope: "all_maps", maps: [] });
+    } finally {
+      await setMode("open");
+    }
+  });
+
+  it("a code cannot name a module (2026-10-12)", async () => {
+    const moduleRow = await pool.query<{ id: string }>(
+      `insert into map (slug, name, kind) values ($1, 'A module', 'module') returning id::text as id`,
+      [`module-${suffix}`],
+    );
+    const moduleId = moduleRow.rows[0]!.id;
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/admin/access-codes",
+        headers: { cookie: adminCookie },
+        payload: {
+          label: `Module code ${suffix}`,
+          scope: "maps",
+          mapIds: [restrictedMapId, moduleId],
+          maxUses: null,
+          accessSeconds: 3600,
+        },
+      });
+      expect(response.statusCode).toBe(400);
+    } finally {
+      await pool.query("delete from map where id = $1", [moduleId]);
+    }
+  });
+
   it("a maps-only code shows its maps — restricted ones too — and, when required, only those", async () => {
     const created = await createCode({
       label: `Maps code ${suffix}`,

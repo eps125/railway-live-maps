@@ -84,6 +84,38 @@ describe("admin berth query route (integration)", () => {
     await app.close();
   });
 
+  it("searches every TD area the headcode was seen in when tdAreas is * (owner request 2026-10-13)", async () => {
+    const app = await buildApp();
+    const areaA = uniqueArea("U");
+    const areaB = uniqueArea("V");
+    const headcode = `H${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+
+    await recordObservedBerthEvent(pool, areaA, null, "0011", headcode);
+    await recordObservedBerthEvent(pool, areaA, "0011", "0012", headcode);
+    await recordObservedBerthEvent(pool, areaB, "0021", "0022", headcode);
+    await recordObservedBerthEvent(pool, areaB, null, "0023", "OTHERHC"); // another headcode
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/query?tdAreas=*&headcode=${headcode}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const events = response.json().events as Array<{ tdArea: string; description: string }>;
+    expect(events).toHaveLength(3);
+    expect(new Set(events.map((e) => e.tdArea))).toEqual(new Set([areaA, areaB]));
+    expect(events.every((e) => e.description === headcode)).toBe(true);
+
+    // A headcode never seen anywhere is an empty answer, not an error.
+    const none = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/berths/query?tdAreas=*&headcode=Z${headcode}`,
+    });
+    expect(none.statusCode).toBe(200);
+    expect(none.json()).toEqual({ events: [], nextCursor: null });
+
+    await app.close();
+  });
+
   it("rejects a missing tdAreas with 400", async () => {
     const app = await buildApp();
     const response = await app.inject({

@@ -70,7 +70,27 @@ describe("BerthQueryPage", () => {
     fireEvent.change(screen.getByPlaceholderText("e.g. 1A23"), { target: { value: "1A23" } });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
 
-    expect(await screen.findByText("Enter at least one train describer area.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Enter at least one train describer area, or * for all."),
+    ).toBeInTheDocument();
+  });
+
+  it("sends * as the area to search every train describer", async () => {
+    const fetchMock = vi.fn((_url: string) =>
+      Promise.resolve(jsonResponse({ events: [], nextCursor: null })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<BerthQueryPage />);
+    fireEvent.change(screen.getByLabelText("Train describer area(s)"), {
+      target: { value: " * " },
+    });
+    fireEvent.change(screen.getByPlaceholderText("e.g. 1A23"), { target: { value: "1A23" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0]![0]).toContain("tdAreas=*");
+    expect(await screen.findByText("No matching berth events.")).toBeInTheDocument();
   });
 
   it("shows the server's error message when the search fails", async () => {

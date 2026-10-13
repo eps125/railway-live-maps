@@ -4664,3 +4664,20 @@ Owner request.
       these maps.
 
 Not changed: an editor can still open a module shared with one of their groups in the editor.
+
+## Milestone 90 — Query Berths: `*` for every train describer (2026-10-13)
+
+Owner request.
+
+- [x] `GET /api/v1/admin/berths/query?tdAreas=*`: the headcode's intervals are read from
+      `berth_occupancy` (indexed on description) and the raw steps that opened and closed them are
+      fetched from `td_berth_event` by source event. The raw steps have no index on description,
+      and searching every area the headcode was seen in was tried first and ran past 60 s on
+      production (1A23: 40 areas in a week); this takes 11 s cold for 1A23, 0.4 s for a freight
+      headcode.
+- [x] A `*` search omits steps attached to no interval (a cancel of a berth not holding the
+      headcode), the few seconds the projection lags, and the exit of an interval that began more
+      than 24 h before the range. Naming the area still shows every raw step.
+- [x] Query Berths page: the area field accepts `*`, and says so.
+
+Not changed: Berth steps still takes one area.

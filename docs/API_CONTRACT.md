@@ -715,7 +715,11 @@ SEARCH_TOO_SLOW`. **Single berth (2026-09-25):** `toBerth` is optional; leave it
   `400 INVALID_TIME_RANGE` for a bad or too-wide range. Returns
   `{ events: [{ id, tdArea, messageType, fromBerth, toBerth, description, eventAt,
 ingestionSequence }], nextCursor }` ordered by `event_at` ascending (then `id`), cursor-paginated
-  like the history routes above.
+  like the history routes above. **All areas (2026-10-13):** `tdAreas=*` searches every TD area.
+  It reads the headcode's intervals from the `berth_occupancy` projection and returns the raw steps
+  that opened and closed them, so it omits a step attached to no interval (a cancel of a berth that
+  did not hold the headcode), the few seconds the projection has not reached, and the exit of an
+  interval that began more than 24 h before `from`. A headcode seen nowhere is an empty `events`.
 
 Reached through the admin-only "Berths" nav item → "Query Berths" page (`/admin/berths/query` in
 the web app) — a hub page (`/admin/berths`) sits above it for tooling added here later.

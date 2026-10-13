@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
+import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { apiError, parseLimit, parseTimeRange } from "../../lib/queryRange.js";
 
 export interface BerthQueryRoutesDeps {
@@ -52,7 +53,24 @@ interface QueryQuerystring {
  * memory/docs on the ingestion_sequence-vs-area-index planner pitfall confirmed on this same
  * table; ordering here is by `event_at` (part of that index), not a global sequence column, so the
  * planner has no reason to prefer anything else.
+ *
+ * Owner request 2026-10-13: `*` in `tdAreas` means every area. `td_berth_event` has no index on
+ * `description`, so dropping the area filter would read a week of nationwide steps — and so does
+ * naming every area the headcode was seen in (1A23: 40 areas in a week; over 60 s on production).
+ * Instead the headcode's occupancy intervals are read from `berth_occupancy` (indexed on
+ * `(description, entered_at)`), and the raw steps that opened and closed them are fetched by their
+ * source event on `td_berth_event`'s `(raw_event_id, event_at)` unique index. Measured on
+ * production: 1A23 over 7 days, 5,400 lookups, 11 s on a cold cache; a freight headcode 0.4 s.
+ *
+ * What a `*` search therefore cannot show, and a named area can: a step the projector attached to
+ * no interval (a cancel of a berth that did not hold the headcode — a `td_projection_anomaly`),
+ * the newest few seconds the projection has not reached yet, and the exit of an interval that
+ * began more than `ALL_AREAS_ENTRY_SLACK_MS` before `from`.
  */
+const ALL_AREAS = "*";
+/** How far before `from` an occupancy may have begun and still have its exit step found by a `*`
+ * search. */
+const ALL_AREAS_ENTRY_SLACK_MS = 24 * 60 * 60 * 1000;
 /** Owner request 2026-09-22 ("Berth steps"): how many of the newest steps between a pair of
  * berths to return. */
 const PAIR_STEPS_DEFAULT_LIMIT = 50;
@@ -99,7 +117,10 @@ export async function registerBerthQueryRoutes(
         .filter((area) => area.length > 0);
       if (tdAreas.length === 0) {
         reply.code(400);
-        return apiError("VALIDATION_ERROR", "tdAreas (comma-separated, at least one) is required");
+        return apiError(
+          "VALIDATION_ERROR",
+          "tdAreas (comma-separated, at least one, or * for all) is required",
+        );
       }
 
       const headcode = (request.query.headcode ?? "").trim();
@@ -116,16 +137,50 @@ export async function registerBerthQueryRoutes(
       const limit = parseLimit(request.query.limit);
       const after = request.query.after ?? "0";
 
-      const result = await pool.query<BerthEventRow>(
-        `select id, td_area, message_type, from_berth, to_berth, description, event_at,
-                ingestion_sequence
-         from td_berth_event
-         where td_area = any($1) and description = $2
-           and event_at >= $3 and event_at < $4 and id > $5
-         order by event_at asc, id asc
-         limit $6`,
-        [tdAreas, headcode, rangeResult.range.from, rangeResult.range.to, after, limit],
-      );
+      const result = tdAreas.includes(ALL_AREAS)
+        ? await pool.query<BerthEventRow>(
+            `with occupancy as materialized (
+               select entry_event_id, entered_at, exit_event_id, left_at
+                 from berth_occupancy
+                where projection_version = $1 and description = $2
+                  and entered_at >= $3 and entered_at < $5
+             ),
+             source_event as (
+               select entry_event_id as raw_event_id, entered_at as event_at
+                 from occupancy
+                where entered_at >= $4
+               union
+               select exit_event_id, left_at
+                 from occupancy
+                where exit_event_id is not null and left_at >= $4 and left_at < $5
+             )
+             select e.id, e.td_area, e.message_type, e.from_berth, e.to_berth, e.description,
+                    e.event_at, e.ingestion_sequence
+               from source_event s
+               join td_berth_event e on e.raw_event_id = s.raw_event_id and e.event_at = s.event_at
+              where e.description = $2 and e.id > $6
+              order by e.event_at asc, e.id asc
+              limit $7`,
+            [
+              TD_PROJECTION_VERSION,
+              headcode,
+              new Date(rangeResult.range.from.getTime() - ALL_AREAS_ENTRY_SLACK_MS),
+              rangeResult.range.from,
+              rangeResult.range.to,
+              after,
+              limit,
+            ],
+          )
+        : await pool.query<BerthEventRow>(
+            `select id, td_area, message_type, from_berth, to_berth, description, event_at,
+                    ingestion_sequence
+             from td_berth_event
+             where td_area = any($1) and description = $2
+               and event_at >= $3 and event_at < $4 and id > $5
+             order by event_at asc, id asc
+             limit $6`,
+            [tdAreas, headcode, rangeResult.range.from, rangeResult.range.to, after, limit],
+          );
 
       const events = result.rows.map(eventResponse);
       const last = result.rows.at(-1);

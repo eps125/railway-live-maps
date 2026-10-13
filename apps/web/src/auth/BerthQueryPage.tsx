@@ -73,7 +73,7 @@ export function BerthQueryPage(): JSX.Element {
     e.preventDefault();
     const areas = parseAreas(areasInput);
     if (areas.length === 0) {
-      setSearchError("Enter at least one train describer area.");
+      setSearchError("Enter at least one train describer area, or * for all.");
       return;
     }
     setSearching(true);
@@ -135,7 +135,8 @@ export function BerthQueryPage(): JSX.Element {
       </p>
       <p className="field-hint">
         Raw berth-to-berth steps for a headcode, in time order. Times are shown in your browser's
-        local time; the maximum range per search is 7 days.
+        local time; the maximum range per search is 7 days. Enter <span className="mono">*</span> as
+        the area to search every train describer.
       </p>
 
       <form className="panel-card" onSubmit={(e) => void handleSearch(e)}>
@@ -145,7 +146,7 @@ export function BerthQueryPage(): JSX.Element {
             type="text"
             value={areasInput}
             onChange={(e) => setAreasInput(e.target.value)}
-            placeholder="e.g. PX, LA"
+            placeholder="e.g. PX, LA — or * for all"
           />
         </label>
 

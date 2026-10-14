@@ -3,16 +3,19 @@ import type { MapDocument } from "@railway/map-schema";
 
 export type LiveSignalState = "blank" | "on" | "off";
 export type LiveRouteState = "blank" | "set" | "unset";
+export type LiveTrtsState = "blank" | "lit" | "unlit";
 
 export interface LiveSClassStates {
   signals: Record<string, LiveSignalState>;
   /** Milestone 64: each bound route's live state, so a wrong route bit is obvious while
    * authoring, as a wrong signal bit already is. */
   routes: Record<string, LiveRouteState>;
+  /** Milestone 92: each starting signal's TRTS state, keyed by the signal. */
+  trts: Record<string, LiveTrtsState>;
 }
 
 const POLL_INTERVAL_MS = 3000;
-const EMPTY: LiveSClassStates = { signals: {}, routes: {} };
+const EMPTY: LiveSClassStates = { signals: {}, routes: {}, trts: {} };
 
 /**
  * Milestone 36c (owner request): bound signals — and since Milestone 64 bound routes — show their
@@ -28,7 +31,12 @@ export function useLiveSClassStates(
   doc: Pick<MapDocument, "bindings">,
 ): LiveSClassStates {
   const boundIds = doc.bindings
-    .filter((binding) => binding.type === "tdSBit" || binding.type === "tdSBitRoute")
+    .filter(
+      (binding) =>
+        binding.type === "tdSBit" ||
+        binding.type === "tdSBitRoute" ||
+        binding.type === "tdSBitTrts",
+    )
     .map((binding) => binding.elementId)
     .sort()
     .join(",");
@@ -48,13 +56,17 @@ export function useLiveSClassStates(
         const body = (await response.json()) as {
           signals?: Record<string, { state: LiveSignalState }>;
           routes?: Record<string, { state: LiveRouteState }>;
+          trts?: Record<string, { state: LiveTrtsState }>;
         };
-        const next: LiveSClassStates = { signals: {}, routes: {} };
+        const next: LiveSClassStates = { signals: {}, routes: {}, trts: {} };
         for (const [elementId, signal] of Object.entries(body.signals ?? {})) {
           if (bound.has(elementId)) next.signals[elementId] = signal.state;
         }
         for (const [elementId, route] of Object.entries(body.routes ?? {})) {
           if (bound.has(elementId)) next.routes[elementId] = route.state;
+        }
+        for (const [elementId, trts] of Object.entries(body.trts ?? {})) {
+          if (bound.has(elementId)) next.trts[elementId] = trts.state;
         }
         if (!cancelled) setStates(next);
       } catch {

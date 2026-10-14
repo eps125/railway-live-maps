@@ -77,6 +77,20 @@ export async function insertMapBindingIndexRows(
     );
   }
 
+  // Milestone 92: a starting signal's TRTS bit, in its own binding_type and lit/unlit vocabulary
+  // (migration 0051), so a TRTS bit can never be read as the signal's aspect. `element_id` is the
+  // signal the indicator belongs to.
+  for (const [key, elementId] of Object.entries(bundle.trtsBindingIndex ?? {})) {
+    const [tdArea, address, bit] = key.split("|");
+    const activeMeans = bundle.trtsBindingActiveMeans?.[key] ?? null;
+    await client.query(
+      `insert into map_binding_index (map_version_id, element_id, binding_type, td_area, address, bit, active_means)
+       values ($1, $2, 'td_s_bit_trts', $3, $4, $5, $6)
+       on conflict do nothing`,
+      [mapVersionId, elementId, tdArea, address, bit, activeMeans],
+    );
+  }
+
   // Milestone 59 / ADR 0015: one row per input signal of an inferred crossing, in the signal's
   // on/off vocabulary (migration 0040). The live publisher groups them by element_id.
   for (const [elementId, inputs] of Object.entries(bundle.inferredBarrierBindings ?? {})) {

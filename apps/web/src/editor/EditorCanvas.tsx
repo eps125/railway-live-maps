@@ -23,6 +23,7 @@ import {
   signalColor,
   signalLabelPosition,
   signalPostGeometry,
+  trtsPosition,
   type Layer as MapLayer,
   type MapElement,
 } from "@railway/map-schema";
@@ -516,21 +517,45 @@ export interface EditorCanvasProps {
   /** Milestone 64: live state of each bound route. A route that is live-set is drawn whether or
    * not its signal is selected, exactly as the public map would show it right now. */
   routeStates?: Record<string, "blank" | "set" | "unset"> | undefined;
+  /** Milestone 92: live TRTS state of each starting signal that has a TRTS binding. */
+  trtsStates?: Record<string, "blank" | "lit" | "unlit"> | undefined;
   /** Milestone 85: other parts of an assembled map, drawn dimmed behind the document. */
   backdrop?: BackdropItem[] | undefined;
   /** Milestone 85: a freely placed module was dragged to (x, y). */
   onMoveModule?: ((slug: string, x: number, y: number) => void) | undefined;
 }
 
+/** Milestone 92: a lit TRTS dot in the editor, flashing like the public map's CSS animation. */
+function FlashingTrts({ x, y }: { x: number; y: number }): JSX.Element | null {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    const id = setInterval(() => setOn((v) => !v), MAP_STYLE.trts.flashPeriodMs / 2);
+    return () => clearInterval(id);
+  }, []);
+  return on ? (
+    <Circle
+      x={x}
+      y={y}
+      radius={MAP_STYLE.trts.radius}
+      fill={MAP_STYLE.trts.litColor}
+      listening={false}
+    />
+  ) : null;
+}
+
 export function EditorCanvas({
   previewState,
   signalStates,
   routeStates,
+  trtsStates,
   backdrop,
   onMoveModule,
 }: EditorCanvasProps = {}): JSX.Element {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
+  const trtsSignalIds = new Set(
+    state.document.bindings.filter((b) => b.type === "tdSBitTrts").map((b) => b.elementId),
+  );
   const transformerRef = useRef<Konva.Transformer>(null);
   const nodeRefs = useRef(new Map<string, Konva.Node>());
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1702,6 +1727,33 @@ export function EditorCanvas({
                       ) : null}
                     </Group>
                   )}
+                  {trtsSignalIds.has(element.id)
+                    ? (() => {
+                        // Milestone 92 (option C): the dashed outline marks a signal with a TRTS
+                        // binding (editor only); it flashes white while the live preview says lit.
+                        const at = trtsPosition(element);
+                        if (!at) return null;
+                        const x = at.x - element.x;
+                        const y = at.y - element.y;
+                        const style = MAP_STYLE.trts;
+                        return (
+                          <>
+                            <Circle
+                              x={x}
+                              y={y}
+                              radius={style.radius}
+                              stroke={style.editorOutline}
+                              strokeWidth={style.editorOutlineWidth}
+                              dash={[...style.editorOutlineDash]}
+                              listening={false}
+                            />
+                            {trtsStates?.[element.id] === "lit" ? (
+                              <FlashingTrts x={x} y={y} />
+                            ) : null}
+                          </>
+                        );
+                      })()
+                    : null}
                   {signalStates?.[element.id] ? (
                     <Circle
                       x={headCentre.x}

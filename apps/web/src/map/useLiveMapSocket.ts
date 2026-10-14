@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BerthDelay, LiveWsMessage } from "@railway/protocol";
-import type { BerthState, CrossingState, RouteState, SignalState } from "./types.js";
+import type { BerthState, CrossingState, RouteState, SignalState, TrtsState } from "./types.js";
 
 export type LiveConnectionStatus = "connecting" | "live" | "stale" | "reconnecting";
 
@@ -11,6 +11,8 @@ export interface UseLiveMapSocketResult {
   signals: Record<string, SignalState> | null;
   crossings: Record<string, CrossingState> | null;
   routes: Record<string, RouteState> | null;
+  /** Milestone 92: each starting signal's TRTS state, keyed by signal. */
+  trts: Record<string, TrtsState> | null;
   quality: {
     status: "ok" | "stale" | "unknown";
     gaps: string[];
@@ -62,6 +64,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
   const [signals, setSignals] = useState<Record<string, SignalState> | null>(null);
   const [crossings, setCrossings] = useState<Record<string, CrossingState> | null>(null);
   const [routes, setRoutes] = useState<Record<string, RouteState> | null>(null);
+  const [trts, setTrts] = useState<Record<string, TrtsState> | null>(null);
   const [quality, setQuality] = useState<{
     status: "ok" | "stale" | "unknown";
     gaps: string[];
@@ -130,6 +133,8 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         setCrossings(message.state.crossings ?? {});
         // Likewise routes (Milestone 64): none recorded means none set.
         setRoutes(message.state.routes ?? {});
+        // And TRTS (Milestone 92): none recorded means none lit.
+        setTrts(message.state.trts ?? {});
         setQuality(message.state.quality);
         // A server without Milestone 82 sends none: no colours, never stale ones.
         setDelays(Object.fromEntries((message.state.delays ?? []).map((d) => [d.runKey, d])));
@@ -150,6 +155,13 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         setBerths((prev) => ({
           ...prev,
           [message.elementId]: { description: null, enteredAt: null },
+        }));
+        return;
+      }
+      if (message.type === "trts.updated") {
+        setTrts((current) => ({
+          ...(current ?? {}),
+          [message.elementId]: { state: message.state },
         }));
         return;
       }
@@ -214,6 +226,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     signals,
     crossings,
     routes,
+    trts,
     quality,
     delays: delayList,
   };

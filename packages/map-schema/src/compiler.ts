@@ -58,6 +58,11 @@ export interface CompiledMapBundle {
    * empty one. */
   routeBindingIndex?: Record<string, string>;
   routeBindingActiveMeans?: Record<string, "set" | "unset">;
+  /** Milestone 92: the same keying for a TRTS indicator's lit/unlit bit, in its own index so a
+   * TRTS bit can never be read as a signal aspect or a route. Optional for the same immutability
+   * reason as the indexes above. */
+  trtsBindingIndex?: Record<string, string>;
+  trtsBindingActiveMeans?: Record<string, "lit" | "unlit">;
   /** Milestone 31: every `station`/`label` element carrying at least one place identifier
    * (`crs`/`tiploc`/`stanox`) — the source `map_place_index` is populated from at publish time,
    * for `GET /api/v1/places/search` to join against. An element with none of the three is not
@@ -292,6 +297,8 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
   const inferredBarrierBindings: NonNullable<CompiledMapBundle["inferredBarrierBindings"]> = {};
   const routeBindingIndex: Record<string, string> = {};
   const routeBindingActiveMeans: Record<string, "set" | "unset"> = {};
+  const trtsBindingIndex: Record<string, string> = {};
+  const trtsBindingActiveMeans: Record<string, "lit" | "unlit"> = {};
   for (const binding of doc.bindings) {
     if (binding.type === "tdSBitBarrierInferred") {
       // The author's `label` is a note, not an input to the inference, so it isn't compiled in.
@@ -318,6 +325,11 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     if (binding.type === "tdSBitRoute") {
       routeBindingIndex[key] = binding.elementId;
       routeBindingActiveMeans[key] = binding.activeMeans;
+      continue;
+    }
+    if (binding.type === "tdSBitTrts") {
+      trtsBindingIndex[key] = binding.elementId;
+      trtsBindingActiveMeans[key] = binding.activeMeans;
       continue;
     }
     sBitBindingIndex[key] = binding.elementId;
@@ -384,6 +396,8 @@ export function compileMapDocument(doc: MapDocument): CompiledMapBundle {
     inferredBarrierBindings,
     routeBindingIndex,
     routeBindingActiveMeans,
+    trtsBindingIndex,
+    trtsBindingActiveMeans,
     placeBindingIndex,
     boundingBox: computeBoundingBox(doc.elements),
     topologyAdjacency,

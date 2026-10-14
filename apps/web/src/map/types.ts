@@ -25,6 +25,12 @@ export interface RouteState {
   state: "blank" | "set" | "unset";
 }
 
+/** Milestone 92: whether a starting signal's TRTS indicator is lit, from its bound TRTS bit only.
+ * Keyed by the signal's id. The map draws the dot only when `lit`. */
+export interface TrtsState {
+  state: "blank" | "lit" | "unlit";
+}
+
 export interface MapStateResponse {
   mapSlug: string;
   mapVersion: number;
@@ -38,13 +44,32 @@ export interface MapStateResponse {
   crossings?: Record<string, CrossingState>;
   /** Absent from a response produced before routes existed; read as "no routes set". */
   routes?: Record<string, RouteState>;
+  /** Absent from a response produced before TRTS existed; read as "none lit". */
+  trts?: Record<string, TrtsState>;
 }
 
 /** One compact playback event from `GET /api/v1/maps/{slug}/events` — the same wire shape as a
  * live WS `berth.updated` / `berth.cleared` / `signal.updated` delta, so playback applies them
  * with the same semantics as the live socket. */
 export type PlaybackDelta =
-  BerthPlaybackDelta | SignalPlaybackDelta | CrossingPlaybackDelta | RoutePlaybackDelta;
+  | BerthPlaybackDelta
+  | SignalPlaybackDelta
+  | CrossingPlaybackDelta
+  | RoutePlaybackDelta
+  | TrtsPlaybackDelta;
+
+/** Milestone 92: a starting signal's TRTS state (keyed by the signal), same contract as
+ * `route.updated`. */
+export interface TrtsPlaybackDelta {
+  type: "trts.updated";
+  sequence: number;
+  eventAt: string;
+  elementId: string;
+  state: TrtsState["state"];
+  tdArea: string;
+  address: string;
+  bit: number;
+}
 
 /** Milestone 64: a bound route's absolute state, same contract as `signal.updated`. */
 export interface RoutePlaybackDelta {

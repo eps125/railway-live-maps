@@ -350,6 +350,42 @@ export function routeBindingsFromIndex(
 }
 
 /**
+ * Milestone 92: whether a TRTS indicator is lit, from one bound S-Class TRTS bit — the same "one
+ * bit, two states or blank" shape as a route, converted only here. `lit` maps to `off` and
+ * `unlit` to `on`, a bookkeeping convention with no aspect meaning. Never worked out from the
+ * signal, train movements or the timetable (rule 10).
+ */
+export type TrtsDisplayState = "blank" | "lit" | "unlit";
+
+export function trtsActiveMeansAsSignal(activeMeans: "lit" | "unlit"): "on" | "off" {
+  return activeMeans === "lit" ? "off" : "on";
+}
+
+export function trtsStateFromSignalState(state: SignalDisplayState): TrtsDisplayState {
+  if (state === "blank") return "blank";
+  return state === "off" ? "lit" : "unlit";
+}
+
+/** A TRTS indicator belongs to its signal, so it resolves under a synthetic id — the signal's own
+ * id would collide with the signal's aspect in any per-element state map. */
+export function trtsStateKey(signalElementId: string): string {
+  return `${signalElementId}#trts`;
+}
+
+/** A compiled bundle's `trtsBindingIndex` (+ `trtsBindingActiveMeans`) as binding records, each
+ * under its `trtsStateKey`. A bundle published before TRTS existed has neither key, which reads
+ * like an empty one. */
+export function trtsBindingsFromIndex(
+  index: Record<string, string> | undefined,
+  activeMeans: Record<string, "lit" | "unlit"> | undefined,
+): SignalBinding[] {
+  return bindingsFromIndex(index, activeMeans, trtsActiveMeansAsSignal).map((binding) => ({
+    ...binding,
+    elementId: trtsStateKey(binding.elementId),
+  }));
+}
+
+/**
  * Milestone 59 / ADR 0015 (owner decision 2026-09-21): a level crossing whose barrier position
  * is **inferred** from the signals protecting it, for an area whose feed publishes signals but no
  * crossing (LXC) bit — e.g. M9's Carleton crossing from S3879 and S3870.

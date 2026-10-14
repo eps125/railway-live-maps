@@ -780,6 +780,72 @@ describe("PropertyPanel S-Class signal binding (Milestone 36c)", () => {
     fireEvent.change(screen.getByLabelText("Bit (0-7)"), { target: { value: "7" } });
     expect(screen.getByRole("button", { name: "Bind signal" })).toBeEnabled();
   });
+
+  it("adds the signal's TRTS from the area's definitions, keeping its own binding (Milestone 92)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/editor/s-class/areas"))
+          return Promise.resolve(jsonResponse({ areas: ["CE"] }));
+        if (url.includes("/editor/s-class/areas/CE/definitions")) {
+          return Promise.resolve(
+            jsonResponse({
+              definitions: [
+                { address: "2F", bit: 0, kind: "signal", label: "S0128", destination: null },
+                { address: "3B", bit: 4, kind: "trts", label: "TRTS 0128", destination: null },
+                { address: "3B", bit: 3, kind: "trts", label: "TRTS 0157", destination: null },
+              ],
+            }),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+    const doc = signalDoc();
+    const withAspect: MapDocument = {
+      ...doc,
+      elements: doc.elements.map((e) => (e.id === "sig-1" ? { ...e, label: "CE128" } : e)),
+      bindings: [
+        {
+          id: "a1",
+          elementId: "sig-1",
+          type: "tdSBit",
+          tdArea: "CE",
+          address: "2F",
+          bit: 0,
+          activeMeans: "off",
+        },
+      ],
+    };
+    function AllBindings(): JSX.Element {
+      const { document: d } = useEditorState();
+      return <pre data-testid="all">{JSON.stringify(d.bindings)}</pre>;
+    }
+    render(
+      <EditorStateProvider initialDocument={withAspect}>
+        <Select id="sig-1" />
+        <PropertyPanel />
+        <AllBindings />
+      </EditorStateProvider>,
+    );
+    // The area comes from the signal's own binding, and the TRTS numbered like it is offered.
+    expect(screen.getByLabelText("TRTS TD area")).toHaveValue("CE");
+    fireEvent.click(await screen.findByRole("button", { name: "Use it" }));
+    expect(screen.getByLabelText("TRTS address (hex)")).toHaveValue("3B");
+    expect(screen.getByLabelText("TRTS bit (0-7)")).toHaveValue("4");
+    fireEvent.click(screen.getByRole("button", { name: "Add TRTS" }));
+    const bindings = JSON.parse(screen.getByTestId("all").textContent ?? "[]");
+    expect(bindings).toEqual([
+      expect.objectContaining({ id: "a1", type: "tdSBit" }),
+      expect.objectContaining({
+        type: "tdSBitTrts",
+        elementId: "sig-1",
+        address: "3B",
+        bit: 4,
+        activeMeans: "lit",
+      }),
+    ]);
+  });
 });
 
 describe("PropertyPanel crossing style and barrier source (Milestone 59)", () => {

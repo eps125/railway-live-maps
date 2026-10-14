@@ -294,6 +294,31 @@ export function validateMapDocument(json: unknown): ValidationResult {
     }
   }
 
+  // Milestone 92: a TRTS indicator belongs to a signal, and a signal has at most one.
+  const trtsCountByElement = new Map<string, number>();
+  for (const binding of doc.bindings) {
+    if (binding.type !== "tdSBitTrts") continue;
+    const element = elementsById.get(binding.elementId);
+    if (element && element.type !== "signal") {
+      errors.push({
+        code: "invalid_trts_binding",
+        message: `TRTS binding "${binding.id}" is on ${element.type} element "${element.id}" — only signals can have one`,
+        elementId: element.id,
+        bindingId: binding.id,
+      });
+    }
+    trtsCountByElement.set(binding.elementId, (trtsCountByElement.get(binding.elementId) ?? 0) + 1);
+  }
+  for (const [elementId, count] of trtsCountByElement) {
+    if (count > 1) {
+      errors.push({
+        code: "multiple_trts_bindings",
+        message: `Signal "${elementId}" has ${count} TRTS bindings — a signal has one TRTS indicator`,
+        elementId,
+      });
+    }
+  }
+
   // Milestone 85 / ADR 0019: a module's joins are attached by id and shown by name — both must be
   // unique, and a join needs a length to have a direction.
   const joinIds = new Set<string>();

@@ -14,6 +14,7 @@ import {
   type MapDocument,
   type RouteElement,
   type TdSBitRouteBinding,
+  type TdSBitTrtsBinding,
   type TdBerthBinding,
   type TdSBitBarrierBinding,
   type TdSBitBarrierInferredBinding,
@@ -983,6 +984,163 @@ function SignalBindingFields({
 }
 
 /**
+ * Milestone 92 (owner request 2026-10-14): a starting signal's Train Ready To Start indicator, from
+ * one S-Class TRTS bit. It belongs to the signal — one per starting signal — and is drawn as a
+ * small dot between the signal and its berth, shown on the public map only while lit. The area's
+ * TRTS definitions are offered, with the one numbered like this signal picked out. What a set bit
+ * means is stated per binding, never assumed.
+ */
+function TrtsBindingFields({
+  signalId,
+  signalLabel,
+  signalArea,
+  binding,
+}: {
+  signalId: string;
+  signalLabel: string | undefined;
+  signalArea: string | undefined;
+  binding: TdSBitTrtsBinding | undefined;
+}): JSX.Element {
+  const dispatch = useEditorDispatch();
+  const [area, setArea] = useState(binding?.tdArea ?? signalArea ?? "");
+  const [address, setAddress] = useState(binding?.address ?? "");
+  const [bit, setBit] = useState(binding ? String(binding.bit) : "");
+  const [activeMeans, setActiveMeans] = useState<"lit" | "unlit">(binding?.activeMeans ?? "lit");
+  useEffect(() => {
+    setArea(binding?.tdArea ?? signalArea ?? "");
+    setAddress(binding?.address ?? "");
+    setBit(binding ? String(binding.bit) : "");
+    setActiveMeans(binding?.activeMeans ?? "lit");
+  }, [signalId, binding, signalArea]);
+
+  const areaCode = area.trim().toUpperCase();
+  const definitions = useSClassDefinitions(/^[A-Z0-9]{2}$/.test(areaCode) ? areaCode : null);
+  const trtsDefinitions = definitions.filter((d) => d.kind === "trts");
+  const number = signalLabel ? /(\d+)\D*$/.exec(signalLabel)?.[1] : undefined;
+  const suggested = number
+    ? trtsDefinitions.find((d) => Number(/(\d+)\D*$/.exec(d.label ?? "")?.[1]) === Number(number))
+    : undefined;
+  const canonical = /^[0-9A-Fa-f]{1,2}$/.test(address.trim())
+    ? canonicalSAddress(address.trim())
+    : null;
+  const bitNumber = /^[0-7]$/.test(bit.trim()) ? Number(bit.trim()) : null;
+  const matched = definitions.find((d) => d.address === canonical && d.bit === bitNumber);
+  const valid = /^[A-Z0-9]{2}$/.test(areaCode) && canonical !== null && bitNumber !== null;
+
+  function apply(): void {
+    if (!valid || canonical === null || bitNumber === null) return;
+    dispatch({
+      type: "dispatchCommand",
+      command: {
+        type: "setTrtsBinding",
+        signalId,
+        binding: {
+          id: binding?.id ?? `bind-${signalId}-trts-${Date.now()}`,
+          elementId: signalId,
+          type: "tdSBitTrts",
+          tdArea: areaCode,
+          address: canonical,
+          bit: bitNumber,
+          activeMeans,
+        },
+      },
+    });
+  }
+
+  return (
+    <fieldset>
+      <legend>TRTS indicator</legend>
+      <label className="field">
+        TRTS TD area
+        <input value={area} onChange={(e) => setArea(e.target.value.toUpperCase())} />
+      </label>
+      {trtsDefinitions.length > 0 ? (
+        <label className="field">
+          Defined TRTS
+          <select
+            value={matched ? `${matched.address}:${matched.bit}` : ""}
+            onChange={(e) => {
+              const [a, b] = e.target.value.split(":");
+              if (a && b) {
+                setAddress(a);
+                setBit(b);
+              }
+            }}
+          >
+            <option value="">— choose —</option>
+            {trtsDefinitions.map((d) => (
+              <option key={`${d.address}:${d.bit}`} value={`${d.address}:${d.bit}`}>
+                {d.label} ({d.address}:{d.bit})
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {suggested && !binding && !(matched && matched === suggested) ? (
+        <p className="field-hint">
+          {suggested.label} is defined for this signal{" "}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              setAddress(suggested.address);
+              setBit(String(suggested.bit));
+            }}
+          >
+            Use it
+          </button>
+        </p>
+      ) : null}
+      <label className="field">
+        TRTS address (hex)
+        <input value={address} onChange={(e) => setAddress(e.target.value)} />
+      </label>
+      <label className="field">
+        TRTS bit (0-7)
+        <input value={bit} onChange={(e) => setBit(e.target.value)} />
+      </label>
+      <label className="field">
+        A set TRTS bit means
+        <select
+          value={activeMeans}
+          onChange={(e) => setActiveMeans(e.target.value === "unlit" ? "unlit" : "lit")}
+        >
+          <option value="lit">lit — usual for TRTS bits</option>
+          <option value="unlit">unlit</option>
+        </select>
+      </label>
+      {matched?.label && matched.kind !== "trts" ? (
+        <p className="field-hint">
+          Careful: {matched.address}.{matched.bit} is defined as {matched.label} ({matched.kind}),
+          not a TRTS.
+        </p>
+      ) : null}
+      <button type="button" className="btn btn--primary" disabled={!valid} onClick={apply}>
+        {binding ? "Update TRTS" : "Add TRTS"}
+      </button>
+      {binding ? (
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            dispatch({
+              type: "dispatchCommand",
+              command: { type: "setTrtsBinding", signalId, binding: null },
+            })
+          }
+        >
+          Remove TRTS
+        </button>
+      ) : null}
+      <p className="field-hint">
+        Drawn as a small dot between the signal and its berth. On the public map it shows only while
+        lit, flashing white; here a dashed outline marks it.
+      </p>
+    </fieldset>
+  );
+}
+
+/**
  * Milestone 63 (revised 2026-09-22): a switched diamond's mark and which corners are switched. The
  * angle comes from the tracks it sits on, so there is nothing to rotate or size.
  */
@@ -1905,6 +2063,18 @@ export function PropertyPanel(): JSX.Element {
             )}
             currentLabel={element.label}
             onUseLabel={(label) => patchProps({ label, labelSource: "custom" })}
+          />
+          <TrtsBindingFields
+            signalId={elementId}
+            signalLabel={element.label}
+            signalArea={
+              doc.bindings.find(
+                (b): b is TdSBitBinding => b.type === "tdSBit" && b.elementId === elementId,
+              )?.tdArea
+            }
+            binding={doc.bindings.find(
+              (b): b is TdSBitTrtsBinding => b.type === "tdSBitTrts" && b.elementId === elementId,
+            )}
           />
           <SignalRoutesFieldset signalId={elementId} />
         </>

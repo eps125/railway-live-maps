@@ -12,6 +12,8 @@ import {
   routeStateFromSignalState,
   signalBindingsFromIndex,
   signalStateForBit,
+  trtsBindingsFromIndex,
+  trtsStateFromSignalState,
   type BarrierDisplayState,
   type SignalBinding,
   type SignalDisplayState,
@@ -52,12 +54,14 @@ export interface EventSource {
  * from the same bytes by the same rules, so they are paged together as one stream and only the
  * emitted message type differs — keeping barrier playback in exact step with signal playback
  * (including the blank-on-silence rule below) rather than as a second, drifting implementation. */
-type PlaybackBinding = SignalBinding & { kind: "signal" | "barrier" | "route" | "input" };
+type PlaybackBinding = SignalBinding & {
+  kind: "signal" | "barrier" | "route" | "trts" | "input";
+};
 
 /** The absolute-state message for one signal, crossing or route (Milestone 64 added routes, in
  * the same stream so a route set/unset stays in exact step with its signal in playback). */
 function stateMessage(
-  kind: "signal" | "barrier" | "route",
+  kind: "signal" | "barrier" | "route" | "trts",
   resolved: SignalDisplayState,
   fields: {
     sequence: number;
@@ -73,6 +77,9 @@ function stateMessage(
   }
   if (kind === "route") {
     return { type: "route.updated", ...fields, state: routeStateFromSignalState(resolved) };
+  }
+  if (kind === "trts") {
+    return { type: "trts.updated", ...fields, state: trtsStateFromSignalState(resolved) };
   }
   return { type: "signal.updated", ...fields, state: resolved };
 }
@@ -112,6 +119,15 @@ export async function fetchSignalPlaybackEvents(
     ),
     ...routeBindingsFromIndex(bundle.routeBindingIndex, bundle.routeBindingActiveMeans).map(
       (binding) => ({ ...binding, kind: "route" as const }),
+    ),
+    // Milestone 92: each resolves on its own here, so the message can carry the signal's own id
+    // (the `#trts` key only matters where states share one map).
+    ...trtsBindingsFromIndex(bundle.trtsBindingIndex, bundle.trtsBindingActiveMeans).map(
+      (binding) => ({
+        ...binding,
+        elementId: binding.elementId.replace(/#trts$/, ""),
+        kind: "trts" as const,
+      }),
     ),
     ...inputBindings.map((binding) => ({ ...binding, kind: "input" as const })),
   ];

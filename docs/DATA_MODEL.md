@@ -324,6 +324,10 @@ Since Milestone 64 (ADR 0016) a route can be bound too: `map_binding_index.bindi
 constraint, as `0039` does for barriers). Route state is derived from `td_s_event` on demand like
 signal state; it has no table of its own.
 
+Since Milestone 92 a starting signal's TRTS indicator can be bound: `binding_type = 'td_s_bit_trts'`
+with `active_means` `lit` | `unlit` (migration `0051`), `element_id` being the signal. Its state is
+derived the same way and published as its own `trts.updated`, never as the signal's aspect.
+
 ## 6. Schedule and reference data
 
 > **ADR 0002 (2026-09-01):** RLM no longer runs its own SCHEDULE/VSTP importer. `schedule` /

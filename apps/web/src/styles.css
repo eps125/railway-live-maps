@@ -2662,3 +2662,55 @@ legend {
   display: flex;
   gap: 0.5rem;
 }
+
+/* Milestone 91: S-Class coverage panel */
+.coverage-area {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--color-border-subtle);
+  margin-top: 0.6rem;
+}
+
+.coverage-area h4 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.coverage-area summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.coverage-area .issue-list .btn {
+  margin-top: 0.3rem;
+}
+
+.coverage-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.coverage-add .field {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Milestone 92: a lit TRTS indicator flashes on and off, after SimSig. The period comes from
+   MAP_STYLE.trts.flashPeriodMs via an inline animation-duration. */
+.trts-lit {
+  animation: trts-flash 1s steps(1, end) infinite;
+}
+@keyframes trts-flash {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}

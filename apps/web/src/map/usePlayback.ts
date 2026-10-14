@@ -6,6 +6,7 @@ import type {
   PlaybackDelta,
   CrossingState,
   RouteState,
+  TrtsState,
   SignalState,
 } from "./types.js";
 
@@ -43,6 +44,7 @@ type Berths = Record<string, BerthState>;
 type Signals = Record<string, SignalState>;
 type Crossings = Record<string, CrossingState>;
 type Routes = Record<string, RouteState>;
+type Trts = Record<string, TrtsState>;
 type Quality = {
   status: "ok" | "stale" | "unknown";
   gaps: string[];
@@ -55,7 +57,8 @@ export function applyPlaybackDelta(berths: Berths, delta: PlaybackDelta): Berths
   if (
     delta.type === "signal.updated" ||
     delta.type === "crossing.updated" ||
-    delta.type === "route.updated"
+    delta.type === "route.updated" ||
+    delta.type === "trts.updated"
   ) {
     return berths;
   }
@@ -87,6 +90,12 @@ export function applyPlaybackRouteDelta(routes: Routes, delta: PlaybackDelta): R
   return { ...routes, [delta.elementId]: { state: delta.state } };
 }
 
+/** Milestone 92: the TRTS equivalent — absolute state, keyed by signal, so replaying is idempotent. */
+export function applyPlaybackTrtsDelta(trts: Trts, delta: PlaybackDelta): Trts {
+  if (delta.type !== "trts.updated") return trts;
+  return { ...trts, [delta.elementId]: { state: delta.state } };
+}
+
 export interface UsePlaybackResult {
   /** Current playback position, ms epoch. */
   clock: number;
@@ -99,6 +108,7 @@ export interface UsePlaybackResult {
   signals: Signals;
   crossings: Crossings;
   routes: Routes;
+  trts: Trts;
   quality: Quality;
   /** True once the clock has reached the live edge — further forward play is capped. */
   atLiveEdge: boolean;
@@ -134,6 +144,7 @@ export function usePlayback(
   const [signals, setSignals] = useState<Signals>({});
   const [crossings, setCrossings] = useState<Crossings>({});
   const [routes, setRoutes] = useState<Routes>({});
+  const [trts, setTrts] = useState<Trts>({});
   const [quality, setQuality] = useState<Quality>({ status: "unknown", gaps: [] });
 
   // Refs the interval tick reads without forcing itself to re-subscribe.
@@ -144,6 +155,7 @@ export function usePlayback(
   const signalsRef = useRef(signals);
   const crossingsRef = useRef(crossings);
   const routesRef = useRef(routes);
+  const trtsRef = useRef(trts);
   const bufferRef = useRef<PlaybackDelta[]>([]);
   const bufferIdxRef = useRef(0);
   /** ISO `from` of the current seek — every refill page keeps this lower bound and walks
@@ -160,6 +172,7 @@ export function usePlayback(
   signalsRef.current = signals;
   crossingsRef.current = crossings;
   routesRef.current = routes;
+  trtsRef.current = trts;
 
   const seed = useCallback(
     async (atMs: number) => {
@@ -187,6 +200,7 @@ export function usePlayback(
         setSignals(state.signals);
         setCrossings(state.crossings ?? {});
         setRoutes(state.routes ?? {});
+        setTrts(state.trts ?? {});
         setQuality(state.quality);
         bufferRef.current = events.events;
         bufferIdxRef.current = 0;
@@ -267,10 +281,13 @@ export function usePlayback(
       let appliedSignals: Signals | null = null;
       let appliedCrossings: Crossings | null = null;
       let appliedRoutes: Routes | null = null;
+      let appliedTrts: Trts | null = null;
       while (bufferIdxRef.current < buffer.length) {
         const delta = buffer[bufferIdxRef.current];
         if (!delta || Date.parse(delta.eventAt) > next) break;
-        if (delta.type === "route.updated") {
+        if (delta.type === "trts.updated") {
+          appliedTrts = applyPlaybackTrtsDelta(appliedTrts ?? trtsRef.current, delta);
+        } else if (delta.type === "route.updated") {
           appliedRoutes = applyPlaybackRouteDelta(appliedRoutes ?? routesRef.current, delta);
         } else if (delta.type === "crossing.updated") {
           appliedCrossings = applyPlaybackCrossingDelta(
@@ -288,6 +305,7 @@ export function usePlayback(
       if (appliedSignals) setSignals(appliedSignals);
       if (appliedCrossings) setCrossings(appliedCrossings);
       if (appliedRoutes) setRoutes(appliedRoutes);
+      if (appliedTrts) setTrts(appliedTrts);
       clockRef.current = next;
       setClock(next);
 
@@ -334,6 +352,7 @@ export function usePlayback(
     signals,
     crossings,
     routes,
+    trts,
     quality,
     atLiveEdge: clock >= Date.now() - LIVE_EDGE_MS - TICK_MS,
     play,

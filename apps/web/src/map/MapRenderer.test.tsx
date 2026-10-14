@@ -1191,6 +1191,24 @@ describe("MapRenderer", () => {
         />,
       ).container;
 
+    it("draws a lit TRTS dot beside its signal, and nothing when unlit (Milestone 92)", () => {
+      const element = mk("s", { appliesTo: "left", side: "below" });
+      const draw = (state: "blank" | "lit" | "unlit") =>
+        render(
+          <MapRenderer
+            bundle={bundle({ elementsById: { s: element } as never })}
+            berths={{}}
+            signals={{ s: { state: "on" } }}
+            trts={{ s: { state } }}
+          />,
+        ).container;
+      const lit = draw("lit").querySelector("[data-testid=trts-s]")!;
+      expect(lit.getAttribute("class")).toBe("trts-lit");
+      expect([lit.getAttribute("cx"), lit.getAttribute("cy")]).toEqual(["24.5", "28.5"]);
+      expect(draw("unlit").querySelector("[data-testid=trts-s]")).toBeNull();
+      expect(draw("blank").querySelector("[data-testid=trts-s]")).toBeNull();
+    });
+
     it("draws a signal with a direction on an L-shaped post, touching track and head", () => {
       const c = renderSignal(mk("s", { appliesTo: "right" }), "on");
       const post = c.querySelector("polyline:not(.signal-cutout)")!;

@@ -4681,3 +4681,74 @@ Owner request.
 - [x] Query Berths page: the area field accepts `*`, and says so.
 
 Not changed: Berth steps still takes one area.
+
+## Milestone 91 — S-Class coverage in the editor; CE and M4 signal decode (2026-10-14)
+
+Owner request: "I currently have no way from within the map editor of knowing if I've input every
+route or signal that's been defined or if I've double used a particular signal / route bit.
+Sometimes duplication is okay, e.g. for crossings."
+
+- [x] `allowDuplicate` (optional) on `tdSBit`, `tdSBitRoute` and `tdSBitBarrier` bindings.
+- [x] `sClassCoverage` (`apps/web/src/editor/sClassCoverage.ts`): per area, defined vs bound signals,
+      routes and crossings; unbound definitions; double uses across the assembled map; bindings to an
+      undefined bit, the wrong kind of bit, or a bit whose definition label disagrees.
+- [x] Signal bits shared with a crossing's inferred inputs never count as double use.
+- [x] `SClassCoveragePanel` in the editor's design view: counts, lists, "Mark as intended",
+      click-to-select for elements in the document being edited, and "Check another area".
+
+Data (applied to production by hand on 2026-10-14, at the owner's request):
+
+- 52 `s_class_definition` rows from an observed decode of 4–14 Oct: 44 CE signals and 3 M4 signals
+  (`source = observed`, evidence in `notes`), plus 5 CE signals placed by bit position only
+  (`source = other`: S0113, S0121, S0124, S0131, S0133). Revisions use import batch
+  `s-class-deep-dive-2026-10-14`.
+- `tdSBit` bindings for those 47 observed signals on the `crewe-area` (revision 13) and
+  `winsford-north` (revision 464) drafts.
+- 125 CE route definitions (`kind = route`, `source = observed`, import batch
+  `s-class-routes-2026-10-14`), and 122 route elements with `tdSBitRoute` bindings on `crewe-area`
+  (revision 14), traced with `traceRoute` from entry signal to exit signal, bay buffer or map edge.
+  Superseded the same day (below).
+- Route re-decode over 19 Sep–14 Oct (batch `s-class-routes-v2-2026-10-14`): the first decode
+  only counted a signal clear _after_ the route bit, but on busy routes both arrive in the same
+  second, so the most-used routes were missing and four were on the wrong signal. Decoded instead
+  by containment (the entry signal clears while the route bit is set). Crossovers among equal-length
+  paths were chosen so routes the railway set together never share drawn track. Checked by two
+  tests: routes set together sharing track, and every recorded berth step tracing on drawn track.
+- Berth 1036 (revision 17): the westbound berth on CE543's line to South Yard / Basford Hall, which
+  was resignalled into TD area M8 (it shares berth 1036). The 2016 plan's buffer there is out of
+  date, so that line now runs off the west edge, with a 1036 berth and its 6 routes.
+- Deep dive 2 (revision 18, batch `s-class-deep-dive-2-2026-10-14`): 23 more signals (Potteries
+  CE175–CE193, Gresty Lane CE9001–CE9042, shunt signals CE561/CE566; CE124 confirmed), 18 TRTS
+  bits (on when pressed, out as the signal clears), 29 more routes, and 27 non-route indications
+  (signal repeats, route locks, "any route" and "into destination" bits). CE124/CE561/CE566 bound;
+  CE9030/CE9032 added and bound; routes to 9030/9032 now end at those signals. Shunt moves into
+  the carriage sheds (0531/0535/0537) have no S-Class route bits at all.
+- Subsidiaries (revisions 19–22, batch `s-class-subsidiaries-2026-10-14`): signal bits 35.2–37.0 are the
+  subsidiaries in number order (CE531…CE573) and route bits 25.5–2C.4 their routes in order; every clear
+  of each used subsidiary happens while one of its own routes is set. Several bits earlier labelled
+  "any route", "into destination" or "lock" were these. Subsidiaries in the path of a main route clear
+  with it, so their routes are nested inside main routes (the clash test and crossover choice skip
+  nested same-direction pairs). CE553 moved east of the Up Slow crossover; CE562 added; the south throat
+  west of x=560 moved 30 left to make room for CE545. Routes into the carriage sheds are not in the
+  feed (no bit; OTT's route numbers have gaps there too).
+
+## Milestone 92 — TRTS indicators (2026-10-14)
+
+Owner request: show Train Ready To Start indicators, after SimSig. Mock-ups agreed option C: a small
+dot between the starting signal and its berth, invisible on the public map until lit, then flashing
+white; a dashed outline in the editor. Owner decision: the TRTS belongs to the signal (one per
+starting signal), not a separate element.
+
+- [x] `tdSBitTrts` binding (`lit`/`unlit`) on signals; validation (`invalid_trts_binding`,
+      `multiple_trts_bindings`); compiled `trtsBindingIndex`/`trtsBindingActiveMeans`.
+- [x] `MAP_STYLE.trts` and the shared `trtsPosition`.
+- [x] Domain `trtsStateFromSignalState`/`trtsBindingsFromIndex`, resolved under `signalId#trts` so
+      the signal's aspect and its TRTS never share a state.
+- [x] Live state, `/state?at=`, playback `/events` and the live projector (`trts.updated`, its own
+      `T` delta key and its own cache branch — a TRTS bit can never fall through to the signal).
+- [x] `map_binding_index` rows `td_s_bit_trts` (migration `0051`, **hand-apply on production before
+      publishing a map with TRTS**).
+- [x] Public renderer (flashing dot while lit), editor canvas (outline + live preview), signal panel
+      (TRTS section with suggested definition), `setTrtsBinding` (and `setBinding` keeps the TRTS),
+      S-Class coverage panel counts TRTS.
+- [x] Tests at each layer; MAP_EDITOR_SPEC, API_CONTRACT and DATA_MODEL updated.

@@ -73,6 +73,7 @@ describe("useLiveSignalStates (Milestone 36c)", () => {
       expect(result.current).toEqual({
         signals: { "sig-1": "off" },
         routes: { "route-1": "set" },
+        trts: {},
       }),
     );
   });

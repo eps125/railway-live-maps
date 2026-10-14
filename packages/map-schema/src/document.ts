@@ -489,6 +489,10 @@ const TdSBitBindingSchema = z.object({
   /** What a set bit means: most signal bits are set when the signal is *not* at its most
    * restrictive aspect, i.e. `"off"` (green). Verified per binding, never assumed (ADR 0013). */
   activeMeans: z.enum(["on", "off"]),
+  /** Milestone 91 (owner request 2026-10-14): the author has checked that this bit is meant to
+   * be bound more than once (e.g. two crossings worked together). The editor's S-Class coverage
+   * panel stops warning about a double use once every binding on the bit says so. */
+  allowDuplicate: z.boolean().optional(),
 });
 
 /**
@@ -510,6 +514,10 @@ const TdSBitBarrierBindingSchema = z.object({
   bit: z.number().int().min(0).max(7),
   /** What a set bit means for this crossing's barriers. */
   activeMeans: z.enum(["up", "down"]),
+  /** Milestone 91 (owner request 2026-10-14): the author has checked that this bit is meant to
+   * be bound more than once (e.g. two crossings worked together). The editor's S-Class coverage
+   * panel stops warning about a double use once every binding on the bit says so. */
+  allowDuplicate: z.boolean().optional(),
 });
 
 /**
@@ -558,6 +566,34 @@ const TdSBitRouteBindingSchema = z.object({
   bit: z.number().int().min(0).max(7),
   /** What a set bit means for this route. */
   activeMeans: z.enum(["set", "unset"]),
+  /** Milestone 91 (owner request 2026-10-14): the author has checked that this bit is meant to
+   * be bound more than once (e.g. two crossings worked together). The editor's S-Class coverage
+   * panel stops warning about a double use once every binding on the bit says so. */
+  allowDuplicate: z.boolean().optional(),
+});
+
+/**
+ * Milestone 92 (owner request 2026-10-14): a starting signal's Train Ready To Start (TRTS)
+ * indicator, from one S-Class TRTS bit. It lives on the **signal** — one TRTS per starting signal,
+ * as the CE decode found — so it needs no placing: the renderer draws it as a small dot between
+ * the signal and its berth (option C). The public map shows it only while lit, flashing white
+ * (after SimSig); the editor also draws a dashed outline.
+ *
+ * Same shape as `tdSBit` with its own vocabulary, and a separate type so a TRTS bit can never be
+ * read as the signal's aspect. `activeMeans` is stated and verified per binding, never assumed, and
+ * the display is always and only this bit (rule 10).
+ */
+const TdSBitTrtsBindingSchema = z.object({
+  id: z.string().min(1),
+  elementId: z.string().min(1),
+  type: z.literal("tdSBitTrts"),
+  tdArea: z.string().min(1),
+  address: z.string().regex(/^[0-9A-Fa-f]{1,2}$/, "address must be 1-2 hex digits"),
+  bit: z.number().int().min(0).max(7),
+  /** What a set bit means for this indicator. */
+  activeMeans: z.enum(["lit", "unlit"]),
+  /** As on the other S-Class bindings: the author has checked a double use is intended. */
+  allowDuplicate: z.boolean().optional(),
 });
 
 export const MapBindingSchema = z.discriminatedUnion("type", [
@@ -566,6 +602,7 @@ export const MapBindingSchema = z.discriminatedUnion("type", [
   TdSBitBarrierBindingSchema,
   TdSBitBarrierInferredBindingSchema,
   TdSBitRouteBindingSchema,
+  TdSBitTrtsBindingSchema,
 ]);
 
 /**
@@ -637,6 +674,7 @@ export type SwitchedDiamondElement = z.infer<typeof SwitchedDiamondElementSchema
 export type BufferStopElement = z.infer<typeof BufferStopElementSchema>;
 export type RouteElement = z.infer<typeof RouteElementSchema>;
 export type TdSBitRouteBinding = z.infer<typeof TdSBitRouteBindingSchema>;
+export type TdSBitTrtsBinding = z.infer<typeof TdSBitTrtsBindingSchema>;
 export type BoundaryElement = z.infer<typeof BoundaryElementSchema>;
 export type MapBinding = z.infer<typeof MapBindingSchema>;
 export type TdBerthBinding = z.infer<typeof TdBerthBindingSchema>;

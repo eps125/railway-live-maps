@@ -44,6 +44,12 @@ export const RouteStateSchema = z.object({
   state: z.enum(["blank", "set", "unset"]),
 });
 
+/** Milestone 92: whether a TRTS indicator is lit. Comes only from its bound S-Class bit (rule 10);
+ * `blank` means nothing trustworthy is known, and the public map flashes it only when `lit`. */
+export const TrtsStateSchema = z.object({
+  state: z.enum(["blank", "lit", "unlit"]),
+});
+
 /** Milestone 82: a train's lateness band from its latest TRUST report — never a prediction.
  * `on_time` is under 15 min late or early; `minor` 15-29, `moderate` 30-59, `severe` 60+.
  * `none` (no information: no report, or off route) is only ever sent in a `delay.updated`, to
@@ -80,6 +86,9 @@ export const LiveSnapshotStateSchema = z.object({
   /** Milestone 64 / ADR 0016: each route's state. Optional for the same reason as `crossings`;
    * a missing record reads as "no routes set". */
   routes: z.record(z.string(), RouteStateSchema).optional(),
+  /** Milestone 92: each TRTS indicator's state. Optional for the same reason as `crossings`; a
+   * missing record reads as "none lit". */
+  trts: z.record(z.string(), TrtsStateSchema).optional(),
   /** Milestone 82: every banded berth (at least 15 min late) at connect time. Optional for the
    * same reason as `crossings`; missing reads as "no delays known". */
   delays: z.array(BerthDelaySchema).optional(),
@@ -163,6 +172,20 @@ export const RouteUpdatedMessageSchema = z.object({
 });
 export type RouteUpdatedMessage = z.infer<typeof RouteUpdatedMessageSchema>;
 
+/** Milestone 92: a bound TRTS indicator was lit or went out. Absolute state, like
+ * `route.updated`, so a duplicate or replayed delta is harmless. */
+export const TrtsUpdatedMessageSchema = z.object({
+  type: z.literal("trts.updated"),
+  sequence: z.number().int().nonnegative(),
+  eventAt: z.string(),
+  elementId: z.string(),
+  state: z.enum(["blank", "lit", "unlit"]),
+  tdArea: z.string(),
+  address: z.string(),
+  bit: z.number().int().min(0).max(7),
+});
+export type TrtsUpdatedMessage = z.infer<typeof TrtsUpdatedMessageSchema>;
+
 /** Milestone 82: openrail-eps reported something new for a run that is on this map now, so its
  * band is re-stated (absolute, never a toggle — a duplicate is harmless). Published by
  * `ingest-garner` only when a new TRUST report arrives, never per berth step. Like
@@ -217,6 +240,7 @@ export const LiveWsMessageSchema = z.discriminatedUnion("type", [
   SignalUpdatedMessageSchema,
   CrossingUpdatedMessageSchema,
   RouteUpdatedMessageSchema,
+  TrtsUpdatedMessageSchema,
   QualityUpdatedMessageSchema,
   HeartbeatMessageSchema,
   ResyncRequiredMessageSchema,
@@ -234,6 +258,7 @@ export type LiveDeltaMessage =
   | SignalUpdatedMessage
   | CrossingUpdatedMessage
   | RouteUpdatedMessage
+  | TrtsUpdatedMessage
   | QualityUpdatedMessage;
 
 /** Everything a `LiveDeltaSource` can hand the WS route: sequenced deltas, plus the

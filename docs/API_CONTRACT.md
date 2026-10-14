@@ -73,6 +73,15 @@ An unbound route is `blank`. Playback `/events` and the live WS emit the same ab
 `route.updated` (`elementId`, `state`, `tdArea`, `address`, `bit`). Optional on the wire: a missing
 record means no routes are set. The public map draws a route only while it is `set`.
 
+`trts` (Milestone 92): each starting signal's Train Ready To Start indicator, keyed by the **signal's**
+`elementId`, with `state` `lit` | `unlit` | `blank` — only ever its bound `tdSBitTrts` bit read through
+the binding's `activeMeans`, with the same trust, lookback and live-overlay rules as a signal, and
+never worked out from the signal or train movements. Only signals with a TRTS binding appear.
+Playback `/events` and the live WS emit `trts.updated` (`elementId` = the signal, `state`, `tdArea`,
+`address`, `bit`) — a separate message from `signal.updated`, so a TRTS bit never changes the
+signal's aspect. Optional on the wire: a missing record means none lit. The public map draws the
+indicator only while `lit`.
+
 Response outline:
 
 ```json

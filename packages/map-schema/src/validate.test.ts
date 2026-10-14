@@ -687,3 +687,69 @@ describe("routes (Milestone 64 / ADR 0016)", () => {
     });
   });
 });
+
+describe("TRTS indicators (Milestone 92)", () => {
+  const doc = (bindings: unknown[]): unknown => ({
+    schemaVersion: 1,
+    map: {
+      id: "m",
+      name: "m",
+      canvas: { width: 100, height: 100, gridSize: 10 },
+      timezone: "Europe/London",
+    },
+    layers: [{ id: "l1", name: "Track", order: 0 }],
+    elements: [
+      { id: "s1", layerId: "l1", type: "signal", x: 20, y: 50, appliesTo: "left" },
+      {
+        id: "t1",
+        layerId: "l1",
+        type: "trackPath",
+        points: [
+          { x: 0, y: 50 },
+          { x: 90, y: 50 },
+        ],
+      },
+    ],
+    topology: { nodes: [], edges: [] },
+    bindings,
+    editorMetadata: {},
+  });
+  const trts = (id: string, elementId = "s1", extra = {}) => ({
+    id,
+    elementId,
+    type: "tdSBitTrts",
+    tdArea: "CE",
+    address: "3B",
+    bit: 4,
+    activeMeans: "lit",
+    ...extra,
+  });
+  const aspect = {
+    id: "a1",
+    elementId: "s1",
+    type: "tdSBit",
+    tdArea: "CE",
+    address: "2F",
+    bit: 0,
+    activeMeans: "off",
+  };
+
+  it("accepts a signal with its own bit and one TRTS bit", () => {
+    expect(validateMapDocument(doc([aspect, trts("b1")]))).toEqual({ valid: true, errors: [] });
+  });
+
+  it("rejects a TRTS on anything but a signal, and two on one signal", () => {
+    expect(validateMapDocument(doc([trts("b1", "t1")])).errors.map((e) => e.code)).toContain(
+      "invalid_trts_binding",
+    );
+    expect(
+      validateMapDocument(doc([trts("b1"), trts("b2", "s1", { bit: 5 })])).errors.map(
+        (e) => e.code,
+      ),
+    ).toContain("multiple_trts_bindings");
+  });
+
+  it("rejects a TRTS bit stated in a signal's vocabulary", () => {
+    expect(validateMapDocument(doc([trts("b1", "s1", { activeMeans: "off" })])).valid).toBe(false);
+  });
+});

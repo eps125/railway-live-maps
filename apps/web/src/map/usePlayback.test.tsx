@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyPlaybackDelta,
   applyPlaybackRouteDelta,
+  applyPlaybackTrtsDelta,
   applyPlaybackSignalDelta,
   usePlayback,
 } from "./usePlayback.js";
@@ -299,5 +300,27 @@ describe("applyPlaybackRouteDelta (Milestone 64 / ADR 0016)", () => {
     const berths = { b: { description: "1A23", enteredAt: "2026-09-22T11:59:00Z" } };
     expect(applyPlaybackDelta(berths, route("set"))).toBe(berths);
     expect(applyPlaybackSignalDelta({}, route("set"))).toEqual({});
+  });
+});
+
+describe("applyPlaybackTrtsDelta (Milestone 92)", () => {
+  const trts = (state: "blank" | "lit" | "unlit"): PlaybackDelta => ({
+    type: "trts.updated",
+    sequence: 1,
+    eventAt: "2026-10-14T12:00:00Z",
+    elementId: "ce128",
+    state,
+    tdArea: "CE",
+    address: "3B",
+    bit: 4,
+  });
+
+  it("applies a TRTS's absolute state by signal, and never touches the signal's aspect", () => {
+    const lit = applyPlaybackTrtsDelta({}, trts("lit"));
+    expect(lit).toEqual({ ce128: { state: "lit" } });
+    expect(applyPlaybackTrtsDelta(lit, trts("unlit"))).toEqual({ ce128: { state: "unlit" } });
+    expect(applyPlaybackSignalDelta({}, trts("lit"))).toEqual({});
+    const berths = { b: { description: "1A23", enteredAt: "2026-10-14T11:59:00Z" } };
+    expect(applyPlaybackDelta(berths, trts("lit"))).toBe(berths);
   });
 });

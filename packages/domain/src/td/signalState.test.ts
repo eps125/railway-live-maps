@@ -17,6 +17,9 @@ import {
   routeActiveMeansAsSignal,
   routeBindingsFromIndex,
   routeStateFromSignalState,
+  trtsActiveMeansAsSignal,
+  trtsBindingsFromIndex,
+  trtsStateFromSignalState,
 } from "./signalState.js";
 
 const t = (iso: string): Date => new Date(`2026-09-19T${iso}Z`);
@@ -312,5 +315,28 @@ describe("route vocabulary (Milestone 64 / ADR 0016)", () => {
     expect(routeBindingsFromIndex({ "M9|0C|4": "r-1" }, undefined)).toEqual([
       { elementId: "r-1", tdArea: "M9", address: "0C", bit: 4 },
     ]);
+  });
+});
+
+describe("TRTS vocabulary (Milestone 92)", () => {
+  it("round-trips a bound TRTS bit into lit/unlit, keeping blank as blank", () => {
+    const value = 0b0100_0000;
+    expect(
+      trtsStateFromSignalState(signalStateForBit(value, 6, trtsActiveMeansAsSignal("lit"))),
+    ).toBe("lit");
+    expect(
+      trtsStateFromSignalState(signalStateForBit(value, 7, trtsActiveMeansAsSignal("lit"))),
+    ).toBe("unlit");
+    expect(
+      trtsStateFromSignalState(signalStateForBit(value, 6, trtsActiveMeansAsSignal("unlit"))),
+    ).toBe("unlit");
+    expect(trtsStateFromSignalState("blank")).toBe("blank");
+  });
+
+  it("reads a bundle's TRTS index, and a bundle without one as empty", () => {
+    expect(trtsBindingsFromIndex({ "CE|3B|4": "s-128" }, { "CE|3B|4": "lit" })).toEqual([
+      { elementId: "s-128#trts", tdArea: "CE", address: "3B", bit: 4, activeMeans: "off" },
+    ]);
+    expect(trtsBindingsFromIndex(undefined, undefined)).toEqual([]);
   });
 });

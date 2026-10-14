@@ -92,7 +92,10 @@ export function Toolbar({
       });
     for (const element of newElements) {
       if ("bindingId" in element && element.bindingId) {
-        const newBindingId = newBindings.find((b) => b.elementId === element.id)?.id;
+        // A signal can also carry a TRTS binding (Milestone 92); `bindingId` is its own one.
+        const newBindingId = newBindings.find(
+          (b) => b.elementId === element.id && b.type !== "tdSBitTrts",
+        )?.id;
         if (newBindingId) {
           (element as { bindingId?: string }).bindingId = newBindingId;
         }

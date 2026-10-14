@@ -195,3 +195,19 @@ export function applySignalNamePrefix(label: string, prefix: string | undefined)
   if (!match) return label;
   return `${trimmed}${match[2]}`;
 }
+
+/**
+ * Milestone 92 (option C): where a starting signal's TRTS indicator is drawn — `MAP_STYLE.trts.gap`
+ * from the post on the side away from the head (towards the berth the train stands in), level
+ * with the head. Shared by the public renderer and the editor so they always agree. Null for a
+ * signal drawn without a post (no direction), which has no such side.
+ */
+export function trtsPosition(signal: SignalElement): { x: number; y: number } | null {
+  const geometry = signalPostGeometry(signal);
+  if (!geometry) return null;
+  const away = geometry.headCentre.x < 0 ? 1 : -1;
+  return {
+    x: signal.x + away * MAP_STYLE.trts.gap,
+    y: signal.y + geometry.headCentre.y,
+  };
+}

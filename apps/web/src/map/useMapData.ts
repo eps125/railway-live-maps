@@ -108,6 +108,7 @@ export function useMapData(slug: string): UseMapDataResult {
           signals: live.signals ?? {},
           crossings: live.crossings ?? {},
           routes: live.routes ?? {},
+          trts: live.trts ?? {},
         }
       : restState;
 

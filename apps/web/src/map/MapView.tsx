@@ -298,6 +298,7 @@ export function MapView({
           signals={state?.signals ?? {}}
           crossings={state?.crossings ?? {}}
           routes={state?.routes ?? {}}
+          trts={state?.trts ?? {}}
           showEmptyBerths={showEmptyBerths}
           showSignalNumbers={showSignalNumbers}
           delayBands={liveDelayBands}
@@ -422,6 +423,7 @@ function PlaybackView({
         signals={pb.signals}
         crossings={pb.crossings}
         routes={pb.routes}
+        trts={pb.trts}
         showEmptyBerths={showEmptyBerths}
         showSignalNumbers={showSignalNumbers}
         delayBands={delayBands}

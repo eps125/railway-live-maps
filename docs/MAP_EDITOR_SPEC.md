@@ -369,6 +369,24 @@ crossing, as before.
 - Display only: no binding, no live state, not part of `topology`, never welded, and it never shows
   or implies which way the blades lie (CLAUDE.md rules 9/10).
 
+### TRTS indicator (on a signal)
+
+**Milestone 92 (owner request 2026-10-14).** A starting signal's Train Ready To Start indicator,
+after SimSig. It is part of the signal, not an element of its own: one TRTS per starting signal, as
+the CE S-Class decode found (each TRTS bit goes out as one particular signal clears).
+
+- Binding: one `tdSBitTrts` on the signal (`tdArea`, `address`, `bit`, `activeMeans: "lit" |
+"unlit"`), alongside the signal's own `tdSBit`. `validateMapDocument` rejects one on anything but a
+  signal (`invalid_trts_binding`) and two on one signal (`multiple_trts_bindings`).
+- Drawing (option C): a small dot (`MAP_STYLE.trts`) between the signal's post and its berth, level
+  with the head (`trtsPosition`, shared by the renderer and the editor). The **public map draws
+  nothing until it is lit**, then a white dot flashing once a second. The editor always draws a
+  dashed outline on a signal with a TRTS binding, and flashes it in the live preview when lit.
+- Authoring: select the signal; the **TRTS indicator** section offers the area's `trts` definitions
+  and picks out the one numbered like the signal (CE128 → TRTS 0128). Setting or clearing the
+  signal's own binding never touches its TRTS (`setTrtsBinding` manages it separately).
+- The S-Class coverage panel counts TRTS bits and flags one bound to a signal of a different number.
+
 ### `route`
 
 **Milestone 64 / ADR 0016.** A signalling route from its entry signal to its exit signal, drawn on
@@ -668,6 +686,23 @@ Each committed command/batch records affected IDs, before/after data, author and
 - Duplicated binding.
 - Signal has no S-Class binding; expected for Lancaster and suppressible per map.
 - Experimental future S-Class mapping.
+
+**S-Class coverage (Milestone 91, owner request 2026-10-14).** A panel under Validation in the
+editor's design view. For each TD area the map binds S-Class bits in (plus any area the author
+adds), it compares the area's `s_class_definition` rows with the bindings across the whole assembled
+map: the document being edited, the other modules, and for a module opened from a map that map's own
+elements. It shows how many defined signals, routes and crossings are bound, lists the defined bits
+nobody has bound, and warns about:
+
+- a bit bound to two signals, two routes or two crossings (in any modules). Setting
+  `allowDuplicate` on every binding involved (the panel's "Mark as intended") silences it, the
+  same opt-in a berth binding already has;
+- a binding to a bit with no definition, to a bit defined as another kind, or whose element label
+  disagrees with the definition's (signal number, or exact route name).
+
+A signal bit that also feeds a crossing's inferred barrier inputs is never a double use, and
+neither is one signal input shared by two crossings; a signal bit used only by a crossing is listed
+separately instead of as missing. Authoring aid only: it changes nothing a viewer sees.
 
 ### Informational diagnostics
 

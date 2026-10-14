@@ -5,6 +5,8 @@ import { EditorCanvas } from "./EditorCanvas.js";
 import { PropertyPanel } from "./PropertyPanel.js";
 import { LayersPanel } from "./LayersPanel.js";
 import { ValidationPanel } from "./ValidationPanel.js";
+import { SClassCoveragePanel } from "./SClassCoveragePanel.js";
+import type { CoverageSource } from "./sClassCoverage.js";
 import { useTestModePanel } from "./TestModePanel.js";
 import { ReviewPanel } from "./ReviewPanel.js";
 import { useDraftSync } from "./useDraftSync.js";
@@ -83,6 +85,23 @@ export function EditorWorkspace({
       ? assemblyBackdrop(currentDocument, modules)
       : null;
   }, [isModule, contextDoc, slug, currentDocument, modules]);
+
+  // Milestone 91: the rest of the assembled map, so the S-Class coverage panel counts bits bound in
+  // other modules (and spots one bound in two). A module opened from a map also sees that map's
+  // own local elements.
+  const coverageOthers = useMemo<CoverageSource[]>(() => {
+    const parts: CoverageSource[] = modules.flatMap((m) => {
+      const moduleDoc = m.draft ?? m.published;
+      return moduleDoc ? [{ moduleSlug: m.slug, name: m.name || m.slug, doc: moduleDoc }] : [];
+    });
+    if (isModule && contextDoc && contextSlug)
+      parts.push({
+        moduleSlug: contextSlug,
+        name: contextDoc.map.name || contextSlug,
+        doc: contextDoc,
+      });
+    return parts;
+  }, [modules, isModule, contextDoc, contextSlug]);
 
   /** Leave for another editor page, saving first so nothing is lost. */
   async function openPath(path: string): Promise<void> {
@@ -231,6 +250,7 @@ export function EditorWorkspace({
             previewState={viewMode === "test" ? testMode.previewState : undefined}
             signalStates={liveStates.signals}
             routeStates={liveStates.routes}
+            trtsStates={liveStates.trts}
             backdrop={assembly?.items}
             onMoveModule={isModule ? undefined : moveModule}
           />
@@ -258,6 +278,7 @@ export function EditorWorkspace({
               )}
               <LayersPanel />
               <ValidationPanel slug={slug} />
+              <SClassCoveragePanel others={coverageOthers} />
             </>
           ) : null}
           {viewMode === "test" ? testMode.panel : null}

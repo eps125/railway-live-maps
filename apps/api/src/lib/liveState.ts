@@ -10,9 +10,13 @@ import {
   routeBindingsFromIndex,
   routeStateFromSignalState,
   signalBindingsFromIndex,
+  trtsBindingsFromIndex,
+  trtsStateFromSignalState,
+  trtsStateKey,
   type BarrierDisplayState,
   type RouteDisplayState,
   type SignalDisplayState,
+  type TrtsDisplayState,
 } from "@railway/domain";
 import { createSignalFactsPort } from "@railway/database";
 import type { CompiledMapBundle } from "@railway/map-schema";
@@ -51,6 +55,9 @@ export interface LiveState {
   /** Milestone 64 / ADR 0016: each route's state, from its bound route bit only. An unbound
    * route is present and `blank`; the public map draws a route only when it is `set`. */
   routes: Record<string, { state: RouteDisplayState }>;
+  /** Milestone 92: each starting signal's TRTS state, keyed by signal id, from its bound TRTS bit
+   * only. Only signals with a TRTS binding appear; the public map draws the dot only when `lit`. */
+  trts: Record<string, { state: TrtsDisplayState }>;
   quality: QualityState;
 }
 
@@ -124,7 +131,7 @@ export async function computeLiveState(
     berths[elementId] = joinCombinedBerthState(members);
   }
 
-  const { signals, crossings, routes } = await sClassStatesForBundle(pool, bundle, now, true);
+  const { signals, crossings, routes, trts } = await sClassStatesForBundle(pool, bundle, now, true);
 
   const areas = tdAreasFromBundle(bundle);
   const [status, { gaps, incomplete }] = await Promise.all([
@@ -133,7 +140,7 @@ export async function computeLiveState(
   ]);
   const quality: QualityState = { status, gaps, incomplete };
 
-  return { sourceSequence, berths, signals, crossings, routes, quality };
+  return { sourceSequence, berths, signals, crossings, routes, trts, quality };
 }
 
 /**
@@ -158,6 +165,7 @@ export async function sClassStatesForBundle(
   signals: Record<string, SignalState>;
   crossings: Record<string, { state: BarrierDisplayState }>;
   routes: Record<string, { state: RouteDisplayState }>;
+  trts: Record<string, { state: TrtsDisplayState }>;
 }> {
   const elements = Object.values(bundle.elementsById);
   const signalElementIds = elements
@@ -171,6 +179,10 @@ export async function sClassStatesForBundle(
     .filter((element) => element.type === "route")
     .map((element) => element.id);
 
+  // Milestone 92: a TRTS indicator belongs to its signal, so it is keyed by the signal's id — under
+  // its own record, so the signal's aspect and its TRTS never share a state.
+  const trtsElementIds = [...new Set(Object.values(bundle.trtsBindingIndex ?? {}))];
+
   const inputElementIds = inferredInputBindings(bundle.inferredBarrierBindings).map(
     (binding) => binding.elementId,
   );
@@ -179,12 +191,14 @@ export async function sClassStatesForBundle(
       ...signalElementIds,
       ...crossingElementIds,
       ...routeElementIds,
+      ...trtsElementIds.map(trtsStateKey),
       ...inputElementIds,
     ],
     bindings: [
       ...signalBindingsFromIndex(bundle.sBitBindingIndex ?? {}, bundle.sBitBindingActiveMeans),
       ...barrierBindingsFromIndex(bundle.barrierBindingIndex, bundle.barrierBindingActiveMeans),
       ...routeBindingsFromIndex(bundle.routeBindingIndex, bundle.routeBindingActiveMeans),
+      ...trtsBindingsFromIndex(bundle.trtsBindingIndex, bundle.trtsBindingActiveMeans),
       // Milestone 59 / ADR 0015: each inferred crossing's input signals, resolved under synthetic
       // element ids by the very same machinery (trust, lookback, live overlay) as a real signal.
       ...inferredInputBindings(bundle.inferredBarrierBindings),
@@ -206,5 +220,9 @@ export async function sClassStatesForBundle(
   for (const id of routeElementIds) {
     routes[id] = { state: routeStateFromSignalState(resolved[id]?.state ?? "blank") };
   }
-  return { signals, crossings, routes };
+  const trts: Record<string, { state: TrtsDisplayState }> = {};
+  for (const id of trtsElementIds) {
+    trts[id] = { state: trtsStateFromSignalState(resolved[trtsStateKey(id)]?.state ?? "blank") };
+  }
+  return { signals, crossings, routes, trts };
 }

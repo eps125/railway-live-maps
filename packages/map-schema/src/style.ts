@@ -252,6 +252,22 @@ export const MAP_STYLE = {
     dashColor: "#0d1117",
     dash: [10, 10],
   },
+  /**
+   * Milestone 92 (owner request 2026-10-14, option C): a starting signal's Train Ready To Start
+   * indicator, after SimSig — a small dot `gap` units from the signal's post towards its berth,
+   * level with the head. On the public map it is drawn only while lit, as a white dot flashing
+   * every `flashPeriodMs`; the editor also draws a dashed `editorOutline` on every signal that has
+   * a TRTS binding, so the author can see it.
+   */
+  trts: {
+    radius: 2.5,
+    gap: 4.5,
+    litColor: "#f5f7fa",
+    flashPeriodMs: 1000,
+    editorOutline: "#8b949e",
+    editorOutlineWidth: 0.8,
+    editorOutlineDash: [1.2, 0.8],
+  },
   /** Editor endpoint magnet, and the compiler's coincident-endpoint weld (ADR 0004 D2). */
   weldTolerance: 6,
 } as const;

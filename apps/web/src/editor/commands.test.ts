@@ -507,3 +507,81 @@ describe("patchElement (Milestone 64)", () => {
     expect("line" in cleared.elements.find((e) => e.id === "track-1")!).toBe(false);
   });
 });
+
+describe("TRTS bindings live alongside a signal's own (Milestone 92)", () => {
+  const aspect = {
+    id: "a1",
+    elementId: "sig",
+    type: "tdSBit" as const,
+    tdArea: "CE",
+    address: "2F",
+    bit: 0,
+    activeMeans: "off" as const,
+  };
+  const trts = {
+    id: "t1",
+    elementId: "sig",
+    type: "tdSBitTrts" as const,
+    tdArea: "CE",
+    address: "3B",
+    bit: 4,
+    activeMeans: "lit" as const,
+  };
+  const doc = (bindings: MapDocument["bindings"]): MapDocument => ({
+    schemaVersion: 1,
+    map: {
+      id: "m",
+      name: "m",
+      canvas: { width: 100, height: 100, gridSize: 10 },
+      timezone: "Europe/London",
+    },
+    layers: [{ id: "l", name: "L", order: 0, locked: false, visible: true }],
+    elements: [
+      {
+        id: "sig",
+        layerId: "l",
+        zIndex: 0,
+        type: "signal",
+        x: 10,
+        y: 10,
+        orientation: 0,
+        symbolStyle: "signal-blank",
+        labelSource: "auto",
+        orientationSource: "auto",
+      } as unknown as MapDocument["elements"][number],
+    ],
+    topology: { nodes: [], edges: [] },
+    bindings,
+    editorMetadata: {},
+  });
+
+  it("setBinding replaces or clears the signal's own bit and keeps its TRTS", () => {
+    const changed = expectRoundTrip(doc([aspect, trts]), {
+      type: "setBinding",
+      elementId: "sig",
+      binding: { ...aspect, bit: 1 },
+    });
+    expect(byId(changed.bindings)).toEqual([{ ...aspect, bit: 1 }, trts]);
+    const cleared = expectRoundTrip(doc([aspect, trts]), {
+      type: "setBinding",
+      elementId: "sig",
+      binding: null,
+    });
+    expect(cleared.bindings).toEqual([trts]);
+  });
+
+  it("setTrtsBinding adds, replaces or removes only the TRTS", () => {
+    const added = expectRoundTrip(doc([aspect]), {
+      type: "setTrtsBinding",
+      signalId: "sig",
+      binding: trts,
+    });
+    expect(byId(added.bindings)).toEqual([aspect, trts]);
+    const removed = expectRoundTrip(doc([aspect, trts]), {
+      type: "setTrtsBinding",
+      signalId: "sig",
+      binding: null,
+    });
+    expect(removed.bindings).toEqual([aspect]);
+  });
+});

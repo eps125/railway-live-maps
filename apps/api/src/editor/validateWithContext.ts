@@ -9,6 +9,7 @@ import {
   type TdBerthBinding,
   type TdSBitBinding,
   type TdSBitRouteBinding,
+  type TdSBitTrtsBinding,
   canonicalSAddress,
 } from "@railway/map-schema";
 import { TD_S_STATE_PROJECTION_VERSION } from "@railway/domain";
@@ -172,9 +173,10 @@ export async function validateDraftInContext(
   // One `(td_area, address, event_at desc)` index seek per binding (first-sight rows, with no
   // previous value, don't count as a change).
   // Milestone 64: a route bit is checked the same way — one that never changes is a wrong bit.
+  // Milestone 92: and a TRTS bit.
   const sBitBindings = doc.bindings.filter(
-    (binding): binding is TdSBitBinding | TdSBitRouteBinding =>
-      binding.type === "tdSBit" || binding.type === "tdSBitRoute",
+    (binding): binding is TdSBitBinding | TdSBitRouteBinding | TdSBitTrtsBinding =>
+      binding.type === "tdSBit" || binding.type === "tdSBitRoute" || binding.type === "tdSBitTrts",
   );
   if (sBitBindings.length > 0) {
     const rows = await bestEffortQuery<{ td_area: string; address: string; bit: number }>(

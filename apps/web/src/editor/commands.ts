@@ -5,6 +5,7 @@ import type {
   MapBinding,
   MapJoin,
   ModuleUse,
+  TdSBitTrtsBinding,
   TopologyEdge,
 } from "@railway/map-schema";
 
@@ -36,6 +37,9 @@ export type EditorCommand =
     }
   | { type: "renameElement"; elementId: string; newId: string }
   | { type: "setBinding"; elementId: string; binding: MapBinding | null }
+  /** Milestone 92: a starting signal's TRTS binding, set or cleared on its own — the signal's own
+   * S-Class binding is untouched, as `setBinding` leaves the TRTS one. */
+  | { type: "setTrtsBinding"; signalId: string; binding: TdSBitTrtsBinding | null }
   /** Owner request 2026-09-17: a combined berth — up to 4 `tdBerth` bindings sharing one
    * elementId (docs/MAP_EDITOR_SPEC.md's berth section). Replaces the *entire* set of bindings
    * currently on `elementId` in one commit (same "whole-group" granularity as `setBinding`,
@@ -292,9 +296,12 @@ function applySetBinding(
   elementId: string,
   binding: MapBinding | null,
 ): ApplyCommandResult {
-  const previousBinding = doc.bindings.find((b) => b.elementId === elementId) ?? null;
+  // Milestone 92: a signal's TRTS binding is separate from its own and kept by this command
+  // (`setTrtsBinding` manages it), so binding or clearing the signal never loses its TRTS.
+  const own = (b: MapBinding): boolean => b.elementId === elementId && b.type !== "tdSBitTrts";
+  const previousBinding = doc.bindings.find(own) ?? null;
 
-  const bindings = doc.bindings.filter((b) => b.elementId !== elementId);
+  const bindings = doc.bindings.filter((b) => !own(b));
   if (binding) bindings.push(binding);
 
   const elements = doc.elements.map((element) =>
@@ -306,6 +313,22 @@ function applySetBinding(
   return {
     doc: { ...doc, elements, bindings },
     inverse: { type: "setBinding", elementId, binding: previousBinding },
+  };
+}
+
+function applySetTrtsBinding(
+  doc: MapDocument,
+  signalId: string,
+  binding: TdSBitTrtsBinding | null,
+): ApplyCommandResult {
+  const isTrts = (b: MapBinding): b is TdSBitTrtsBinding =>
+    b.elementId === signalId && b.type === "tdSBitTrts";
+  const previous = doc.bindings.find(isTrts) ?? null;
+  const bindings: MapBinding[] = doc.bindings.filter((b) => !isTrts(b));
+  if (binding) bindings.push({ ...binding, elementId: signalId });
+  return {
+    doc: { ...doc, bindings },
+    inverse: { type: "setTrtsBinding", signalId, binding: previous },
   };
 }
 
@@ -416,6 +439,8 @@ export function applyCommand(doc: MapDocument, command: EditorCommand): ApplyCom
       return applyRenameElement(doc, command.elementId, command.newId);
     case "setBinding":
       return applySetBinding(doc, command.elementId, command.binding);
+    case "setTrtsBinding":
+      return applySetTrtsBinding(doc, command.signalId, command.binding);
     case "setCombinedBindings":
       return applySetCombinedBindings(doc, command.elementId, command.bindings);
     case "connectTopology":

@@ -719,3 +719,45 @@ describe("compileMapDocument route bindings (Milestone 64 / ADR 0016)", () => {
     expect(bundle.elementsById["r-1"]).toMatchObject({ type: "route", trackIds: [] });
   });
 });
+
+describe("TRTS bindings (Milestone 92)", () => {
+  it("indexes a signal's TRTS bit apart from its aspect bit", () => {
+    const bundle = compileMapDocument(
+      MapDocumentSchema.parse({
+        schemaVersion: 1,
+        map: {
+          id: "m",
+          name: "m",
+          canvas: { width: 100, height: 100, gridSize: 10 },
+          timezone: "Europe/London",
+        },
+        layers: [{ id: "l1", name: "Track", order: 0 }],
+        elements: [{ id: "sig-1", layerId: "l1", type: "signal", x: 10, y: 20 }],
+        bindings: [
+          {
+            id: "b1",
+            elementId: "sig-1",
+            type: "tdSBit",
+            tdArea: "CE",
+            address: "2F",
+            bit: 0,
+            activeMeans: "off",
+          },
+          {
+            id: "b2",
+            elementId: "sig-1",
+            type: "tdSBitTrts",
+            tdArea: "CE",
+            address: "3b",
+            bit: 4,
+            activeMeans: "lit",
+          },
+        ],
+      }),
+    );
+    expect(bundle.trtsBindingIndex).toEqual({ "CE|3B|4": "sig-1" });
+    expect(bundle.trtsBindingActiveMeans).toEqual({ "CE|3B|4": "lit" });
+    // The TRTS bit must never be read as the signal's aspect.
+    expect(bundle.sBitBindingIndex).toEqual({ "CE|2F|0": "sig-1" });
+  });
+});

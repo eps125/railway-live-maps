@@ -19,6 +19,7 @@ import {
   signalColor,
   signalLabelPosition,
   signalPostGeometry,
+  trtsPosition,
   type CompiledMapBundle,
   type MapElement,
   type BarrierDisplayState,
@@ -52,6 +53,9 @@ export interface MapRendererProps {
   /** Milestone 64 / ADR 0016: each route's state. Only a route that is `set` is drawn; a route
    * missing from this record draws nothing. */
   routes?: Record<string, { state: "blank" | "set" | "unset" }>;
+  /** Milestone 92: each starting signal's TRTS state, keyed by the signal. The dot is drawn only
+   * while `lit`; a signal missing from this record draws no dot. */
+  trts?: Record<string, { state: "blank" | "lit" | "unlit" }>;
   /** ADR 0004 D5: when false, vacant berths draw nothing (berthmaps behaviour); occupied
    * berths are unaffected. Defaults to true — parity with the pre-ADR renderer. */
   showEmptyBerths?: boolean;
@@ -1028,6 +1032,26 @@ const BerthNode = memo(function BerthNode({
   );
 });
 
+/** Milestone 92 (option C): a lit TRTS indicator — a white dot beside its starting signal,
+ * flashing (CSS `trts-lit`). Drawn only while lit; nothing at all otherwise (rule 10: the bound bit
+ * alone decides it). */
+function TrtsDot({ signal }: { signal: SignalElement }): JSX.Element | null {
+  const at = trtsPosition(signal);
+  if (!at) return null;
+  return (
+    <circle
+      className="trts-lit"
+      data-testid={`trts-${signal.id}`}
+      cx={at.x}
+      cy={at.y}
+      r={MAP_STYLE.trts.radius}
+      fill={MAP_STYLE.trts.litColor}
+      style={{ animationDuration: `${MAP_STYLE.trts.flashPeriodMs}ms` }}
+      pointerEvents="none"
+    />
+  );
+}
+
 /** Milestone 73: one signal, memoised on its state. */
 const SignalNode = memo(function SignalNode({
   element,
@@ -1130,6 +1154,7 @@ export function MapRenderer({
   signals,
   crossings = EMPTY_RECORD,
   routes = EMPTY_RECORD,
+  trts = EMPTY_RECORD,
   showEmptyBerths = true,
   showSignalNumbers = false,
   delayBands = EMPTY_RECORD,
@@ -1499,13 +1524,21 @@ export function MapRenderer({
           );
         }
         if (element.type === "signal") {
-          return (
+          const node = (
             <SignalNode
               key={element.id}
               element={element}
               state={signals[element.id]?.state ?? "blank"}
               showNumber={showSignalNumbers}
             />
+          );
+          // Milestone 92: the TRTS dot rides with its signal, only while lit.
+          if (trts[element.id]?.state !== "lit") return node;
+          return (
+            <g key={element.id}>
+              {node}
+              <TrtsDot signal={element} />
+            </g>
           );
         }
         if (element.type === "label") {
@@ -1580,6 +1613,7 @@ export function MapRenderer({
       signals,
       crossings,
       routes,
+      trts,
       hidden,
       showEmptyBerths,
       showSignalNumbers,

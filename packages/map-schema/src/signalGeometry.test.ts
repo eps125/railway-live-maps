@@ -7,6 +7,7 @@ import {
   signalColor,
   signalLabelPosition,
   signalPostGeometry,
+  trtsPosition,
 } from "./signalGeometry.js";
 
 describe("signalColor (ADR 0017)", () => {
@@ -159,5 +160,28 @@ describe("applySignalNamePrefix (owner rule, 2026-09-27)", () => {
     expect(applySignalNamePrefix("S001", undefined)).toBe("S001");
     expect(applySignalNamePrefix("S001", "  ")).toBe("S001");
     expect(applySignalNamePrefix("0451", "CE")).toBe("0451");
+  });
+});
+
+describe("trtsPosition (Milestone 92, option C)", () => {
+  const signal = (extra: object): Parameters<typeof trtsPosition>[0] =>
+    ({ id: "s", layerId: "l", type: "signal", x: 940, y: 400, zIndex: 0, ...extra }) as Parameters<
+      typeof trtsPosition
+    >[0];
+
+  it("sits between the post and the berth, level with the head", () => {
+    // A left-applying signal's head is west of the post, so the TRTS goes east, towards the berth.
+    expect(trtsPosition(signal({ appliesTo: "left", side: "below" }))).toEqual({
+      x: 944.5,
+      y: 408.5,
+    });
+    expect(trtsPosition(signal({ appliesTo: "right", side: "above" }))).toEqual({
+      x: 935.5,
+      y: 391.5,
+    });
+  });
+
+  it("has no position for a signal drawn without a post", () => {
+    expect(trtsPosition(signal({}))).toBeNull();
   });
 });

@@ -113,6 +113,15 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
         activeMeans: "set" | "unset" | null;
       }>
     > = {},
+    trts: Record<
+      string,
+      Array<{
+        mapSlug: string;
+        elementId: string;
+        bit: number;
+        activeMeans: "lit" | "unlit" | null;
+      }>
+    > = {},
   ): BindingsCache {
     return {
       getSignals: async (tdArea: string, address: string) => signals[`${tdArea} ${address}`] ?? [],
@@ -121,6 +130,8 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
         barriers[`${tdArea} ${address}`] ?? [],
       // Milestone 64 / ADR 0016: and route bindings.
       getRoutes: async (tdArea: string, address: string) => routes[`${tdArea} ${address}`] ?? [],
+      // Milestone 92: and TRTS bindings.
+      getTrts: async (tdArea: string, address: string) => trts[`${tdArea} ${address}`] ?? [],
       // Milestone 59: no inferred crossings in these tests.
       getInferredInputs: async () => [],
       inferredCrossingInputs: () => [],
@@ -196,6 +207,43 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
   });
 });
 
+describe("buildSignalDeltas — TRTS (Milestone 92)", () => {
+  const sRow = (seq: number, address: string, data: string): RawSClassRow => ({
+    id: String(seq),
+    normalized_event_at_utc: new Date("2026-10-14T12:00:00Z"),
+    ingestion_sequence: String(seq),
+    event_type: "SF_MSG",
+    td_area: "CE",
+    raw_event_json: { SF_MSG: { area_id: "CE", address, data } },
+  });
+
+  it("reads a TRTS bit as lit/unlit for its signal, never as the signal's aspect", async () => {
+    const cache = {
+      getSignals: async () => [],
+      getBarriers: async () => [],
+      getRoutes: async () => [],
+      getTrts: async (tdArea: string, address: string) =>
+        tdArea === "CE" && address === "3B"
+          ? [{ mapSlug: "crewe", elementId: "ce128", bit: 4, activeMeans: "lit" as const }]
+          : [],
+      getInferredInputs: async () => [],
+      inferredCrossingInputs: () => [],
+      seededInputByte: () => undefined,
+    } as unknown as BindingsCache;
+    const pending = await buildSignalDeltas(cache, [
+      sRow(400, "3B", "10"), // bit 4 set → lit
+      sRow(401, "3B", "00"), // bit 4 clear → unlit
+    ]);
+    expect(
+      pending.map((p) => [p.key, JSON.parse(p.message).type, JSON.parse(p.message).state]),
+    ).toEqual([
+      ["T CE 3B 4", "trts.updated", "lit"],
+      ["T CE 3B 4", "trts.updated", "unlit"],
+    ]);
+    expect(JSON.parse(pending[0]!.message)).toMatchObject({ elementId: "ce128", bit: 4 });
+  });
+});
+
 describe("buildSignalDeltas — inferred crossings (Milestone 59 / ADR 0015)", () => {
   // Carleton-style: two protecting signals in different bytes of one area; set bit = signal off.
   // Each test uses its own crossing id — the builder's de-dup memory is per process.
@@ -213,6 +261,7 @@ describe("buildSignalDeltas — inferred crossings (Milestone 59 / ADR 0015)", (
       getSignals: async () => [],
       getBarriers: async () => [],
       getRoutes: async () => [],
+      getTrts: async () => [],
       getInferredInputs: async (tdArea: string, address: string) =>
         inputs.filter((i) => i.tdArea === tdArea && i.address === address),
       inferredCrossingInputs: (mapSlug: string, elementId: string) =>

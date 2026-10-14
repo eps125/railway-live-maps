@@ -16,9 +16,12 @@ import {
   barrierStateFromSignalState,
   routeActiveMeansAsSignal,
   routeStateFromSignalState,
+  trtsActiveMeansAsSignal,
+  trtsStateFromSignalState,
   signalStateForBit,
   type BarrierDisplayState,
   type RouteDisplayState,
+  type TrtsDisplayState,
   type ReceivedRow,
   type SignalDisplayState,
 } from "@railway/domain";
@@ -26,6 +29,7 @@ import type {
   CrossingUpdatedMessage,
   ResyncRequiredMessage,
   RouteUpdatedMessage,
+  TrtsUpdatedMessage,
   SignalUpdatedMessage,
 } from "@railway/protocol";
 import {
@@ -176,6 +180,15 @@ export interface CachedRouteBinding {
   activeMeans: "set" | "unset" | null;
 }
 
+/** A `td_s_bit_trts` map binding (Milestone 92), keyed the same way, with the TRTS indicator's own
+ * lit/unlit vocabulary. `elementId` is the signal the indicator belongs to. */
+export interface CachedTrtsBinding {
+  mapSlug: string;
+  elementId: string;
+  bit: number;
+  activeMeans: "lit" | "unlit" | null;
+}
+
 /** Milestone 59 / ADR 0015: one input signal of an inferred crossing (a
  * `td_s_bit_barrier_input` row). `elementId` is the crossing; `activeMeans` is in the signal's
  * vocabulary. A crossing's full input list is every row sharing its `mapSlug` + `elementId`. */
@@ -195,6 +208,7 @@ export class BindingsCache {
   private signalsByKey = new Map<string, CachedSignalBinding[]>();
   private barriersByKey = new Map<string, CachedBarrierBinding[]>();
   private routesByKey = new Map<string, CachedRouteBinding[]>();
+  private trtsByKey = new Map<string, CachedTrtsBinding[]>();
   private inputsByKey = new Map<string, CachedInferredInput[]>();
   private inputsByCrossing = new Map<string, CachedInferredInput[]>();
   /** Each inferred input byte's value from `td_s_current_state` at the last reload — the fallback
@@ -238,6 +252,14 @@ export class BindingsCache {
       await this.reload();
     }
     return this.routesByKey.get(`${tdArea} ${address}`) ?? [];
+  }
+
+  /** TRTS bindings on the S-Class byte `(tdArea, address)` across every open map version. */
+  async getTrts(tdArea: string, address: string): Promise<CachedTrtsBinding[]> {
+    if (Date.now() - this.loadedAt > this.ttlMs) {
+      await this.reload();
+    }
+    return this.trtsByKey.get(`${tdArea} ${address}`) ?? [];
   }
 
   /** Inferred-crossing inputs on the S-Class byte `(tdArea, address)` across every open map. */
@@ -295,8 +317,13 @@ export class BindingsCache {
       address: string;
       /** `map_binding_index.bit` is a text column (migration 0010) — coerced where it is read. */
       bit: string;
-      active_means: "on" | "off" | "up" | "down" | "set" | "unset" | null;
-      binding_type: "td_s_bit" | "td_s_bit_barrier" | "td_s_bit_barrier_input" | "td_s_bit_route";
+      active_means: "on" | "off" | "up" | "down" | "set" | "unset" | "lit" | "unlit" | null;
+      binding_type:
+        | "td_s_bit"
+        | "td_s_bit_barrier"
+        | "td_s_bit_barrier_input"
+        | "td_s_bit_route"
+        | "td_s_bit_trts";
       mapSlug: string;
       elementId: string;
     }>(
@@ -306,12 +333,14 @@ export class BindingsCache {
        join map_version mv on mv.id = mbi.map_version_id
        join map m on m.id = mv.map_id
        where mbi.binding_type in
-               ('td_s_bit', 'td_s_bit_barrier', 'td_s_bit_barrier_input', 'td_s_bit_route')
+               ('td_s_bit', 'td_s_bit_barrier', 'td_s_bit_barrier_input', 'td_s_bit_route',
+                'td_s_bit_trts')
          and mv.effective_to is null`,
     );
     const nextSignals = new Map<string, CachedSignalBinding[]>();
     const nextBarriers = new Map<string, CachedBarrierBinding[]>();
     const nextRoutes = new Map<string, CachedRouteBinding[]>();
+    const nextTrts = new Map<string, CachedTrtsBinding[]>();
     const nextInputs = new Map<string, CachedInferredInput[]>();
     const nextInputsByCrossing = new Map<string, CachedInferredInput[]>();
     const slugs = new Set<string>();
@@ -358,6 +387,18 @@ export class BindingsCache {
             row.active_means === "set" || row.active_means === "unset" ? row.active_means : null,
         });
         nextRoutes.set(key, list);
+      } else if (row.binding_type === "td_s_bit_trts") {
+        // Milestone 92: its own branch, so a TRTS bit can never fall through to the signal cache
+        // and drive the signal's aspect.
+        const list = nextTrts.get(key) ?? [];
+        list.push({
+          mapSlug: row.mapSlug,
+          elementId: row.elementId,
+          bit: Number(row.bit),
+          activeMeans:
+            row.active_means === "lit" || row.active_means === "unlit" ? row.active_means : null,
+        });
+        nextTrts.set(key, list);
       } else {
         const list = nextSignals.get(key) ?? [];
         list.push({
@@ -374,6 +415,7 @@ export class BindingsCache {
     this.signalsByKey = nextSignals;
     this.barriersByKey = nextBarriers;
     this.routesByKey = nextRoutes;
+    this.trtsByKey = nextTrts;
     this.inputsByKey = nextInputs;
     this.inputsByCrossing = nextInputsByCrossing;
 
@@ -423,6 +465,9 @@ const lastBarrierState = new Map<string, BarrierDisplayState>();
 
 /** The same per-process de-duplication for route state (Milestone 64 / ADR 0016). */
 const lastRouteState = new Map<string, RouteDisplayState>();
+
+/** The same per-process de-duplication for TRTS indicators (Milestone 92). */
+const lastTrtsState = new Map<string, TrtsDisplayState>();
 
 /** Milestone 59 / ADR 0015: each inferred input's last state seen live by this process, keyed
  * per crossing and bit. An input missing here falls back to the byte seeded at cache reload. */
@@ -543,6 +588,38 @@ export async function buildSignalDeltas(
         pending.push({
           mapSlug: binding.mapSlug,
           key: `R ${row.td_area} ${byte.address} ${binding.bit}`,
+          sequence,
+          message: JSON.stringify(message),
+        });
+      }
+
+      // Milestone 92: the same bit read as a TRTS indicator's lit/unlit, keyed by the signal it
+      // belongs to. Its own delta key prefix ("T") and its own message type, so it can never be
+      // confused with the signal's aspect.
+      for (const binding of await bindings.getTrts(row.td_area, byte.address)) {
+        const state = trtsStateFromSignalState(
+          signalStateForBit(
+            byte.value,
+            binding.bit,
+            binding.activeMeans ? trtsActiveMeansAsSignal(binding.activeMeans) : undefined,
+          ),
+        );
+        const memoryKey = `${binding.mapSlug}|${binding.elementId}`;
+        if (lastTrtsState.get(memoryKey) === state) continue;
+        lastTrtsState.set(memoryKey, state);
+        const message: TrtsUpdatedMessage = {
+          type: "trts.updated",
+          sequence,
+          eventAt: row.normalized_event_at_utc.toISOString(),
+          elementId: binding.elementId,
+          state,
+          tdArea: row.td_area,
+          address: byte.address,
+          bit: binding.bit,
+        };
+        pending.push({
+          mapSlug: binding.mapSlug,
+          key: `T ${row.td_area} ${byte.address} ${binding.bit}`,
           sequence,
           message: JSON.stringify(message),
         });

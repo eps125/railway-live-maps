@@ -172,11 +172,11 @@ describe("trtsPosition (Milestone 92, option C)", () => {
   it("sits between the post and the berth, level with the head", () => {
     // A left-applying signal's head is west of the post, so the TRTS goes east, towards the berth.
     expect(trtsPosition(signal({ appliesTo: "left", side: "below" }))).toEqual({
-      x: 944.5,
+      x: 945,
       y: 408.5,
     });
     expect(trtsPosition(signal({ appliesTo: "right", side: "above" }))).toEqual({
-      x: 935.5,
+      x: 935,
       y: 391.5,
     });
   });

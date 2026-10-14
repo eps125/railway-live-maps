@@ -261,7 +261,7 @@ export const MAP_STYLE = {
    */
   trts: {
     radius: 2.5,
-    gap: 4.5,
+    gap: 5,
     litColor: "#f5f7fa",
     flashPeriodMs: 1000,
     editorOutline: "#8b949e",

@@ -261,7 +261,11 @@ export const MAP_STYLE = {
    */
   trts: {
     radius: 2.5,
-    gap: 5,
+    /** From the stem's centre. Owner (2026-10-15): the roundel must look centred between the berth
+     * and the stem. With the berth one grid step (10) from the stem, its box edge visibly at 0.5
+     * past that (half its 1-unit border) and the stem's near edge 1 from its centre (half its 2-unit
+     * width), 5.25 leaves the same 1.75 of clear space on each side of the 2.5 radius. */
+    gap: 5.25,
     litColor: "#f5f7fa",
     flashPeriodMs: 1000,
     editorOutline: "#8b949e",

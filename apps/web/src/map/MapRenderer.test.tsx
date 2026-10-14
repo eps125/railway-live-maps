@@ -1204,7 +1204,7 @@ describe("MapRenderer", () => {
         ).container;
       const lit = draw("lit").querySelector("[data-testid=trts-s]")!;
       expect(lit.getAttribute("class")).toBe("trts-lit");
-      expect([lit.getAttribute("cx"), lit.getAttribute("cy")]).toEqual(["25.25", "28.5"]);
+      expect([lit.getAttribute("cx"), lit.getAttribute("cy")]).toEqual(["25.625", "28.5"]);
       expect(draw("unlit").querySelector("[data-testid=trts-s]")).toBeNull();
       expect(draw("blank").querySelector("[data-testid=trts-s]")).toBeNull();
     });

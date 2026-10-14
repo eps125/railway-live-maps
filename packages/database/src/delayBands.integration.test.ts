@@ -72,7 +72,11 @@ function newTrustId(): string {
 }
 
 function londonTodayDateString(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
+  return londonDateString(new Date());
+}
+
+function londonDateString(at: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(at);
 }
 
 /** Runs the projection until it has caught up with everything mirrored so far. */
@@ -198,7 +202,10 @@ async function seedLinkedRun(
        cif_schedule_id, cif_train_uid, traffic_day, match_basis, match_confidence,
        established_td_area, established_berth
      ) values ($1, $2, $3::date, 'headcode_only', $4, $5, $6) returning id::text as id`,
-    [scheduleId, `U${scheduleId}`, londonTodayDateString(), confidence, tdArea, berth],
+    // The run's traffic day is the London date it was activated on, as for a real run — not
+    // "today", which for an activation shortly before London midnight is already the next day
+    // (and the projection rightly ignores an activation from before its run's traffic day).
+    [scheduleId, `U${scheduleId}`, londonDateString(activatedAt), confidence, tdArea, berth],
   );
   const runKey = run.rows[0]!.id;
   createdTrainRunIds.push(runKey);

@@ -146,6 +146,23 @@ function londonYesterdayDateString(): string {
   return today.toISOString().slice(0, 10);
 }
 
+/**
+ * A `?at=` pinning the route's "now" to this London afternoon, or "" once it already is afternoon
+ * or later. For fixtures that seed a fixed *evening* origin departure while activating it "now":
+ * the resolver matches a daily train to whichever day's departure is nearest to now (the
+ * overnight fix, `chooseServiceDate`), so from midnight until mid-morning a 19:00-22:00 departure
+ * genuinely resolves to *yesterday's* run and the fixture's premise ("activated today") no longer
+ * holds. Pinning to the afternoon of the same London date keeps every seeded "now" timestamp
+ * (activations, occupancy, movements) before the reference moment and on its traffic day, so
+ * these tests mean the same thing whenever CI happens to run. 13:00Z is 13:00 GMT or 14:00 BST.
+ */
+function afternoonAtQuery(): string {
+  const afternoon = new Date(`${londonTodayDateString()}T13:00:00Z`);
+  return Date.now() >= afternoon.getTime()
+    ? ""
+    : `?at=${encodeURIComponent(afternoon.toISOString())}`;
+}
+
 /** Milestone 35: the route computes "now" from a real `new Date()` internally (not injectable),
  * so these tests seed schedule times relative to the actual current London wall-clock time
  * rather than a fixed one — mirrors `currentRun.ts`'s own `londonMinutesSinceMidnight`. Returns
@@ -1068,7 +1085,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       try {
         const response = await app.inject({
           method: "GET",
-          url: `/api/v1/td/areas/${area}/berths/0024/current-run`,
+          url: `/api/v1/td/areas/${area}/berths/0024/current-run${afternoonAtQuery()}`,
           headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
@@ -1509,7 +1526,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       try {
         const response = await app.inject({
           method: "GET",
-          url: `/api/v1/td/areas/${area}/berths/0033/current-run`,
+          url: `/api/v1/td/areas/${area}/berths/0033/current-run${afternoonAtQuery()}`,
           headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);
@@ -1560,7 +1577,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       try {
         const response = await app.inject({
           method: "GET",
-          url: `/api/v1/td/areas/${area}/berths/0037/current-run`,
+          url: `/api/v1/td/areas/${area}/berths/0037/current-run${afternoonAtQuery()}`,
           headers: await authHeaders(),
         });
         expect(response.statusCode).toBe(200);

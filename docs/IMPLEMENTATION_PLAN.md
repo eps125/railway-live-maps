@@ -4752,3 +4752,11 @@ starting signal), not a separate element.
       (TRTS section with suggested definition), `setTrtsBinding` (and `setBinding` keeps the TRTS),
       S-Class coverage panel counts TRTS.
 - [x] Tests at each layer; MAP_EDITOR_SPEC, API_CONTRACT and DATA_MODEL updated.
+
+Follow-up (2026-10-15): six integration tests failed CI just after London midnight. Three current-run
+tests seed a fixed evening origin departure but activate it "now"; the resolver (correctly) matches
+a daily train to the day whose departure is nearest, so before mid-morning those resolve to
+yesterday's run. They now pin the route's `?at=` to this London afternoon (`afternoonAtQuery`). The
+delay-band fixture's run took "today" as its traffic day while being activated 90 minutes earlier;
+it now takes its activation's London date. Verified at 00:25 BST: 6 failures without the fix, 57/57
+with it.

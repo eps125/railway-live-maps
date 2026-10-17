@@ -4760,3 +4760,30 @@ yesterday's run. They now pin the route's `?at=` to this London afternoon (`afte
 delay-band fixture's run took "today" as its traffic day while being activated 90 minutes earlier;
 it now takes its activation's London date. Verified at 00:25 BST: 6 failures without the fix, 57/57
 with it.
+
+## Milestone 93 — Recovered TD backfill from a secondary capture (2026-10-16/17, ADR 0020)
+
+The first CT 116 native-ZFS cutover attempt (2026-10-16 ~00:55 BST,
+`docs/runbooks/ct116-native-zfs-cutover.md`) lost RLM TD for 2026-10-15 23:55:49–~23:56:44Z.
+openrail-eps logged every TD message up to 23:56:13Z. Its lines were verified complete and field-exact
+against RLM for the preceding 40 s, so 768 messages can be rebuilt exactly. The owner chose option B:
+the events plus a windowed repair of occupancy and S-Class history.
+
+- [x] Migration `0052` (**hand-applied on production 2026-10-17 before deploy**):
+      `raw_feed_event.recovery_source`, `td_berth_event.recovered`, `source_kind = 'recovered-log'`.
+      Catalog-only / `NOT VALID`, with no table scan.
+- [x] TD history and live projectors, the map-delta projector and run-lineage skip recovered rows
+      (they carry new sequences but old event times).
+- [x] `recover-td-from-openrail-log`: parser (exact NR shape, upper-case hex, verbatim line kept)
+      and a per-berth / per-byte repair planner (`td/recovery/repairPlan.ts`). Exact because every
+      event resets the berths it touches, so the repair ends at each berth's first post-gap event.
+- [x] Two phases after the 2026-10-16 incident, in which a long dry-run transaction held row locks the
+      live projector needed and froze live maps about 18:55–21:55 BST (no data lost):
+  - Phase 1 is a read-only transaction with a statement timeout and a read-only dry run.
+  - Phase 2 is one short write transaction (`lock_timeout` 3 s, `statement_timeout` 30 s).
+  - Every bounded read is area and time filtered in a materialized CTE, and plans were checked
+    with `EXPLAIN ANALYZE` on production.
+- [x] Unit tests (parser against stored NR JSON, planner scenarios) and a projector integration test
+      that recovered rows are never folded.
+- [ ] Run inside the production worker container: dry run, then `--execute` with the owner's go.
+- [ ] Verify the repaired window; feed_gap note.

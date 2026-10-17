@@ -943,6 +943,9 @@ export async function runProjectTdLive(
               message_class, received_at_utc
        from raw_feed_event
        where feed_name = 'TD' and parse_status = 'parsed' and ingestion_sequence > $1
+         -- ADR 0020: recovered rows carry new sequences but old event times; folding them here
+         -- would overwrite current berth/signal state with stale data.
+         and recovery_source is null
          and ((message_class = 'C' and event_type in ('CA', 'CB', 'CC')) or message_class = 'S')
        order by ingestion_sequence
        limit $2`,

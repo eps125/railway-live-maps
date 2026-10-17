@@ -509,6 +509,7 @@ export async function classifyReceiveSilences(client: Pool | PoolClient): Promis
          select e.normalized_event_at_utc as event_at from raw_feed_event e
           where e.feed_name = 'TD' and e.ingestion_sequence >= $1::bigint
             and e.ingestion_sequence <= $1::bigint + $4::bigint
+            and e.recovery_source is null
        )
        select exists (
          select 1 from after
@@ -1016,6 +1017,9 @@ export async function runProjectTd(
                 raw_event_json, parse_status, received_at_utc
          from raw_feed_event
          where feed_name = 'TD' and ingestion_sequence > $1
+           -- ADR 0020: recovered rows (old event times, new sequences) are never folded here; the
+           -- import tool writes their derived rows and repairs the affected window itself.
+           and recovery_source is null
          order by ingestion_sequence
          limit $2`,
         [lastSequence, batchSize],

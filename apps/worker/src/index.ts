@@ -19,6 +19,7 @@ import { runRefreshReferenceData } from "./commands/refreshReferenceData.js";
 import { runScheduleReferenceRefresh } from "./commands/scheduleReferenceRefresh.js";
 import { runBackfillTdAreaSummary } from "./commands/backfillTdAreaSummary.js";
 import { runBackfillSClassBits } from "./commands/backfillSClassBits.js";
+import { runRecoverTdFromOpenrailLog } from "./commands/recoverTdFromOpenrailLog.js";
 import { runBackfillBerthActivity } from "./commands/backfillBerthActivity.js";
 import { runProjectTdDaemon } from "./commands/projectTdDaemon.js";
 import { runProjectTdLiveDaemon } from "./commands/projectTdLiveDaemon.js";
@@ -72,6 +73,8 @@ async function main(): Promise<void> {
       return runRefreshReferenceData(config);
     case "backfill-td-area-summary":
       return runBackfillTdAreaSummary(config);
+    case "recover-td-from-openrail-log":
+      return runRecoverTdFromOpenrailLog(config, argvRest);
     case "backfill-s-class-bits":
       return runBackfillSClassBits(config, argvRest);
     case "backfill-berth-activity":

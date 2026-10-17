@@ -825,4 +825,29 @@ describe("runProjectTd (integration)", () => {
     expect(summary.skippedLockContention).toBe(false);
     expect((await openOccupancy(area, "0950"))?.description).toBe("LOCK");
   });
+
+  it("never folds recovered rows (ADR 0020): old event times with new sequences must not touch history", async () => {
+    const area = uniqueArea();
+    const t = Date.now();
+    await record([cc(area, "0700", "1A01", t)], new Date(t));
+    // Mark the just-recorded row as recovered before any projector run sees it.
+    const marked = await pool.query<{ id: string }>(
+      `update raw_feed_event set recovery_source = '{"source":"test"}'::jsonb
+       where feed_name = 'TD' and td_area = $1 returning id`,
+      [area],
+    );
+    expect(marked.rowCount).toBe(1);
+    // A normal NR row for the same berth afterwards is projected as usual.
+    await record([cc(area, "0701", "2B02", t + 1000)], new Date(t + 1000));
+
+    await runProjectTd(pool);
+
+    const events = await pool.query<{ to_berth: string }>(
+      "select to_berth from td_berth_event where td_area = $1 order by event_at",
+      [area],
+    );
+    expect(events.rows.map((r) => r.to_berth)).toEqual(["0701"]);
+    expect(await openOccupancy(area, "0700")).toBeUndefined();
+    expect((await openOccupancy(area, "0701"))?.description).toBe("2B02");
+  });
 });

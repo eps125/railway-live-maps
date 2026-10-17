@@ -760,6 +760,9 @@ export async function runProjectRunLineage(
               from_berth, to_berth, description, ingestion_sequence
        from td_berth_event
        where ingestion_sequence > $1 and message_type = 'CA'
+         -- ADR 0020: recovered steps arrive long after their event time; chaining them now would
+         -- link runs out of order.
+         and not recovered
        order by ingestion_sequence
        limit $2`,
       [lastSequence, batchSize],

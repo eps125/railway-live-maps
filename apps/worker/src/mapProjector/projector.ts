@@ -86,6 +86,8 @@ export async function runProjectMapDeltas(
       `select id, ingestion_sequence, td_area, message_type, from_berth, to_berth, description, event_at
        from td_berth_event
        where ingestion_sequence > $1
+         -- ADR 0020: recovered historical steps must never be published as live map deltas.
+         and not recovered
        order by ingestion_sequence
        limit $2`,
       [lastSequence, batchSize],

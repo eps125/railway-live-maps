@@ -91,7 +91,7 @@ about 3 hours (18:55–21:55 BST, 2026-10-16). No data was lost.
 
 The tool is now two-phase:
 
-- **Plan (read-only):** this phase runs in a `read only` transaction with a 120 s statement timeout. All
+- **Plan (read-only):** this phase runs in a `read only` transaction with a 300 s statement timeout. All
   reads are bounded:
   - pre-gap occupancy is one `LIMIT 1` index probe per berth
   - post-gap events are area- and time-filtered `materialized` CTEs

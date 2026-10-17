@@ -125,7 +125,8 @@ export async function runRecoverTdFromOpenrailLog(config: Config, argv: string[]
     let plan: Plan;
     try {
       await reader.query("begin transaction read only");
-      await reader.query("set local statement_timeout = '120s'");
+      // Read-only, so a long statement can never block a live writer; the cap only stops a runaway.
+      await reader.query("set local statement_timeout = '300s'");
       // Every planning statement is timed on stderr, so a slow plan is visible, not silent.
       const timed = new Proxy(reader, {
         get(target, prop, receiver) {
@@ -280,6 +281,7 @@ async function buildPlan(
     gapEnd,
     args.sPostWindowHours,
     lastPreSeq,
+    args.postWindowHours,
   );
 
   const anomalyTargets = berthPlans.filter((p) => p.replaceAnomaliesOfEventId);
@@ -483,6 +485,7 @@ async function planBytes(
   gapEnd: Date,
   postHours: number,
   lastPreSeq: string,
+  longHours: number,
 ): Promise<{ plans: SByteRepairPlan[]; unknownPre: number }> {
   const byByte = new Map<string, SByteEventRef[]>();
   for (const { m, index } of inEventOrder(messages)) {
@@ -552,6 +555,58 @@ async function planBytes(
       if (before) {
         preValue.set(k, value); // rows are in sequence order, so the last one wins
       } else if (e.event_at >= gapEnd && !firstPost.has(k)) {
+        firstPost.set(k, {
+          rawEventId: e.raw_event_id,
+          rawEventNormalizedAt: e.raw_event_normalized_at_utc,
+          eventAt: e.event_at,
+          ingestionSequence: e.ingestion_sequence,
+          value,
+          sourceKind: e.message_type === "SF_MSG" ? "update" : "refresh",
+        });
+      }
+    }
+  }
+
+  // Second, targeted pass: bytes with no statement in the short window (quiet bytes no frequent
+  // refresh covers) are looked up over the full post window, for just their own start addresses.
+  const missing = keys.filter((k) => !firstPost.has(k));
+  if (missing.length > 0 && longHours > postHours) {
+    const missingPairs = new Set<string>();
+    for (const k of missing) {
+      const [area, address] = k.split("|") as [string, string];
+      const start = Number.parseInt(address, 16);
+      for (let d = 0; d < 4 && start - d >= 0; d += 1) {
+        missingPairs.add(`${area}|${(start - d).toString(16).toUpperCase().padStart(2, "0")}`);
+      }
+    }
+    const mp = [...missingPairs].map((p) => p.split("|") as [string, string]);
+    const { rows: late } = await db.query<{
+      raw_event_id: string;
+      raw_event_normalized_at_utc: Date;
+      td_area: string;
+      message_type: string;
+      decoded_bitset: { bytes: Record<string, number> } | null;
+      event_at: Date;
+      ingestion_sequence: string;
+    }>(
+      `with p as (select distinct * from unnest($1::text[], $2::text[]) as p(area, addr)),
+       w as materialized (
+         select e.raw_event_id, e.raw_event_normalized_at_utc, e.td_area, e.message_type, e.decoded_bitset,
+                e.event_at, e.ingestion_sequence
+         from td_s_event e join p on e.td_area = p.area and e.address = p.addr
+         where e.td_area = any(array(select distinct area from p)) and e.decode_status = 'decoded'
+           and e.event_at >= $3::timestamptz + make_interval(hours => $4)
+           and e.event_at < $3::timestamptz + make_interval(hours => $5)
+       )
+       select raw_event_id::text, raw_event_normalized_at_utc, td_area, message_type, decoded_bitset, event_at,
+              ingestion_sequence::text
+       from w order by ingestion_sequence`,
+      [mp.map((p) => p[0]), mp.map((p) => p[1]), gapEnd, postHours, longHours],
+    );
+    for (const e of late) {
+      for (const [address, value] of Object.entries(e.decoded_bitset?.bytes ?? {})) {
+        const k = `${e.td_area}|${address}`;
+        if (!byByte.has(k) || firstPost.has(k)) continue;
         firstPost.set(k, {
           rawEventId: e.raw_event_id,
           rawEventNormalizedAt: e.raw_event_normalized_at_utc,

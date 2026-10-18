@@ -1,8 +1,18 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   MAP_CSS_TOKENS,
   MAP_STYLE,
   berthRenderRect,
+  horizontalTrackIndex,
   bufferStopDrawing,
   hiddenTracks,
   visibleRouteRuns,
@@ -41,7 +51,29 @@ import {
 import type { BerthState, SignalState } from "./types.js";
 import { DELAY_BAND_COLORS, type DelayBand } from "./delayBands.js";
 import { RunPopup } from "./RunPopup.js";
+import {
+  LiveCells,
+  bandCell,
+  berthCell,
+  berthInfo,
+  crossingCell,
+  routeCell,
+  signalCell,
+  syncCells,
+  trtsCell,
+  useCell,
+  type LiveRecords,
+  type SyncedRecords,
+} from "./liveCells.js";
 import { navigate } from "../useRoute.js";
+import {
+  CULL_MIN_ELEMENTS,
+  buildCullIndex,
+  cullRegionFor,
+  needsRecull,
+  nextCullRegion,
+  type Box,
+} from "./culling.js";
 
 export interface MapRendererProps {
   bundle: CompiledMapBundle;
@@ -103,11 +135,13 @@ function boundaryClickHandler(
   adjacentMapSlug: string | undefined,
   adjacentBoundaryName: string | undefined,
   ownName: string,
-  playbackLink: MapRendererProps["playbackLink"] = null,
+  playbackLink: () => MapRendererProps["playbackLink"],
 ): (() => void) | undefined {
   if (!adjacentMapSlug) return undefined;
+  // Milestone 94: the playback position is read when clicked, not when drawn, so a label is
+  // drawn once rather than again on every playback tick.
   return () => {
-    navigate(boundaryLinkUrl(adjacentMapSlug, adjacentBoundaryName ?? ownName, playbackLink));
+    navigate(boundaryLinkUrl(adjacentMapSlug, adjacentBoundaryName ?? ownName, playbackLink()));
   };
 }
 
@@ -977,6 +1011,11 @@ export function zoomAroundPoint(view: MapView, dx: number, dy: number, scale: nu
   return { cx: x - dx / scale, cy: y - dy / scale, scale };
 }
 
+/** Milestone 94: how long after the last wheel or pinch step the zoom is drawn at its real size.
+ * Until then the drawing already on screen is scaled by the compositor, which costs no layout or
+ * repaint however big the map is. */
+export const ZOOM_SETTLE_MS = 150;
+
 const EMPTY_RECORD = {};
 const EMPTY_IDS: ReadonlyArray<string> = [];
 
@@ -1063,6 +1102,96 @@ const SignalNode = memo(function SignalNode({
   showNumber: boolean;
 }): JSX.Element {
   return renderSignal(element, state, showNumber);
+});
+
+/** Milestone 94: a berth drawn from its own live cell, so only it re-renders when it changes. */
+const LiveBerth = memo(function LiveBerth({
+  cells,
+  id,
+  rect,
+  fontSize,
+  showEmpty,
+  onSelect,
+}: {
+  cells: LiveCells;
+  id: string;
+  rect: { x: number; y: number; width: number; height: number };
+  fontSize: number;
+  showEmpty: boolean;
+  onSelect: (id: string) => void;
+}): JSX.Element | null {
+  const description = useCell<string>(cells, berthCell(id));
+  const band = useCell<DelayBand>(cells, bandCell(id));
+  // ADR 0004 D5: a vacant berth can be hidden entirely (berthmaps style).
+  if (!description && !showEmpty) return null;
+  return (
+    <BerthNode
+      id={id}
+      rect={rect}
+      description={description}
+      delayBand={description ? band : undefined}
+      fontSize={fontSize}
+      onSelect={onSelect}
+    />
+  );
+});
+
+const LiveSignal = memo(function LiveSignal({
+  cells,
+  element,
+  showNumber,
+}: {
+  cells: LiveCells;
+  element: SignalElement;
+  showNumber: boolean;
+}): JSX.Element {
+  const state = useCell<SignalState["state"]>(cells, signalCell(element.id)) ?? "blank";
+  // Milestone 92: the TRTS dot rides with its signal, only while lit.
+  const lit = useCell<boolean>(cells, trtsCell(element.id)) === true;
+  const node = <SignalNode element={element} state={state} showNumber={showNumber} />;
+  if (!lit) return node;
+  return (
+    <g>
+      {node}
+      <TrtsDot signal={element} />
+    </g>
+  );
+});
+
+const LiveCrossing = memo(function LiveCrossing({
+  cells,
+  element,
+}: {
+  cells: LiveCells;
+  element: LevelCrossingElement;
+}): JSX.Element {
+  const state = useCell<BarrierDisplayState>(cells, crossingCell(element.id)) ?? "blank";
+  return renderLevelCrossing(element, state);
+});
+
+/** Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and unset draw
+ * nothing — the plain track underneath is the "no route" picture. */
+const LiveRoute = memo(function LiveRoute({
+  cells,
+  element,
+  hidden,
+}: {
+  cells: LiveCells;
+  element: RouteElement;
+  hidden: ReadonlyArray<TrackPathElement>;
+}): JSX.Element | null {
+  const set = useCell<boolean>(cells, routeCell(element.id)) === true;
+  return set ? renderSetRoute(element, hidden) : null;
+});
+
+/** The drawn elements, as one memoised child, so a render of the renderer itself (for a live
+ * update) does not even walk the list. */
+const MapContent = memo(function MapContent({
+  nodes,
+}: {
+  nodes: ReadonlyArray<JSX.Element | null>;
+}): JSX.Element {
+  return <>{nodes}</>;
 });
 
 /** An element that never changes while the map is shown — drawn once per bundle. Anything with
@@ -1223,7 +1352,10 @@ export function MapRenderer({
   function viewChanged(): void {
     const { w, h } = windowSize();
     const box = viewToViewBox(view.current!, w, h);
-    svgRef.current?.setAttribute("data-view", `${box.x} ${box.y} ${box.width} ${box.height}`);
+    // Milestone 94: published on the scroll container, not the SVG — an attribute write on the
+    // SVG made Chrome repaint the whole map on every scroll step.
+    scrollRef.current?.setAttribute("data-view", `${box.x} ${box.y} ${box.width} ${box.height}`);
+    maybeRecull(box);
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(
       () => writeSavedView(bundle.mapId, box),
@@ -1243,11 +1375,58 @@ export function MapRenderer({
     viewChanged();
   }
 
-  function setView(next: MapView): void {
+  // Milestone 94 (fix 3): a wheel or pinch zoom is first shown by scaling the drawing already on
+  // screen (a compositor transform: no layout, no repaint), and drawn at its real size once the
+  // gesture has rested for `ZOOM_SETTLE_MS`. Zooming used to re-lay out and repaint every element
+  // on every step (211 ms per step on a 20k-element map).
+  const zoomSettleTimer = useRef<number | undefined>(undefined);
+
+  function clearZoomPreview(): void {
+    const svg = svgRef.current;
+    if (svg && svg.style.transform) {
+      svg.style.transform = "";
+      svg.style.willChange = "";
+    }
+  }
+
+  function previewView(next: MapView): void {
     const { w, h } = windowSize();
     view.current = { ...next, scale: clampScale(next.scale, w, h, world) };
-    if (view.current.scale !== scale) setScale(view.current.scale);
-    else applyScroll();
+    const v = view.current;
+    const svg = svgRef.current;
+    const el = scrollRef.current;
+    if (svg && el) {
+      // Move and scale the drawing (made at the drawn scale) so map point (cx, cy) sits in the
+      // middle of the window at the new scale. The SVG starts after the half-window padding.
+      const k = v.scale / renderedScale.current;
+      const tx = w / 2 - windowPx.w / 2 + el.scrollLeft - (v.cx - world.x) * v.scale;
+      const ty = h / 2 - windowPx.h / 2 + el.scrollTop - (v.cy - world.y) * v.scale;
+      svg.style.transformOrigin = "0 0";
+      svg.style.willChange = "transform";
+      svg.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
+    }
+    viewChanged();
+    window.clearTimeout(zoomSettleTimer.current);
+    zoomSettleTimer.current = window.setTimeout(settleZoom, ZOOM_SETTLE_MS);
+  }
+
+  /** Draws a previewed zoom at its real size; the layout effect below drops the transform in the
+   * same frame. */
+  function settleZoom(): void {
+    window.clearTimeout(zoomSettleTimer.current);
+    zoomSettleTimer.current = undefined;
+    const v = view.current!;
+    if (v.scale !== renderedScale.current) setScale(v.scale);
+    else {
+      clearZoomPreview();
+      applyScroll();
+    }
+  }
+
+  /** Before anything that reads or moves the scroll position, which only means anything at the
+   * drawn scale. */
+  function settlePendingZoom(): void {
+    if (zoomSettleTimer.current !== undefined) settleZoom();
   }
 
   // Once mounted: measure the real window, and settle the starting view for it (a first-ever
@@ -1278,8 +1457,10 @@ export function MapRenderer({
   const renderedScale = useRef(scale);
   useLayoutEffect(() => {
     renderedScale.current = scale;
+    clearZoomPreview();
     applyScroll();
   }, [scale, windowPx.w, windowPx.h]);
+  useEffect(() => () => window.clearTimeout(zoomSettleTimer.current), []);
 
   function onScroll(): void {
     const el = scrollRef.current;
@@ -1300,6 +1481,19 @@ export function MapRenderer({
   // sideways swipe (or shift+wheel) is left to the browser, so it scrolls natively. A real,
   // non-passive listener, because React's synthetic onWheel is passive and can't preventDefault.
   const pendingZoom = useRef<{ factor: number; dx: number; dy: number } | null>(null);
+  // The latest render's zoom step, so the listener below can be registered once.
+  const zoomStep = useRef<(pending: { factor: number; dx: number; dy: number }) => void>(
+    () => undefined,
+  );
+  zoomStep.current = (pending) => {
+    const v = view.current!;
+    const { w, h } = windowSize();
+    const target = clampScale(v.scale * pending.factor, w, h, world);
+    previewView(zoomAroundPoint(v, pending.dx, pending.dy, target));
+  };
+  // Milestone 94: registered once per mount. It used to be re-added on every render, and adding a
+  // blocking wheel listener makes Chrome recompute the scroller's hit-test regions — a repaint of
+  // the whole map on every live update, even one that changed nothing on screen.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1308,11 +1502,7 @@ export function MapRenderer({
       frame = 0;
       const pending = pendingZoom.current;
       pendingZoom.current = null;
-      if (!pending) return;
-      const v = view.current!;
-      const { w, h } = windowSize();
-      const target = clampScale(v.scale * pending.factor, w, h, world);
-      setView(zoomAroundPoint(v, pending.dx, pending.dy, target));
+      if (pending) zoomStep.current(pending);
     }
     function onWheel(event: WheelEvent): void {
       if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
@@ -1335,7 +1525,7 @@ export function MapRenderer({
       el.removeEventListener("wheel", onWheel);
       if (frame) cancelAnimationFrame(frame);
     };
-  });
+  }, []);
 
   function pointerDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {
     return Math.hypot(a.x - b.x, a.y - b.y);
@@ -1347,6 +1537,7 @@ export function MapRenderer({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    settlePendingZoom();
     // Deliberately no setPointerCapture here (tried it, reverted 2026-08-11): capturing on
     // every pointerdown — including a plain tap that lands on a berth — broke the click event a
     // berth's own onClick depends on to open the popup.
@@ -1382,7 +1573,7 @@ export function MapRenderer({
         { startDistance: g.startDistance, origin: viewToViewBox(g.origin, w, h) },
         pointerDistance(a!, b!),
       );
-      if (next) setView({ ...g.origin, scale: viewBoxToView(next, w, h).scale });
+      if (next) previewView({ ...g.origin, scale: viewBoxToView(next, w, h).scale });
       return;
     }
     if (g?.kind === "drag" && activePointers.current.size === 1) {
@@ -1397,6 +1588,7 @@ export function MapRenderer({
   }
 
   function onPointerUp(event: React.PointerEvent<HTMLDivElement>): void {
+    if (gesture.current?.kind === "pinch") settlePendingZoom();
     activePointers.current.delete(event.pointerId);
     gesture.current = null;
     setGrabbing(false);
@@ -1483,62 +1675,95 @@ export function MapRenderer({
   // left y. Worked out once per bundle — for a berth with no bound track it searches every track.
   const berthRects = useMemo(() => {
     const rects = new Map<string, ReturnType<typeof berthRenderRect>>();
+    const tracks = horizontalTrackIndex(bundle.elementsById);
     for (const element of elements) {
       if (element.type === "berth")
-        rects.set(element.id, berthRenderRect(element, bundle.elementsById));
+        rects.set(element.id, berthRenderRect(element, bundle.elementsById, tracks));
     }
     return rects;
   }, [elements, bundle]);
 
   const selectBerth = useCallback((id: string) => setSelectedElementId(id), []);
 
-  // The map's content. Re-evaluated only when live state (or the bundle) changes — never on a
-  // scroll or zoom — and even then static elements are reused as-is.
+  // Milestone 94 (fix 2): a large map draws only what is within about a window of the view.
+  const cullIndex = useMemo(
+    () => (elements.length >= CULL_MIN_ELEMENTS ? buildCullIndex(elements, berthRects) : null),
+    [elements, berthRects],
+  );
+  const cullIndexRef = useRef(cullIndex);
+  cullIndexRef.current = cullIndex;
+  // Culled from the first render, at the starting view (the window is measured just after, and
+  // the region renewed then if it needs to be), so a large map never mounts in full.
+  const [cullRegion, setCullRegion] = useState<Box | null>(() =>
+    cullIndex ? cullRegionFor(viewToViewBox(view.current!, NOMINAL_WIDTH, NOMINAL_HEIGHT)) : null,
+  );
+  const cullRegionRef = useRef<Box | null>(cullRegion);
+
+  function maybeRecull(box: ViewBox): void {
+    if (!cullIndexRef.current || !needsRecull(cullRegionRef.current, box)) return;
+    cullRegionRef.current = nextCullRegion(cullRegionRef.current, box);
+    const region = cullRegionRef.current;
+    // A low-priority render, worked on between frames, so a drag or zoom never waits for it; the
+    // margin already drawn round the view covers the moment until it lands.
+    startTransition(() => setCullRegion(region));
+  }
+
+  // What is drawn, in paint order: worked out when the region changes, so a live update walks
+  // only the drawn elements.
+  const drawList = useMemo(() => {
+    if (!cullIndex || !cullRegion) return elements;
+    const visible = cullIndex.query(cullRegion);
+    return elements.filter((element) => visible.has(element.id));
+  }, [elements, cullIndex, cullRegion]);
+
+  // Labels and boundaries read the playback position when clicked (see boundaryClickHandler).
+  const playbackLinkRef = useRef(playbackLink);
+  playbackLinkRef.current = playbackLink;
+  const getPlaybackLink = useCallback(() => playbackLinkRef.current, []);
+
+  // Milestone 94 (fix 4): live state reaches each element through its own cell. The records
+  // are compared with the last ones after every render and only the cells that differ are
+  // updated, so a live update re-renders the changed elements and nothing else.
+  const berthsInfo = useMemo(() => berthInfo(elements), [elements]);
+  const liveRecords: LiveRecords = { berths, signals, crossings, routes, trts, delayBands };
+  const synced = useRef<SyncedRecords | null>(null);
+  const cells = useMemo(() => {
+    const created = new LiveCells();
+    synced.current = syncCells(created, berthsInfo, null, liveRecords);
+    return created;
+    // Created once per element set; later changes arrive through the layout effect below.
+  }, [berthsInfo]);
+  useLayoutEffect(() => {
+    synced.current = syncCells(cells, berthsInfo, synced.current, liveRecords);
+  });
+
+  // The map's content: rebuilt only when the bundle, the drawn region or a display setting
+  // changes — never for a live update, a scroll or a zoom step.
   const content = useMemo(
     () =>
-      elements.map((element) => {
+      drawList.map((element) => {
         if (staticNodes.has(element.id)) return staticNodes.get(element.id)!;
         if (element.type === "berth") {
-          const rawDescription = berths[element.id]?.description;
-          // Opt-in TD-area fringe pairs (2026-09-11 owner request, BerthElementSchema.inhibitedBy):
-          // when the berth this one is inhibited by currently shows the identical description,
-          // render this berth exactly as if vacant. Purely cosmetic — live state, history and
-          // playback all keep this berth's real data untouched; only what gets drawn changes.
-          const inhibiting = element.inhibitedBy ? berths[element.inhibitedBy] : undefined;
-          const description =
-            rawDescription && rawDescription === inhibiting?.description
-              ? undefined
-              : rawDescription || undefined;
-          // ADR 0004 D5: a vacant berth can be hidden entirely (berthmaps style).
-          if (!description && !showEmptyBerths) return null;
           return (
-            <BerthNode
+            <LiveBerth
               key={element.id}
+              cells={cells}
               id={element.id}
               rect={berthRects.get(element.id)!}
-              description={description}
-              delayBand={description ? delayBands[element.id] : undefined}
               fontSize={element.fontSize}
+              showEmpty={showEmptyBerths}
               onSelect={selectBerth}
             />
           );
         }
         if (element.type === "signal") {
-          const node = (
-            <SignalNode
+          return (
+            <LiveSignal
               key={element.id}
+              cells={cells}
               element={element}
-              state={signals[element.id]?.state ?? "blank"}
               showNumber={showSignalNumbers}
             />
-          );
-          // Milestone 92: the TRTS dot rides with its signal, only while lit.
-          if (trts[element.id]?.state !== "lit") return node;
-          return (
-            <g key={element.id}>
-              {node}
-              <TrtsDot signal={element} />
-            </g>
           );
         }
         if (element.type === "label") {
@@ -1550,7 +1775,7 @@ export function MapRenderer({
             element.adjacentMapSlug,
             element.adjacentBoundaryName,
             element.text,
-            playbackLink,
+            getPlaybackLink,
           );
           return (
             <text
@@ -1574,12 +1799,10 @@ export function MapRenderer({
           );
         }
         if (element.type === "levelCrossing") {
-          return renderLevelCrossing(element, crossings[element.id]?.state ?? "blank");
+          return <LiveCrossing key={element.id} cells={cells} element={element} />;
         }
         if (element.type === "route") {
-          // Milestone 64 / ADR 0016: drawn only while its bound bit says it is set. Blank and
-          // unset draw nothing — the plain track underneath is the "no route" picture.
-          return routes[element.id]?.state === "set" ? renderSetRoute(element, hidden) : null;
+          return <LiveRoute key={element.id} cells={cells} element={element} hidden={hidden} />;
         }
         if (element.type === "boundary") {
           // Legacy — superseded by `label`'s adjacent* fields (see boundaryClickHandler);
@@ -1588,7 +1811,7 @@ export function MapRenderer({
             element.adjacentMapSlug,
             element.adjacentBoundaryName,
             element.name,
-            playbackLink,
+            getPlaybackLink,
           );
           return (
             <g
@@ -1606,21 +1829,14 @@ export function MapRenderer({
         return null;
       }),
     [
-      elements,
+      drawList,
       staticNodes,
       berthRects,
-      berths,
-      signals,
-      crossings,
-      routes,
-      trts,
+      cells,
       hidden,
       showEmptyBerths,
       showSignalNumbers,
-      delayBands,
-      playbackLink?.atIso,
-      playbackLink?.speed,
-      playbackLink?.playing,
+      getPlaybackLink,
       selectBerth,
     ],
   );
@@ -1698,7 +1914,7 @@ export function MapRenderer({
             height={world.height * scale}
             style={{ background: "#0d1117", overflow: "visible" }}
           >
-            {content}
+            <MapContent nodes={content} />
             {highlight}
           </svg>
         </div>

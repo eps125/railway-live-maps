@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:build": "vite build -c bench/vite.config.ts",
+    "bench": "node bench/run.mjs"
   },
   "dependencies": {
     "@railway/domain": "workspace:*",

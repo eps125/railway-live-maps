@@ -14,6 +14,8 @@ export interface UseMapDataResult {
   connectionStatus: LiveConnectionStatus;
   /** Milestone 82: delay-banded berths from the live socket (empty until its first snapshot). */
   delays: BerthDelay[];
+  /** Milestone 94: changes when the live records are patched in place (see recordChanges.ts). */
+  liveRevision: number;
 }
 
 const NO_DELAYS: BerthDelay[] = [];
@@ -120,5 +122,6 @@ export function useMapData(slug: string): UseMapDataResult {
     connectionStatus: live.connectionStatus,
     // Kept through a socket drop: the last known bands beat none while it reconnects.
     delays: live.delays ?? NO_DELAYS,
+    liveRevision: live.revision,
   };
 }

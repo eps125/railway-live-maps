@@ -4,6 +4,7 @@ import Konva from "konva";
 import {
   MAP_STYLE,
   berthRenderRect,
+  horizontalTrackIndex,
   bufferStopBounds,
   bufferStopDrawing,
   computeBoundingBox,
@@ -1322,6 +1323,8 @@ export function EditorCanvas({
   // consumes — see docs there for the layer-order/zIndex band math.
   const layersById = new Map(doc.layers.map((layer) => [layer.id, layer]));
   const elementsMap = new Map(doc.elements.map((element) => [element.id, element]));
+  // Milestone 94: built once per render so each unbound berth checks only the tracks at its height.
+  const trackIndex = horizontalTrackIndex(elementsMap);
   // Combined berths (owner request 2026-09-17, docs/MAP_EDITOR_SPEC.md's berth section): more
   // than one tdBerth binding sharing an elementId. Editor-only visual cue (a dashed outline
   // instead of solid) so the author can tell at a glance which boxes are a split-berth group —
@@ -1595,7 +1598,7 @@ export function EditorCanvas({
               // ADR 0004 D1: the box is drawn centred on its bound track. The Group stays at the
               // authored x/y (so drag + Transformer resize math is unchanged); `yOffset` is a
               // purely visual nudge of the Rect/Text inside it.
-              const centred = berthRenderRect(element, elementsMap);
+              const centred = berthRenderRect(element, elementsMap, trackIndex);
               const yOffset = centred.y - element.y;
               return (
                 <Group

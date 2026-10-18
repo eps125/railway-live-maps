@@ -87,6 +87,75 @@ describe("useLiveMapSocket", () => {
     await waitFor(() => expect(result.current.berths?.["berth-1"]?.description).toBe("1B99"));
   });
 
+  it("applies a burst of deltas in one render per frame, latest value per element (Milestone 94)", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      return useLiveMapSocket("lancaster");
+    });
+    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
+    await waitFor(() => expect(result.current.connectionStatus).toBe("live"));
+    const before = renders;
+    const berthsBefore = result.current.berths;
+
+    act(() => {
+      for (let i = 0; i < 20; i += 1) {
+        FakeWebSocket.instances[0]!.sendFromServer({
+          type: "berth.updated",
+          sequence: 11 + i,
+          eventAt: "2026-08-05T12:01:00.000Z",
+          elementId: `berth-${i % 3}`,
+          tdArea: "ZZ",
+          berth: "0001",
+          description: `1B${String(i).padStart(2, "0")}`,
+          enteredAt: "2026-08-05T12:01:00.000Z",
+        });
+      }
+      FakeWebSocket.instances[0]!.sendFromServer({
+        type: "berth.cleared",
+        sequence: 31,
+        eventAt: "2026-08-05T12:01:00.000Z",
+        elementId: "berth-2",
+        tdArea: "ZZ",
+        berth: "0002",
+      });
+    });
+    // Nothing is applied until the frame.
+    expect(result.current.berths?.["berth-0"]).toBeUndefined();
+    const revisionBefore = result.current.revision;
+    await waitFor(() => expect(result.current.sequence).toBe(31));
+    expect(renders - before).toBe(1);
+    expect(result.current.berths?.["berth-0"]?.description).toBe("1B18");
+    expect(result.current.berths?.["berth-1"]?.description).toBe("1B19");
+    expect(result.current.berths?.["berth-2"]).toEqual({ description: null, enteredAt: null });
+    // Patched in place (the record keeps its identity); the revision says it changed.
+    expect(result.current.berths).toBe(berthsBefore);
+    expect(result.current.revision).toBe(revisionBefore + 1);
+  });
+
+  it("a snapshot supersedes deltas still waiting for the frame (Milestone 94)", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result } = renderHook(() => useLiveMapSocket("lancaster"));
+    act(() => {
+      FakeWebSocket.instances[0]!.sendFromServer(snapshot);
+      FakeWebSocket.instances[0]!.sendFromServer({
+        type: "berth.updated",
+        sequence: 11,
+        eventAt: "2026-08-05T12:01:00.000Z",
+        elementId: "berth-1",
+        tdArea: "ZZ",
+        berth: "0001",
+        description: "STALE",
+        enteredAt: "2026-08-05T12:01:00.000Z",
+      });
+      FakeWebSocket.instances[0]!.sendFromServer({ ...snapshot, sequence: 12 });
+    });
+    await waitFor(() => expect(result.current.sequence).toBe(12));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(result.current.berths?.["berth-1"]?.description).toBe("1A23");
+  });
+
   it("applies a signal.updated delta (Milestone 36b)", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const { result } = renderHook(() => useLiveMapSocket("blackpool"));

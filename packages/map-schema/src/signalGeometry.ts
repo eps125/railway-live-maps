@@ -1,6 +1,6 @@
 import type { MapElement, SignalElement } from "./document.js";
 import { stopBoardParts, type DrawPrimitive } from "./drawing.js";
-import { berthRenderRect, type Rect } from "./geometry.js";
+import { berthRenderRect, horizontalTrackIndex, type Rect } from "./geometry.js";
 import { MAP_STYLE } from "./style.js";
 
 /**
@@ -148,9 +148,10 @@ export type SignalDirectionDecision =
  * all tracks for its row, so this must not run per signal). */
 export function berthBoxes(elements: ReadonlyArray<MapElement>): Rect[] {
   const byId = new Map(elements.map((e) => [e.id, e]));
+  const tracks = horizontalTrackIndex(byId);
   const boxes: Rect[] = [];
   for (const element of elements) {
-    if (element.type === "berth") boxes.push(berthRenderRect(element, byId));
+    if (element.type === "berth") boxes.push(berthRenderRect(element, byId, tracks));
   }
   return boxes;
 }

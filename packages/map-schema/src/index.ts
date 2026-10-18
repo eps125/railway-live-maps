@@ -81,6 +81,8 @@ export {
 } from "./signalGeometry.js";
 export {
   berthRenderRect,
+  horizontalTrackIndex,
+  type HorizontalTrackIndex,
   levelCrossingGeometry,
   realisticLevelCrossingGeometry,
   neutralSectionGeometry,

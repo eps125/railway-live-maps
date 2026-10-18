@@ -745,4 +745,8 @@ Playback selects the map version effective at the requested timestamp.
 
 - Editor canvas: Konva/react-konva for selection, transforms and hit testing.
 - Public renderer: SVG for sharp scalable schematic display and direct element interaction.
+  Large maps (1,000 elements or more) draw only the elements within about one window of the
+  view. A wheel or pinch zoom is first shown as a scaled version of the current drawing, then
+  redrawn at its real size once the gesture rests. Live updates re-render only the elements they
+  change (Milestone 94). Map size has no hard limit.
 - Maintain visual regression fixtures for each symbol in both renderers.

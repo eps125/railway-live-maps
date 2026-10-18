@@ -4787,3 +4787,195 @@ the events plus a windowed repair of occupancy and S-Class history.
       that recovered rows are never folded.
 - [ ] Run inside the production worker container: dry run, then `--execute` with the owner's go.
 - [ ] Verify the repaired window; feed_gap note.
+
+## Milestone 94 — How the public map scales with map size (2026-10-18)
+
+Owner question: is there a limit to map size? Traksy maps are huge and show no lag. Code reading
+found no hard limit. Every element is always in the DOM (no culling), the map is served as one
+flattened document even when it is built from modules (ADR 0019), and the work done for each live
+delta grows with the element count. This milestone measured first, then made the five fixes the owner
+approved (below).
+
+- [x] Synthetic bundle generator `apps/web/src/bench/syntheticMap.ts` (with tests), shaped like the
+      real Carlisle bundle: 2-point track segments, 40 × 20 berths with no `trackElementId` (none of
+      Carlisle's 279 berths has one), ADR 0017 signals on posts, and labels, in a 30/30/30/10 mix.
+- [x] Bench page `apps/web/bench/` (`pnpm --filter @railway/web bench:build`, then
+      `pnpm --filter @railway/web bench`). This is a production build of the real `MapView`, using
+      React's profiling build so `<Profiler>` reports commit times. `fetch` and `WebSocket` are
+      stubbed. A Node driver controls a windowed Chrome 155 over the DevTools protocol. Main-thread
+      time comes from Chrome traces (the union of top-level tasks on `CrRendererMain`); frame
+      intervals come from `requestAnimationFrame` in an untraced repeat. `--bundle name=path` adds
+      a real bundle. The Carlisle row used `carlisle-psb` v76, exported read-only and kept out of
+      the repository.
+- [x] Measured on desktop (1400 × 950 window) and on a "mobile" profile (390 × 844 at DPR 3, 4×
+      CPU throttle) at about 1.5k, 5k, 10k and 20k elements, plus real Carlisle.
+
+### Results (2026-10-18, one Windows laptop, Chrome 155)
+
+"Delta" means one `berth.cleared` or `berth.updated` message. It covers all main-thread work until
+the next frame: message handling, React, style, layout, paint and compositor commit. The burst is
+50 deltas/s for 5 s, each delta its own task, as socket messages arrive. Zoom is one 100 px wheel
+step per frame for 60 frames. Pan is one 60 px scroll per frame for 60 frames. Frame intervals are
+p50 / p95 in ms. The idle frame interval on this machine was 16.6–23 ms, because the display
+sometimes ran below 60 Hz.
+
+| Profile | Map       | Elements | SVG nodes | Definition KB (gzip) | Snapshot KB (gzip) | Mount ms (of it React) | 1 delta: main ms (React) | 50/s: main busy %, frames | Zoom: main ms/step, frames | Pan: main ms/step, frames |
+| ------- | --------- | -------: | --------: | -------------------: | -----------------: | ---------------------: | -----------------------: | ------------------------: | -------------------------: | ------------------------: |
+| desktop | Carlisle  |    1,341 |     3,426 |             327 (40) |             50 (6) |              615 (302) |               15.6 (2.4) |             44 %, 23 / 26 |                14, 24 / 49 |              1.4, 22 / 25 |
+| desktop | synthetic |    1,500 |     4,350 |             245 (23) |             38 (4) |              290 (188) |               13.6 (2.2) |             38 %, 22 / 25 |                11, 22 / 25 |              2.0, 23 / 25 |
+| desktop | synthetic |    5,000 |    14,500 |             823 (74) |           128 (13) |          1,932 (1,749) |                 54 (6.5) |             87 %, 25 / 50 |                47, 25 / 75 |              4.0, 21 / 25 |
+| desktop | synthetic |   10,000 |    29,000 |          1,645 (140) |           259 (25) |        10,524 (10,045) |                 129 (17) |           100 %, 50 / 150 |             147, 100 / 250 |               12, 17 / 67 |
+| desktop | synthetic |   20,000 |    58,000 |          3,273 (268) |           520 (48) |        45,951 (44,846) |                 204 (24) |           100 %, 83 / 283 |             211, 183 / 416 |               13, 17 / 67 |
+| mobile  | Carlisle  |    1,341 |     3,426 |             327 (40) |             50 (6) |          2,961 (1,741) |                 108 (12) |           100 %, 50 / 167 |               83, 67 / 150 |              7.4, 17 / 17 |
+| mobile  | synthetic |    1,500 |     4,350 |             245 (23) |             38 (4) |          3,026 (1,889) |                 194 (17) |           100 %, 50 / 266 |             113, 100 / 167 |              9.9, 17 / 17 |
+| mobile  | synthetic |    5,000 |    14,500 |             823 (74) |           128 (13) |     105,367 (90,937)\* |                 612 (76) |        100 %, 266 / 1,348 |           413, 499 / 1,281 |               15, 17 / 17 |
+| mobile  | synthetic |   10,000 |    29,000 |          1,645 (140) |           259 (25) |        65,929 (62,175) |                 454 (51) |          100 %, 266 / 732 |           557, 549 / 1,131 |              9.4, 17 / 17 |
+| mobile  | synthetic |   20,000 |    58,000 |          3,273 (268) |           520 (48) |      293,265 (281,222) |              1,360 (195) |        100 %, 399 / 2,645 |       1,122, 1,331 / 3,178 |               15, 17 / 17 |
+
+\* Single run, inconsistent with the 10k row (probably machine noise under throttling). Rows of 10k
+and over are single mounts; the rest are the median of three.
+
+With "Delay colours" on (`matchDelayBands` running on every berth change), per-delta time was
+within run-to-run noise of the rows above at every size. For example, desktop 20k was 212 ms
+(React 32 ms) and mobile Carlisle was 120 ms (React 11 ms).
+
+For scale: Traksy's ~10,700 SVG nodes sits between our 1.5k and 5k rows. Carlisle draws 3,426.
+
+### What the numbers say
+
+1. **Mount is quadratic, and it is the renderer's own JavaScript.** `berthRenderRect` searches
+   every track for each berth with no `trackElementId`, and `Object.values` re-allocates the
+   element list on every call. That is true of every berth on Carlisle. In Node, the search alone
+   took 0.2 s at 1.5k, 3.1 s at 5k, 13 s at 10k and 59 s at 20k. It accounts for most of the
+   React mount time in the table.
+2. **A live delta costs whole-map browser work, not React work.** At 5k desktop, one delta was
+   ~54 ms of main thread. React was 6.5 ms of that. Paint, PrePaint, Layerize and the compositor
+   commit made up most of the rest, because the whole SVG is one paint layer: changing one berth
+   re-walks, re-layers and re-commits the display list of every node. Hover hit-testing after the
+   change added a few ms. This grows with total SVG nodes, whatever changed. Above ~5k elements on
+   desktop, and at Carlisle size on the mobile profile, 50 deltas/s saturates the main thread.
+3. **React's share grows linearly but is secondary.** Each WebSocket message is its own
+   `setState` copying the whole record. The `content` memo re-runs over every element, labels,
+   routes, crossings and boundaries are rebuilt each time, and `MapView` re-renders. This cost
+   2.2 ms at 1.5k and 24 ms at 20k on desktop, and 12–195 ms on mobile. `matchDelayBands` was not
+   measurable on top of that.
+4. **Zoom is layout plus paint of everything.** React is under 2 ms. Changing the SVG's pixel size
+   re-lays out and repaints every node: 11 ms per step at 1.5k, 47 ms at 5k and 211 ms at 20k on
+   desktop.
+5. **Pan holds up best.** It is native scroll: frame p50 stays at vsync everywhere, with p95
+   dropping to ~67 ms at 10k and above on desktop. Main-thread time per step, 1.4–15 ms, is
+   probably the scroll handler's `data-view` attribute write and hover hit-testing (not yet traced).
+6. **Payloads are not the problem.** At 20k elements the definition is 3.3 MB raw (268 KB gzip)
+   and the snapshot is 520 KB (48 KB gzip).
+
+Limits: one machine. The mobile profile is CPU throttling plus DPR 3, not a real phone. GPU-process
+raster was not captured (Chrome rasterises in the GPU process), so frame intervals are the only
+view of it. The profiling build and tracing add a little overhead.
+
+### Proposed fixes, ranked by gain (as proposed before approval)
+
+1. **Spatial index for the berth nearest-track search** (`map-schema`, shared with the editor).
+   Bucket horizontal tracks by x range once per bundle, and keep the current tie-break and
+   tolerance exactly, so every berth lands where it does today. Expected mount: 10k from 10.5 s to
+   under 1 s, 20k from 46 s to about 1–2 s; mobile proportionally. This is the lowest-risk, highest
+   gain change, and it also speeds up the editor.
+2. **Viewport culling above a size threshold.** Render only elements whose bounds meet the window
+   plus about one screen of margin. Re-cull when a scroll settles, on zoom, and when the margin is
+   crossed, with hysteresis so a drag stays native scroll. This targets the dominant per-delta and
+   per-zoom browser cost, making it O(visible) rather than O(map). At the default zoom it should
+   hold any map near the Carlisle row. When zoomed far out, everything is visible again; a
+   level-of-detail step, such as dropping berth text below a readable size, would cover that.
+   Medium complexity; needs tests for centring, boundary links, popups and highlights.
+3. **Zoom via CSS transform during the gesture.** Scale the drawn SVG with a compositor transform
+   while the wheel or pinch is active, then commit the real size, with one relayout and repaint,
+   about 150 ms after it stops. Each zoom step becomes compositor-only. Medium complexity.
+4. **Per-element subscriptions plus per-frame batching** (`useSyncExternalStore` store fed by the
+   socket; deltas applied once per animation frame). A delta re-renders only its own node; labels,
+   routes and crossings become memoised nodes; `matchDelayBands` is recomputed once per frame and
+   only for changed descriptions. This removes the React share: up to ~24 ms desktop and ~195 ms
+   mobile per delta at 20k. On its own it does not touch the larger browser paint cost.
+5. **Pan: stop writing `data-view` to the SVG on every scroll event.** Keep the view in a ref and
+   publish it to tests another way. This is a small, cheap change, but it should first be
+   confirmed with a trace.
+
+Fixes 1, 4 and 5 are independent of each other. Fix 2 is where large maps get most of their gain,
+and fix 3 complements it.
+
+### Fixes (owner approved all five, 2026-10-18; implemented)
+
+- [x] **1. Spatial index for the berth nearest-track search.** `horizontalTrackIndex` in
+      `map-schema/geometry.ts` buckets horizontal tracks by **y**, not x as first proposed.
+      `pointOnPathAtX` clamps to a track's end, so any track at the berth's height is a candidate
+      wherever it lies along the line. Candidates are visited in the old order, so ties resolve as
+      before. A test checks 400 random berths against the old full search. Used by the public
+      renderer, the editor canvas and both signal tools.
+- [x] **2. Viewport culling** (`apps/web/src/map/culling.ts`) for maps of 1,000 elements or more.
+      Only elements whose estimated drawing meets the view plus a margin are drawn. The margin is
+      one window, but at least 1,000 × 600 map units. Element types with unknown bounds are always
+      drawn. The region is renewed when the view comes within half a window of its edge, or on a
+      large zoom. It grows along a drag rather than moving, up to 1.5 times its normal size, so
+      dragging back and forth does not redraw. The renewal render is a React transition, so it never
+      holds up a frame. Culling is drawing only: live state, the popup, search centring, boundary
+      links and highlights all work from the bundle.
+- [x] **3. Zoom via a compositor transform.** While the wheel or pinch moves, the current drawing is
+      scaled with a CSS transform; it is drawn at the real size `ZOOM_SETTLE_MS` (150 ms) after the
+      gesture rests, or straight away when a drag starts. The preview matched the settled drawing
+      within 0.5 px in Chrome, at off-centre pointers and in both directions.
+- [x] **4. Live updates touch only what changed.** `useLiveMapSocket` applies deltas once per
+      animation frame, keeping the latest value per element. It patches its records in place with a
+      change log (`recordChanges.ts`) instead of copying them per message; copying a 6,000-berth
+      record costs about 10 ms in V8. The hook exposes `revision`, which the delay-band memo depends
+      on. `MapRenderer` feeds each element its own cell (`liveCells.ts`, `useSyncExternalStore`), and
+      the drawn list is one memoised child, so an update re-renders only the changed elements. Labels
+      read the playback position when clicked, so they no longer redraw on every playback tick.
+- [x] **5. `data-view` moved from the SVG to the scroll container.**
+- [x] **Found while measuring:** the wheel listener effect had no dependency list, so it was
+      removed and re-added on every render. Adding a blocking wheel listener makes Chrome recompute
+      the scroller's hit-test regions, which repainted the whole map on every live update, even an
+      off-screen one. It is now registered once per mount.
+
+Bench changes: `BENCH_NO_PROFILER=1` builds with plain production React, because the profiling
+build's per-component timing inflated the earlier numbers. Other additions are deltas aimed only at
+on-screen berths, a zoom-settle measurement, a per-case time limit, and `--probe` for one-off
+traces and CPU profiles.
+
+### Results after the fixes (main-thread time, plain production React)
+
+Desktop: the old renderer (last commit's code) and the new one were run back to back, 2026-10-18
+11:55–12:25. For the new renderer, "1 delta" is a berth step on screen; one off screen costs almost
+nothing. "Settle" is the single full redraw once a zoom gesture rests.
+
+| Desktop  | Mount         | 1 delta     | 50 deltas/s: main busy | Zoom step (settle) | Pan step     |
+| -------- | ------------- | ----------- | ---------------------- | ------------------ | ------------ |
+| Carlisle | 474 → 570 ms  | 13.5 → 8 ms | 55 → 14 %              | 10.5 → 2.7 ms      | 2.0 → 1.5 ms |
+| 1.5k     | 410 → 69 ms   | 20 → 8 ms   | 61 → 26 %              | 15 → 4.7 ms        | 3.8 → 1.3 ms |
+| 5k       | 2.4 s → 0.2 s | 39 → 16 ms  | 96 → 29 %              | 37 → 6.8 ms        | 4.2 → 1.5 ms |
+| 10k      | 8.7 s → 0.4 s | 73 → 16 ms  | 100 → 40 %             | 73 → 11 ms         | 9.8 → 2.2 ms |
+| 20k      | 38 s → 0.9 s  | 136 → 25 ms | 100 → 52 %             | 147 → 15 ms        | 8.4 → 2.8 ms |
+
+Mobile profile, old and new back to back, about 13:40. The machine was about 1.5–2 times slower
+than in the morning, so compare within this table only.
+
+| Mobile   | Mount       | 1 delta     | 50 deltas/s: main busy | Zoom step (settle)        | Pan step   |
+| -------- | ----------- | ----------- | ---------------------- | ------------------------- | ---------- |
+| Carlisle | 3.5 → 1.1 s | 163 → 68 ms | 99 → 96 %              | 146 → 31 ms (351 ms once) | 29 → 21 ms |
+| 1.5k     | 4.1 → 1.1 s | 216 → 99 ms | 99 → 95 %              | 160 → 31 ms (462 ms once) | 24 → 22 ms |
+
+Earlier mobile runs of the new code at 5k and 10k, before the pan fix below, showed similar
+falls: delta 192 → 34 ms and 373 → 47 ms, zoom 211 → 15 ms and 380 → 13 ms, mount 13 s → 1.4 s and
+47 s → 2.0 s. The 20k mobile case did not finish (stuck page, given up after 24 min), and the final
+code has not been re-measured at 5k and above on mobile.
+
+Pan regression found and fixed: with a one-window margin, a phone's narrow window made a drag
+renew the drawn region every few frames. Pan steps at 5k–10k went from ~15 ms to 47–62 ms. The
+minimum margin, region growth and transition renewal brought mobile Carlisle back below the old
+renderer (above).
+
+Follow-ups:
+
+- Level of detail when zoomed far out, where culling has nothing left to remove.
+- On mobile, 50 deltas/s still keeps the main thread busy; most of what is left is Chrome's paint
+  of the drawn area.
+- Re-measure mobile 5k–20k on a quiet machine.
+- The browser's own find (Ctrl+F) no longer finds text that is off screen on a culled map; the app's
+  place search is unaffected.

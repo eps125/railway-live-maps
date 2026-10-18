@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAP_STYLE } from "./style.js";
 import {
   berthRenderRect,
+  horizontalTrackIndex,
   levelCrossingGeometry,
   neutralSectionGeometry,
   platformNumberGeometry,
@@ -13,7 +14,12 @@ import {
   switchedDiamondGeometry,
   viaductWidth,
 } from "./geometry.js";
-import { MapDocumentSchema, type BerthElement, type MapElement } from "./document.js";
+import {
+  MapDocumentSchema,
+  type BerthElement,
+  type MapElement,
+  type TrackPathElement,
+} from "./document.js";
 
 describe("pointOnPathAtX", () => {
   it("interpolates linearly between the two bracketing vertices", () => {
@@ -162,6 +168,110 @@ describe("berthRenderRect", () => {
     const byId = Object.fromEntries(doc.elements.map((e) => [e.id, e]));
     const b = doc.elements.find((e) => e.id === "b1") as BerthElement;
     expect(berthRenderRect(b, byId).y).toBe(90);
+  });
+});
+
+describe("horizontalTrackIndex (Milestone 94)", () => {
+  /** The pre-Milestone-94 search over every track, kept here as the reference the index must
+   * reproduce exactly — including which track wins a tie. */
+  function referenceRect(b: BerthElement, elements: Record<string, MapElement>) {
+    const cx = b.x + b.width / 2;
+    const cy = b.y + b.height / 2;
+    let best: { points: Array<{ x: number; y: number }>; dist: number } | undefined;
+    if (b.trackElementId && elements[b.trackElementId]?.type === "trackPath") {
+      best = { points: (elements[b.trackElementId] as TrackPathElement).points, dist: 0 };
+    } else {
+      for (const el of Object.values(elements)) {
+        if (el.type !== "trackPath") continue;
+        const ys = el.points.map((p) => p.y);
+        if (Math.max(...ys) - Math.min(...ys) > MAP_STYLE.rowPitch) continue;
+        const ty = pointOnPathAtX(el.points, cx);
+        if (ty === null) continue;
+        const dist = Math.abs(ty - cy);
+        if (dist <= MAP_STYLE.weldTolerance * 3 && (!best || dist < best.dist))
+          best = { points: el.points, dist };
+      }
+    }
+    const ty = best ? pointOnPathAtX(best.points, cx) : null;
+    return ty === null
+      ? { x: b.x, y: b.y, width: b.width, height: b.height }
+      : { x: b.x, y: ty - b.height / 2, width: b.width, height: b.height };
+  }
+
+  it("places every berth exactly where the full search did, on a random map", () => {
+    let seed = 7;
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    const elements: Record<string, MapElement> = {};
+    for (let i = 0; i < 400; i += 1) {
+      const x = Math.round(rand() * 3000);
+      const y = Math.round(rand() * 40) * 10;
+      // Mostly running lines, some short diagonals and ones that rise a little, all overlapping.
+      const dy = rand() < 0.2 ? Math.round(rand() * 80) : rand() < 0.3 ? 4 : 0;
+      elements[`t${i}`] = {
+        id: `t${i}`,
+        type: "trackPath",
+        layerId: "track",
+        zIndex: 0,
+        points: [
+          { x, y },
+          { x: x + 50 + Math.round(rand() * 400), y: y + dy },
+        ],
+      };
+    }
+    const berths: BerthElement[] = [];
+    for (let i = 0; i < 400; i += 1) {
+      berths.push(
+        berth({
+          x: Math.round(rand() * 3500) - 200,
+          y: Math.round(rand() * 420) - 10,
+          ...(i % 10 === 0 ? { trackElementId: `t${i}` } : {}),
+        }),
+      );
+    }
+    const index = horizontalTrackIndex(elements);
+    let moved = 0;
+    for (const b of berths) {
+      const expected = referenceRect(b, elements);
+      if (expected.y !== b.y) moved += 1;
+      expect(berthRenderRect(b, elements, index)).toEqual(expected);
+      expect(berthRenderRect(b, elements)).toEqual(expected);
+    }
+    // The map is dense enough that most unbound berths really are snapped to a track.
+    expect(moved).toBeGreaterThan(100);
+  });
+
+  it("keeps the first of two equally near tracks, as the full search did", () => {
+    const a: MapElement = {
+      ...track,
+      id: "a",
+      points: [
+        { x: 0, y: 96 },
+        { x: 200, y: 96 },
+      ],
+    };
+    const b: MapElement = {
+      ...track,
+      id: "b",
+      points: [
+        { x: 0, y: 104 },
+        { x: 200, y: 104 },
+      ],
+    };
+    const elements = { a, b };
+    expect(berthRenderRect(berth({ y: 90 }), elements, horizontalTrackIndex(elements)).y).toBe(86);
+  });
+
+  it("ignores tracks with non-finite coordinates instead of hanging", () => {
+    const bad: MapElement = {
+      ...track,
+      id: "bad",
+      points: [
+        { x: 0, y: Infinity },
+        { x: 100, y: Infinity },
+      ],
+    };
+    const index = horizontalTrackIndex({ bad, trk: track });
+    expect(berthRenderRect(berth({ y: 96 }), { bad, trk: track }, index).y).toBe(90);
   });
 });
 

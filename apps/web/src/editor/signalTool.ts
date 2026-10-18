@@ -3,6 +3,7 @@ import {
   applySignalNamePrefix,
   berthBoxes,
   berthRenderRect,
+  horizontalTrackIndex,
   canonicalSAddress,
   defaultSignalDirection,
   SIGNAL_BERTH_SEARCH,
@@ -91,9 +92,10 @@ export function planSignalTool(
 ): SignalToolPlan {
   const boxes = options.setDirections ? berthBoxes(doc.elements) : [];
   const byId = new Map(doc.elements.map((e) => [e.id, e]));
+  const tracks = horizontalTrackIndex(byId);
   // Each berth's drawn box now, and how much each end moves in (negative: out) when resized.
   const berths = doc.elements.flatMap((e) =>
-    e.type === "berth" ? [{ element: e, rect: berthRenderRect(e, byId) }] : [],
+    e.type === "berth" ? [{ element: e, rect: berthRenderRect(e, byId, tracks) }] : [],
   );
   const trims = new Map<string, number>();
   if (options.resizeBerths) {

@@ -13,7 +13,9 @@ import {
   zoomAroundPoint,
   MIN_ZOOM_WIDTH,
   WORLD_MARGIN,
+  ZOOM_SETTLE_MS,
 } from "./MapRenderer.js";
+import { syntheticBundle } from "../bench/syntheticMap.js";
 
 // jsdom has no PointerEvent, so fireEvent.pointer* would build events with no clientX/clientY.
 if (typeof window.PointerEvent === "undefined") {
@@ -349,7 +351,11 @@ describe("MapRenderer", () => {
       <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="station-1" />,
     );
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
+    const [x, y, width, height] = svg
+      .closest(".map-frame__scroll")!
+      .getAttribute("data-view")!
+      .split(" ")
+      .map(Number);
     // Centred means the element's point sits in the middle of the viewBox, not at the
     // bounding-box centre (500, 500) the default view would have used instead.
     expect(x! + width! / 2).toBeCloseTo(900);
@@ -362,7 +368,11 @@ describe("MapRenderer", () => {
       <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="does-not-exist" />,
     );
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
+    const [x, y, width, height] = svg
+      .closest(".map-frame__scroll")!
+      .getAttribute("data-view")!
+      .split(" ")
+      .map(Number);
     expect(x! + width! / 2).toBeCloseTo(500);
     expect(y! + height! / 2).toBeCloseTo(500);
   });
@@ -374,7 +384,11 @@ describe("MapRenderer", () => {
     });
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
+    const [x, y, width, height] = svg
+      .closest(".map-frame__scroll")!
+      .getAttribute("data-view")!
+      .split(" ")
+      .map(Number);
     expect(x! + width! / 2).toBeCloseTo(250);
     expect(y! + height! / 2).toBeCloseTo(300);
   });
@@ -400,7 +414,11 @@ describe("MapRenderer", () => {
       <MapRenderer bundle={doc} berths={{}} signals={{}} centerElementId="station-1" />,
     );
     const svg = container.querySelector("svg")!;
-    const [x, y, width, height] = svg.getAttribute("data-view")!.split(" ").map(Number);
+    const [x, y, width, height] = svg
+      .closest(".map-frame__scroll")!
+      .getAttribute("data-view")!
+      .split(" ")
+      .map(Number);
     expect(x! + width! / 2).toBeCloseTo(900);
     expect(y! + height! / 2).toBeCloseTo(900);
   });
@@ -409,13 +427,13 @@ describe("MapRenderer", () => {
     const doc = bundle();
     const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
-    const initialViewBox = svg.getAttribute("data-view")!;
+    const initialViewBox = svg.closest(".map-frame__scroll")!.getAttribute("data-view")!;
     const initialWidth = Number(initialViewBox.split(" ")[2]);
 
     fireEvent.pointerDown(svg, { pointerId: 1, clientX: 100, clientY: 100 });
     fireEvent.pointerMove(svg, { pointerId: 1, clientX: 60, clientY: 100 });
 
-    const newViewBox = svg.getAttribute("data-view")!;
+    const newViewBox = svg.closest(".map-frame__scroll")!.getAttribute("data-view")!;
     const newWidth = Number(newViewBox.split(" ")[2]);
     // Panning moves x/y, never changes width/height.
     expect(newWidth).toBe(initialWidth);
@@ -1305,6 +1323,8 @@ describe("MapRenderer", () => {
       const scroller = container.querySelector(".map-frame__scroll")!;
       for (let i = 0; i < 4; i++) fireEvent.wheel(scroller, { deltaY: -100 });
       await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      // Milestone 94: decided once the zoom is drawn at its real size.
+      await act(() => new Promise<void>((resolve) => setTimeout(resolve, ZOOM_SETTLE_MS + 50)));
       expect(svg.getAttribute("class")).toBeNull();
     });
   });
@@ -1655,7 +1675,8 @@ describe("MapRenderer", () => {
 });
 
 describe("native scrolling (Milestone 73)", () => {
-  const view = (svg: SVGSVGElement) => svg.getAttribute("data-view")!.split(" ").map(Number);
+  const view = (svg: SVGSVGElement) =>
+    svg.closest(".map-frame__scroll")!.getAttribute("data-view")!.split(" ").map(Number);
 
   it("draws the whole map at a fixed viewBox; a pan moves the view, never the drawing", () => {
     const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 400 } });
@@ -1728,8 +1749,10 @@ describe("native scrolling (Milestone 73)", () => {
     fireEvent.pointerMove(svg, { pointerId: 1, clientX: 250, clientY: 120 });
     const mutations = observer.takeRecords();
     observer.disconnect();
-    // The only change is the published view — no element was touched.
-    expect(mutations.every((m) => m.target === svg && m.attributeName === "data-view")).toBe(true);
+    // Nothing in the drawing changes at all (Milestone 94: the view is published on the scroll
+    // container, since an attribute write on the SVG made Chrome repaint the whole map).
+    expect(mutations).toEqual([]);
+    expect(svg.closest(".map-frame__scroll")!.getAttribute("data-view")).not.toBeNull();
     expect(screen.getByText("1A01")).toBe(text);
   });
 
@@ -1758,11 +1781,40 @@ describe("native scrolling (Milestone 73)", () => {
     fireEvent.wheel(scroller, { deltaY: -100 });
     fireEvent.wheel(scroller, { deltaY: -100 });
     await nextFrame();
-    expect(Number(svg.getAttribute("width"))).toBeCloseTo(width * Math.exp(0.2));
+    // Milestone 94: while the wheel is moving, the drawing on screen is only scaled — not
+    // re-laid out — and the view already reflects the zoom.
+    expect(Number(svg.getAttribute("width"))).toBe(width);
+    expect(Number(/scale\(([^)]+)\)/.exec(svg.style.transform)?.[1])).toBeCloseTo(Math.exp(0.2));
     const after = view(svg);
     expect(after[2]).toBeLessThan(before[2]!);
     // With no measurable pointer offset (jsdom), the middle of the window stays put.
     expect(after[0]! + after[2]! / 2).toBeCloseTo(before[0]! + before[2]! / 2);
+
+    // Once it rests, the map is drawn at the new size and the transform dropped.
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, ZOOM_SETTLE_MS + 50)));
+    expect(Number(svg.getAttribute("width"))).toBeCloseTo(width * Math.exp(0.2));
+    expect(svg.style.transform).toBe("");
+    expect(view(svg)).toEqual(after);
+  });
+
+  it("a drag straight after a wheel zoom draws the zoom first, so the pan starts from it", async () => {
+    const doc = bundle({ boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 400 } });
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const svg = container.querySelector("svg")!;
+    const scroller = container.querySelector(".map-frame__scroll")!;
+    const width = Number(svg.getAttribute("width"));
+    fireEvent.wheel(scroller, { deltaY: -100 });
+    await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    const zoomed = view(svg);
+
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 300, clientY: 100 });
+    expect(Number(svg.getAttribute("width"))).toBeCloseTo(width * Math.exp(0.1));
+    expect(svg.style.transform).toBe("");
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+    const panned = view(svg);
+    expect(panned[2]).toBeCloseTo(zoomed[2]!);
+    expect(panned[0]! - zoomed[0]!).toBeCloseTo(100 * (zoomed[2]! / 1200));
   });
 
   it("restores a view remembered before Milestone 73 (same stored shape)", () => {
@@ -1885,5 +1937,85 @@ describe("elementCenterPoint", () => {
       }),
     ).toBeNull();
     expect(elementCenterPoint(undefined)).toBeNull();
+  });
+});
+
+describe("large maps (Milestone 94)", () => {
+  it("in playback, a boundary label drawn once still links to the current clock", () => {
+    window.history.pushState(null, "", "/map/preston");
+    const doc = bundle({
+      elementsById: {
+        "label-1": {
+          id: "label-1",
+          layerId: "layer-visible",
+          zIndex: 0,
+          type: "label",
+          x: 5,
+          y: 5,
+          text: "To Carlisle",
+          align: "center",
+          fontSize: 12,
+          adjacentMapSlug: "carlisle",
+        },
+      },
+    });
+    const props = { bundle: doc, berths: {}, signals: {} };
+    const { rerender } = render(
+      <MapRenderer
+        {...props}
+        playbackLink={{ atIso: "2026-09-20T10:00:00.000Z", speed: 5, playing: true }}
+      />,
+    );
+    const label = screen.getByText("To Carlisle");
+    rerender(
+      <MapRenderer
+        {...props}
+        playbackLink={{ atIso: "2026-09-20T10:05:00.000Z", speed: 5, playing: false }}
+      />,
+    );
+    // The same node, not redrawn for the new playback position...
+    expect(screen.getByText("To Carlisle")).toBe(label);
+    // ...but its link carries the position as it is now.
+    fireEvent.click(label);
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("at")).toBe("2026-09-20T10:05:00.000Z");
+    expect(params.get("play")).toBeNull();
+  });
+
+  it("draws only what is near the view, and draws more as the view moves there", () => {
+    const doc = syntheticBundle(5000);
+    const berths = {
+      b0: { description: "0L00", enteredAt: null },
+      b75: { description: "7M75", enteredAt: null },
+    };
+    const { container, rerender } = render(
+      <MapRenderer bundle={doc} berths={berths} signals={{}} />,
+    );
+    // The view starts on the middle of a 15,000-unit-wide map, so its left end is not drawn.
+    expect(screen.getByText("7M75")).toBeTruthy();
+    expect(screen.queryByText("0L00")).toBeNull();
+    // Drawn in full there would be 4,500 polylines: 1,500 tracks and two per signal post.
+    expect(container.querySelectorAll("svg[role=img] polyline").length).toBeLessThan(2250);
+
+    // A live update to an undrawn berth is kept, and shown once the view gets there.
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{ ...berths, b0: { description: "0L01", enteredAt: null } }}
+        signals={{}}
+      />,
+    );
+    const scroller = container.querySelector<HTMLElement>(".map-frame__scroll")!;
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+    expect(screen.getByText("0L01")).toBeTruthy();
+    expect(screen.queryByText("7M75")).toBeNull();
+  });
+
+  it("draws every element of a map below the size threshold", () => {
+    const doc = syntheticBundle(900);
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    // 270 tracks and two polylines per signal post: all of them.
+    expect(container.querySelectorAll("svg[role=img] polyline")).toHaveLength(270 + 2 * 270);
   });
 });

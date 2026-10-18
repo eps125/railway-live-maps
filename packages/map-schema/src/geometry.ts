@@ -72,7 +72,11 @@ function isHorizontalish(points: ReadonlyArray<{ x: number; y: number }>): boole
  * map self-corrects because `trackElementId` is already in the compiled bundle. Shared by the
  * public SVG renderer and the editor canvas so both agree (CLAUDE.md rule 13).
  */
-export function berthRenderRect(berth: BerthElement, elements: ElementLookup): Rect {
+export function berthRenderRect(
+  berth: BerthElement,
+  elements: ElementLookup,
+  trackIndex?: HorizontalTrackIndex,
+): Rect {
   const authored: Rect = { x: berth.x, y: berth.y, width: berth.width, height: berth.height };
   const cx = berth.x + berth.width / 2;
 
@@ -85,13 +89,13 @@ export function berthRenderRect(berth: BerthElement, elements: ElementLookup): R
 
   if (!track) {
     const cy = berth.y + berth.height / 2;
+    const candidates = (trackIndex ?? horizontalTrackIndex(elements)).near(cy);
     let best: { el: TrackPathElement; dist: number } | undefined;
-    for (const el of values(elements)) {
-      if (el.type !== "trackPath" || !isHorizontalish(el.points)) continue;
+    for (const el of candidates) {
       const ty = pointOnPathAtX(el.points, cx);
       if (ty === null) continue;
       const dist = Math.abs(ty - cy);
-      if (dist <= MAP_STYLE.weldTolerance * 3 && (!best || dist < best.dist)) {
+      if (dist <= BERTH_TRACK_SEARCH && (!best || dist < best.dist)) {
         best = { el, dist };
       }
     }
@@ -104,6 +108,46 @@ export function berthRenderRect(berth: BerthElement, elements: ElementLookup): R
   if (trackY === null) return authored;
 
   return { x: berth.x, y: trackY - berth.height / 2, width: berth.width, height: berth.height };
+}
+
+/** How far (map units, vertically) an unbound berth's centre may be from a track's line at the
+ * berth's x for `berthRenderRect` to centre it on that track. */
+const BERTH_TRACK_SEARCH = MAP_STYLE.weldTolerance * 3;
+const TRACK_INDEX_BUCKET = 64;
+
+/** Milestone 94: the horizontal-enough tracks of a map, bucketed by y, so finding the track an
+ * unbound berth sits on checks only the tracks at its height rather than every track on the map
+ * (that search was O(berths × tracks): ~46 s to open a 20k-element map). */
+export interface HorizontalTrackIndex {
+  /** Every horizontal-enough track whose line could lie within `BERTH_TRACK_SEARCH` of `y`, in
+   * the same order the full search visited them, so ties resolve exactly as before. */
+  near(y: number): ReadonlyArray<TrackPathElement>;
+}
+
+/** Builds a `HorizontalTrackIndex` once per element set. A track's line at any x lies within
+ * its own points' y range (`pointOnPathAtX` interpolates, or clamps to an endpoint), so a track
+ * can only be in range of `y` if that range, widened by the search distance, contains `y`. */
+export function horizontalTrackIndex(elements: ElementLookup): HorizontalTrackIndex {
+  const buckets = new Map<number, TrackPathElement[]>();
+  for (const el of values(elements)) {
+    if (el.type !== "trackPath" || el.points.length === 0 || !isHorizontalish(el.points)) continue;
+    const ys = el.points.map((p) => p.y);
+    const from = Math.floor((Math.min(...ys) - BERTH_TRACK_SEARCH) / TRACK_INDEX_BUCKET);
+    const to = Math.floor((Math.max(...ys) + BERTH_TRACK_SEARCH) / TRACK_INDEX_BUCKET);
+    // A non-finite coordinate can never be within range of a berth (the old search's distance
+    // was never <= the limit either), and would loop forever here.
+    if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
+    for (let b = from; b <= to; b += 1) {
+      const list = buckets.get(b);
+      if (list) list.push(el);
+      else buckets.set(b, [el]);
+    }
+  }
+  return {
+    near(y) {
+      return buckets.get(Math.floor(y / TRACK_INDEX_BUCKET)) ?? [];
+    },
+  };
 }
 
 /** Where a placed label sits. `anchor` is SVG `text-anchor` vocabulary (Konva's equivalent is

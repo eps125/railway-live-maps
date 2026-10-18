@@ -155,7 +155,8 @@ export function MapView({
   initialPlayback = null,
   isAdmin = false,
 }: MapViewProps): JSX.Element {
-  const { definition, state, error, loading, connectionStatus, delays } = useMapData(slug);
+  const { definition, state, error, loading, connectionStatus, delays, liveRevision } =
+    useMapData(slug);
   const [playbackFrom, setPlaybackFrom] = useState<number | null>(initialPlayback?.atMs ?? null);
   // The speed/play state this page arrived with (a boundary link or a refreshed playback URL)
   // applies to that first playback only: once the visitor returns to live, the Playback button
@@ -190,7 +191,8 @@ export function MapView({
   const liveBerths = state?.berths;
   const liveDelayBands = useMemo(
     () => (delayColours ? matchDelayBands(delays, liveBerths ?? {}) : {}),
-    [delayColours, delays, liveBerths],
+    // The live berths record is patched in place (Milestone 94): its revision says it changed.
+    [delayColours, delays, liveBerths, liveRevision],
   );
 
   function toggleDelayColours(): void {

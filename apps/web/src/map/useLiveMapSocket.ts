@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BerthDelay, LiveWsMessage } from "@railway/protocol";
 import type { BerthState, CrossingState, RouteState, SignalState, TrtsState } from "./types.js";
+import { patchInPlace } from "./recordChanges.js";
 
 export type LiveConnectionStatus = "connecting" | "live" | "stale" | "reconnecting";
 
@@ -21,6 +22,9 @@ export interface UseLiveMapSocketResult {
   /** Milestone 82: banded berths — the snapshot's list, kept current by `delay.updated` pushes
    * (sent only when openrail-eps reports on a train on this map). Null until a snapshot. */
   delays: BerthDelay[] | null;
+  /** Milestone 94: changes whenever a frame's deltas are patched into the records above, which
+   * keep their identity (see recordChanges.ts) — anything derived from them depends on this. */
+  revision: number;
 }
 
 /** Apply one `delay.updated`: it re-states a run's band wherever the train now is, so it
@@ -33,6 +37,24 @@ export function applyDelayUpdate(
   if (update.band === "none") delete next[update.runKey];
   else next[update.runKey] = update;
   return next;
+}
+
+/** Milestone 94: the live per-element deltas waiting for the next frame, latest per element. */
+interface PendingDeltas {
+  berths: Record<string, BerthState>;
+  signals: Record<string, SignalState>;
+  crossings: Record<string, CrossingState>;
+  routes: Record<string, RouteState>;
+  trts: Record<string, TrtsState>;
+}
+
+function emptyPending(): PendingDeltas {
+  return { berths: {}, signals: {}, crossings: {}, routes: {}, trts: {} };
+}
+
+function hasAny(record: Record<string, unknown>): boolean {
+  for (const _ in record) return true;
+  return false;
 }
 
 /** Same shape/parameters as apps/worker/src/td/connection/backoff.ts's `computeBackoffDelayMs`
@@ -71,6 +93,17 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     incomplete?: boolean | undefined;
   } | null>(null);
   const [delays, setDelays] = useState<Record<string, BerthDelay> | null>(null);
+  // Milestone 94: the records above are patched in place once per frame (see recordChanges.ts);
+  // `revision` changes with every patch so the map re-renders, and `records` is the copy of the
+  // current objects the frame's patch is applied to.
+  const [revision, setRevision] = useState(0);
+  const records = useRef<{
+    berths: Record<string, BerthState> | null;
+    signals: Record<string, SignalState> | null;
+    crossings: Record<string, CrossingState> | null;
+    routes: Record<string, RouteState> | null;
+    trts: Record<string, TrtsState> | null;
+  }>({ berths: null, signals: null, crossings: null, routes: null, trts: null });
   const lastSequenceRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -78,6 +111,64 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
+    // Milestone 94: deltas are gathered and applied once per animation frame — one state copy
+    // and one render per frame however many messages arrived, rather than one per message. Only
+    // the latest value per element is kept, so the queue is bounded by the map's size even in a
+    // background tab (where frames stop and only the timer fallback runs, throttled).
+    let pending = emptyPending();
+    let frame = 0;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    let pendingSequence: number | null = null;
+
+    function flush(): void {
+      if (frame) cancelAnimationFrame(frame);
+      if (fallback) clearTimeout(fallback);
+      frame = 0;
+      fallback = null;
+      const batch = pending;
+      pending = emptyPending();
+      if (pendingSequence !== null) setSequence(pendingSequence);
+      pendingSequence = null;
+      let patched = false;
+      function apply<K extends keyof PendingDeltas>(
+        kind: K,
+        setRecord: (record: PendingDeltas[K]) => void,
+      ): void {
+        const patch = batch[kind];
+        if (!hasAny(patch)) return;
+        const current = records.current[kind] as PendingDeltas[K] | null;
+        if (current) {
+          patchInPlace(current as Record<string, unknown>, patch as Record<string, unknown>);
+          patched = true;
+        } else {
+          const created = { ...patch } as PendingDeltas[K];
+          (records.current[kind] as PendingDeltas[K] | null) = created;
+          setRecord(created);
+        }
+      }
+      apply("berths", setBerths);
+      apply("signals", setSignals);
+      apply("crossings", setCrossings);
+      apply("routes", setRoutes);
+      apply("trts", setTrts);
+      if (patched) setRevision((r) => r + 1);
+    }
+
+    function queue<K extends keyof PendingDeltas>(
+      kind: K,
+      elementId: string,
+      value: PendingDeltas[K][string],
+    ): void {
+      (pending[kind] as Record<string, unknown>)[elementId] = value;
+      schedule();
+    }
+
+    function schedule(): void {
+      if (frame || fallback) return;
+      if (typeof requestAnimationFrame === "function") frame = requestAnimationFrame(flush);
+      // Frames stop in a background tab; the timer still drains the queue there.
+      fallback = setTimeout(flush, 250);
+    }
 
     function scheduleReconnect(): void {
       if (cancelled) return;
@@ -123,64 +214,62 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
         return;
       }
       lastSequenceRef.current = message.sequence;
-      setSequence(message.sequence);
 
       if (message.type === "snapshot") {
-        setBerths(message.state.berths);
-        setSignals(message.state.signals);
-        // A server that predates crossings sends no record at all; treat that as "none", never
-        // as stale state carried over from a previous snapshot.
-        setCrossings(message.state.crossings ?? {});
-        // Likewise routes (Milestone 64): none recorded means none set.
-        setRoutes(message.state.routes ?? {});
-        // And TRTS (Milestone 92): none recorded means none lit.
-        setTrts(message.state.trts ?? {});
+        // Anything still queued came before this snapshot, which supersedes it.
+        pending = emptyPending();
+        pendingSequence = null;
+        setSequence(message.sequence);
+        records.current = {
+          berths: message.state.berths,
+          signals: message.state.signals,
+          // A server that predates crossings sends no record at all; treat that as "none",
+          // never as stale state carried over from a previous snapshot.
+          crossings: message.state.crossings ?? {},
+          // Likewise routes (Milestone 64): none recorded means none set.
+          routes: message.state.routes ?? {},
+          // And TRTS (Milestone 92): none recorded means none lit.
+          trts: message.state.trts ?? {},
+        };
+        setBerths(records.current.berths);
+        setSignals(records.current.signals);
+        setCrossings(records.current.crossings);
+        setRoutes(records.current.routes);
+        setTrts(records.current.trts);
         setQuality(message.state.quality);
         // A server without Milestone 82 sends none: no colours, never stale ones.
         setDelays(Object.fromEntries((message.state.delays ?? []).map((d) => [d.runKey, d])));
         setConnectionStatus("live");
         return;
       }
+      // Every other message's sequence is published with the next frame's batch.
+      pendingSequence = message.sequence;
+      schedule();
       if (message.type === "berth.updated") {
-        setBerths((prev) => ({
-          ...prev,
-          [message.elementId]: {
-            description: message.description,
-            enteredAt: message.enteredAt,
-          },
-        }));
+        queue("berths", message.elementId, {
+          description: message.description,
+          enteredAt: message.enteredAt,
+        });
         return;
       }
       if (message.type === "berth.cleared") {
-        setBerths((prev) => ({
-          ...prev,
-          [message.elementId]: { description: null, enteredAt: null },
-        }));
+        queue("berths", message.elementId, { description: null, enteredAt: null });
         return;
       }
       if (message.type === "trts.updated") {
-        setTrts((current) => ({
-          ...(current ?? {}),
-          [message.elementId]: { state: message.state },
-        }));
+        queue("trts", message.elementId, { state: message.state });
         return;
       }
       if (message.type === "route.updated") {
-        setRoutes((current) => ({
-          ...(current ?? {}),
-          [message.elementId]: { state: message.state },
-        }));
+        queue("routes", message.elementId, { state: message.state });
         return;
       }
       if (message.type === "crossing.updated") {
-        setCrossings((current) => ({
-          ...(current ?? {}),
-          [message.elementId]: { state: message.state },
-        }));
+        queue("crossings", message.elementId, { state: message.state });
         return;
       }
       if (message.type === "signal.updated") {
-        setSignals((prev) => ({ ...(prev ?? {}), [message.elementId]: { state: message.state } }));
+        queue("signals", message.elementId, { state: message.state });
         return;
       }
       if (message.type === "quality.updated") {
@@ -214,6 +303,8 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (frame) cancelAnimationFrame(frame);
+      if (fallback) clearTimeout(fallback);
       socket?.close();
     };
   }, [slug]);
@@ -229,5 +320,6 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     trts,
     quality,
     delays: delayList,
+    revision,
   };
 }

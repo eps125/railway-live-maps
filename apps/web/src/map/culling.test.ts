@@ -66,6 +66,31 @@ describe("elementDrawBounds (Milestone 94)", () => {
     expect(label.maxY).toBeGreaterThan(100 + 12);
   });
 
+  it("covers a control boundary's line and the names beyond its ends (Milestone 95)", () => {
+    const box = elementDrawBounds(
+      {
+        ...base,
+        id: "cb",
+        type: "controlBoundary",
+        points: [
+          { x: 500, y: 100 },
+          { x: 500, y: 300 },
+        ],
+        leftName: "Crewe Coal Yard SB",
+        rightName: "Crewe PSB",
+        nameEnds: "both",
+        fontSize: 11,
+      },
+      undefined,
+    )!;
+    // The left name runs leftwards from just left of the line: 18 characters at 11 units.
+    expect(box.minX).toBeLessThanOrEqual(500 - 18 * 11 * 0.6);
+    expect(box.maxX).toBeGreaterThanOrEqual(500 + 9 * 11 * 0.6);
+    // Names sit above the top end and hang below the bottom end.
+    expect(box.minY).toBeLessThan(100 - 11);
+    expect(box.maxY).toBeGreaterThan(300 + 11);
+  });
+
   it("gives null (always drawn) for an element type it does not know", () => {
     expect(elementDrawBounds({ ...base, id: "x", type: "mystery" } as never, undefined)).toBeNull();
   });

@@ -45,6 +45,8 @@
   --map-viaduct-color: #6d6255;
   --map-water-fill: #16384f;
   --map-level-crossing-road: #9aa4b1;
+  /* Milestone 95: the chain-dot limit between signal boxes, and its names. */
+  --map-control-boundary-color: #a5b4c8;
 
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono:
@@ -647,8 +649,10 @@ legend {
   display: block;
 }
 
-/* ADR 0017: signal numbers are hidden when zoomed out too far to read them. */
-.map--signal-numbers-hidden .signal-number {
+/* ADR 0017: signal numbers are hidden when zoomed out too far to read them. Milestone 95: so are
+   the names on a control boundary, which are the same small size; the line itself stays. */
+.map--signal-numbers-hidden .signal-number,
+.map--signal-numbers-hidden .control-boundary-name {
   display: none;
 }
 

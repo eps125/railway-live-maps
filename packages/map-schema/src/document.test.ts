@@ -149,6 +149,42 @@ describe("MapDocumentSchema", () => {
     expect(onePointViaduct.success).toBe(false);
   });
 
+  it("parses a controlBoundary with defaults and requires two points (Milestone 95)", () => {
+    const result = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [
+          {
+            id: "cb1",
+            layerId: "l1",
+            type: "controlBoundary",
+            points: [
+              { x: 0, y: 0 },
+              { x: 0, y: 100 },
+              { x: 50, y: 100 },
+            ],
+            leftName: "Winsford SB",
+          },
+        ],
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.elements[0]).toMatchObject({
+      type: "controlBoundary",
+      leftName: "Winsford SB",
+      nameEnds: "both",
+      fontSize: 11,
+      zIndex: 0,
+    });
+
+    const onePoint = MapDocumentSchema.safeParse(
+      minimalDoc({
+        elements: [{ id: "cb1", layerId: "l1", type: "controlBoundary", points: [{ x: 0, y: 0 }] }],
+      }),
+    );
+    expect(onePoint.success).toBe(false);
+  });
+
   it("rejects a neutralSection with a non-positive size", () => {
     const result = MapDocumentSchema.safeParse(
       minimalDoc({

@@ -155,6 +155,21 @@ export const MAP_STYLE = {
     stroke: "#2d7098",
     strokeWidth: 1,
   },
+  /** Milestone 95 (owner request 2026-10-18): the limit between two signal boxes, panels or
+   * workstations. A thin chain-dot line (dash, dot, dash: the control-area limit on signalling
+   * plans) in a quiet grey-blue that never competes with berths, trains or signal colours,
+   * painted beneath the rails (`zIndex: -1`). */
+  controlBoundary: {
+    color: "#a5b4c8",
+    strokeWidth: 1.5,
+    /** SVG `stroke-dasharray` / Konva `dash`: a 10-unit dash, gap, 2-unit dot, gap. */
+    dash: [10, 4, 2, 4],
+    fontSize: 11,
+    /** How far a name sits beyond the end of the line. */
+    endGap: 6,
+    /** How far a name sits to the side of the line. */
+    sideGap: 6,
+  },
   /**
    * Milestone 55: a level crossing — the road drawn across the railway, with a pair of barriers
    * whose position comes from a bound S-Class crossing bit (ADR 0014), from the author-configured
@@ -289,6 +304,7 @@ export const MAP_CSS_TOKENS = {
   tunnelFill: "--map-tunnel-fill",
   viaductColor: "--map-viaduct-color",
   waterFill: "--map-water-fill",
+  controlBoundaryColor: "--map-control-boundary-color",
   levelCrossingRoad: "--map-level-crossing-road",
   neutralSectionBoard: "--map-neutral-section-board",
   neutralSectionSymbol: "--map-neutral-section-symbol",

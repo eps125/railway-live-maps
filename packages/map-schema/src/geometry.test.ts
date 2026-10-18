@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAP_STYLE } from "./style.js";
 import {
   berthRenderRect,
+  controlBoundaryGeometry,
   horizontalTrackIndex,
   levelCrossingGeometry,
   neutralSectionGeometry,
@@ -893,5 +894,152 @@ describe("switchedDiamondGeometry (Milestone 63, revised)", () => {
       editorMetadata: {},
     });
     expect(doc.elements[0]).toMatchObject({ corners: ["a", "b"], style: "knuckle" });
+  });
+});
+
+describe("controlBoundaryGeometry (Milestone 95)", () => {
+  const { endGap, sideGap } = MAP_STYLE.controlBoundary;
+  const fontSize = 11;
+  const base = {
+    leftName: "Winsford SB",
+    rightName: "Crewe PSB",
+    nameEnds: "both" as const,
+    fontSize,
+  };
+
+  it("puts the left name on the screen's left of a line drawn top to bottom, at both ends", () => {
+    const names = controlBoundaryGeometry({
+      ...base,
+      points: [
+        { x: 100, y: 0 },
+        { x: 100, y: 120 },
+      ],
+    });
+    expect(names).toEqual([
+      // Top end: above the tip, either side of the line, anchored away from it.
+      {
+        text: "Winsford SB",
+        side: "left",
+        end: "start",
+        x: 100 - sideGap,
+        y: -endGap,
+        anchor: "end",
+      },
+      {
+        text: "Crewe PSB",
+        side: "right",
+        end: "start",
+        x: 100 + sideGap,
+        y: -endGap,
+        anchor: "start",
+      },
+      // Bottom end: the text hangs below the tip.
+      {
+        text: "Winsford SB",
+        side: "left",
+        end: "end",
+        x: 100 - sideGap,
+        y: 120 + endGap + fontSize * 0.8,
+        anchor: "end",
+      },
+      {
+        text: "Crewe PSB",
+        side: "right",
+        end: "end",
+        x: 100 + sideGap,
+        y: 120 + endGap + fontSize * 0.8,
+        anchor: "start",
+      },
+    ]);
+  });
+
+  it("keeps each name on its own region at both ends of a stepped line", () => {
+    // Down past the first two lines at x=340, across to x=450, then down past the other two:
+    // Winsford is always west of the line.
+    const names = controlBoundaryGeometry({
+      ...base,
+      points: [
+        { x: 340, y: 40 },
+        { x: 340, y: 130 },
+        { x: 450, y: 130 },
+        { x: 450, y: 210 },
+      ],
+    });
+    const winsford = names.filter((n) => n.text === "Winsford SB");
+    expect(winsford.map((n) => [n.x, n.anchor])).toEqual([
+      [340 - sideGap, "end"],
+      [450 - sideGap, "end"],
+    ]);
+  });
+
+  it("puts names above and below an end segment that runs across, beyond its end", () => {
+    // Drawn left to right. The rule that makes "left" the screen's left for a line drawn top to
+    // bottom puts it below a line drawn left to right (the same side of the line all along it).
+    const names = controlBoundaryGeometry({
+      ...base,
+      nameEnds: "end",
+      points: [
+        { x: 0, y: 50 },
+        { x: 200, y: 50 },
+      ],
+    });
+    expect(names).toEqual([
+      {
+        text: "Winsford SB",
+        side: "left",
+        end: "end",
+        x: 200 + endGap,
+        y: 50 + sideGap + fontSize * 0.8,
+        anchor: "start",
+      },
+      {
+        text: "Crewe PSB",
+        side: "right",
+        end: "end",
+        x: 200 + endGap,
+        y: 50 - sideGap,
+        anchor: "start",
+      },
+    ]);
+  });
+
+  it("leaves out blank names, unchosen ends and a zero-length line", () => {
+    const vertical = [
+      { x: 0, y: 0 },
+      { x: 0, y: 100 },
+    ];
+    expect(
+      controlBoundaryGeometry({ ...base, rightName: "  ", nameEnds: "start", points: vertical }),
+    ).toEqual([expect.objectContaining({ text: "Winsford SB", end: "start" })]);
+    expect(
+      controlBoundaryGeometry({
+        ...base,
+        leftName: undefined,
+        rightName: undefined,
+        points: vertical,
+      }),
+    ).toEqual([]);
+    expect(
+      controlBoundaryGeometry({
+        ...base,
+        points: [
+          { x: 5, y: 5 },
+          { x: 5, y: 5 },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("skips a duplicated end point to find the end segment's direction", () => {
+    const names = controlBoundaryGeometry({
+      ...base,
+      nameEnds: "start",
+      points: [
+        { x: 100, y: 0 },
+        { x: 100, y: 0 },
+        { x: 100, y: 120 },
+      ],
+    });
+    expect(names.map((n) => n.anchor)).toEqual(["end", "start"]);
   });
 });

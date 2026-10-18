@@ -43,6 +43,19 @@ function ghost(element: MapElement): JSX.Element | null {
           opacity={0.5}
         />
       );
+    case "controlBoundary":
+      // Milestone 95: just the chain-dot line, so a neighbouring module's box limit shows where
+      // it joins; its names would only clutter the backdrop.
+      return (
+        <Line
+          key={element.id}
+          points={flat(element.points)}
+          stroke={MAP_STYLE.controlBoundary.color}
+          strokeWidth={MAP_STYLE.controlBoundary.strokeWidth}
+          dash={[...MAP_STYLE.controlBoundary.dash]}
+          opacity={0.5}
+        />
+      );
     case "platform":
     case "tunnel":
     case "water":

@@ -20,6 +20,7 @@ import {
   snapToTrack,
   switchedDiamondGeometry,
   viaductWidth,
+  controlBoundaryGeometry,
   sortElementsForPaint,
   signalColor,
   signalLabelPosition,
@@ -273,6 +274,9 @@ const TOOL_LAYER_NAME_HINT: Partial<Record<ToolMode, RegExp>> = {
   // viaduct deliberately belongs with the track it carries (owner: "same layer as track").
   tunnel: /scenery|terrain/i,
   water: /scenery|terrain|water/i,
+  // Milestone 95: a box limit is furniture drawn under the rails, so it goes with scenery
+  // where a map has that layer, and otherwise with the track (zIndex -1 sinks it below the rails).
+  controlBoundary: /scenery|track/i,
   viaduct: /track/i,
   // A crossing sits on the railway it crosses, so it belongs with the track rather than in
   // scenery; it paints above the rails (default zIndex 0) because the road crosses over them.
@@ -391,6 +395,22 @@ function defaultElementForTool(
         ],
         labelPosition: "below",
         fontSize: MAP_STYLE.placedLabel.fontSize,
+      };
+    case "controlBoundary":
+      // A straight limit across a few running lines to start from; double-click it to add the
+      // vertices that make it step between lines. Drawn top to bottom, so "left" is the
+      // screen's left (see controlBoundaryGeometry).
+      return {
+        id,
+        layerId,
+        zIndex: -1,
+        type: "controlBoundary",
+        points: [
+          { x: point.x, y: point.y - 60 },
+          { x: point.x, y: point.y + 60 },
+        ],
+        nameEnds: "both",
+        fontSize: MAP_STYLE.controlBoundary.fontSize,
       };
     case "viaduct":
       return {
@@ -1934,6 +1954,42 @@ export function EditorCanvas({
                   />
                   {renderVertexHandles(element)}
                   {renderPlacedLabel(element)}
+                </Group>
+              );
+            }
+            if (element.type === "controlBoundary") {
+              // Milestone 95: the same chain-dot line and `controlBoundaryGeometry` names as the
+              // public renderer (CLAUDE.md rule 13). Double-click the line to add a vertex, which
+              // is how the limit steps between running lines.
+              const style = MAP_STYLE.controlBoundary;
+              const colour = selected ? "#58a6ff" : style.color;
+              return (
+                <Group key={element.id}>
+                  <Line
+                    ref={setRef}
+                    points={flattenPoints(element.points)}
+                    stroke={colour}
+                    strokeWidth={selected ? 2 : style.strokeWidth}
+                    dash={[...style.dash]}
+                    lineJoin="miter"
+                    lineCap="butt"
+                    hitStrokeWidth={16}
+                    draggable={draggable}
+                    onClick={(e) => handleElementClick(e, element.id)}
+                    onDragEnd={(e) => handlePathDragEnd(e, element.id)}
+                    onDblClick={(e) => handleInsertVertex(e, element.id)}
+                  />
+                  {renderVertexHandles(element)}
+                  {controlBoundaryGeometry(element).map((name) => (
+                    <Text
+                      key={`${name.end}-${name.side}`}
+                      {...placedLabelTextProps(name.x, name.y, element.fontSize, name.anchor)}
+                      text={name.text}
+                      fontSize={element.fontSize}
+                      fill={colour}
+                      onClick={(e) => handleElementClick(e, element.id)}
+                    />
+                  ))}
                 </Group>
               );
             }

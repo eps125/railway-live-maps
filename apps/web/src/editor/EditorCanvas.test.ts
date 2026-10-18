@@ -50,6 +50,10 @@ describe("defaultLayerIdForTool", () => {
     expect(defaultLayerIdForTool("tunnel", withScenery)).toBe("layer-scenery");
     expect(defaultLayerIdForTool("water", withScenery)).toBe("layer-scenery");
     expect(defaultLayerIdForTool("viaduct", withScenery)).toBe("layer-track");
+    // Milestone 95: a box limit is drawn under the rails, so it goes with the scenery when a map
+    // has that layer, and with the track when it does not.
+    expect(defaultLayerIdForTool("controlBoundary", withScenery)).toBe("layer-scenery");
+    expect(defaultLayerIdForTool("controlBoundary", standardLayers)).toBe("layer-track");
     // Milestone 63: a switched diamond is marked on the rails, so it belongs with the track too.
     expect(defaultLayerIdForTool("switchedDiamond", withScenery)).toBe("layer-track");
   });

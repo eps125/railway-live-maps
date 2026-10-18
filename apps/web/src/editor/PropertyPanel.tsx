@@ -1958,6 +1958,50 @@ export function PropertyPanel(): JSX.Element {
         </>
       )}
 
+      {element.type === "controlBoundary" && (
+        <>
+          <TextField
+            label="Name on the left"
+            value={element.leftName ?? ""}
+            onCommit={(v) => setProp("leftName", v.trim() ? v : undefined)}
+          />
+          <TextField
+            label="Name on the right"
+            value={element.rightName ?? ""}
+            onCommit={(v) => setProp("rightName", v.trim() ? v : undefined)}
+          />
+          <button
+            type="button"
+            className="btn"
+            onClick={() => patchProps({ leftName: element.rightName, rightName: element.leftName })}
+          >
+            Swap sides
+          </button>
+          <label className="field">
+            Show names at
+            <select value={element.nameEnds} onChange={(e) => setProp("nameEnds", e.target.value)}>
+              <option value="both">Both ends</option>
+              <option value="start">Start only</option>
+              <option value="end">End only</option>
+            </select>
+          </label>
+          <NumberField
+            label="Name size"
+            value={element.fontSize}
+            min={1}
+            onCommit={(v) => setProp("fontSize", v)}
+          />
+          <p className="field-hint">
+            The limit between two signal boxes, panels or workstations. Double-click the line to add
+            a vertex, then drag the vertices so it crosses each running line at that line&apos;s own
+            limit. Left and right are as drawn from the first point to the last, which is the
+            screen&apos;s left and right for a line drawn top to bottom; if the names come out the
+            wrong way round, use Swap sides. It paints beneath the rails. Furniture only: no binding
+            and no live state.
+          </p>
+        </>
+      )}
+
       {element.type === "signal" && (
         <>
           <TextField

@@ -1259,3 +1259,55 @@ describe("PropertyPanel signal type, direction and number (ADR 0017)", () => {
     await waitFor(() => expect(signal()).toMatchObject({ label: "CE451", labelSource: "custom" }));
   });
 });
+
+describe("PropertyPanel control boundary fields (Milestone 95)", () => {
+  function docWithControlBoundary(): MapDocument {
+    const doc = baseDoc();
+    doc.elements.push({
+      id: "cb-a",
+      layerId: "l",
+      zIndex: -1,
+      type: "controlBoundary",
+      points: [
+        { x: 100, y: 0 },
+        { x: 100, y: 120 },
+      ],
+      leftName: "Crewe PSB",
+      nameEnds: "both",
+      fontSize: 11,
+    });
+    return doc;
+  }
+
+  it("swaps the two names, sets the other name, and clears a blanked one", async () => {
+    render(
+      <EditorStateProvider initialDocument={docWithControlBoundary()}>
+        <Select id="cb-a" />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    const left = await screen.findByLabelText("Name on the left");
+    const right = screen.getByLabelText("Name on the right");
+    expect(left).toHaveValue("Crewe PSB");
+    expect(right).toHaveValue("");
+
+    fireEvent.change(right, { target: { value: "Winsford SB" } });
+    fireEvent.blur(right);
+    expect(right).toHaveValue("Winsford SB");
+
+    // Drawn bottom to top by mistake: one click puts each name on its own side.
+    fireEvent.click(screen.getByRole("button", { name: "Swap sides" }));
+    expect(screen.getByLabelText("Name on the left")).toHaveValue("Winsford SB");
+    expect(screen.getByLabelText("Name on the right")).toHaveValue("Crewe PSB");
+
+    const ends = screen.getByLabelText("Show names at");
+    expect(ends).toHaveValue("both");
+    fireEvent.change(ends, { target: { value: "start" } });
+    expect(ends).toHaveValue("start");
+
+    fireEvent.change(screen.getByLabelText("Name on the right"), { target: { value: "  " } });
+    fireEvent.blur(screen.getByLabelText("Name on the right"));
+    expect(screen.getByLabelText("Name on the right")).toHaveValue("");
+  });
+});

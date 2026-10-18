@@ -871,6 +871,40 @@ describe("MapRenderer", () => {
     ]);
   });
 
+  it("draws a control boundary as a chain-dot line with its names (Milestone 95)", () => {
+    const doc = bundle({
+      elementsById: {
+        "cb-1": {
+          id: "cb-1",
+          layerId: "layer-visible",
+          zIndex: -1,
+          type: "controlBoundary",
+          points: [
+            { x: 340, y: 40 },
+            { x: 340, y: 130 },
+            { x: 450, y: 130 },
+            { x: 450, y: 210 },
+          ],
+          leftName: "Winsford SB",
+          rightName: "Crewe PSB",
+          nameEnds: "start",
+          fontSize: 11,
+        },
+      },
+    });
+
+    const { container } = render(<MapRenderer bundle={doc} berths={{}} signals={{}} />);
+    const line = container.querySelector(".control-boundary polyline")!;
+    expect(line.getAttribute("points")).toBe("340,40 340,130 450,130 450,210");
+    // Dash, gap, dot, gap: the chain-dot of a control-area limit.
+    expect(line.getAttribute("stroke-dasharray")).toBe("10 4 2 4");
+    const names = [...container.querySelectorAll("text.control-boundary-name")];
+    expect(names.map((t) => [t.textContent, t.getAttribute("text-anchor")])).toEqual([
+      ["Winsford SB", "end"],
+      ["Crewe PSB", "start"],
+    ]);
+  });
+
   it("anchors a detached scenery label at its offset from the shape's centre", () => {
     const doc = bundle({
       elementsById: {

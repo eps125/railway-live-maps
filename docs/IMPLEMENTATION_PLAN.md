@@ -4985,3 +4985,46 @@ Follow-ups:
 - Re-measure mobile 5k–20k on a quiet machine.
 - The browser's own find (Ctrl+F) no longer finds text that is off screen on a culled map; the app's
   place search is unaffected.
+
+## Milestone 95 — Control boundaries between signal boxes (2026-10-18)
+
+Owner request: a visual way to show where one signal box, panel or workstation hands over to the
+next, in keeping with the map's style. It must allow for limits that are asymmetric and not a single
+vertical line. The owner chose a chain-dot stepped line with names, and no area tint.
+
+- [x] `controlBoundary` element (`packages/map-schema`), covering both the schema and the drawing:
+  - a polyline of 2 or more points
+  - optional `leftName` / `rightName`
+  - `nameEnds` (`both` / `start` / `end`)
+  - `fontSize` (default 11)
+  - `MAP_STYLE.controlBoundary`: grey-blue `#a5b4c8`, 1.5 wide, chain-dot dash `10 4 2 4`
+  - `--map-control-boundary-color`
+- [x] Pure `controlBoundaryGeometry`, which places the names beyond each named end, one either side
+      of the line. "Left" is the screen's left for a line drawn top to bottom and stays on the
+      same side all along the line, so a stepped line's ends agree. Blank names, a zero-length line
+      and duplicated end points are handled.
+- [x] Public renderer:
+  - the line paints under the rails (`zIndex: -1`)
+  - names hide with signal numbers when zoomed out; the line stays
+  - Milestone 94 culling knows its bounds, names included
+- [x] Editor:
+  - **Box limit** tool, placing a 120-unit vertical line drawn top to bottom, with no names, on the
+    Scenery layer, or Track if there is none
+  - drawn the same as the public map
+  - vertex handles; double-click to add or remove steps
+  - panel fields for both names, **Swap sides**, which ends show names, and name size
+  - module backdrop shows a neighbour's limit as a faint line
+- [x] Element-type sweep (the "hardcoded type lists" lesson): every
+      `"points" in` / `"x" in` / `element.type ===` site was checked. They are all structural, so
+      move, paste, select, bounds, highlight and vertex editing work unchanged.
+- [x] Tests: schema (defaults, at least 2 points), geometry (vertical, stepped, horizontal end,
+      blank or missing names, zero-length, duplicate end point), renderer (chain-dot, names and
+      anchors), culling (bounds include names), editor layer choice, property panel (names, Swap
+      sides, ends, clearing a blank name).
+- [x] Spec: `docs/MAP_EDITOR_SPEC.md` § `controlBoundary`.
+
+Known limitations:
+
+- Names are single-line.
+- There is no hover tooltip on the line.
+- Names don't avoid colliding with nearby labels; the author places the ends clear of them.

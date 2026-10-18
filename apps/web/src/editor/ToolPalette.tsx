@@ -20,6 +20,8 @@ const TOOLS: Array<{ mode: ToolMode; label: string }> = [
   { mode: "tunnel", label: "Tunnel" },
   { mode: "viaduct", label: "Viaduct" },
   { mode: "water", label: "Water" },
+  // Milestone 95: the chain-dot limit between signal boxes; double-click it to add steps.
+  { mode: "controlBoundary", label: "Box limit" },
   { mode: "levelCrossing", label: "Level xing" },
   // 2026-09-27: placed on the nearest dead track end, facing the way trains reach it.
   { mode: "bufferStop", label: "Buffer stop" },

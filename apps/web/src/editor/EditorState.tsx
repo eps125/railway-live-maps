@@ -16,6 +16,8 @@ export type ToolMode =
   | "tunnel"
   | "viaduct"
   | "water"
+  /** Milestone 95: the limit between two signal boxes, panels or workstations. */
+  | "controlBoundary"
   | "levelCrossing"
   | "bufferStop"
   | "switchedDiamond"

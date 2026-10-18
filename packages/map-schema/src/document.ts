@@ -323,6 +323,30 @@ const WaterElementSchema = BaseElementSchema.extend({
 });
 
 /**
+ * Milestone 95 (owner request 2026-10-18): the limit between two signal boxes, panels or
+ * workstations, drawn as a chain-dot line with each side's name at its ends.
+ *
+ * A polyline rather than a straight line, because real limits are asymmetric: the line crosses each
+ * running line at that line's own limit (usually between the last signal of one box and the first
+ * of the next), stepping between them. `leftName` and `rightName` are the names on each side:
+ * "left" is the screen's left for a line drawn top to bottom (the editor draws new ones that way),
+ * and stays the same side of the line all along it, so a stepped line's ends always agree
+ * (`controlBoundaryGeometry`). The editor's "Swap sides" fixes one drawn the other way.
+ * `nameEnds` picks which end(s) show the names.
+ *
+ * Map furniture only: no binding, no live state, and nothing about control is inferred from or
+ * attributed to it (CLAUDE.md rules 9/10). Placed with `zIndex: -1`, so it paints under the rails.
+ */
+const ControlBoundaryElementSchema = BaseElementSchema.extend({
+  type: z.literal("controlBoundary"),
+  points: z.array(PointSchema).min(2),
+  leftName: z.string().optional(),
+  rightName: z.string().optional(),
+  nameEnds: z.enum(["both", "start", "end"]).default("both"),
+  fontSize: z.number().positive().default(MAP_STYLE.controlBoundary.fontSize),
+});
+
+/**
  * 2026-09-27 (owner): a UK buffer stop, drawn top-down in the level crossing's realistic palette —
  * 10 units across the track (centred on it) and 5 deep. `(x, y)` is the face a train meets, on
  * the track end; `facing` is the way that face points (towards the trains): a buffer at the right
@@ -439,6 +463,7 @@ export const MapElementSchema = z.discriminatedUnion("type", [
   TunnelElementSchema,
   ViaductElementSchema,
   WaterElementSchema,
+  ControlBoundaryElementSchema,
   LevelCrossingElementSchema,
   BufferStopElementSchema,
   SwitchedDiamondElementSchema,
@@ -669,6 +694,7 @@ export type NeutralSectionElement = z.infer<typeof NeutralSectionElementSchema>;
 export type TunnelElement = z.infer<typeof TunnelElementSchema>;
 export type ViaductElement = z.infer<typeof ViaductElementSchema>;
 export type WaterElement = z.infer<typeof WaterElementSchema>;
+export type ControlBoundaryElement = z.infer<typeof ControlBoundaryElementSchema>;
 export type LevelCrossingElement = z.infer<typeof LevelCrossingElementSchema>;
 export type SwitchedDiamondElement = z.infer<typeof SwitchedDiamondElementSchema>;
 export type BufferStopElement = z.infer<typeof BufferStopElementSchema>;

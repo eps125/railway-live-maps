@@ -557,6 +557,90 @@ export function viaductWidth(element: { width?: number | undefined }): number {
   return element.width ?? MAP_STYLE.track.strokeWidth + MAP_STYLE.viaduct.extraWidth;
 }
 
+/** One name drawn at an end of a `controlBoundary`: `x`/`y` is its baseline anchor, as for a
+ * `PlacedLabel`. */
+export interface ControlBoundaryName extends PlacedLabel {
+  text: string;
+  side: "left" | "right";
+  end: "start" | "end";
+}
+
+/**
+ * Milestone 95: where a `controlBoundary`'s names go. At each named end, the two names sit just
+ * beyond the end of the line, one on each side of it.
+ *
+ * Sides follow the line's own direction (first point to last), using the normal
+ * `(-dy, dx)` for "left". That is the screen's left for a line drawn top to bottom, and because
+ * the same rule holds all along the line, a stepped line's two ends always agree about which
+ * region is which, even when one end segment runs horizontally.
+ *
+ * An end segment that runs mostly up/down puts the names left and right of it, anchored away
+ * from the line, beyond the end. One that runs mostly across puts them above and below it,
+ * anchored beyond the end. A name that is missing or blank is left out. Pure and shared by the
+ * public renderer and the editor (CLAUDE.md rule 13).
+ */
+export function controlBoundaryGeometry(element: {
+  points: ReadonlyArray<{ x: number; y: number }>;
+  leftName?: string | undefined;
+  rightName?: string | undefined;
+  nameEnds: "both" | "start" | "end";
+  fontSize: number;
+}): ControlBoundaryName[] {
+  const { endGap, sideGap } = MAP_STYLE.controlBoundary;
+  const points = element.points;
+  const names: ControlBoundaryName[] = [];
+  const ends: Array<"start" | "end"> =
+    element.nameEnds === "both" ? ["start", "end"] : [element.nameEnds];
+
+  for (const end of ends) {
+    const tip = end === "start" ? points[0] : points[points.length - 1];
+    if (!tip) continue;
+    // The nearest point that differs from the tip gives the end segment's direction.
+    const order = end === "start" ? points : [...points].reverse();
+    const neighbour = order.find((p) => p.x !== tip.x || p.y !== tip.y);
+    if (!neighbour) continue;
+    const length = Math.hypot(tip.x - neighbour.x, tip.y - neighbour.y);
+    // Outward, away from the line.
+    const ux = (tip.x - neighbour.x) / length;
+    const uy = (tip.y - neighbour.y) / length;
+    // Travel direction (first point to last) at this end, and its "left" normal.
+    const tx = end === "start" ? -ux : ux;
+    const ty = end === "start" ? -uy : uy;
+    const nx = -ty;
+    const ny = tx;
+    const vertical = Math.abs(uy) >= Math.abs(ux);
+
+    for (const side of ["left", "right"] as const) {
+      const text = side === "left" ? element.leftName : element.rightName;
+      if (!text || !text.trim()) continue;
+      const s = side === "left" ? 1 : -1;
+      if (vertical) {
+        names.push({
+          text,
+          side,
+          end,
+          x: tip.x + nx * s * sideGap,
+          // Above a top end the baseline sits at the gap; below a bottom end the text hangs
+          // from it, so its baseline drops by roughly the cap height.
+          y: tip.y + uy * endGap + (uy > 0 ? element.fontSize * 0.8 : 0),
+          anchor: nx * s > 0 ? "start" : "end",
+        });
+      } else {
+        const below = ny * s > 0;
+        names.push({
+          text,
+          side,
+          end,
+          x: tip.x + ux * endGap,
+          y: tip.y + ny * s * sideGap + (below ? element.fontSize * 0.8 : 0),
+          anchor: ux > 0 ? "start" : "end",
+        });
+      }
+    }
+  }
+  return names;
+}
+
 /**
  * Owner request 2026-09-20: set a tunnel's width — the extent across the bore — numerically
  * instead of dragging corners. Scales the outline about its own centre, so its length and

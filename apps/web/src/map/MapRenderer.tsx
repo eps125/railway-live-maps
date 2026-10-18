@@ -25,6 +25,7 @@ import {
   pointsBounds,
   switchedDiamondGeometry,
   viaductWidth,
+  controlBoundaryGeometry,
   sortElementsForPaint,
   signalColor,
   signalLabelPosition,
@@ -34,6 +35,7 @@ import {
   type MapElement,
   type BarrierDisplayState,
   type BufferStopElement,
+  type ControlBoundaryElement,
   type DrawPrimitive,
   type LevelCrossingElement,
   type NeutralSectionElement,
@@ -306,6 +308,42 @@ function renderTunnel(element: TunnelElement): JSX.Element {
         element.label,
         element.fontSize,
       )}
+    </g>
+  );
+}
+
+/** Milestone 95: the limit between two signal boxes, panels or workstations: a chain-dot line,
+ * painted under the rails, with each side's name at its ends (`controlBoundaryGeometry`). The
+ * names hide with the signal numbers when the map is zoomed out too far to read them
+ * (styles.css), while the line stays. Furniture only: no binding, no state. */
+function renderControlBoundary(element: ControlBoundaryElement): JSX.Element {
+  const style = MAP_STYLE.controlBoundary;
+  const colour = `var(${MAP_CSS_TOKENS.controlBoundaryColor}, ${style.color})`;
+  const names = controlBoundaryGeometry(element);
+  return (
+    <g key={element.id} className="control-boundary">
+      <polyline
+        points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill="none"
+        stroke={colour}
+        strokeWidth={style.strokeWidth}
+        strokeDasharray={style.dash.join(" ")}
+        strokeLinejoin="miter"
+        strokeLinecap="butt"
+      />
+      {names.map((name) => (
+        <text
+          key={`${name.end}-${name.side}`}
+          className="control-boundary-name"
+          x={name.x}
+          y={name.y}
+          textAnchor={name.anchor}
+          fontSize={element.fontSize}
+          fill={colour}
+        >
+          {name.text}
+        </text>
+      ))}
     </g>
   );
 }
@@ -1259,6 +1297,8 @@ function renderStaticElement(
       return renderViaduct(element);
     case "water":
       return renderWater(element);
+    case "controlBoundary":
+      return renderControlBoundary(element);
     case "bufferStop":
       return renderBufferStop(element);
     case "switchedDiamond":

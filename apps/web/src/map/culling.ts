@@ -1,5 +1,6 @@
 import {
   bufferStopBounds,
+  controlBoundaryGeometry,
   levelCrossingGeometry,
   neutralSectionGeometry,
   placedLabelAnchor,
@@ -151,6 +152,12 @@ export function elementDrawBounds(
         placedText(placedLabelAnchor(bounds, element), element.label, element.fontSize),
       );
     }
+    case "controlBoundary":
+      return controlBoundaryGeometry(element).reduce<Box>(
+        (box, name) =>
+          union(box, textBox(name.x, name.y, name.text, element.fontSize, name.anchor)),
+        fromRect(pointsBounds(element.points), 20),
+      );
     default:
       return null;
   }

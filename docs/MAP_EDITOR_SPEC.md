@@ -258,6 +258,42 @@ A viaduct goes on the **Track** layer, with the line it carries.
 
 Scenery only: no binding, no live state, nothing inferred (CLAUDE.md rules 9/10).
 
+### `controlBoundary`
+
+**Milestone 95 (owner request 2026-10-18).** The limit between two signal boxes, panels or
+workstations: where Winsford SB hands over to Crewe PSB, say.
+
+- **Shape.** A polyline of 2 or more `points`, not a single straight line, because real limits are
+  asymmetric. The line crosses each running line at that line's own limit (usually between the
+  last signal of one box and the first of the next) and steps between them. With the 100-unit
+  drafting cell, the steps fall cleanly between the signals at +80 and +20.
+- **Drawing.** A thin chain-dot line (dash, gap, dot, gap: the control-area limit on signalling
+  plans) in a quiet grey-blue (`--map-control-boundary-color`), painted beneath the rails
+  (`zIndex: -1`) so it never covers track, berths, trains or signals. There is no area tint
+  (owner's choice).
+- **Names.**
+  - `leftName` / `rightName`, each optional. "Left" is the screen's left for a line drawn top to
+    bottom, and it stays the same side of the line all along it, so a stepped line's ends always
+    agree.
+  - `nameEnds` (`both` by default, or `start` / `end`) picks which end(s) show them.
+  - At an end that runs up or down, the names sit beyond the tip, one either side, anchored away
+    from the line. At an end that runs across, they sit above and below it, beyond the tip.
+  - `controlBoundaryGeometry` places them for both renderers (CLAUDE.md rule 13).
+  - `fontSize` defaults to 11.
+- **Zoom.** The names hide together with signal numbers when the map is zoomed out too far to read
+  them; the line stays.
+- **Editor.**
+  - The **Box limit** tool places a vertical line 120 units long, drawn top to bottom, with no
+    names. It goes on the Scenery layer if the map has one, otherwise on Track.
+  - Double-click the line to add a vertex. Drag the vertex handles to make the steps;
+    double-click a vertex to remove it.
+  - The panel has the two names, **Swap sides** (for a line drawn the other way), which end(s)
+    show names, and the name size.
+  - A module's backdrop shows a neighbour's box limit as a faint line without names.
+
+Map furniture only: no binding, no live state, and nothing about who controls what is inferred from
+or attributed to it (CLAUDE.md rules 9/10).
+
 ### `levelCrossing`
 
 **Milestone 55, [ADR 0014](adr/0014-level-crossing-barriers-from-s-class.md).** The road drawn

@@ -1013,8 +1013,13 @@ export function zoomAroundPoint(view: MapView, dx: number, dy: number, scale: nu
 
 /** Milestone 94: how long after the last wheel or pinch step the zoom is drawn at its real size.
  * Until then the drawing already on screen is scaled by the compositor, which costs no layout or
- * repaint however big the map is. */
-export const ZOOM_SETTLE_MS = 150;
+ * repaint however big the map is — but is soft when zoomed in. */
+export const ZOOM_SETTLE_MS = 80;
+/** During a long zoom gesture (a touchpad's momentum keeps sending wheel events for a second or
+ * more after the fingers stop) the map is also drawn sharp at least this often, or every two real
+ * redraws' time when a redraw takes longer than that, so it is never soft for long (owner,
+ * 2026-10-18: "a zoom leaves the map out of focus for a second or two"). */
+export const ZOOM_REDRAW_MIN_MS = 200;
 
 const EMPTY_RECORD = {};
 const EMPTY_IDS: ReadonlyArray<string> = [];
@@ -1375,11 +1380,16 @@ export function MapRenderer({
     viewChanged();
   }
 
-  // Milestone 94 (fix 3): a wheel or pinch zoom is first shown by scaling the drawing already on
-  // screen (a compositor transform: no layout, no repaint), and drawn at its real size once the
-  // gesture has rested for `ZOOM_SETTLE_MS`. Zooming used to re-lay out and repaint every element
-  // on every step (211 ms per step on a 20k-element map).
+  // Milestone 94 (fix 3): a wheel or pinch zoom is shown by scaling the drawing already on screen
+  // (a compositor transform: no layout, no repaint) and drawn sharp at its real size every
+  // `redrawEveryMs` while the gesture goes on, and `ZOOM_SETTLE_MS` after it rests. Zooming used
+  // to re-lay out and repaint every element on every step (211 ms per step on a 20k-element map).
   const zoomSettleTimer = useRef<number | undefined>(undefined);
+  /** When the current gesture started, or the map was last drawn sharp during it. */
+  const zoomSharpAt = useRef(0);
+  /** When the last sharp redraw was asked for, to time it. */
+  const redrawAskedAt = useRef<number | null>(null);
+  const redrawEveryMs = useRef(ZOOM_REDRAW_MIN_MS);
 
   function clearZoomPreview(): void {
     const svg = svgRef.current;
@@ -1389,38 +1399,56 @@ export function MapRenderer({
     }
   }
 
-  function previewView(next: MapView): void {
+  /** Moves and scales the drawing (made at the drawn scale) so map point (cx, cy) sits in the
+   * middle of the window at the view's scale. The SVG starts after the half-window padding. */
+  function drawPreview(): void {
     const { w, h } = windowSize();
-    view.current = { ...next, scale: clampScale(next.scale, w, h, world) };
-    const v = view.current;
+    const v = view.current!;
     const svg = svgRef.current;
     const el = scrollRef.current;
-    if (svg && el) {
-      // Move and scale the drawing (made at the drawn scale) so map point (cx, cy) sits in the
-      // middle of the window at the new scale. The SVG starts after the half-window padding.
-      const k = v.scale / renderedScale.current;
-      const tx = w / 2 - windowPx.w / 2 + el.scrollLeft - (v.cx - world.x) * v.scale;
-      const ty = h / 2 - windowPx.h / 2 + el.scrollTop - (v.cy - world.y) * v.scale;
-      svg.style.transformOrigin = "0 0";
-      svg.style.willChange = "transform";
-      svg.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
-    }
-    viewChanged();
-    window.clearTimeout(zoomSettleTimer.current);
-    zoomSettleTimer.current = window.setTimeout(settleZoom, ZOOM_SETTLE_MS);
+    if (!svg || !el) return;
+    const k = v.scale / renderedScale.current;
+    const tx = w / 2 - windowPx.w / 2 + el.scrollLeft - (v.cx - world.x) * v.scale;
+    const ty = h / 2 - windowPx.h / 2 + el.scrollTop - (v.cy - world.y) * v.scale;
+    svg.style.transformOrigin = "0 0";
+    svg.style.willChange = "transform";
+    svg.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
   }
 
-  /** Draws a previewed zoom at its real size; the layout effect below drops the transform in the
-   * same frame. */
-  function settleZoom(): void {
+  function previewView(next: MapView): void {
+    const { w, h } = windowSize();
+    const gestureStarting = zoomSettleTimer.current === undefined;
+    view.current = { ...next, scale: clampScale(next.scale, w, h, world) };
+    drawPreview();
+    viewChanged();
+    const now = performance.now();
+    if (gestureStarting) zoomSharpAt.current = now;
     window.clearTimeout(zoomSettleTimer.current);
-    zoomSettleTimer.current = undefined;
+    zoomSettleTimer.current = window.setTimeout(settleZoom, ZOOM_SETTLE_MS);
+    if (now - zoomSharpAt.current >= redrawEveryMs.current) {
+      zoomSharpAt.current = now;
+      drawSharp();
+    }
+  }
+
+  /** Draws the view at its real size; the layout effect below drops the transform in the same
+   * frame. */
+  function drawSharp(): void {
     const v = view.current!;
-    if (v.scale !== renderedScale.current) setScale(v.scale);
-    else {
+    if (v.scale !== renderedScale.current) {
+      redrawAskedAt.current = performance.now();
+      setScale(v.scale);
+    } else {
       clearZoomPreview();
       applyScroll();
     }
+  }
+
+  /** The gesture has rested: draw it sharp. */
+  function settleZoom(): void {
+    window.clearTimeout(zoomSettleTimer.current);
+    zoomSettleTimer.current = undefined;
+    drawSharp();
   }
 
   /** Before anything that reads or moves the scroll position, which only means anything at the
@@ -1457,8 +1485,33 @@ export function MapRenderer({
   const renderedScale = useRef(scale);
   useLayoutEffect(() => {
     renderedScale.current = scale;
-    clearZoomPreview();
-    applyScroll();
+    const v = view.current!;
+    const el = scrollRef.current;
+    if (v.scale !== scale && el) {
+      // The zoom went on while this size was being drawn: scroll to the view at the drawn size,
+      // and show the rest of the way with the transform until the next sharp redraw.
+      el.scrollLeft = (v.cx - world.x) * scale;
+      el.scrollTop = (v.cy - world.y) * scale;
+      drawPreview();
+      viewChanged();
+    } else {
+      clearZoomPreview();
+      applyScroll();
+    }
+    // How long a sharp redraw takes here (to the frame after it), so a slow device is not asked
+    // for one more often than it can draw them.
+    const asked = redrawAskedAt.current;
+    if (asked !== null) {
+      redrawAskedAt.current = null;
+      requestAnimationFrame(() =>
+        setTimeout(() => {
+          redrawEveryMs.current = Math.min(
+            Math.max(ZOOM_REDRAW_MIN_MS, 2 * (performance.now() - asked)),
+            1000,
+          );
+        }, 0),
+      );
+    }
   }, [scale, windowPx.w, windowPx.h]);
   useEffect(() => () => window.clearTimeout(zoomSettleTimer.current), []);
 

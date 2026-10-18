@@ -4918,9 +4918,15 @@ and fix 3 complements it.
       holds up a frame. Culling is drawing only: live state, the popup, search centring, boundary
       links and highlights all work from the bundle.
 - [x] **3. Zoom via a compositor transform.** While the wheel or pinch moves, the current drawing is
-      scaled with a CSS transform; it is drawn at the real size `ZOOM_SETTLE_MS` (150 ms) after the
-      gesture rests, or straight away when a drag starts. The preview matched the settled drawing
-      within 0.5 px in Chrome, at off-centre pointers and in both directions.
+      scaled with a CSS transform, and drawn sharp at its real size `ZOOM_SETTLE_MS` (80 ms) after
+      the gesture rests, or straight away when a drag starts. The preview matched the settled
+      drawing within 0.5 px in Chrome, at off-centre pointers and in both directions.
+  - Follow-up (owner, 2026-10-18: "a zoom leaves the map out of focus for a second or two"). A
+    touchpad or smooth wheel keeps sending momentum events for a second or more, so the "rested"
+    redraw came only at the very end. Now the map is also drawn sharp during the gesture, every
+    `ZOOM_REDRAW_MIN_MS` (200 ms), or every two redraws' time on a device where one takes longer
+    (capped at 1 s). Measured on Carlisle with a 90-frame momentum stream: sharp every ~220 ms on
+    desktop and every ~1 s on the throttled mobile profile, where a redraw takes ~0.5 s.
 - [x] **4. Live updates touch only what changed.** `useLiveMapSocket` applies deltas once per
       animation frame, keeping the latest value per element. It patches its records in place with a
       change log (`recordChanges.ts`) instead of copying them per message; copying a 6,000-berth

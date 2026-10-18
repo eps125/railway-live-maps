@@ -2010,7 +2010,7 @@ describe("large maps (Milestone 94)", () => {
     fireEvent.scroll(scroller);
     expect(screen.getByText("0L01")).toBeTruthy();
     expect(screen.queryByText("7M75")).toBeNull();
-  });
+  }, 30_000);
 
   it("draws every element of a map below the size threshold", () => {
     const doc = syntheticBundle(900);

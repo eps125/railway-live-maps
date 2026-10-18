@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { readApiJson } from "./apiJson.js";
 
 interface IdDiff {
@@ -22,10 +22,24 @@ export type PublishOutcome =
       /** Milestone 85: after a module publish, every map assembled from it was republished. */
       kind: "map" | "module";
       cascade: CascadeOutcome[];
+      /** Milestone 96: modules published together with the map. */
+      modules: Array<{ slug: string; versionNumber: number }>;
     }
   | { status: "validationFailed"; errors: Array<{ code: string; message: string }> }
   | { status: "conflict"; currentRevision: number | null }
   | { status: "error"; message: string };
+
+/** Milestone 96: one of an assembled map's modules, as `GET .../module-changes` reports it. */
+export interface ModuleChange {
+  slug: string;
+  name: string | null;
+  status: "changed" | "never_published" | "unchanged" | "missing";
+  draftRevision: number | null;
+  publishedVersion: number | null;
+}
+
+/** Milestone 96: what to do with modules that have unpublished drafts. */
+export type ModulePublishChoice = "withModules" | "mapOnly";
 
 export interface ReviewPanelProps {
   slug: string;
@@ -60,6 +74,34 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
   const [effectiveFrom, setEffectiveFrom] = useState(() => toDatetimeLocal(new Date()));
   const [publishedBy, setPublishedBy] = useState("");
   const [outcome, setOutcome] = useState<PublishOutcome>({ status: "idle" });
+  const [moduleChanges, setModuleChanges] = useState<ModuleChange[]>([]);
+  // Milestone 96 (owner request): by default the changed modules publish with the map.
+  const [moduleChoice, setModuleChoice] = useState<ModulePublishChoice>("withModules");
+
+  // Milestone 96: which of this map's modules have unpublished drafts — re-read whenever the
+  // map's draft changes and after a publish.
+  async function loadModuleChanges(signal?: AbortSignal): Promise<void> {
+    try {
+      const response = await fetch(
+        `/api/v1/editor/maps/${encodeURIComponent(slug)}/module-changes`,
+        { signal: signal ?? null },
+      );
+      if (!response.ok) return;
+      const body = await readApiJson<{ modules?: ModuleChange[] }>(response);
+      setModuleChanges(body.modules ?? []);
+    } catch {
+      // Aborted or offline: the publish itself still reports anything wrong.
+    }
+  }
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadModuleChanges(controller.signal);
+    return () => controller.abort();
+  }, [slug, syncedRevision]);
+  const pendingModules = moduleChanges.filter(
+    (change) => change.status === "changed" || change.status === "never_published",
+  );
+  const neverPublished = pendingModules.filter((change) => change.status === "never_published");
 
   async function loadDiff(): Promise<void> {
     const response = await fetch(`/api/v1/editor/maps/${encodeURIComponent(slug)}/diff`);
@@ -78,6 +120,13 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
           expectedRevision: syncedRevision,
           effectiveFrom: applyToAllHistory ? undefined : new Date(effectiveFrom).toISOString(),
           publishedBy: publishedBy || undefined,
+          publishModules:
+            moduleChoice === "withModules" && pendingModules.length > 0
+              ? pendingModules.map((change) => ({
+                  slug: change.slug,
+                  expectedRevision: change.draftRevision,
+                }))
+              : undefined,
         }),
       });
       const body = await readApiJson<{
@@ -95,6 +144,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         effectiveFrom?: string;
         kind?: "map" | "module";
         cascade?: CascadeOutcome[];
+        modules?: Array<{ slug: string; versionNumber: number }>;
       }>(response);
       if (response.status === 409) {
         setOutcome({
@@ -121,10 +171,12 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         effectiveFrom: body.effectiveFrom ?? "",
         kind: body.kind ?? "map",
         cascade: body.cascade ?? [],
+        modules: body.modules ?? [],
       });
-      // Milestone 85: after a module publish, stay here so the author sees which maps were
-      // republished (and any that couldn't be).
-      if (body.kind !== "module") onPublished();
+      void loadModuleChanges();
+      // Milestone 85/96: after publishing a module, or a map with modules, stay here so the
+      // author sees what was published and which maps were republished (and any that couldn't be).
+      if (body.kind !== "module" && (body.modules ?? []).length === 0) onPublished();
     } catch (error) {
       setOutcome({
         status: "error",
@@ -176,6 +228,47 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
             />
           </label>
         )}
+        {pendingModules.length > 0 ? (
+          <fieldset className="module-publish-choice">
+            <legend>Modules with unpublished changes</legend>
+            <ul className="module-publish-choice__list">
+              {pendingModules.map((change) => (
+                <li key={change.slug}>
+                  <strong>{change.name ?? change.slug}</strong>{" "}
+                  {change.status === "never_published"
+                    ? "— never published"
+                    : `— changed since version ${change.publishedVersion}`}
+                </li>
+              ))}
+            </ul>
+            <label className="field field--checkbox">
+              <input
+                type="radio"
+                name="module-publish-choice"
+                checked={moduleChoice === "withModules"}
+                onChange={() => setModuleChoice("withModules")}
+              />
+              Publish {pendingModules.length === 1 ? "this module" : "these modules"} with the map
+              (recommended)
+            </label>
+            <label className="field field--checkbox">
+              <input
+                type="radio"
+                name="module-publish-choice"
+                checked={moduleChoice === "mapOnly"}
+                onChange={() => setModuleChoice("mapOnly")}
+              />
+              Publish the map only, with the modules&apos; published versions
+            </label>
+            {moduleChoice === "mapOnly" && neverPublished.length > 0 ? (
+              <p role="alert" className="publish-result publish-result--error">
+                {neverPublished.map((change) => change.name ?? change.slug).join(", ")}{" "}
+                {neverPublished.length === 1 ? "has" : "have"} never been published, so the map
+                can&apos;t be assembled without {neverPublished.length === 1 ? "it" : "them"}.
+              </p>
+            ) : null}
+          </fieldset>
+        ) : null}
         <label className="field">
           Published by
           <input
@@ -195,9 +288,22 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
       </fieldset>
 
       {outcome.status === "published" && outcome.kind === "map" ? (
-        <p className="publish-result publish-result--success">
-          Published version {outcome.versionNumber}, effective from {outcome.effectiveFrom}.
-        </p>
+        <div className="publish-result publish-result--success">
+          <p>
+            Published version {outcome.versionNumber}, effective from {outcome.effectiveFrom}.
+            {outcome.modules.length > 0
+              ? ` Published with it: ${outcome.modules
+                  .map((m) => `${m.slug} (module version ${m.versionNumber})`)
+                  .join(", ")}.`
+              : ""}
+          </p>
+          {outcome.cascade.length > 0 ? (
+            <>
+              <p>Other maps using those modules were republished:</p>
+              <CascadeList cascade={outcome.cascade} />
+            </>
+          ) : null}
+        </div>
       ) : null}
       {outcome.status === "published" && outcome.kind === "module" ? (
         <div className="publish-result publish-result--success">
@@ -207,18 +313,7 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
               ? " No published map uses this module yet."
               : " Maps using it were republished:"}
           </p>
-          {outcome.cascade.length > 0 ? (
-            <ul className="cascade-list">
-              {outcome.cascade.map((map) => (
-                <li key={map.slug} className={map.ok ? "" : "cascade-list__failed"}>
-                  <strong>{map.slug}</strong>{" "}
-                  {map.ok
-                    ? `— now version ${map.versionNumber}`
-                    : `— not republished: ${(map.errors ?? []).map((e) => e.message).join("; ")}`}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          {outcome.cascade.length > 0 ? <CascadeList cascade={outcome.cascade} /> : null}
         </div>
       ) : null}
       {outcome.status === "validationFailed" ? (
@@ -245,5 +340,20 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         </p>
       ) : null}
     </section>
+  );
+}
+
+function CascadeList({ cascade }: { cascade: CascadeOutcome[] }): JSX.Element {
+  return (
+    <ul className="cascade-list">
+      {cascade.map((map) => (
+        <li key={map.slug} className={map.ok ? "" : "cascade-list__failed"}>
+          <strong>{map.slug}</strong>{" "}
+          {map.ok
+            ? `— now version ${map.versionNumber}`
+            : `— not republished: ${(map.errors ?? []).map((e) => e.message).join("; ")}`}
+        </li>
+      ))}
+    </ul>
   );
 }

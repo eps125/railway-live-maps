@@ -41,6 +41,18 @@ and an assembled map's `modules` (`[{ slug, placement }]`, placement `{ kind: "a
 (`flattenAssembledMap`): module ids become `<module>/<id>`; joins and the module list are not
 published.
 
+**Publishing modules with the map (Milestone 96, ADR 0019 amendment).** When an assembled map's
+modules have unpublished drafts (changed since their latest published version, or never
+published), the Review panel lists them and offers a choice:
+
+- **Publish these modules with the map** (the default). The modules and the map are published
+  in one transaction, and every other map using those modules is republished as well.
+- **Publish the map only**, with the modules' published versions. A never-published module then
+  blocks the publish (`module_missing`), and the panel warns before the author tries.
+
+The validation panel checks an assembled map with those module drafts, as the default publish
+will.
+
 ## 3. Element types for MVP
 
 ### `trackPath`
@@ -776,6 +788,9 @@ A published version is immutable and has an effective interval. Publishing compi
 - stripped editor-only metadata
 
 Playback selects the map version effective at the requested timestamp.
+
+An assembled map published together with its modules (Milestone 96) still records one new
+immutable `map_version`, plus one new `map_module_version` per module published with it.
 
 ## 12. Renderer choices
 

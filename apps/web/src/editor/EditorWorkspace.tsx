@@ -162,7 +162,7 @@ export function EditorWorkspace({
       ? ` ${body.keptInMap.length} element(s) stayed in this map because they refer to things outside the selection.`
       : "";
     window.alert(
-      `Module "${name.trim()}" made with ${body.movedElements ?? 0} element(s), placed exactly where they were.${kept} Publish the module, then this map.`,
+      `Module "${name.trim()}" made with ${body.movedElements ?? 0} element(s), placed exactly where they were.${kept} Publishing this map publishes the module with it.`,
     );
   }
 

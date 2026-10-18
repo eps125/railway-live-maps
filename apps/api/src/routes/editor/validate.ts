@@ -5,7 +5,7 @@ import { validateDraftInContext } from "../../editor/validateWithContext.js";
 import {
   assembleFromPublished,
   loadModuleDrafts,
-  loadPublishedModules,
+  moduleChanges,
   moduleIssuesAsValidation,
 } from "../../editor/modules.js";
 
@@ -45,31 +45,34 @@ export async function registerEditorValidateRoutes(
         };
       }
 
-      // Milestone 85: an assembled map is checked exactly as it would publish — flattened with
-      // each module's latest published version — plus whether its modules fit together, and a
-      // warning for each module with changes not yet published (they won't be included).
+      // Milestone 85/96: an assembled map is checked exactly as the editor's default publish
+      // would produce it — flattened with each module's latest published version, except that a
+      // module with unpublished changes (or never published) uses its draft, since publishing
+      // offers to publish it with the map — plus whether its modules fit together, and a warning
+      // for each such module.
       if (!isAssembledMap(parsed.data)) return validateDraftInContext(pool, parsed.data);
-      const assembly = await assembleFromPublished(pool, parsed.data);
-      const result = await validateDraftInContext(pool, assembly.flattened);
       const slugs = moduleSlugs(parsed.data);
-      const [published, drafts] = await Promise.all([
-        loadPublishedModules(pool, slugs),
-        loadModuleDrafts(pool, slugs),
-      ]);
-      const unpublished = slugs.filter((slug) => {
-        const draft = drafts.get(slug);
-        const live = published.get(slug);
-        return draft && live && JSON.stringify(draft) !== JSON.stringify(live.doc);
-      });
+      const pending = (await moduleChanges(pool, slugs)).filter(
+        (change) => change.status === "changed" || change.status === "never_published",
+      );
+      const drafts = await loadModuleDrafts(
+        pool,
+        pending.map((change) => change.slug),
+      );
+      const assembly = await assembleFromPublished(pool, parsed.data, drafts);
+      const result = await validateDraftInContext(pool, assembly.flattened);
       const errors = [...moduleIssuesAsValidation(assembly.issues), ...result.errors];
       return {
         ...result,
         valid: errors.length === 0,
         errors,
         warnings: [
-          ...unpublished.map((slug) => ({
+          ...pending.map((change) => ({
             code: "module_unpublished_changes",
-            message: `Module ${slug} has changes that aren't published yet — publish the module to include them`,
+            message:
+              change.status === "never_published"
+                ? `Module ${change.slug} has never been published — it will be published with this map`
+                : `Module ${change.slug} has changes that aren't published yet — they will be published with this map unless you choose the map only`,
           })),
           ...result.warnings,
         ],

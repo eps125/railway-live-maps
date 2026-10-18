@@ -371,4 +371,238 @@ describe("map modules (integration)", () => {
     expect(mine).toHaveLength(2);
     expect(mine.every((m: { ok: boolean }) => m.ok)).toBe(true);
   });
+  // Milestone 96 (docs/adr/0019 amendment): publishing an assembled map with its changed modules.
+  describe("publishing modules with the map", () => {
+    const changedModule = `together-a-${suffix}`;
+    const newModule = `together-b-${suffix}`;
+    const together = `together-map-${suffix}`;
+    const other = `together-other-${suffix}`;
+    let togetherSource: MapDocument;
+
+    async function draftRevision(slug: string): Promise<number> {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/editor/maps/${slug}/draft`,
+        headers: { cookie },
+      });
+      return response.json().revision as number;
+    }
+
+    async function moduleChanges(slug: string) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/editor/maps/${slug}/module-changes`,
+        headers: { cookie },
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json().modules as Array<{
+        slug: string;
+        status: string;
+        draftRevision: number | null;
+        publishedVersion: number | null;
+      }>;
+    }
+
+    async function publishWith(slug: string, revision: number, modules: string[]) {
+      const publishModules = await Promise.all(
+        modules.map(async (moduleSlug) => ({
+          slug: moduleSlug,
+          expectedRevision: await draftRevision(moduleSlug),
+        })),
+      );
+      return app.inject({
+        method: "POST",
+        url: `/api/v1/editor/maps/${slug}/publish`,
+        headers: { cookie },
+        payload: { expectedRevision: revision, publishModules },
+      });
+    }
+
+    async function versionCount(slug: string): Promise<number> {
+      const { rows } = await pool.query<{ n: string }>(
+        `select count(*)::text as n from map_version mv join map m on m.id = mv.map_id
+          where m.slug = $1`,
+        [slug],
+      );
+      return Number(rows[0]!.n);
+    }
+
+    async function moduleVersionCount(slug: string): Promise<number> {
+      const { rows } = await pool.query<{ n: string }>(
+        `select count(*)::text as n from map_module_version mmv join map m on m.id = mmv.map_id
+          where m.slug = $1`,
+        [slug],
+      );
+      return Number(rows[0]!.n);
+    }
+
+    function assembledSource(slug: string, modules: MapDocument["modules"]): MapDocument {
+      return {
+        ...moduleDoc(slug),
+        elements: [],
+        joins: undefined,
+        modules,
+      } as unknown as MapDocument;
+    }
+
+    beforeAll(async () => {
+      await create(changedModule, "module");
+      await create(newModule, "module");
+      await create(together, "map");
+      await create(other, "map");
+      // A published module used by another published map, then changed.
+      await publish(changedModule, await saveDraft(changedModule, moduleDoc(changedModule)));
+      const otherPublish = await publish(
+        other,
+        await saveDraft(
+          other,
+          assembledSource(other, [{ slug: changedModule, placement: { kind: "at", x: 0, y: 0 } }]),
+        ),
+      );
+      expect(otherPublish.statusCode).toBe(200);
+      await saveDraft(changedModule, moduleDoc(changedModule, 260));
+      // A module that has never been published.
+      await saveDraft(newModule, moduleDoc(newModule));
+      togetherSource = assembledSource(together, [
+        { slug: changedModule, placement: { kind: "at", x: 100, y: 100 } },
+        {
+          slug: newModule,
+          placement: { kind: "attached", join: "west", to: changedModule, toJoin: "east" },
+        },
+      ]);
+      await saveDraft(together, togetherSource);
+    });
+
+    it("reports which modules have something to publish", async () => {
+      const changes = await moduleChanges(together);
+      expect(changes.map((c) => [c.slug, c.status, c.publishedVersion])).toEqual([
+        [changedModule, "changed", 1],
+        [newModule, "never_published", null],
+      ]);
+      expect(await moduleChanges(changedModule)).toEqual([]);
+    });
+
+    it("validates with the module drafts, warning about each", async () => {
+      const validate = await app.inject({
+        method: "POST",
+        url: `/api/v1/editor/maps/${together}/validate`,
+        headers: { cookie },
+        payload: { canonicalDocument: togetherSource },
+      });
+      expect(validate.json().valid).toBe(true);
+      expect(
+        validate
+          .json()
+          .warnings.filter((w: { code: string }) => w.code === "module_unpublished_changes"),
+      ).toHaveLength(2);
+    });
+
+    it("the map only can't assemble without the never-published module", async () => {
+      const response = await publish(together, await draftRevision(together));
+      expect(response.statusCode).toBe(422);
+      expect(response.json().error.details.errors[0].code).toBe("module_missing");
+      expect(await moduleVersionCount(changedModule)).toBe(1);
+    });
+
+    it("rejects a module that isn't the map's, and a stale module revision, publishing nothing", async () => {
+      const revision = await draftRevision(together);
+      const notMine = await app.inject({
+        method: "POST",
+        url: `/api/v1/editor/maps/${together}/publish`,
+        headers: { cookie },
+        payload: {
+          expectedRevision: revision,
+          publishModules: [{ slug: west, expectedRevision: 1 }],
+        },
+      });
+      expect(notMine.statusCode).toBe(400);
+
+      const stale = await app.inject({
+        method: "POST",
+        url: `/api/v1/editor/maps/${together}/publish`,
+        headers: { cookie },
+        payload: {
+          expectedRevision: revision,
+          publishModules: [
+            { slug: changedModule, expectedRevision: await draftRevision(changedModule) },
+            { slug: newModule, expectedRevision: (await draftRevision(newModule)) - 1 },
+          ],
+        },
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json().error.details.moduleSlug).toBe(newModule);
+      expect(await moduleVersionCount(changedModule)).toBe(1);
+      expect(await moduleVersionCount(newModule)).toBe(0);
+      expect(await versionCount(together)).toBe(0);
+    });
+
+    it("publishes the changed and never-published modules with the map, in one go", async () => {
+      const otherVersionsBefore = await versionCount(other);
+      const response = await publishWith(together, await draftRevision(together), [
+        changedModule,
+        newModule,
+      ]);
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body).toMatchObject({ kind: "map", versionNumber: 1 });
+      expect(body.modules).toEqual([
+        { slug: changedModule, versionNumber: 2 },
+        { slug: newModule, versionNumber: 1 },
+      ]);
+      // The other map using the changed module is republished once; this map is not republished
+      // a second time by the cascade.
+      expect(body.cascade).toEqual([
+        { slug: other, ok: true, versionNumber: otherVersionsBefore + 1 },
+      ]);
+      expect(await versionCount(together)).toBe(1);
+      expect(await versionCount(other)).toBe(otherVersionsBefore + 1);
+
+      // Assembled from the new module versions: the new module sits beyond the longer one.
+      const bundle = (await definition(together)).json().definition;
+      expect(bundle.elementsById[`${newModule}/up`].points[0]).toEqual({ x: 360, y: 100 });
+      const row = await pool.query<{
+        module_versions: Array<{ slug: string; versionNumber: number }>;
+      }>(
+        `select mv.module_versions from map_version mv join map m on m.id = mv.map_id
+          where m.slug = $1 and mv.effective_to is null`,
+        [together],
+      );
+      expect(row.rows[0]!.module_versions.map((m) => [m.slug, m.versionNumber]).sort()).toEqual(
+        [
+          [changedModule, 2],
+          [newModule, 1],
+        ].sort(),
+      );
+      const otherBundle = (await definition(other)).json().definition;
+      expect(otherBundle.elementsById[`${changedModule}/up`].points[1]).toEqual({ x: 260, y: 0 });
+
+      // Audited like the separate publishes.
+      const audits = await pool.query<{ action: string; details: Record<string, unknown> }>(
+        `select action, details from admin_audit_log
+          where details->>'slug' in ($1, $2, $3)
+          order by id`,
+        [together, changedModule, newModule],
+      );
+      const actions = audits.rows.map((r) => r.action);
+      expect(actions.filter((a) => a === "module.publish")).toHaveLength(3); // incl. beforeAll's
+      expect(
+        audits.rows.filter((r) => r.action === "module.publish" && r.details.withMap === together),
+      ).toHaveLength(2);
+      expect(actions).toContain("map.publish");
+      expect(actions).toContain("module.cascade");
+
+      expect((await moduleChanges(together)).every((c) => c.status === "unchanged")).toBe(true);
+    });
+
+    it("publishes the map only against the published modules when asked", async () => {
+      await saveDraft(changedModule, moduleDoc(changedModule, 300));
+      const response = await publish(together, await draftRevision(together));
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ versionNumber: 2, modules: [], cascade: [] });
+      expect(await moduleVersionCount(changedModule)).toBe(2);
+      const bundle = (await definition(together)).json().definition;
+      expect(bundle.elementsById[`${newModule}/up`].points[0]).toEqual({ x: 360, y: 100 });
+      expect((await moduleChanges(together))[0]!.status).toBe("changed");
+    });
+  });
 });

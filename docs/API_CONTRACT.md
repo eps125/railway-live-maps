@@ -825,6 +825,43 @@ gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/
   version (`422` with the module problems if they don't fit, or a module was never published);
   `{ kind: "map", ... }` as before. `validate` checks an assembled map the same way and warns about
   modules with unpublished changes.
+- `POST /api/v1/editor/maps/{slug}/publish` also takes `publishModules` (Milestone 96, ADR 0019
+  amendment). It is optional, for an assembled map only, and lists
+  `[{ slug, expectedRevision }]`, the modules to publish with the map, each at the draft revision
+  the author saw. Each module listed is checked as if published on its own, and the map is
+  assembled with those drafts. Then, in **one transaction**:
+  - each module gets a new module version;
+  - the map gets its new version, assembled from them;
+  - every other map currently assembled from those modules is republished, once each. Each
+    republish runs behind a savepoint, so one that no longer fits is reported and left as it was.
+    The map being published is never republished a second time.
+
+  A listed module whose draft already matches its latest published version is skipped. Omitting
+  `publishModules` publishes the map only, against the published module versions, as before.
+
+  The response adds `modules: [{ slug, versionNumber }]` (the modules published) and
+  `cascade: [{ slug, ok, versionNumber?, errors? }]`. Errors:
+  - `400 VALIDATION_ERROR`: a malformed or duplicated entry, a slug that isn't one of the map's
+    modules, or `publishModules` on a module or a plain map;
+  - `409 DRAFT_REVISION_CONFLICT` with `details.moduleSlug`: a module draft changed since its
+    `expectedRevision`. Nothing is published;
+  - `422 VALIDATION_FAILED`: a module's own blocking errors (messages prefixed `Module <slug>:`),
+    or the assembled map's.
+
+  Audit: one `module.publish` per module (`details.withMap`), then `map.publish`
+  (`details.publishedModules`), then `module.cascade` if other maps were republished.
+
+- `GET /api/v1/editor/maps/{slug}/module-changes` (Milestone 96) returns
+  `{ modules: [{ slug, name, status, draftRevision, publishedVersion }] }`, in the order of the
+  map draft's `modules`. `status` is one of:
+  - `changed`: the draft differs from the latest published version;
+  - `never_published`;
+  - `unchanged`;
+  - `missing`: no such module.
+
+  The list is `[]` for a module or a map without modules, and `404 DRAFT_NOT_FOUND` if there is
+  no draft.
+
 - `GET /api/v1/editor/modules?slugs=a,b` (Milestone 85) — `{ modules: [{ slug, name, draft,
 draftRevision, published, publishedVersion }] }` for the editor's preview.
 - `POST /api/v1/editor/maps/{slug}/extract-module` (**admin only**, Milestone 85) —

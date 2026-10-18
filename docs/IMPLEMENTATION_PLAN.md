@@ -5028,3 +5028,47 @@ Known limitations:
 - Names are single-line.
 - There is no hover tooltip on the line.
 - Names don't avoid colliding with nearby labels; the author places the ends clear of them.
+
+## Milestone 96 — Publish an assembled map with its modules (2026-10-18, ADR 0019 amendment)
+
+Owner request: publishing an assembled map should deal with its modules that have unpublished
+drafts. Previously every module had to be published by hand, in order, before the map. A new map
+such as Crewe – Colwich showed nothing until then, and a map with a never-published module
+couldn't publish at all (`module_missing`).
+
+- [x] `GET /api/v1/editor/maps/{slug}/module-changes` lists each of the map's modules as
+      `changed`, `never_published`, `unchanged` or `missing`, with its draft revision and
+      published version (`moduleChanges` and the pure `moduleChangeStatus` in
+      `apps/api/src/editor/modules.ts`).
+- [x] `POST .../publish` takes `publishModules: [{ slug, expectedRevision }]` for an assembled
+      map. In one transaction it:
+  - checks each module as if published on its own, with a conflict if its draft has moved on;
+  - publishes the modules;
+  - assembles the map from the new versions and publishes it;
+  - republishes every other map using those modules, once each and behind a savepoint
+    (`cascadeInTransaction`), never the map being published.
+  - Audits `module.publish` (`withMap`), `map.publish` (`publishedModules`) and `module.cascade`.
+- [x] `assembleFromPublished` takes module-document overrides, so the pre-publish check and the
+      validation panel use the drafts that will be published.
+- [x] `validate` checks an assembled map with its pending module drafts and warns once per module.
+- [x] Review panel: lists the pending modules (changed since version N, or never published) and
+      offers **Publish these modules with the map** (default) or **Publish the map only**. It warns
+      when choosing the map only would leave a never-published module out. After the publish it
+      shows the module versions published and the maps republished.
+- [x] Tests:
+  - unit: `moduleChangeStatus` and `parsePublishModules`;
+  - component: `ReviewPanel.test.tsx` covers the default choice and its request body, map only
+    with the never-published warning, and no choice when nothing is pending;
+  - integration (`mapModules.integration.test.ts`): module-changes; validate warnings; map only
+    blocked by a never-published module; a foreign slug gives 400; a stale module revision gives
+    409 and publishes nothing; publishing with modules is checked for version numbers, assembly,
+    the cascade to another map without double-publishing, `module_versions` and the audit rows;
+    the map-only path is checked against the published versions.
+- [x] Docs: ADR 0019 amendment, `docs/API_CONTRACT.md`, `docs/MAP_EDITOR_SPEC.md` (Modules and §11).
+
+Known limitations:
+
+- No Playwright test. The repository has no Playwright setup yet, so the dialog is covered by a
+  Testing Library component test instead.
+- Choosing modules one by one isn't offered. The choice is all pending modules or none, as asked.
+- No migration needed.

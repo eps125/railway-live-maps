@@ -83,3 +83,47 @@ rebuilds every published map the same way (for after a compiler change).
   only for the map's own elements, not the dimmed modules.
 - New elements spanning modules are authored by typing the qualified id where a reference is
   entered; drawing one by clicking across modules is later work.
+
+## Amendment (Milestone 96, 2026-10-18) — publishing modules with the map
+
+**Context.** Assembly uses each module's latest _published_ version, so a new assembled map (the
+owner's Crewe – Colwich map uses five modules, four never published) shows nothing until every
+module has been published by hand, in order, and then the map. A map using a never-published
+module can't publish at all (`module_missing`). The owner asked for publishing the map to take
+care of its modules.
+
+**Decision.**
+
+1. Publishing an assembled map finds which of its modules have something to publish. A module
+   counts if its draft differs from its latest published version, or if it has a draft but was
+   never published (`GET .../module-changes`).
+2. When any module counts, the Review panel offers a choice:
+   - **publish those modules with the map** (the default);
+   - **the map only**, against the modules' published versions, as before.
+3. Publishing with modules is **one transaction**:
+   - each module's draft is checked as if it were published on its own, at the revision the
+     author saw (a newer draft is a conflict and nothing is published);
+   - each module is recorded as a new immutable `map_module_version`;
+   - the map is assembled from those new versions and published as one new immutable
+     `map_version`, with its effective date chosen in the panel as usual;
+   - every _other_ map currently assembled from any of those modules is republished once (§4's
+     cascade), never the map being published. Each republish runs behind a savepoint, so a map that
+     no longer fits is left as it was and reported, as before.
+4. Audit as for separate publishes. Each module gets a `module.publish` naming the map
+   (`withMap`), the map gets `map.publish` listing `publishedModules`, and `module.cascade` is
+   written when other maps were republished.
+5. Publishing a module on its own is unchanged. It records its version, then republishes the maps
+   using it, each in its own transaction after the commit.
+
+**Rule 11 kept.** Nothing published is changed. Every publish is a new version: one per module
+and one per map. Map versions keep their effective dates. Module versions have none, as before.
+
+**Consequences.**
+
+- The validation panel checks an assembled map as the default publish will build it, using the
+  module drafts, and warns once for each module that will be published with the map.
+- Publishing a map can now publish module drafts the author hasn't opened recently. The panel names
+  each one and whether it is changed or new, and a module that is valid on its own but breaks the
+  assembly blocks the whole publish.
+- Within the one transaction the cascade holds row locks a little longer than separate publishes
+  did. There are few assembled maps, so this is acceptable.

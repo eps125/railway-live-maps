@@ -94,6 +94,75 @@ export async function loadModuleDrafts(
   return out;
 }
 
+/**
+ * Milestone 96 (docs/adr/0019 amendment): how a module's draft stands against its latest
+ * published version — what publishing an assembled map offers to publish with it.
+ * - `changed`: the draft differs from the latest published version;
+ * - `never_published`: there is a draft but no published version (the map can't assemble
+ *   without it — `module_missing`);
+ * - `unchanged`: nothing to publish;
+ * - `missing`: no such module, or neither a draft nor a published version.
+ */
+export type ModuleChangeStatus = "changed" | "never_published" | "unchanged" | "missing";
+
+export interface ModuleChange {
+  slug: string;
+  name: string | null;
+  status: ModuleChangeStatus;
+  draftRevision: number | null;
+  publishedVersion: number | null;
+}
+
+/** Pure: compares the stored JSON (both are `jsonb`, so equal documents serialise equally). */
+export function moduleChangeStatus(input: {
+  exists: boolean;
+  draft: unknown;
+  published: unknown;
+}): ModuleChangeStatus {
+  if (!input.exists || (input.draft == null && input.published == null)) return "missing";
+  if (input.published == null) return "never_published";
+  if (input.draft == null) return "unchanged";
+  return JSON.stringify(input.draft) === JSON.stringify(input.published) ? "unchanged" : "changed";
+}
+
+/** Each named module's change status, in the order given. */
+export async function moduleChanges(db: Queryable, slugs: string[]): Promise<ModuleChange[]> {
+  if (slugs.length === 0) return [];
+  const { rows } = await db.query<{
+    slug: string;
+    exists: boolean;
+    name: string | null;
+    draft: unknown;
+    draft_revision: number | null;
+    published: unknown;
+    published_version: number | null;
+  }>(
+    `select s.slug, m.id is not null as exists, m.name,
+            d.canonical_document as draft, d.revision as draft_revision,
+            mmv.canonical_document as published, mmv.version_number as published_version
+       from unnest($1::text[]) with ordinality as s(slug, ord)
+       left join map m on m.slug = s.slug and m.kind = 'module'
+       left join map_draft d on m.id is not null and d.slug = m.slug
+       left join lateral (
+         select canonical_document, version_number from map_module_version
+          where map_id = m.id order by version_number desc limit 1
+       ) mmv on true
+      order by s.ord`,
+    [slugs],
+  );
+  return rows.map((row) => ({
+    slug: row.slug,
+    name: row.name,
+    status: moduleChangeStatus({
+      exists: row.exists,
+      draft: row.draft,
+      published: row.published,
+    }),
+    draftRevision: row.draft_revision,
+    publishedVersion: row.published_version,
+  }));
+}
+
 export function moduleIssuesAsValidation(issues: ModuleIssue[]): ValidationIssue[] {
   return issues.map((issue) => ({ code: issue.code, message: issue.message }));
 }
@@ -105,12 +174,19 @@ export interface Assembly {
 }
 
 /** An assembled map's source, flattened with each module's latest *published* version — what a
- * publish of it would produce. */
-export async function assembleFromPublished(db: Queryable, source: MapDocument): Promise<Assembly> {
+ * publish of it would produce. Milestone 96: `overrides` replaces named modules' documents (the
+ * drafts about to be published with the map) for a pre-publish check; the module versions
+ * reported are then only the published ones actually used. */
+export async function assembleFromPublished(
+  db: Queryable,
+  source: MapDocument,
+  overrides: ReadonlyMap<string, MapDocument> = new Map(),
+): Promise<Assembly> {
   const modules = await loadPublishedModules(db, moduleSlugs(source));
+  for (const slug of overrides.keys()) modules.delete(slug);
   const result = flattenAssembledMap(
     source,
-    new Map([...modules].map(([slug, module]) => [slug, module.doc])),
+    new Map([...[...modules].map(([slug, module]) => [slug, module.doc] as const), ...overrides]),
   );
   return {
     flattened: result.doc,
@@ -268,6 +344,42 @@ export async function republishMap(
     publishedBy,
   });
   return { slug, ok: true, versionNumber: result.versionNumber };
+}
+
+/**
+ * Milestone 96: after a map was published together with some of its modules, inside that same
+ * transaction — republish every *other* map currently assembled from any of those modules, once
+ * each (not once per module), each behind a savepoint so one map that no longer fits (or fails)
+ * is left as it was and reported without undoing the rest.
+ */
+export async function cascadeInTransaction(
+  client: Queryable,
+  moduleSlugList: string[],
+  excludeSlug: string,
+  publishedBy: string,
+): Promise<RepublishOutcome[]> {
+  const slugs = new Set<string>();
+  for (const moduleSlug of moduleSlugList) {
+    for (const slug of await mapsUsingModule(client, moduleSlug)) {
+      if (slug !== excludeSlug) slugs.add(slug);
+    }
+  }
+  const outcomes: RepublishOutcome[] = [];
+  for (const slug of slugs) {
+    await client.query("savepoint module_cascade");
+    try {
+      outcomes.push(await republishMap(client, slug, publishedBy));
+      await client.query("release savepoint module_cascade");
+    } catch (error) {
+      await client.query("rollback to savepoint module_cascade");
+      outcomes.push({
+        slug,
+        ok: false,
+        errors: [{ code: "republish_failed", message: (error as Error).message }],
+      });
+    }
+  }
+  return outcomes;
 }
 
 /** Runs `fn` in its own transaction. */

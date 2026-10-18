@@ -4785,8 +4785,8 @@ the events plus a windowed repair of occupancy and S-Class history.
     with `EXPLAIN ANALYZE` on production.
 - [x] Unit tests (parser against stored NR JSON, planner scenarios) and a projector integration test
       that recovered rows are never folded.
-- [ ] Run inside the production worker container: dry run, then `--execute` with the owner's go.
-- [ ] Verify the repaired window; feed_gap note.
+- [x] Run inside the production worker container: dry run, then `--execute` with the owner's go (2026-10-17: committed in 11.8 s; archive object 14843733, frame 14843572; 768 raw rows, 231 berth events, 78 heartbeats, 459 S events).
+- [x] Verify the repaired window; feed_gap note (TD 10 s buckets continuous to 23:56:13Z; post-gap anomalies 254 → 204; no open or overlapping recovered occupancies; projectors stayed fresh).
 
 ## Milestone 94 — How the public map scales with map size (2026-10-18)
 

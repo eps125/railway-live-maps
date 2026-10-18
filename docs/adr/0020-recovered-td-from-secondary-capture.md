@@ -104,3 +104,18 @@ The tool is now two-phase:
   `statement_timeout` 30 s, run from inside the production worker container, not over a tunnel.
 - The projector filters (`recovery_source is null`, `not recovered`) must be deployed **before** an
   `--execute`.
+
+## Outcome (2026-10-17)
+
+`--execute` committed in 11.8 s from inside the production worker container. Live map state stayed 0–1 s
+fresh throughout, with only brief single lock waits.
+
+- Archive object 14843733 (`raw/td-recovered/2026/10/15/bc2c7217…`), feed frame 14843572.
+- 768 `raw_feed_event` rows (23:55:49–23:56:13Z), each with its source line: 231 berth events
+  (`recovered = true`), 78 heartbeats, 459 S-Class events.
+- TD per 10 s is now continuous to 23:56:13Z. 23:56:20–23:56:40Z stays empty (lost, documented in `feed_gap`).
+- `from_berth_empty` anomalies 23:56–23:59Z fell from 46/147/40/21 to 41/119/27/17 per minute. The remainder is
+  caused by the 31 s that no system captured.
+- No recovered occupancy is left open, and none overlaps another. The only strict overlaps on the repaired
+  berths are WE `WUSY` rapid interposes, which the normal projector also produces in daytime. They are not
+  related to the recovery.

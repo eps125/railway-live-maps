@@ -65,6 +65,15 @@ async function insertOccupancy(
   leftAt: Date,
 ): Promise<{ id: string; enteredAt: Date }> {
   const entry = await tdEvent(enteredAt);
+  // The repair takes each area's berths from berth_current_state, as the projector leaves them.
+  await pool.query(
+    `insert into berth_current_state (
+       projection_version, td_area, berth_code, description, event_at, source_event_id,
+       source_event_normalized_at_utc, source_ingestion_sequence
+     ) values ($1, $2, $3, null, $4, $5, $6, 0)
+     on conflict do nothing`,
+    [TD_PROJECTION_VERSION, AREA, berth, enteredAt, entry.id, entry.normalizedAt],
+  );
   const result = await pool.query<{ id: string }>(
     `insert into berth_occupancy (
        projection_version, td_area, berth_code, description, entered_at, left_at,
@@ -138,6 +147,7 @@ afterAll(async () => {
     [AREA],
   );
   await pool.query("delete from train_run where established_td_area = $1", [AREA]);
+  await pool.query("delete from berth_current_state where td_area = $1", [AREA]);
   await pool.query("delete from berth_occupancy where td_area = $1", [AREA]);
   await pool.query("delete from trust_activation where cif_schedule_id = any($1::bigint[])", [
     scheduleIds,

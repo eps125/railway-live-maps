@@ -7,7 +7,7 @@ import {
   resolveFreshRunMatch,
   upsertResolvedLink,
 } from "@railway/database";
-import { isSameRunIdentity } from "@railway/domain";
+import { isSameRunIdentity, TD_PROJECTION_VERSION } from "@railway/domain";
 import type { Pool } from "pg";
 import type { Config } from "../config.js";
 import { propagateLinkForward } from "../runLineage/projector.js";
@@ -100,16 +100,25 @@ export async function repairRunLinks(
   const areas = options.areas ? [...options.areas] : [...mapped];
   if (areas.length === 0) return summary;
 
-  // `(td_area, entered_at)`-bounded per area, so partitions prune; oldest first, so a link
-  // written early is carried forward before later berths of the same train are looked at.
+  // One `(td_area, berth_code, entered_at)` index probe per berth, taking the area's berths from
+  // `berth_current_state` (a row for every berth the projector has ever seen). Filtering on
+  // `td_area` and `entered_at` alone walked every index entry of each area in the month's
+  // partition (no skip scan in Postgres 17): over 120 s for six hours of 14 areas on production,
+  // 0.45 s this way (2026-10-19). Oldest first, so a link written early is carried forward before
+  // later berths of the same train are looked at.
   const { rows } = await pool.query<OccupancyRow>(
-    `select id::text as id, entered_at, left_at, td_area, berth_code, description
-       from berth_occupancy
-      where td_area = any($1::text[])
-        and entered_at >= $2 and entered_at < $3
-        and description ~ '^[0-9][A-Z][0-9]{2}$'
-      order by entered_at, id`,
-    [areas, options.from, options.to],
+    `select o.id::text as id, o.entered_at, o.left_at, o.td_area, o.berth_code, o.description
+       from berth_current_state b
+       cross join lateral (
+         select o.id, o.entered_at, o.left_at, o.td_area, o.berth_code, o.description
+           from berth_occupancy o
+          where o.td_area = b.td_area and o.berth_code = b.berth_code
+            and o.entered_at >= $2 and o.entered_at < $3
+            and o.description ~ '^[0-9][A-Z][0-9]{2}$'
+       ) o
+      where b.projection_version = $4 and b.td_area = any($1::text[])
+      order by o.entered_at, o.id`,
+    [areas, options.from, options.to, TD_PROJECTION_VERSION],
   );
 
   const now = Date.now();

@@ -2305,4 +2305,61 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
       await app.close();
     }
   });
+
+  // Owner report 2026-10-19: in playback the popup was "matching against today". A schedule row
+  // runs every day and gets a new TRUST activation each time; the route took the latest
+  // activation since the traffic day began with no upper bound, so a past instant showed the
+  // train's most recent run (today's trust id, movements and delay) instead of the one on the
+  // berth then. Both the stored-link and the fresh-resolution branch looked it up that way.
+  it.each([
+    ["a stored run link", true],
+    ["fresh resolution", false],
+  ])(
+    "uses the activation in force at the instant, not a later one of the same schedule (%s)",
+    async (_label, withLink) => {
+      const area = uniqueArea();
+      const enteredAt = new Date(Date.now() - 40 * 60_000);
+      const leftAt = new Date(Date.now() - 35 * 60_000);
+      const headcode = uniqueHeadcode();
+      const { occupancyId } = await seedClosedOccupancy(area, "0106", headcode, enteredAt, leftAt);
+      const scheduleId = await seedSchedule(headcode, "P");
+      const thenTrustId = await seedActivationAt(
+        scheduleId,
+        new Date(enteredAt.getTime() - 5 * 60_000),
+      );
+      // The same schedule activated again after the instant being viewed — a later run.
+      await seedActivationAt(scheduleId, new Date());
+      if (withLink) {
+        const trafficDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(
+          enteredAt,
+        );
+        await seedRunLink(
+          occupancyId,
+          enteredAt,
+          scheduleId,
+          `U${scheduleId}`,
+          trafficDay,
+          area,
+          "0106",
+        );
+      }
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/0106/current-run?at=${encodeURIComponent(
+            new Date(enteredAt.getTime() + 60_000).toISOString(),
+          )}`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.matchStatus).toBe("matched");
+        expect(body.effective?.scheduleId).toBe(String(scheduleId));
+        expect(body.effective?.activation?.trustId).toBe(thenTrustId);
+      } finally {
+        await app.close();
+      }
+    },
+  );
 });

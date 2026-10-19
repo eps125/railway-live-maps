@@ -229,4 +229,22 @@ describe("repair-run-links --correct (integration)", () => {
     const again = await repairRunLinks(pool, { ...window, dryRun: true, correct: true });
     expect(again.wrongRun).toBe(0);
   });
+
+  // Owner report 2026-10-19: CE/R2/R3/R4 history from before crewe-colwich and rugby-colwich
+  // were published had no run links at all, so playback showed no delay colours there.
+  // `--areas` repairs just the areas a new map added, rather than every mapped area again.
+  it("--areas limits the repair to the listed mapped areas, and refuses an unmapped one", async () => {
+    const window = {
+      from: new Date("2026-03-12T00:00:00Z"),
+      to: new Date("2026-03-12T00:45:00Z"),
+      dryRun: true,
+    };
+    const listed = await repairRunLinks(pool, { ...window, areas: [AREA] });
+    expect(listed.examined).toBe(2);
+
+    const unmappedArea = `Z${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await expect(repairRunLinks(pool, { ...window, areas: [unmappedArea] })).rejects.toThrow(
+      /not on any published map/,
+    );
+  });
 });

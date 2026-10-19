@@ -5083,3 +5083,24 @@ Known limitations:
   Testing Library component test instead.
 - Choosing modules one by one isn't offered. The choice is all pending modules or none, as asked.
 - No migration needed.
+
+## Fix — playback popup and delay colours for past days (2026-10-19)
+
+Owner report: in playback the run popup was "matching against today", and delay colours only
+worked for recent times.
+
+- [x] Popup (`GET .../current-run?at=`): the TRUST activation behind a match was looked up as the
+      latest one since the traffic day began, with no upper bound. A schedule row runs (and is
+      activated) every day, so a past instant picked up today's activation — today's trust id,
+      movements and delay. Both the stored-link and fresh-resolution branches now take the latest
+      activation at or before `at` (`findRunActivation`), the rule `findMapDelaysAt` already used.
+      Live requests are unchanged. Integration tests cover both branches.
+- [x] Delay colours: not a code regression. Past bands need a stored run link, and the live sweep
+      only links occupancies in areas that are on a published map at the time
+      (`RUN_LINEAGE_FRESH_RESOLUTION_SCOPE=mapped`). WD/M4/CE (first mapped 2026-10-13), M7/R3
+      (2026-10-15) and R4/R2 (2026-10-18) therefore had no links before those dates, so
+      crewe-colwich and rugby-colwich playback showed no colours there. `repair-run-links` gains
+      `--areas A,B` to backfill just those areas.
+- [ ] Backfill on production with `repair-run-links --areas …` for each area's pre-publish window
+      (needs this change deployed and owner go-ahead). Any future map that adds TD areas needs the
+      same backfill after publishing.

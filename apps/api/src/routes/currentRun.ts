@@ -283,6 +283,33 @@ async function queryUnitAllocation(
   }));
 }
 
+/**
+ * The TRUST activation of `scheduleId`'s run on `trafficDay` — for playback, as known at `asOf`
+ * (the `?at=` instant; `null` live, where the latest one is the answer). A schedule row runs on many days and is
+ * activated afresh each one, so without the upper bound a playback question about an earlier day
+ * picked up the latest activation since that day began — today's train, with today's movements
+ * and delay (owner report 2026-10-19: playback "matching against today"). Same rule as
+ * `findMapDelaysAt`, so the popup and the delay colours agree.
+ */
+async function findRunActivation(
+  pool: Pool,
+  scheduleId: number | string,
+  trafficDay: string,
+  asOf: Date | null,
+): Promise<ActivationRow | undefined> {
+  return (
+    await pool.query<ActivationRow>(
+      `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
+       from trust_activation
+       where cif_schedule_id = $1
+         and created >= ($2::date)::timestamp at time zone 'Europe/London'
+         and ($3::timestamptz is null or created <= $3::timestamptz)
+       order by created desc limit 1`,
+      [scheduleId, trafficDay, asOf ? asOf.toISOString() : null],
+    )
+  ).rows[0];
+}
+
 export async function registerCurrentRunRoutes(
   app: FastifyInstance,
   deps: CurrentRunRoutesDeps,
@@ -417,16 +444,12 @@ export async function registerCurrentRunRoutes(
         // The link's own `traffic_day` (docs/adr/0007) is already the traffic day this schedule
         // was actually resolved against — not necessarily "today" for a still-open overnight run.
         effectiveTrafficDay = occupancyLink.trafficDay;
-        const activation = (
-          await pool.query<ActivationRow>(
-            `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
-             from trust_activation
-             where cif_schedule_id = $1
-               and created >= ($2::date)::timestamp at time zone 'Europe/London'
-             order by created desc limit 1`,
-            [lineageSchedule.id, effectiveTrafficDay],
-          )
-        ).rows[0];
+        const activation = await findRunActivation(
+          pool,
+          lineageSchedule.id,
+          effectiveTrafficDay,
+          at,
+        );
         candidateSchedules = buildCandidateSchedules(
           [lineageSchedule],
           new Map(activation ? [[activation.cif_schedule_id, activation]] : []),
@@ -505,16 +528,8 @@ export async function registerCurrentRunRoutes(
         // `effectiveTrafficDay` is always set whenever `effectiveRow` is (both branches above set
         // it together) — `?? today` only guards TypeScript's narrowing, never a real fallback.
         const activation =
-          (
-            await pool.query<ActivationRow>(
-              `select cif_schedule_id::text as cif_schedule_id, trust_id, deduced, created
-               from trust_activation
-               where cif_schedule_id = $1
-                 and created >= ($2::date)::timestamp at time zone 'Europe/London'
-               order by created desc limit 1`,
-              [effectiveRow.id, effectiveTrafficDay ?? today],
-            )
-          ).rows[0] ?? null;
+          (await findRunActivation(pool, effectiveRow.id, effectiveTrafficDay ?? today, at)) ??
+          null;
 
         const locations = (
           await pool.query<CifLocationRowLike>(

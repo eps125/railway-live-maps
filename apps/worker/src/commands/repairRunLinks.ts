@@ -46,7 +46,7 @@ interface OccupancyRow {
 }
 
 /**
- * `repair-run-links --from <iso> [--to <iso>] [--correct] [--dry-run]` — one-shot console command (run it
+ * `repair-run-links --from <iso> [--to <iso>] [--areas A,B] [--correct] [--dry-run]` — one-shot console command (run it
  * from the `worker` container like `migrate`). Re-runs run matching for every described
  * occupancy in the mapped TD areas over a past window, **as of each occupancy's own time**
  * (`resolveFreshRunMatch`'s `asOf`), and writes the links the live sweep should have written then,
@@ -60,10 +60,24 @@ interface OccupancyRow {
  * `ServiceDateChoice`) is counted (`wrongRun`), and with `--correct` replaced when the new answer
  * is confirmed by its TRUST activation; links carried from the old run move with it. Run with
  * `--dry-run` first to see the counts.
+ *
+ * The live sweep only links occupancies in TD areas that are on a published map at the time
+ * (`RUN_LINEAGE_FRESH_RESOLUTION_SCOPE=mapped`), so when a new map adds areas, their history from
+ * before it was published has no links — playback shows no delay colours there and the popup
+ * re-resolves every click (owner report 2026-10-19, after crewe-colwich and rugby-colwich added
+ * CE/R2/R3/R4). `--areas` runs the repair over just those areas.
  */
 export async function repairRunLinks(
   pool: Pool,
-  options: { from: Date; to: Date; dryRun: boolean; correct?: boolean },
+  options: {
+    from: Date;
+    to: Date;
+    dryRun: boolean;
+    correct?: boolean;
+    /** Only these TD areas (each must be on a published map) — e.g. just the areas a newly
+     * published map added, whose past occupancies the live sweep never linked. */
+    areas?: ReadonlyArray<string> | undefined;
+  },
 ): Promise<RepairRunLinksSummary> {
   const summary: RepairRunLinksSummary = {
     examined: 0,
@@ -76,7 +90,14 @@ export async function repairRunLinks(
     corrected: 0,
     repointed: 0,
   };
-  const areas = [...(await getMappedTdAreas(pool))];
+  const mapped = await getMappedTdAreas(pool);
+  if (options.areas) {
+    const unmapped = options.areas.filter((area) => !mapped.has(area));
+    if (unmapped.length > 0) {
+      throw new Error(`repair-run-links: not on any published map: ${unmapped.join(", ")}`);
+    }
+  }
+  const areas = options.areas ? [...options.areas] : [...mapped];
   if (areas.length === 0) return summary;
 
   // `(td_area, entered_at)`-bounded per area, so partitions prune; oldest first, so a link
@@ -234,9 +255,19 @@ export async function runRepairRunLinks(config: Config, argv: string[]): Promise
   }
   const dryRun = argv.includes("--dry-run");
   const correct = argv.includes("--correct");
+  const areasRaw = readFlag(argv, "areas");
+  const areas = areasRaw
+    ? areasRaw
+        .split(",")
+        .map((area) => area.trim())
+        .filter(Boolean)
+    : undefined;
+  if (areas && areas.length === 0) {
+    throw new Error("repair-run-links: --areas needs at least one TD area, e.g. --areas R2,R3");
+  }
   const pool = createPool({ connectionString: config.DATABASE_URL, statementTimeoutMs: 120_000 });
   try {
-    const summary = await repairRunLinks(pool, { from, to, dryRun, correct });
+    const summary = await repairRunLinks(pool, { from, to, dryRun, correct, areas });
     console.log(
       `repair-run-links${dryRun ? " (dry run)" : ""}: ${JSON.stringify(summary, null, 2)}`,
     );

@@ -104,6 +104,22 @@ describe("liveDataStatus (integration)", () => {
     expect(status).toBe("unknown");
   });
 
+  it("takes the newest event across every area, not just the first area's newest (2026-10-19 per-area rewrite)", async () => {
+    // The main query now asks each area for its newest row separately and takes the max of those;
+    // a map is live if ANY of its areas is fresh, and within an area the newest row must win even
+    // when older ones in the window were inserted after it.
+    const quiet = uniqueArea();
+    const busy = uniqueArea();
+    const now = new Date();
+    await seedBerthEvent(quiet, new Date(now.getTime() - 5 * 60 * 60 * 1000));
+    await seedBerthEvent(busy, new Date(now.getTime() - 5000));
+    await seedBerthEvent(busy, new Date(now.getTime() - 3 * 60 * 60 * 1000));
+
+    expect(await liveDataStatus(pool, [quiet, busy], now)).toBe("ok");
+    expect(await liveDataStatus(pool, [busy, quiet], now)).toBe("ok");
+    expect(await liveDataStatus(pool, [quiet], now)).toBe("stale");
+  });
+
   it("reports stale (not unknown) when the only history is older than the lookback window", async () => {
     // Milestone 30 incident fix: the main query is bounded to the last day for performance, but an
     // area with real (if very old) history must still classify as "stale", not "unknown" — the

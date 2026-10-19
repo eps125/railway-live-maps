@@ -120,6 +120,14 @@ export function tdAreasFromBundle(bundle: CompiledMapBundle): string[] {
  * project's standing rule (docs/IMPLEMENTATION_PLAN.md Milestone 15 step 6): every
  * projector/bridge query carries an explicit bounded range or reads a rollup, never an unbounded
  * scan of a table that grows without limit.
+ *
+ * Bounding alone was still not enough (2026-10-19): `max(event_at) where td_area = any($1) and
+ * event_at >= $since` still reads every event in the window — a day of six busy areas is ~48k
+ * index entries, each with a heap fetch (37k buffers, ~210 ms warm, several seconds cold), once per
+ * map on the landing page and once per live `/state`. The landing page measured p50 306 ms with
+ * 5.8 s / 7.5 s outliers. So the main query asks each area for its single newest row instead
+ * (`unnest` + `lateral … order by event_at desc limit 1`), which walks the `(td_area, event_at)`
+ * index backwards one entry per area: ~100 buffers, ~3 ms, same answer.
  */
 const LIVE_STATUS_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
@@ -132,8 +140,16 @@ export async function liveDataStatus(
   const since = new Date(now.getTime() - LIVE_STATUS_LOOKBACK_MS);
   const result = await pool.query<{ last_activity_at: Date | null }>(
     `select greatest(
-       (select max(event_at) from td_heartbeat where td_area = any($1::text[]) and event_at >= $2),
-       (select max(event_at) from td_berth_event where td_area = any($1::text[]) and event_at >= $2)
+       (select max(h.event_at)
+          from unnest($1::text[]) a(area)
+          cross join lateral (select event_at from td_heartbeat
+                               where td_area = a.area and event_at >= $2
+                               order by event_at desc limit 1) h),
+       (select max(e.event_at)
+          from unnest($1::text[]) a(area)
+          cross join lateral (select event_at from td_berth_event
+                               where td_area = a.area and event_at >= $2
+                               order by event_at desc limit 1) e)
      ) as last_activity_at`,
     [tdAreas, since],
   );

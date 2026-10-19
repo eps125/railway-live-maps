@@ -1536,6 +1536,17 @@ class of bug Milestone 15 step 6 already fixed once for `/td/areas`): every quer
 that grows without bound needs an explicit range or a rollup, with no exceptions for "it's just a
 freshness check."
 
+**Follow-up (2026-10-19): bounded was still not cheap.** The bounded `max(event_at) … where
+td_area = any($1) and event_at >= now() - 24h` still read every event in the window. For
+`winsford-crewe`'s six areas that is ~48k index entries with heap fetches: 37k buffers, ~210 ms
+warm, seconds when cold. It ran once per map on the landing page and once per live `/state`. The
+production API logs showed `GET /api/v1/maps` at p50 306 ms, with 5.8 s and 7.5 s outliers.
+`liveDataStatus` now asks each area for its single newest row instead (`unnest` + `lateral (…
+order by event_at desc limit 1)`). That walks the `(td_area, event_at)` index backwards one entry
+per area. Measured on production with real parameters: ~100 buffers, 2.6 ms, identical answers.
+The 24 h bound and the `exists(...)` fallback are unchanged. New integration test: "takes the
+newest event across every area, not just the first area's newest".
+
 ## Milestone 31 — place identifiers on labels + nationwide CRS/TIPLOC/STANOX search `[done — 2026-09-13]`
 
 Owner request: label elements get the same CRS/TIPLOC/STANOX identifiers stations already carry

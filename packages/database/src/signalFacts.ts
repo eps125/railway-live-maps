@@ -35,6 +35,12 @@ const TD_S_STATE_PROJECTION_VERSION = 2;
  * Only a byte whose latest statement is after `at` (playback) falls back to one
  * `(td_area, event_at desc)` index seek per byte (`limit 1` lateral), bounded by the lookback so a
  * byte that is never stated can't scan an area's whole history.
+ *
+ * 2026-10-20 (owner report: playback of 5 Sep 504'd): each area's per-byte search also stops at
+ * the area's first *decoded* row in the window, found once per area. Before decoding began
+ * (Milestone 36a) every row is `raw_only`, so for a moment in that era each byte walked the whole
+ * seven-day lookback finding nothing — hundreds of bytes times a week of an area's rows, read cold.
+ * An area with no decoded row in the window now has every byte unknown without any per-byte walk.
  */
 export async function fetchSByteFactsAt(
   pool: Pool,
@@ -78,13 +84,28 @@ export async function fetchSByteFactsAt(
     value: number | null;
     ingestion_sequence: string | null;
   }>(
-    `select wanted.td_area, wanted.address, latest.value, latest.ingestion_sequence::text
+    `with areas as (
+       select distinct td_area from unnest($1::text[]) as a(td_area)
+     ),
+     floors as materialized (
+       -- The area's first decoded row in (since, at]: one forward index walk per area.
+       select areas.td_area,
+              (select d.event_at from td_s_event d
+                where d.td_area = areas.td_area
+                  and d.event_at > $4 and d.event_at <= $3
+                  and d.decode_status = 'decoded'
+                order by d.event_at asc
+                limit 1) as first_decoded_at
+         from areas
+     )
+     select wanted.td_area, wanted.address, latest.value, latest.ingestion_sequence::text
        from unnest($1::text[], $2::text[]) as wanted(td_area, address)
+       join floors floor on floor.td_area = wanted.td_area and floor.first_decoded_at is not null
        cross join lateral (
          select (e.decoded_bitset->'bytes'->>wanted.address)::int as value, e.ingestion_sequence
            from td_s_event e
           where e.td_area = wanted.td_area
-            and e.event_at <= $3 and e.event_at > $4
+            and e.event_at <= $3 and e.event_at >= floor.first_decoded_at
             and e.decode_status = 'decoded'
             and e.decoded_bitset->'bytes' ? wanted.address
           order by e.event_at desc, e.ingestion_sequence desc

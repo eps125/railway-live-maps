@@ -96,4 +96,47 @@ describe("fetchSByteFactsAt (integration, 2026-09-26 quiet bytes)", () => {
     );
     expect(quiet.get(`${area}|10`)?.value).toBe(5);
   });
+
+  // Owner report 2026-10-20: playback of 5 Sep 504'd. Before decoding began every S row is
+  // raw_only, and each byte's history search walked the whole lookback finding nothing. The
+  // search now starts at the area's first decoded row in the window; the answers must not change.
+  it("ignores raw_only history from before decoding began, and still finds decoded statements after it", async () => {
+    const area = `Q${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = Date.now();
+    const hour = 3_600_000;
+    await recordSf(area, "10", "05", now - 8 * hour);
+    await recordSf(area, "10", "06", now - 6 * hour);
+    await recordSf(area, "10", "07", now - hour);
+    await runProjectTd(pool);
+    // The oldest statement predates decoding, as all of early September does on production.
+    await pool.query(
+      `update td_s_event set decode_status = 'raw_only', decoded_bitset = null
+        where td_area = $1 and event_at < $2`,
+      [area, new Date(now - 7 * hour)],
+    );
+    const bytes = [
+      { tdArea: area, address: "10" },
+      { tdArea: area, address: "11" },
+    ];
+
+    // Inside the raw_only era: nothing decoded yet, so unknown (never the raw value).
+    const before = await fetchSByteFactsAt(
+      pool,
+      bytes,
+      new Date(now - 7.5 * hour),
+      SIGNAL_STATE_LOOKBACK_MS,
+    );
+    expect(before.size).toBe(0);
+
+    // After decoding began: the decoded statement, even though the window reaches back into
+    // the raw_only rows.
+    const after = await fetchSByteFactsAt(
+      pool,
+      bytes,
+      new Date(now - 2 * hour),
+      SIGNAL_STATE_LOOKBACK_MS,
+    );
+    expect(after.get(`${area}|10`)?.value).toBe(6);
+    expect(after.has(`${area}|11`)).toBe(false);
+  });
 });

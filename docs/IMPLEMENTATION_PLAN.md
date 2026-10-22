@@ -5139,7 +5139,7 @@ Owner report: Berth steps for R1 3217 -> 5221 said "took too long" at 90, 30 and
       pages of R1 steps (~150 MB) to find a handful of matches; the first day alone passed the 15 s
       statement timeout. A pair search now matches the to-berth's `berth_occupancy` entries with
       the from-berth's exits on the same TD message, both on the `(td_area, berth_code,
-      entered_at)` index — 90 days in 50-130 ms on production, with the same counts as the old scan
+    entered_at)` index — 90 days in 50-130 ms on production, with the same counts as the old scan
       over a week (5222 -> 5220: 580; 3217 -> 5221: 4). Looking each entry up in `td_berth_event`
       instead was measured too and took 174 s (a probe per partition per entry).
 - [x] It can't show a step the projector attached to no occupancy (a projection anomaly) or the
@@ -5149,4 +5149,3 @@ Owner report: Berth steps for R1 3217 -> 5221 said "took too long" at 90, 30 and
 - [ ] Integration tests run on CI (not run locally).
 
 No migration needed.
-

@@ -764,9 +764,13 @@ Addresses are hex (1-2 digits, returned canonical `"0A"`), bits 0-7; a malformed
 characters), address or bit is `400`.
 
 - `GET /api/v1/admin/s-class/areas` — `{ areas: [{ tdArea, bytes, lastEventAt, definitions }] }`.
-- `GET /api/v1/admin/s-class/areas/{tdArea}/bits` — the live grid: `{ bytes: [{ address, value,
-confirmedAt, sourceKind, lastRefreshAt, bits: [{ bit, value, lastChangedAt, changes24h,
-definition }] }] }` (changes counted over the last 24 h; first sightings are not changes).
+- `GET /api/v1/admin/s-class/areas/{tdArea}/bits?windowHours=` — the live grid: `{ tdArea,
+windowHours, activityComplete, bytes: [{ address, value, confirmedAt, sourceKind, lastRefreshAt,
+bits: [{ bit, value, lastChangedAt, changes, definition }] }] }`. `changes`/`lastChangedAt` cover
+  the last `windowHours` (default 24, max 14 days); first sightings are not changes. Activity is
+  counted per settled UTC day and cached, one query at a time; a request waits at most 5 s for it, so
+  `activityComplete: false` means part of a long window is still being counted and later requests
+  fill it in. Byte values are always current.
 - `GET .../bits/{address}/{bit}/history?before=&limit=` — transitions newest first.
 - `GET .../bits/{address}/{bit}/correlated-steps?from=&to=` — suggestion: the CA berth steps
   within ±10 s of this bit's changes, per change direction, with hit counts and median offset

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
 import { navigate } from "../useRoute.js";
 
@@ -168,6 +168,11 @@ export function SClassExplorerPage(): JSX.Element {
   const [now, setNow] = useState(Date.now());
   const [selected, setSelected] = useState<{ address: string; bit: number } | null>(null);
   const [windowHours, setWindowHours] = useState<number>(24);
+  const [activityComplete, setActivityComplete] = useState(true);
+  // A refresh tick is skipped while the last request is still running (incident 2026-10-22:
+  // overlapping long-window requests piled up on the database); a newer request's answer wins.
+  const loading = useRef(false);
+  const generation = useRef(0);
 
   useEffect(() => {
     fetch("/api/v1/admin/s-class/areas")
@@ -181,21 +186,31 @@ export function SClassExplorerPage(): JSX.Element {
       );
   }, []);
 
-  const loadGrid = useCallback(async (): Promise<void> => {
-    if (!area) return;
-    try {
-      const response = await fetch(
-        `/api/v1/admin/s-class/areas/${area}/bits?windowHours=${windowHours}`,
-      );
-      if (!response.ok) throw new Error(await errorMessage(response, "Could not load bits"));
-      const body = await readApiJson<{ bytes: ByteRow[] }>(response);
-      setBytes(body.bytes);
-      setNow(Date.now());
-      setGridError(null);
-    } catch (error) {
-      setGridError(error instanceof Error ? error.message : "Could not load bits");
-    }
-  }, [area, windowHours]);
+  const loadGrid = useCallback(
+    async (tick = false): Promise<void> => {
+      if (!area || (tick && loading.current)) return;
+      const mine = ++generation.current;
+      loading.current = true;
+      try {
+        const response = await fetch(
+          `/api/v1/admin/s-class/areas/${area}/bits?windowHours=${windowHours}`,
+        );
+        if (!response.ok) throw new Error(await errorMessage(response, "Could not load bits"));
+        const body = await readApiJson<{ bytes: ByteRow[]; activityComplete?: boolean }>(response);
+        if (mine !== generation.current) return;
+        setBytes(body.bytes);
+        setActivityComplete(body.activityComplete !== false);
+        setNow(Date.now());
+        setGridError(null);
+      } catch (error) {
+        if (mine === generation.current)
+          setGridError(error instanceof Error ? error.message : "Could not load bits");
+      } finally {
+        if (mine === generation.current) loading.current = false;
+      }
+    },
+    [area, windowHours],
+  );
 
   useEffect(() => {
     setBytes(null);
@@ -205,7 +220,7 @@ export function SClassExplorerPage(): JSX.Element {
 
   useEffect(() => {
     if (!area || !autoRefresh) return;
-    const interval = setInterval(() => void loadGrid(), REFRESH_MS);
+    const interval = setInterval(() => void loadGrid(true), REFRESH_MS);
     return () => clearInterval(interval);
   }, [area, autoRefresh, loadGrid]);
 
@@ -280,6 +295,12 @@ export function SClassExplorerPage(): JSX.Element {
       {gridError ? (
         <p role="alert" className="login-form__error">
           {gridError}
+        </p>
+      ) : null}
+      {area && bytes && !activityComplete ? (
+        <p className="field-hint" role="status">
+          Still counting changes over {windowLabel(windowHours).toLowerCase()} — the counts fill in
+          over the next few refreshes.
         </p>
       ) : null}
 

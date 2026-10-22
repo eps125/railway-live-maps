@@ -13,6 +13,7 @@ import {
 } from "@railway/domain";
 import { fetchLiveSOverlay, fetchSByteFactsAt, type RawSOverlayRow } from "@railway/database";
 import { apiError, parseLimit } from "../../lib/queryRange.js";
+import { SClassActivityCache, activityQuery } from "./sClassActivity.js";
 
 /**
  * Milestone 36c (docs/IMPLEMENTATION_PLAN.md, docs/adr/0013): the admin S-Class explorer and
@@ -26,6 +27,8 @@ import { apiError, parseLimit } from "../../lib/queryRange.js";
 
 export interface SClassAdminRoutesDeps {
   pool: Pool;
+  /** The bit grid's activity counts; tests pass their own. */
+  activity?: SClassActivityCache;
 }
 
 const DEFINITION_SOURCES = ["wiki", "sop", "ecs", "observed", "other"] as const;
@@ -316,6 +319,8 @@ export async function registerSClassAdminRoutes(
   deps: SClassAdminRoutesDeps,
 ): Promise<void> {
   const { pool } = deps;
+  const activityCache =
+    deps.activity ?? new SClassActivityCache(activityQuery(pool, TD_S_STATE_PROJECTION_VERSION));
 
   /** Every area with decoded S-Class state, for the explorer's area picker. */
   app.get("/api/v1/admin/s-class/areas", async () => {
@@ -459,7 +464,8 @@ export async function registerSClassAdminRoutes(
 
   /** The live bit grid for one area: every byte's current value, and per bit its last change
    * within `?windowHours=` (default 24 h, max the retained 14 days), change count in that window
-   * and definition. */
+   * and definition. The activity is counted per settled day and cached (sClassActivity.ts): a long
+   * window can't pile up queries on the database (incident 2026-10-22). */
   app.get<{ Params: { tdArea: string }; Querystring: { windowHours?: string } }>(
     "/api/v1/admin/s-class/areas/:tdArea/bits",
     async (request, reply) => {
@@ -487,28 +493,19 @@ export async function registerSClassAdminRoutes(
             order by address`,
           [TD_S_STATE_PROJECTION_VERSION, tdArea],
         ),
-        // First-sight rows (previous_value null) are not changes — excluded. Bounded to the
-        // requested window on the (td_area, address, event_at desc) index.
-        pool.query<{ address: string; bit_index: number; last_changed_at: Date; changes: number }>(
-          `select address, bit_index, max(event_at) as last_changed_at, count(*)::int as changes
-             from td_s_bit_transition
-            where projection_version = $1 and td_area = $2
-              and event_at > now() - make_interval(hours => $3)
-              and previous_value is not null
-            group by address, bit_index`,
-          [TD_S_STATE_PROJECTION_VERSION, tdArea, windowHours],
-        ),
+        // Cached per settled day, one query at a time, never piling up (sClassActivity.ts).
+        activityCache.get(tdArea, windowHours),
         pool.query<DefinitionRow>(`select * from s_class_definition where td_area = $1`, [tdArea]),
       ]);
-      const activityByBit = new Map(
-        activity.rows.map((row) => [`${row.address}:${row.bit_index}`, row]),
-      );
+      const activityByBit = activity.activity;
       const definitionByBit = new Map(
         definitions.rows.map((row) => [`${row.address}:${row.bit}`, row]),
       );
       return {
         tdArea,
         windowHours,
+        /** False while part of the window is still being counted; the page asks again. */
+        activityComplete: activity.complete,
         bytes: bytes.rows.map((row) => ({
           address: row.address,
           value: row.byte_value,
@@ -521,7 +518,7 @@ export async function registerSClassAdminRoutes(
             return {
               bit,
               value: ((row.byte_value >> bit) & 1) === 1,
-              lastChangedAt: act ? act.last_changed_at.toISOString() : null,
+              lastChangedAt: act ? act.lastChangedAt.toISOString() : null,
               changes: act?.changes ?? 0,
               definition: def ? definitionResponse(def) : null,
             };

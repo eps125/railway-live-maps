@@ -130,6 +130,61 @@ describe("SClassExplorerPage (Milestone 36c)", () => {
     expect(await screen.findByLabelText("Only bytes with changes in 14 days")).toBeInTheDocument();
   });
 
+  it("says when activity is still being counted, and never overlaps refreshes (2026-10-22)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let release: (() => void) | null = null;
+      let gridCalls = 0;
+      const fetchMock = vi.fn((url: string) => {
+        if (url === "/api/v1/admin/s-class/areas") {
+          return Promise.resolve(
+            jsonResponse({
+              areas: [
+                { tdArea: "M9", bytes: 1, lastEventAt: "2026-09-19T10:00:00Z", definitions: 0 },
+              ],
+            }),
+          );
+        }
+        gridCalls++;
+        const body = jsonResponse({
+          activityComplete: false,
+          bytes: [
+            {
+              address: "03",
+              value: 4,
+              confirmedAt: "2026-09-19T10:00:00Z",
+              sourceKind: "update",
+              lastRefreshAt: null,
+              bits: bits(4),
+            },
+          ],
+        });
+        if (gridCalls === 1) return Promise.resolve(body);
+        // The second request hangs until released: refresh ticks meanwhile must not send more.
+        return new Promise<Response>((resolve) => {
+          release = () => resolve(body);
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<SClassExplorerPage />);
+      const areaSelect = await screen.findByLabelText("TD area");
+      await screen.findByRole("option", { name: /M9 — 1 bytes/ });
+      fireEvent.change(areaSelect, { target: { value: "M9" } });
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        /Still counting changes over 24 hours/i,
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000); // first refresh tick: request 2, left hanging
+      await vi.advanceTimersByTimeAsync(15_000); // three more ticks while it hangs
+      expect(gridCalls).toBe(2);
+      release!();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(gridCalls).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("won't preview an import until the byte numbering is chosen", async () => {
     stubApi();
     render(<SClassExplorerPage />);

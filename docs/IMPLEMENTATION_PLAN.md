@@ -5104,3 +5104,29 @@ worked for recent times.
 - [ ] Backfill on production with `repair-run-links --areas …` for each area's pre-publish window
       (needs this change deployed and owner go-ahead). Any future map that adds TD areas needs the
       same backfill after publishing.
+
+## Fix — the S-Class explorer can no longer take the site down (2026-10-22)
+
+Incident 2026-10-22 ~19:05-19:16 BST: maps failed to load. The admin S-Class explorer was open on
+R1 with a 7- and 14-day activity window. It refreshes every 5 s, each refresh recounted every bit's
+changes over the whole window (~1.6 M scattered rows for R1, ~10 minutes under load), and refreshes
+didn't wait for the last one. About ten copies piled up, saturated the disk, exhausted the API's
+connection pool and the API answered 500s until they were cancelled by hand.
+
+- [x] API (`apps/api/src/routes/admin/sClassActivity.ts`): activity is counted per settled UTC day
+      (finished more than 15 minutes ago) and each day is kept, so a window is the kept days plus at
+      most two partial days at its ends. Requests for the same area and window share one
+      computation (reused for 60 s); only one activity query runs at a time across the API, each
+      under a 120 s statement timeout; a request waits at most 5 s and otherwise answers with what is
+      known and `activityComplete: false` while the rest is counted in the background. A failed day
+      is not kept and is retried next time. One settled R1 day measured on production: ~139 k rows,
+      0.9 s warm.
+- [x] Web: a refresh tick is skipped while the previous request is still running, a newer
+      request's answer always wins, and the page says when counts are still being gathered.
+- [x] Tests: `sClassActivity.test.ts` (day planning, merging, shared computation, one query at a
+      time, kept days reused, answering within the wait, failed days); the explorer page test checks
+      the note and that refreshes don't overlap.
+- [ ] The other explorer tools (correlated steps, route candidates, correlated bits) also take
+      windows up to 14 days, but run only on a click, not on a timer. Left as they are.
+
+No migration needed.

@@ -155,8 +155,10 @@ describe("admin berth query route (integration)", () => {
     const code = randomUUID().replace(/-/g, "").slice(0, 3).toUpperCase();
     const from = `F${code}`;
     const to = `T${code}`;
+    await recordObservedBerthEvent(pool, "WZ", null, from, "1A01"); // the train enters the first berth
     await recordObservedBerthEvent(pool, "WZ", from, to, "1A01");
-    await recordObservedBerthEvent(pool, "WZ", to, from, "1A02"); // the other way: excluded
+    await recordObservedBerthEvent(pool, "WZ", to, from, "1A01"); // the other way: excluded
+    await recordObservedBerthEvent(pool, "WZ", null, from, "1A03");
     await recordObservedBerthEvent(pool, "WZ", from, to, "1A03");
     await recordObservedBerthEvent(pool, "WZ", null, to, "1A04"); // an interpose: excluded
 
@@ -227,7 +229,9 @@ describe("admin berth query route (integration)", () => {
     const app = await buildApp();
     const code = randomUUID().replace(/-/g, "").slice(0, 3).toUpperCase();
     const [a, b, c] = [`A${code}`, `B${code}`, `C${code}`];
+    await recordObservedBerthEvent(pool, "WZ", null, a, "2B01");
     await recordObservedBerthEvent(pool, "WZ", a, b, "2B01"); // A -> B
+    await recordObservedBerthEvent(pool, "WZ", null, c, "2B02");
     await recordObservedBerthEvent(pool, "WZ", c, a, "2B02"); // C -> A
 
     const never = await app.inject({

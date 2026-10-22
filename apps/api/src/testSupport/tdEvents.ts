@@ -69,6 +69,20 @@ export async function recordObservedBerthEvent(
     );
   }
 
+  // As project-td does: a step or cancel out of a berth closes the train's open occupancy there
+  // (the berth-steps pair search finds steps by matching that exit with the next berth's entry).
+  if (fromBerth) {
+    await pool.query(
+      `update berth_occupancy set left_at = $4, exit_event_id = $5, exit_event_normalized_at_utc = $4,
+              exit_reason = 'test_fixture'
+        where id = (select id from berth_occupancy
+                     where projection_version = $1 and td_area = $2 and berth_code = $3
+                       and left_at is null
+                     order by entered_at desc limit 1)`,
+      [TD_PROJECTION_VERSION, tdArea, fromBerth, now, eventId],
+    );
+  }
+
   if (toBerth) {
     await pool.query(
       `insert into berth_current_state (

@@ -5130,3 +5130,23 @@ connection pool and the API answered 500s until they were cancelled by hand.
       windows up to 14 days, but run only on a click, not on a timer. Left as they are.
 
 No migration needed.
+
+## Fix — berth-pair step search no longer times out on busy berths (2026-10-22)
+
+Owner report: Berth steps for R1 3217 -> 5221 said "took too long" at 90, 30 and 14 days.
+
+- [x] Both berths are busy, so every day counted as active and each cold area-day read ~19k heap
+      pages of R1 steps (~150 MB) to find a handful of matches; the first day alone passed the 15 s
+      statement timeout. A pair search now matches the to-berth's `berth_occupancy` entries with
+      the from-berth's exits on the same TD message, both on the `(td_area, berth_code,
+      entered_at)` index — 90 days in 50-130 ms on production, with the same counts as the old scan
+      over a week (5222 -> 5220: 580; 3217 -> 5221: 4). Looking each entry up in `td_berth_event`
+      instead was measured too and took 174 s (a probe per partition per entry).
+- [x] It can't show a step the projector attached to no occupancy (a projection anomaly) or the
+      newest seconds the projector hasn't reached; the single-berth search is unchanged.
+- [x] Test fixture `recordObservedBerthEvent` now closes the from-berth's open occupancy, as
+      `project-td` does; the pair tests interpose the train into its first berth.
+- [ ] Integration tests run on CI (not run locally).
+
+No migration needed.
+

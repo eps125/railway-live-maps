@@ -84,7 +84,9 @@ const PAIR_STEPS_MAX_LIMIT = 200;
  * heap — minutes on a cold cache, which is what the owner hit ("3894 -> 9878", a pair with no
  * steps at all). Kept as a choice, with a timeout, rather than silently allowing a query that can
  * run for minutes. An index on (td_area, from_berth, to_berth, event_at) would remove the limit
- * entirely — roughly 1.5 GB per monthly partition, so it needs the owner's decision. */
+ * entirely — roughly 1.5 GB per monthly partition, so it needs the owner's decision.
+ * 2026-10-22: a *pair* search no longer reads area steps (it matches occupancy exits with entries,
+ * below), so the lookback now bounds only the single-berth search. */
 const PAIR_STEPS_LOOKBACK_CHOICES = [1, 7, 30, 90];
 const PAIR_STEPS_DEFAULT_DAYS = 7;
 /** A berth-pair search is a diagnostic: give up rather than hold a connection for minutes. */
@@ -93,6 +95,9 @@ const PAIR_STEPS_TIMEOUT_MS = 15_000;
  * and says how far back it got. On a cold cache one busy area-day (CL) was measured at 12 s, so a
  * berth active every day can't always fill 50 steps in time; a partial answer beats a failure. */
 const PAIR_STEPS_BUDGET_MS = 20_000;
+/** A pair's step is found from the first berth's occupancy exit: how long before the window that
+ * occupancy may have begun (a train standing in the first berth) - the `*` search's slack. */
+const PAIR_STEPS_FROM_SLACK_S = ALL_AREAS_ENTRY_SLACK_MS / 1000;
 
 interface StepRow {
   event_at: Date;
@@ -197,9 +202,9 @@ export async function registerBerthQueryRoutes(
    * `fromBerth` instead — into it or out of it — with each row's type (CA step, CB cancel, CC
    * interpose) and its own from/to berths. CT heartbeats carry no berth, so never match.
    *
-   * Both read `td_berth_event` newest first on the `(td_area, event_at)` index, within the chosen
-   * look-back — but only on the days `td_berth_daily_activity` (Milestone 72) says the berth (or,
-   * for a pair, the from-berth stepping out and the to-berth stepping in) was active. Owner report
+   * A single berth is read from `td_berth_event` newest first on the `(td_area, event_at)` index,
+   * within the chosen look-back — but only on the days `td_berth_daily_activity` (Milestone 72)
+   * says the berth was active. A pair is read from `berth_occupancy` (2026-10-22, below). Owner report
    * 2026-09-27: a berth never seen in the area (CL A475) timed out even at 7 days, because proving
    * "no steps" meant reading every CL step in the period — on a cold cache over 50 s. Now it is
    * one small index read and an instant empty answer. That table is written in the same
@@ -242,6 +247,63 @@ export async function registerBerthQueryRoutes(
     try {
       await client.query("begin");
       await client.query(`set local statement_timeout = ${PAIR_STEPS_TIMEOUT_MS}`);
+      if (!singleBerth) {
+        // A step from one berth to the next closes the train's occupancy of the first and opens one
+        // in the second, both on the same TD message - so a pair's steps are the second berth's
+        // entries whose event is the first berth's exit. Both come from `berth_occupancy`'s
+        // (td_area, berth_code, entered_at) index: no read of the area's whole step history.
+        // Owner report 2026-10-22: R1 3217 -> 5221 timed out at 90, 30 and 14 days - two busy
+        // berths, so every day was "active" and each cold area-day read ~19k heap pages. Measured
+        // on production: 90 days in 50-130 ms; the same counts as the old scan over a week
+        // (5222 -> 5220: 580, 3217 -> 5221: 4). What it can't show: a step the projector attached
+        // to no occupancy (a `td_projection_anomaly`), and the newest seconds it hasn't reached.
+        const result = await client.query<StepRow>(
+          `with into_to as materialized (
+             select entry_event_id, entered_at, description
+               from berth_occupancy
+              where projection_version = $1 and td_area = $2 and berth_code = $4
+                and entered_at >= $5
+           ),
+           out_of_from as materialized (
+             select exit_event_id
+               from berth_occupancy
+              where projection_version = $1 and td_area = $2 and berth_code = $3
+                and entered_at >= $5::timestamptz - make_interval(secs => $6)
+                and exit_event_id is not null
+           )
+           select t.entered_at as event_at, t.description, 'CA' as message_type,
+                  $3::text as from_berth, $4::text as to_berth
+             from into_to t
+             join out_of_from f on f.exit_event_id = t.entry_event_id
+            order by t.entered_at desc
+            limit $7`,
+          [
+            TD_PROJECTION_VERSION,
+            tdArea,
+            fromBerth,
+            toBerth,
+            since,
+            PAIR_STEPS_FROM_SLACK_S,
+            limit,
+          ],
+        );
+        await client.query("commit");
+        return {
+          tdArea,
+          fromBerth,
+          toBerth,
+          days,
+          since: since.toISOString(),
+          incompleteBefore: null,
+          steps: result.rows.map((row) => ({
+            eventAt: row.event_at.toISOString(),
+            description: row.description,
+            messageType: row.message_type,
+            fromBerth: row.from_berth,
+            toBerth: row.to_berth,
+          })),
+        };
+      }
       const sinceDay = since.toISOString().slice(0, 10);
       const activeDays = singleBerth
         ? await client.query<{ day: string }>(

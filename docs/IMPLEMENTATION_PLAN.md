@@ -5237,6 +5237,10 @@ Known limitations:
 
 - One job at a time across all areas, by design: a long backfill delays an allowance job queued
   after it.
+- Allowances are slow on a cold cache. A berth's occupancies are scattered across the table, so
+  a cold read is about one disk page per occupancy. The first production run (job 1) timed out:
+  CE as one statement took 180 s (37,832 pages at ~5 ms). It now runs one statement per berth
+  (~0.8 s each), so an area takes a few minutes the first time and is much faster once cached.
 - A redeploy mid-job restarts that job from the beginning. Both kinds are idempotent, so only the
   time is lost.
 - Migration 0053 must be applied on production (new tables only, no locks on existing ones).

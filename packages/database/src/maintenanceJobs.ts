@@ -235,19 +235,10 @@ export async function calculateBerthDwellProfiles(
   db: Queryable,
   args: { tdArea: string; from: Date; to: Date; jobId?: string | null },
 ): Promise<BerthDwellProfileSummary> {
-  const { rows } = await db.query<{ berth_code: string; minutes: number[] }>(
-    `select b.berth_code, d.minutes
-       from berth_current_state b
-       cross join lateral (
-         select array_agg(extract(epoch from o.left_at - o.entered_at)::float8 / 60.0) as minutes
-           from berth_occupancy o
-          where o.td_area = b.td_area and o.berth_code = b.berth_code
-            and o.entered_at >= $2 and o.entered_at < $3
-            and o.left_at is not null
-            and o.description ~ '^[0-9][A-Z][0-9]{2}$'
-       ) d
-      where b.projection_version = $4 and b.td_area = $1 and d.minutes is not null`,
-    [args.tdArea, args.from, args.to, TD_PROJECTION_VERSION],
+  const berths = await db.query<{ berth_code: string }>(
+    `select berth_code from berth_current_state
+      where projection_version = $1 and td_area = $2 order by berth_code`,
+    [TD_PROJECTION_VERSION, args.tdArea],
   );
 
   const summary: BerthDwellProfileSummary = {
@@ -256,8 +247,25 @@ export async function calculateBerthDwellProfiles(
     defaulted: 0,
     occupancies: 0,
   };
-  for (const row of rows) {
-    const allowance = berthAllowance(row.minutes);
+  // One statement per berth, not one for the whole area. A berth's occupancies are scattered
+  // across the table (rows arrive in time order nationwide), so a cold read is about one page
+  // per occupancy: on production CE took 180 s as a single statement (37,832 pages at ~5 ms),
+  // about 0.8 s per berth. Small statements keep each well inside the timeout and let the live
+  // site's queries interleave with them.
+  for (const { berth_code: berthCode } of berths.rows) {
+    const { rows } = await db.query<{ minutes: number[] | null }>(
+      `select array_agg(extract(epoch from o.left_at - o.entered_at)::float8 / 60.0) as minutes
+         from berth_occupancy o
+        where o.td_area = $1 and o.berth_code = $2
+          and o.entered_at >= $3 and o.entered_at < $4
+          and o.left_at is not null
+          and o.description ~ '^[0-9][A-Z][0-9]{2}$'`,
+      [args.tdArea, berthCode, args.from, args.to],
+    );
+    const minutes = rows[0]?.minutes;
+    if (!minutes) continue;
+    const row = { berth_code: berthCode };
+    const allowance = berthAllowance(minutes);
     summary.berths += 1;
     summary.occupancies += allowance.sampleSize;
     if (allowance.basis === "measured") summary.measured += 1;

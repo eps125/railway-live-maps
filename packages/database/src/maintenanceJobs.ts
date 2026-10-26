@@ -7,7 +7,11 @@ import type { Queryable } from "./checkpoint.js";
  * state change is a single guarded `update`, so two workers (or a worker and the API) can never
  * both move a job: the partial unique index on `status = 'running'` also stops two running at once.
  */
-export const MAINTENANCE_JOB_KINDS = ["berth_allowances", "link_backfill"] as const;
+export const MAINTENANCE_JOB_KINDS = [
+  "berth_allowances",
+  "link_backfill",
+  "estimate_backfill",
+] as const;
 export type MaintenanceJobKind = (typeof MAINTENANCE_JOB_KINDS)[number];
 export type MaintenanceJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 

@@ -616,7 +616,10 @@ estimate ends (`band = 'cleared'`, with `clear_reason`).
   `cleared`), otherwise its TRUST band.
 - A check constraint ties `minutes_late` / `basis` / `clear_reason` to the band.
 
-Not rebuildable by replay: it records what the sweep saw live, like `map_state_snapshot`.
+`source` (migration 0055) is `live` (the sweep, as it happened) or `backfill` (an
+`estimate_backfill` job's replay of a past window, as known at each minute). A backfill never runs
+over a window with live rows, and replaces only its own earlier `backfill` rows. So days before
+the live sweep (or a gap in it) can be rebuilt from source data.
 
 ### `berth_dwell_profile` (Milestone 97a, migration 0053, docs/adr/0021)
 

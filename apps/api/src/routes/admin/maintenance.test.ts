@@ -67,3 +67,36 @@ describe("validateQueueJobBody", () => {
     expect(backfill("not a date", "2026-10-26T00:00:00Z").ok).toBe(false);
   });
 });
+
+describe("validateQueueJobBody — estimate backfill (Milestone 97d)", () => {
+  it("accepts up to a week, with no correct option", () => {
+    expect(
+      validateQueueJobBody(
+        {
+          kind: "estimate_backfill",
+          tdAreas: ["PX"],
+          params: { from: "2026-10-23T00:00:01Z", to: "2026-10-26T17:00:00Z", correct: true },
+        },
+        NOW,
+      ),
+    ).toEqual({
+      ok: true,
+      kind: "estimate_backfill",
+      tdAreas: ["PX"],
+      params: { from: "2026-10-23T00:00:01.000Z", to: "2026-10-26T17:00:00.000Z" },
+    });
+    expect(
+      validateQueueJobBody(
+        {
+          kind: "estimate_backfill",
+          tdAreas: ["PX"],
+          params: { from: "2026-10-18T00:00:00Z", to: "2026-10-26T00:00:00Z" },
+        },
+        NOW,
+      ),
+    ).toMatchObject({
+      ok: false,
+      message: "A backfill can cover at most 7 days; queue several jobs",
+    });
+  });
+});

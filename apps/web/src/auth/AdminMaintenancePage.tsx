@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
 import { formatLondon, fromDateTimeLocal, toDateTimeLocal } from "./accessCodeFormat.js";
 
-type JobKind = "berth_allowances" | "link_backfill";
+type JobKind = "berth_allowances" | "link_backfill" | "estimate_backfill";
 type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 interface AreaStatus {
@@ -36,6 +36,7 @@ interface ErrorBody {
 const KIND_LABEL: Record<JobKind, string> = {
   berth_allowances: "Recalculate berth allowances",
   link_backfill: "Backfill run links",
+  estimate_backfill: "Backfill held-train estimates",
 };
 
 const STATUS_LABEL: Record<JobStatus, string> = {
@@ -67,6 +68,9 @@ export function jobSummary(job: MaintenanceJobView): string {
     return `${berths} berths (${measured} measured, ${berths - measured} default) over ${String(
       result.windowDays,
     )} days`;
+  }
+  if (job.kind === "estimate_backfill") {
+    return `${String(result.estimatesSet ?? 0)} estimates for ${String(result.trains ?? 0)} trains, ${String(result.rows ?? 0)} rows`;
   }
   return `${String(result.linked ?? 0)} linked, ${String(result.carriedForward ?? 0)} carried on, ${String(
     result.examined ?? 0,
@@ -142,7 +146,9 @@ export function AdminMaintenancePage(): JSX.Element {
     const params =
       kind === "berth_allowances"
         ? { windowDays }
-        : { from: fromDateTimeLocal(from), to: fromDateTimeLocal(to), correct };
+        : kind === "estimate_backfill"
+          ? { from: fromDateTimeLocal(from), to: fromDateTimeLocal(to) }
+          : { from: fromDateTimeLocal(from), to: fromDateTimeLocal(to), correct };
     setQueueing(true);
     try {
       const response = await fetch("/api/v1/admin/maintenance/jobs", {
@@ -247,6 +253,7 @@ export function AdminMaintenancePage(): JSX.Element {
           <select value={kind} onChange={(e) => setKind(e.target.value as JobKind)}>
             <option value="berth_allowances">{KIND_LABEL.berth_allowances}</option>
             <option value="link_backfill">{KIND_LABEL.link_backfill}</option>
+            <option value="estimate_backfill">{KIND_LABEL.estimate_backfill}</option>
           </select>
         </label>
         {kind === "berth_allowances" ? (
@@ -270,14 +277,16 @@ export function AdminMaintenancePage(): JSX.Element {
               To
               <input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
             </label>
-            <label className="field field--checkbox">
-              <input
-                type="checkbox"
-                checked={correct}
-                onChange={(e) => setCorrect(e.target.checked)}
-              />
-              Also correct links that now match a different run (only when TRUST confirms it)
-            </label>
+            {kind === "link_backfill" ? (
+              <label className="field field--checkbox">
+                <input
+                  type="checkbox"
+                  checked={correct}
+                  onChange={(e) => setCorrect(e.target.checked)}
+                />
+                Also correct links that now match a different run (only when TRUST confirms it)
+              </label>
+            ) : null}
           </>
         )}
         <button type="submit" className="btn btn--primary" disabled={queueing}>

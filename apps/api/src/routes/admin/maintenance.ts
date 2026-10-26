@@ -20,6 +20,8 @@ export interface MaintenanceRoutesDeps {
 
 /** A backfill longer than this is refused — split it into several jobs instead. */
 export const MAX_LINK_BACKFILL_DAYS = 62;
+/** Milestone 97d: an estimate backfill replays minute by minute, so it is kept to a week a job. */
+export const MAX_ESTIMATE_BACKFILL_DAYS = 7;
 const MAX_ALLOWANCE_WINDOW_DAYS = 60;
 const TD_AREA_PATTERN = /^[A-Z0-9]{2}$/;
 
@@ -120,11 +122,21 @@ export function validateQueueJobBody(body: QueueJobBody, now: Date = new Date())
   if (to.getTime() > now.getTime() + 5 * 60 * 1000) {
     return { ok: false, code: "INVALID_TIME_RANGE", message: "params.to can't be in the future" };
   }
-  if (to.getTime() - from.getTime() > MAX_LINK_BACKFILL_DAYS * 24 * 60 * 60 * 1000) {
+  const maxDays =
+    kind === "estimate_backfill" ? MAX_ESTIMATE_BACKFILL_DAYS : MAX_LINK_BACKFILL_DAYS;
+  if (to.getTime() - from.getTime() > maxDays * 24 * 60 * 60 * 1000) {
     return {
       ok: false,
       code: "INVALID_TIME_RANGE",
-      message: `A backfill can cover at most ${MAX_LINK_BACKFILL_DAYS} days; queue several jobs`,
+      message: `A backfill can cover at most ${maxDays} days; queue several jobs`,
+    };
+  }
+  if (kind === "estimate_backfill") {
+    return {
+      ok: true,
+      kind: "estimate_backfill",
+      tdAreas: areas,
+      params: { from: from.toISOString(), to: to.toISOString() },
     };
   }
   if (raw.correct !== undefined && typeof raw.correct !== "boolean") {
@@ -175,8 +187,8 @@ export async function registerMaintenanceRoutes(
       return apiError(validated.code, validated.message);
     }
 
-    if (validated.kind === "link_backfill") {
-      // repair-run-links only links occupancies in mapped areas.
+    if (validated.kind === "link_backfill" || validated.kind === "estimate_backfill") {
+      // Run links (and so estimates) exist only in mapped areas.
       const mapped = await getMappedTdAreas(pool);
       const unmapped = validated.tdAreas.filter((area) => !mapped.has(area));
       if (unmapped.length > 0) {

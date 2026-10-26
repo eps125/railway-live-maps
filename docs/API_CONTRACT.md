@@ -766,6 +766,10 @@ startedAt, finishedAt }] }`. `status` is `queued` / `running` / `succeeded` / `f
   - `link_backfill`: `params.from`, `params.to` (ISO, `from` before `to`, `to` not in the future,
     at most 62 days apart; `400 INVALID_TIME_RANGE`), `params.correct` (boolean, default false:
     `repair-run-links --correct`). Every area must be on a published map (`400 AREA_NOT_MAPPED`).
+  - `estimate_backfill` (Milestone 97d): `params.from`, `params.to` (same rules as `link_backfill`,
+    but at most 7 days). Replays the held-train sweep over the window, minute by minute, as known at
+    each moment. Fails if the window already has live estimates. Every area must be on a published
+    map.
 - `POST /api/v1/admin/maintenance/jobs/{id}/cancel` — a queued job is cancelled at once; a running
   one is asked to stop after its current area or 6-hour slice. `409 JOB_NOT_ACTIVE` if it has
   already finished.

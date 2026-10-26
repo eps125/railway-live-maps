@@ -5344,3 +5344,38 @@ report: departed GARSTANG & CATTERALL 18:47, 72 min late").
       last report); component (an estimated line with no explanation).
 - Unchanged: a logged-in non-admin's full view still has its existing "Latest report" section
   (Milestone 34), which is separate from the delay line.
+
+### 97d — Backfilling held-train estimates for past days
+
+Owner request: playback before the live sweep began (2026-10-26 18:27) showed no estimates. A
+backfill from Friday 23 October 00:00:01 was asked for, tested on one hour first.
+
+- [x] Migration 0055:
+  - `maintenance_job.kind` gains `estimate_backfill`;
+  - `estimated_delay_band_change.source` is `live` / `backfill` (catalog-only).
+- [x] As-of reads (`packages/database/src/heldDelays.ts`), each as known at a moment `at`:
+  - `findHeldTrainCandidatesAt`: the occupancy covering `at`, with its run link and the
+    activation known by then (the `findMapDelaysAt` query shape);
+  - `loadRunTrustStates(…, asOf)`: reports and cancellations received by `at`;
+  - `loadOccupiedBerthsForDescriptionsAt`: the berths showing each headcode at `at`.
+- [x] `HeldDelaySweep.replayStep` / `closeReplay`: the same decision as a live tick, with each
+      run's estimate carried in memory. A run that leaves every mapped berth ends after the
+      30-minute carry limit, and every estimate still in force ends at the window's end
+      (`backfill_end`). Rows are `source = 'backfill'`.
+- [x] The `estimate_backfill` job (`runEstimateBackfillJob`):
+  - one-minute steps over the window, for the job's areas' berths on today's published maps;
+  - progress and a cancel check every replayed hour;
+  - refuses a window with live rows, and replaces its own earlier backfill rows there.
+- [x] API: kind `estimate_backfill`, at most 7 days, mapped areas only. Admin page: "Backfill
+      held-train estimates".
+- [x] Tests:
+  - unit: validation;
+  - integration: a replayed hold uses only what was known at each minute (a later TRUST report
+    doesn't end it early), is recorded as backfill rows, ends at the window's end, and is shown
+    by playback.
+
+Known limitations:
+
+- It uses today's map bindings and berth allowances, not those in force at the time.
+- It uses run links as they stand now, including any made after the moment replayed (the live
+  sweep links within seconds, so the difference is small).

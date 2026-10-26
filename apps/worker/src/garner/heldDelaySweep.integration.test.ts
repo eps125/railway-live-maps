@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool, findMapDelaysAt, findOpenBerthsForTrustIds } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
-import { HeldDelaySweep } from "./heldDelaySweep.js";
+import { HeldDelaySweep, type ReplayState } from "./heldDelaySweep.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -61,7 +61,12 @@ const londonDate = (at: Date) =>
 
 /** A train standing in a berth with no SMART location since `enteredAt`, linked to a run whose
  * last TRUST report — a departure `minutesLate` late from the origin — came before it entered. */
-async function seedHeldTrain(enteredAt: Date, reportAt: Date, minutesLate: number) {
+async function seedHeldTrain(
+  enteredAt: Date,
+  reportAt: Date,
+  minutesLate: number,
+  leftAt: Date | null = null,
+) {
   const tdArea = `Z${randomUUID().replace(/-/g, "").slice(0, 5).toUpperCase()}`;
   created.areas.push(tdArea);
   const berth = "0101";
@@ -90,15 +95,16 @@ async function seedHeldTrain(enteredAt: Date, reportAt: Date, minutesLate: numbe
   const occupancyId = (
     await pool.query<{ id: string }>(
       `insert into berth_occupancy (
-         projection_version, td_area, berth_code, description, entered_at,
+         projection_version, td_area, berth_code, description, entered_at, left_at,
          entry_event_id, entry_event_normalized_at_utc, entry_reason
-       ) values ($1, $2, $3, $4, $5, $6, $7, 'cc_interpose') returning id`,
+       ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'cc_interpose') returning id`,
       [
         TD_PROJECTION_VERSION,
         tdArea,
         berth,
         description,
         enteredAt,
+        leftAt,
         event.id,
         event.normalized_event_at_utc,
       ],
@@ -252,5 +258,62 @@ describe("held-train delay sweep (Milestone 97b, integration)", () => {
       now,
     );
     expect(result).toMatchObject({ candidates: 1, activeEstimates: 0, changesRecorded: 0 });
+  });
+});
+
+describe("estimate backfill replay (Milestone 97d, integration)", () => {
+  it("replays a past hold as it was known then, recorded as backfill, and playback shows it", async () => {
+    const now = await dbNow();
+    const at = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * MINUTE);
+    // Held 90-30 minutes ago after a report 5 late; TRUST reported again (12 late) 20 minutes ago.
+    const train = await seedHeldTrain(at(90), at(95), 5, at(30));
+    await pool.query(
+      `insert into trust_movement (trust_id, created, loc_stanox, actual_timestamp, timetable_variation, flags)
+       values ($1, $2, '99999', $2, 12, $3)`,
+      [train.trustId, at(20), DEPARTURE_LATE],
+    );
+    const berths = [{ tdArea: train.tdArea, berth: train.berth }];
+    const sweep = new HeldDelaySweep();
+    const state: ReplayState = new Map();
+
+    // 10 minutes in: 5 + 10 − 3 = 12 late, on time. 30 minutes in: 32 late, moderate — the later
+    // 12-late report isn't known yet, so it doesn't end the estimate.
+    await sweep.replayStep(pool, berths, at(80), state);
+    await sweep.replayStep(pool, berths, at(60), state);
+    expect(state.get(train.trustId)?.state).toMatchObject({ band: "moderate", minutesLate: 32 });
+    await sweep.closeReplay(pool, state, at(50));
+
+    const rows = await pool.query(
+      `select band, minutes_late, clear_reason, source,
+              round(extract(epoch from ($2::timestamptz - effective_at)) / 60) as minutes_ago
+         from estimated_delay_band_change where trust_id = $1 order by effective_at, id`,
+      [train.trustId, now],
+    );
+    expect(rows.rows).toEqual([
+      {
+        band: "on_time",
+        minutes_late: 12,
+        clear_reason: null,
+        source: "backfill",
+        minutes_ago: "80",
+      },
+      {
+        band: "moderate",
+        minutes_late: 32,
+        clear_reason: null,
+        source: "backfill",
+        minutes_ago: "60",
+      },
+      {
+        band: "cleared",
+        minutes_late: null,
+        clear_reason: "backfill_end",
+        source: "backfill",
+        minutes_ago: "50",
+      },
+    ]);
+    expect(await findMapDelaysAt(pool, berths, at(55))).toEqual([
+      expect.objectContaining({ band: "moderate", estimated: true }),
+    ]);
   });
 });

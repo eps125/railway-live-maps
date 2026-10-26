@@ -3,7 +3,8 @@
 Status: **Accepted in principle** (2026-10-26). Owner answered the open questions the same day.
 The allowance check has been run against production (see "Evidence"). Built in full as
 Milestone 97a (maintenance jobs and berth allowances), 97b (the estimate, live and in playback)
-and 97c (the popup delay line for every visitor).
+and 97c (the popup delay line for every visitor). 97d adds an admin backfill that replays
+the sweep over past days.
 
 ## Context
 

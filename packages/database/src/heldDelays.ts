@@ -142,6 +142,8 @@ export interface RunTrustState {
 export async function loadRunTrustStates(
   db: Queryable,
   runs: ReadonlyArray<{ trustId: string; activatedAt: Date }>,
+  /** Milestone 97d: only what had been received by this moment (a backfill replay). */
+  asOf: Date | null = null,
 ): Promise<Map<string, RunTrustState>> {
   const out = new Map<string, RunTrustState>();
   if (runs.length === 0) return out;
@@ -165,18 +167,21 @@ export async function loadRunTrustStates(
            from trust_movement m
           where m.trust_id = p.trust_id and m.actual_timestamp is not null
             and ${withinTrustRun("m.created", "p.activated_at")}
+            and ($3::timestamptz is null or m.created <= $3::timestamptz)
           order by m.actual_timestamp desc, m.created desc limit 1
        ) m on true
        left join lateral (
          select max(m.created) as received_at from trust_movement m
           where m.trust_id = p.trust_id and ${withinTrustRun("m.created", "p.activated_at")}
+            and ($3::timestamptz is null or m.created <= $3::timestamptz)
        ) r on true
        left join lateral (
          select c.trust_id, c.type, c.reinstate from trust_cancellation c
           where c.trust_id = p.trust_id and ${withinTrustRun("c.created", "p.activated_at")}
+            and ($3::timestamptz is null or c.created <= $3::timestamptz)
           order by c.created desc limit 1
        ) c on true`,
-    [runs.map((r) => r.trustId), runs.map((r) => r.activatedAt)],
+    [runs.map((r) => r.trustId), runs.map((r) => r.activatedAt), asOf],
   );
   for (const row of rows) {
     out.set(row.trust_id, {
@@ -404,14 +409,16 @@ export interface EstimateChangeRow {
 export async function recordEstimateChanges(
   db: Queryable,
   changes: readonly EstimateChangeRow[],
+  /** Milestone 97d: 'backfill' for a replay (migration 0055). */
+  source: "live" | "backfill" = "live",
 ): Promise<number> {
   if (changes.length === 0) return 0;
   const result = await db.query(
     `insert into estimated_delay_band_change (
        trust_id, activated_at, band, minutes_late, basis, clear_reason, td_area, berth_code,
-       berth_occupancy_id, occupancy_entered_at, effective_at
+       berth_occupancy_id, occupancy_entered_at, effective_at, source
      )
-     select * from unnest(
+     select *, $12::text from unnest(
        $1::text[], $2::timestamptz[], $3::text[], $4::integer[], $5::text[], $6::text[],
        $7::text[], $8::text[], $9::bigint[], $10::timestamptz[], $11::timestamptz[]
      )
@@ -428,6 +435,7 @@ export async function recordEstimateChanges(
       changes.map((c) => c.occupancyId),
       changes.map((c) => c.occupancyEnteredAt),
       changes.map((c) => c.effectiveAt),
+      source,
     ],
   );
   return result.rows.length;
@@ -613,4 +621,151 @@ export async function findEstimateInForce(
     lastEstimatedAt: row.effective_at,
     occupancyId: row.berth_occupancy_id,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Milestone 97d (docs/adr/0021): replaying the sweep over a past window (the estimate backfill).
+// ---------------------------------------------------------------------------------------------
+
+/** Same bound as `findMapDelaysAt`: an occupancy that started longer before `at` than this is
+ * not looked for. */
+const REPLAY_OCCUPANCY_LOOKBACK = "24 hours";
+
+/**
+ * `findHeldTrainCandidates` as it stood at `at`: each berth's occupancy covering that moment (the
+ * latest to start at or before it, still open then), its run link, and the run's activation
+ * known by then. Same query shape as `findMapDelaysAt`, which playback already uses.
+ */
+export async function findHeldTrainCandidatesAt(
+  db: Queryable,
+  berths: ReadonlyArray<{ tdArea: string; berth: string }>,
+  at: Date,
+): Promise<HeldTrainCandidate[]> {
+  if (berths.length === 0) return [];
+  const { rows } = await db.query<{
+    td_area: string;
+    berth_code: string;
+    description: string;
+    occupancy_id: string;
+    entered_at: Date;
+    run_key: string;
+    match_confidence: "solid" | "weak";
+    cif_schedule_id: string;
+    traffic_day: string;
+    trust_id: string;
+    activated_at: Date;
+  }>(
+    `with wanted as (
+       select unnest($1::text[]) as td_area, unnest($2::text[]) as berth_code
+     ),
+     occ as materialized (
+       select w.td_area, w.berth_code, o.description, o.id, o.entered_at
+       from wanted w
+       cross join lateral (
+         select o.id, o.entered_at, o.description, o.left_at from berth_occupancy o
+         where o.projection_version = $3 and o.td_area = w.td_area and o.berth_code = w.berth_code
+           and o.entered_at <= $4::timestamptz
+           and o.entered_at > $4::timestamptz - $5::interval
+         order by o.entered_at desc limit 1
+       ) o
+       where o.left_at is null or o.left_at > $4::timestamptz
+     ),
+     runs as materialized (
+       select occ.*, r.id as run_id, r.cif_schedule_id, r.traffic_day, r.match_confidence
+       from occ
+       join berth_occupancy_run_link l
+         on l.berth_occupancy_id = occ.id and l.occupancy_entered_at = occ.entered_at
+       join train_run r on r.id = l.train_run_id
+       where r.superseded_by is null and r.cif_schedule_id is not null
+     )
+     select runs.td_area, runs.berth_code, runs.description, runs.id::text as occupancy_id,
+            runs.entered_at, runs.run_id::text as run_key, runs.match_confidence,
+            runs.cif_schedule_id::text as cif_schedule_id, runs.traffic_day::text as traffic_day,
+            a.trust_id, a.created as activated_at
+     from runs
+     cross join lateral (
+       select ta.trust_id, ta.created from trust_activation ta
+       where ta.cif_schedule_id = runs.cif_schedule_id
+         and ta.created >= (runs.traffic_day)::timestamp at time zone 'Europe/London'
+         and ta.created <= $4::timestamptz
+       order by ta.created desc limit 1
+     ) a`,
+    [
+      berths.map((b) => b.tdArea),
+      berths.map((b) => b.berth),
+      TD_PROJECTION_VERSION,
+      at,
+      REPLAY_OCCUPANCY_LOOKBACK,
+    ],
+  );
+  return rows.map((row) => ({
+    tdArea: row.td_area,
+    berth: row.berth_code,
+    description: row.description,
+    occupancyId: row.occupancy_id,
+    enteredAt: row.entered_at,
+    runKey: row.run_key,
+    matchConfidence: row.match_confidence,
+    cifScheduleId: row.cif_schedule_id,
+    trafficDay: row.traffic_day,
+    trustId: row.trust_id,
+    activatedAt: row.activated_at,
+  }));
+}
+
+/** `loadCurrentBerthsForDescriptions` as it stood at `at`: every berth occupied by each
+ * description then, with when that occupancy began. Uses the `(description, entered_at)` index. */
+export async function loadOccupiedBerthsForDescriptionsAt(
+  db: Queryable,
+  descriptions: readonly string[],
+  at: Date,
+): Promise<Map<string, Array<{ tdArea: string; berth: string; eventAt: Date }>>> {
+  const out = new Map<string, Array<{ tdArea: string; berth: string; eventAt: Date }>>();
+  if (descriptions.length === 0) return out;
+  const { rows } = await db.query<{
+    td_area: string;
+    berth_code: string;
+    description: string;
+    entered_at: Date;
+  }>(
+    `select td_area, berth_code, description, entered_at from berth_occupancy
+      where projection_version = $1 and description = any($2::text[])
+        and entered_at <= $3::timestamptz and entered_at > $3::timestamptz - $4::interval
+        and (left_at is null or left_at > $3::timestamptz)`,
+    [TD_PROJECTION_VERSION, [...descriptions], at, REPLAY_OCCUPANCY_LOOKBACK],
+  );
+  for (const row of rows) {
+    const list = out.get(row.description) ?? [];
+    list.push({ tdArea: row.td_area, berth: row.berth_code, eventAt: row.entered_at });
+    out.set(row.description, list);
+  }
+  return out;
+}
+
+/** How many live (not backfilled) estimate rows fall in `[from, to)`: a backfill refuses to run
+ * over live history. */
+export async function countLiveEstimatesIn(db: Queryable, from: Date, to: Date): Promise<number> {
+  const { rows } = await db.query<{ n: string }>(
+    `select count(*)::text as n from estimated_delay_band_change
+      where source = 'live' and effective_at >= $1 and effective_at < $2`,
+    [from, to],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** Removes an earlier backfill's rows in `[from, to]` so a re-run replaces rather than
+ * duplicates them. Only ever `source = 'backfill'` rows — derived, and rebuilt by the same job.
+ * Inclusive of `to`: a backfill's closing clears are stamped exactly at its end. */
+export async function deleteBackfilledEstimatesIn(
+  db: Queryable,
+  from: Date,
+  to: Date,
+): Promise<number> {
+  const { rows } = await db.query<{ id: string }>(
+    `delete from estimated_delay_band_change
+      where source = 'backfill' and effective_at >= $1 and effective_at <= $2
+      returning id`,
+    [from, to],
+  );
+  return rows.length;
 }

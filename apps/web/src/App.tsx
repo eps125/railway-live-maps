@@ -7,6 +7,7 @@ import { useSession, roleAtLeast } from "./auth/useSession.js";
 import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
+import { AdminMaintenancePage } from "./auth/AdminMaintenancePage.js";
 import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
 import { BerthQueryPage } from "./auth/BerthQueryPage.js";
 import { BerthStepsPage } from "./auth/BerthStepsPage.js";
@@ -39,6 +40,7 @@ const ADMIN_ROUTES = new Set([
   "adminBerthSteps",
   "adminBerthExplorer",
   "adminSClass",
+  "adminMaintenance",
 ]);
 
 export function App(): JSX.Element {
@@ -131,6 +133,13 @@ export function App(): JSX.Element {
   } else if (route.name === "adminBerthExplorer") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthExplorerPage />;
+  } else if (route.name === "adminMaintenance") {
+    main =
+      sessionLoading || !isAdmin ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminMaintenancePage />
+      );
   } else if (route.name === "adminSClass") {
     main =
       sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <SClassExplorerPage />;

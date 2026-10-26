@@ -603,6 +603,31 @@ run link reaches (`berth_occupancy_run_link` → `train_run.cif_schedule_id` →
 rebuildable: delete the rows and reset the checkpoint, and it re-fills the last 24 h. Read by the
 WebSocket snapshot, `/delays` (live and playback) and the `delay.updated` push.
 
+### `berth_dwell_profile` (Milestone 97a, migration 0053, docs/adr/0021)
+
+One row per `(td_area, berth_code)`: the berth's normal occupancy time, the "berth allowance" the
+held-train delay estimate subtracts. Calculated by an admin-run `berth_allowances` job from the
+berth's ended, headcode-described `berth_occupancy` rows in a window (default 14 days):
+
+- Outliers longer than `Q3 + 1.5 × (Q3 − Q1)` are dropped.
+- The allowance is the 95th percentile of the rest, at least 1 minute (`basis = 'measured'`).
+- A berth with fewer than 50 occupancies gets 3 minutes (`basis = 'default'`).
+- A berth with none in the window has no row, and readers use the default.
+
+The row keeps its sample size, the number dropped, quartiles, fence, window and the job that wrote
+it. Derived and rebuildable: re-running the job replaces each row.
+
+### `maintenance_job` (Milestone 97a, migration 0053)
+
+The admin area-maintenance queue: `kind` (`berth_allowances` / `link_backfill`), `td_areas`,
+`params`, `status`, `progress`, `result`, `error`, who asked and when.
+
+- A partial unique index allows only one `running` row at a time.
+- The worker's `serve` role claims the oldest `queued` row (`for update skip locked`).
+- On start, the worker puts back any row still `running` (it was interrupted). After
+  `max_attempts` (3) it marks it `failed` instead.
+- Check constraints tie `started_at` / `finished_at` to the status.
+
 ## 10. Projection/version tables
 
 ### `projection_definition`

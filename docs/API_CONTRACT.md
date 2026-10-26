@@ -703,6 +703,28 @@ createdBy, createdAt }] }`.
 Managed through the admin-only "TD boundaries" page (`/admin/td-boundaries` in the web app), which
 is this same API.
 
+**Area maintenance (Milestone 97a, docs/adr/0021), admin only:** jobs the `worker` container runs
+one at a time from the `maintenance_job` queue. Used by the "Area maintenance" page
+(`/admin/maintenance`). Queueing and cancelling are audited (`maintenance.queue`,
+`maintenance.cancel`).
+
+- `GET /api/v1/admin/maintenance/areas` — the TD areas on a published map, each with
+  `{ tdArea, allowanceBerths, measuredBerths, allowancesCalculatedAt }` (`null` = never).
+- `GET /api/v1/admin/maintenance/jobs` — the 50 newest jobs: `{ jobs: [{ id, kind, tdAreas,
+params, status, cancelRequested, attempts, progress, result, error, requestedBy, requestedAt,
+startedAt, finishedAt }] }`. `status` is `queued` / `running` / `succeeded` / `failed` /
+  `cancelled`; `progress` is `{ step, current, done, total }`.
+- `POST /api/v1/admin/maintenance/jobs` — body `{ kind, tdAreas, params }`, `201` with the job.
+  Areas are two characters, upper-cased and de-duplicated.
+  - `berth_allowances`: `params.windowDays` (whole number 1–60, default 14). Every area must have
+    been seen by the TD projector (`400 UNKNOWN_TD_AREA`); it needn't be on a map yet.
+  - `link_backfill`: `params.from`, `params.to` (ISO, `from` before `to`, `to` not in the future,
+    at most 62 days apart; `400 INVALID_TIME_RANGE`), `params.correct` (boolean, default false:
+    `repair-run-links --correct`). Every area must be on a published map (`400 AREA_NOT_MAPPED`).
+- `POST /api/v1/admin/maintenance/jobs/{id}/cancel` — a queued job is cancelled at once; a running
+  one is asked to stop after its current area or 6-hour slice. `409 JOB_NOT_ACTIVE` if it has
+  already finished.
+
 **Berth query (Milestone 51), admin only:** ad hoc lookup of raw `td_berth_event` rows (the
 CA/CB/CC/CT step log, not the `berth_occupancy` projection) by TD area(s) + headcode + time range —
 the web-app replacement for a one-off manual SQL query.

@@ -19,6 +19,7 @@ import { registerManageMapRoutes } from "./routes/editor/manageMap.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
 import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
+import { registerMaintenanceRoutes } from "./routes/admin/maintenance.js";
 import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
 import { registerBerthExplorerRoutes } from "./routes/admin/berthExplorer.js";
 import { registerSClassAdminRoutes, registerSClassEditorRoutes } from "./routes/admin/sClass.js";
@@ -169,6 +170,8 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (tdBoundaryScope) => {
     tdBoundaryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
     await registerTdBoundaryRoutes(tdBoundaryScope, { pool });
+    // Milestone 97a (docs/adr/0021): area maintenance jobs, same admin gate.
+    await registerMaintenanceRoutes(tdBoundaryScope, { pool });
   });
 
   // Admin-only ad hoc td_berth_event lookup ("Query Berths" under the web app's "Berths" nav) —

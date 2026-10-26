@@ -195,6 +195,14 @@ export {
 } from "./trust/garnerMovement.js";
 export { cancellationRulesOutRun, type LatestTrustCancellation } from "./trust/cancellation.js";
 export {
+  BERTH_ALLOWANCE_DEFAULT_MINUTES,
+  BERTH_ALLOWANCE_FLOOR_MINUTES,
+  BERTH_ALLOWANCE_MIN_SAMPLES,
+  berthAllowance,
+  percentileOfSorted,
+  type BerthAllowance,
+} from "./td/berthAllowance.js";
+export {
   delayBandForMinutesLate,
   delayBandForMovement,
   type DelayBand,

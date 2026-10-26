@@ -42,6 +42,13 @@ const SECTIONS: AdminSection[] = [
     path: "/admin/td-boundaries",
     description: "Where train describer areas meet, so a train keeps its match across them.",
   },
+  {
+    title: "Area maintenance",
+    path: "/admin/maintenance",
+    description:
+      "Recalculate berth allowances and backfill run links for a train describer area, and " +
+      "follow the jobs as they run.",
+  },
 ];
 
 /**

@@ -17,7 +17,8 @@ export type Route =
   | { name: "adminBerthQuery" }
   | { name: "adminBerthSteps" }
   | { name: "adminBerthExplorer" }
-  | { name: "adminSClass" };
+  | { name: "adminSClass" }
+  | { name: "adminMaintenance" };
 
 /** Minimal hand-rolled router for the small set of route shapes this app needs (`/` the Milestone
  * 30 map-list landing page, `/map/:slug` the public map, `/editor/:slug` the Milestone 11/12
@@ -43,6 +44,8 @@ export function useRoute(): Route {
   // Milestone 84.
   if (pathname.startsWith("/admin/access")) return { name: "adminAccess" };
   if (pathname.startsWith("/admin/td-boundaries")) return { name: "adminTdBoundaries" };
+  // Milestone 97a.
+  if (pathname.startsWith("/admin/maintenance")) return { name: "adminMaintenance" };
   if (pathname.startsWith("/admin/berths/query")) return { name: "adminBerthQuery" };
   if (pathname.startsWith("/admin/berths/steps")) return { name: "adminBerthSteps" };
   // Milestone 72.

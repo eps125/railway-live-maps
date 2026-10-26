@@ -5183,3 +5183,60 @@ Known limitations:
 - Berths with no SMART coverage are still `headcode_only` and usually stay ambiguous on a busy
   headcode; they recover their link by step-chain from a matched neighbour, as before.
 - No migration needed. Today's links were repaired with `repair-run-links` after deploy.
+
+## Milestone 97 — Estimated delay for held trains (2026-10-26, ADR 0021)
+
+Owner request: a train held at a station or in a plain berth keeps the colour of its last TRUST
+report until it moves again, however long it's held. ADR 0021 adds a lower-bound estimate. It's
+built in three stages:
+
+- **97a:** admin maintenance jobs and berth allowances;
+- **97b:** the estimator, sweep, estimated bands, live push and playback;
+- **97c:** a delay line in the popup for everyone, marked "estimated".
+
+### 97a — Area maintenance jobs and berth allowances
+
+- [x] Migration 0053: `maintenance_job`, a queue with at most one running job, and
+      `berth_dwell_profile`.
+- [x] `berthAllowance` (`packages/domain/src/td/berthAllowance.ts`):
+  - outliers longer than Q3 + 1.5 × IQR are dropped;
+  - the allowance is the 95th percentile of the rest, at least 1 minute;
+  - a berth with under 50 occupancies gets 3 minutes;
+  - percentiles interpolate like Postgres `percentile_cont`.
+- [x] `packages/database/src/maintenanceJobs.ts`:
+  - the queue operations: enqueue, claim, progress (which also reports a cancel request),
+    finish, cancel, and requeue-on-start;
+  - `calculateBerthDwellProfiles`, which reads one berth at a time through the
+    `(td_area, berth_code, entered_at)` index, the same access path as `repair-run-links`.
+- [x] The worker's `serve` role runs the queue every 5 s, one job at a time (`apps/worker/src/maintenance/runner.ts`):
+  - `berth_allowances` runs one area at a time;
+  - `link_backfill` runs `repairRunLinks` in 6-hour slices, oldest first;
+  - it checks for a cancel request between steps;
+  - a failing job is recorded as failed without stopping the queue;
+  - `serve` now returns on SIGTERM, so the container still stops cleanly.
+- [x] Admin API `/api/v1/admin/maintenance/{areas,jobs,jobs/:id/cancel}`:
+  - validated and audited;
+  - allowances can be calculated for any area the projector has seen, so a new map can have them
+    before it's published;
+  - a backfill needs a mapped area.
+- [x] Web: "Area maintenance" admin page (`/admin/maintenance`, linked from the admin hub):
+  - area table with allowance status;
+  - a form to queue either job;
+  - the recent jobs, with progress, result and cancel;
+  - it polls while a job is active.
+- [x] Tests:
+  - unit: `berthAllowance`, `validateQueueJobBody`, `jobSummary`;
+  - component: `AdminMaintenancePage`;
+  - integration: the queue (claim order, single running job, cancel, requeue and give up);
+    `calculateBerthDwellProfiles` (measured, default, skipped, the outlier dropped, re-run
+    replaces); the runner (success, cancel between areas, failure keeps the queue moving); the
+    API (queue, audit, list, cancel, 409, unknown and unmapped areas).
+- [x] Docs: ADR 0021, `docs/API_CONTRACT.md` §4a, `docs/DATA_MODEL.md`.
+
+Known limitations:
+
+- One job at a time across all areas, by design: a long backfill delays an allowance job queued
+  after it.
+- A redeploy mid-job restarts that job from the beginning. Both kinds are idempotent, so only the
+  time is lost.
+- Migration 0053 must be applied on production (new tables only, no locks on existing ones).

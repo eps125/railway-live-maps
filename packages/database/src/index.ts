@@ -134,6 +134,24 @@ export {
   type ListAuditOptions,
 } from "./auditLog.js";
 export {
+  MAINTENANCE_JOB_KINDS,
+  enqueueMaintenanceJob,
+  getMaintenanceJob,
+  listMaintenanceJobs,
+  requestMaintenanceJobCancel,
+  requeueInterruptedMaintenanceJobs,
+  claimNextMaintenanceJob,
+  recordMaintenanceJobProgress,
+  finishMaintenanceJob,
+  calculateBerthDwellProfiles,
+  listAreaDwellProfileStatus,
+  type MaintenanceJob,
+  type MaintenanceJobKind,
+  type MaintenanceJobStatus,
+  type BerthDwellProfileSummary,
+  type AreaDwellProfileStatus,
+} from "./maintenanceJobs.js";
+export {
   resolveFreshRunMatch,
   findOpenOccupancy,
   findOccupancyLink,

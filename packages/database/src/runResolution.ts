@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import {
   TD_PROJECTION_VERSION,
+  cancellationRulesOutRun,
   candidatesRunningOnAny,
   circularDiffMinutes,
   headcodeFromTrustId,
@@ -741,6 +742,84 @@ export async function findAlreadyPassedScheduleIds(
   return new Set(result.rows.filter((row) => row.passed).map((row) => row.schedule_id));
 }
 
+/**
+ * Owner-approved 2026-10-26 (storm cancellations, CL 2C32 / PX 1Y50 / CL 1S66): the candidates
+ * whose TRUST run for the traffic day they resolved to has been cancelled — see
+ * `cancellationRulesOutRun` for the rule itself. Each pair is one candidate and the activation
+ * dated on its resolved day; the latest `trust_cancellation` row of that run (bounded to it,
+ * `withinTrustRun`, and to `asOf`) decides. `cancelled_before_berth` is true only when every
+ * schedule position the cancellation STANOX could mean lies strictly before this berth's *first*
+ * visit — a train terminated short *at* this station is still here, never evidence.
+ */
+export async function findCancelledScheduleIds(
+  pool: Queryable,
+  candidates: ReadonlyArray<{
+    scheduleId: string;
+    trustId: string;
+    activatedAt: Date;
+    resolvedToYesterday: boolean;
+  }>,
+  tiplocs: string[],
+  asOf?: Date | undefined,
+): Promise<Set<string>> {
+  if (candidates.length === 0) return new Set();
+  const result = await pool.query<{
+    schedule_id: string;
+    type: string | null;
+    reinstate: number | null;
+    resolved_to_yesterday: boolean;
+    cancelled_before_berth: boolean | null;
+  }>(
+    `with pairs as (
+       select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id,
+              unnest($3::boolean[]) as resolved_to_yesterday,
+              unnest($4::timestamptz[]) as activated_at
+     )
+     select p.schedule_id::text as schedule_id, c.type, c.reinstate, p.resolved_to_yesterday,
+            (
+              select max(l.seq_no)
+              from location_reference lr
+              join cif_schedule_locations l
+                on l.cif_schedule_id = p.schedule_id and l.tiploc_code = lr.tiploc
+              where lr.stanox = c.loc_stanox
+            ) < (
+              select min(l.seq_no) from cif_schedule_locations l
+              where l.cif_schedule_id = p.schedule_id and l.tiploc_code = any($5::text[])
+            ) as cancelled_before_berth
+     from pairs p
+     join lateral (
+       select c.type, c.reinstate, c.loc_stanox
+       from trust_cancellation c
+       where c.trust_id = p.trust_id
+         and ${withinTrustRun("c.created", "p.activated_at")}
+         and ($6::timestamptz is null or c.created <= $6::timestamptz)
+       order by c.created desc
+       limit 1
+     ) c on true`,
+    [
+      candidates.map((c) => c.scheduleId),
+      candidates.map((c) => c.trustId),
+      candidates.map((c) => c.resolvedToYesterday),
+      candidates.map((c) => c.activatedAt),
+      tiplocs,
+      asOf ?? null,
+    ],
+  );
+  return new Set(
+    result.rows
+      .filter((row) =>
+        cancellationRulesOutRun(
+          { type: row.type, reinstate: Number(row.reinstate ?? 0) },
+          {
+            resolvedToYesterday: row.resolved_to_yesterday,
+            cancelledBeforeBerth: row.cancelled_before_berth === true,
+          },
+        ),
+      )
+      .map((row) => row.schedule_id),
+  );
+}
+
 export interface FreshResolutionResult {
   matchStatus: "matched" | "ambiguous" | "unmatched";
   matchBasis:
@@ -897,7 +976,38 @@ export async function resolveFreshRunMatch(
   // the only situation this filter could actually change anything. Picks each schedule's most
   // recent trust_id (`activationRows` is ordered `created desc` overall, so the first row seen
   // per schedule id is its most recent).
-  let alreadyPassedScheduleIds: Set<string> | undefined;
+  // Each candidate's own resolved traffic day (docs/adr/0008) — a yesterday-resolved one may be
+  // excluded as finished (findAlreadyPassedScheduleIds) or cancelled (findCancelledScheduleIds).
+  const resolvedDateByScheduleId = new Map(
+    activationRows.length > 0
+      ? candidatesRunningOnAny(matchCandidates, serviceDates, dateChoice).map(
+          ({ candidate, serviceDate }) => [candidate.scheduleId, serviceDate] as const,
+        )
+      : [],
+  );
+  // Cancellation fix (2026-10-26): a candidate whose run for its resolved day was cancelled is
+  // not the train here, at any tier — checked against that day's own activation (the latest one
+  // dated on it), never another day's run of the same daily schedule.
+  const resolvedDayActivationByScheduleId = new Map<string, ActivationRow>();
+  for (const row of activationRows) {
+    if (resolvedDayActivationByScheduleId.has(row.cif_schedule_id)) continue;
+    if (londonToday(row.created) === resolvedDateByScheduleId.get(row.cif_schedule_id)) {
+      resolvedDayActivationByScheduleId.set(row.cif_schedule_id, row);
+    }
+  }
+  const cancelledScheduleIds = await findCancelledScheduleIds(
+    pool,
+    [...resolvedDayActivationByScheduleId].map(([scheduleId, activation]) => ({
+      scheduleId,
+      trustId: activation.trust_id,
+      activatedAt: activation.created,
+      resolvedToYesterday: resolvedDateByScheduleId.get(scheduleId) === yesterday,
+    })),
+    tiplocs,
+    asOf,
+  );
+  let alreadyPassedScheduleIds: Set<string> | undefined =
+    cancelledScheduleIds.size > 0 ? cancelledScheduleIds : undefined;
   if (positionScoped && activatedDatesByScheduleId.size > 1) {
     const latestActivationByScheduleId = new Map<string, ActivationRow>();
     for (const row of activationRows) {
@@ -905,14 +1015,7 @@ export async function resolveFreshRunMatch(
         latestActivationByScheduleId.set(row.cif_schedule_id, row);
       }
     }
-    // Each candidate's own resolved traffic day (docs/adr/0008) — a yesterday-resolved one may be
-    // excluded as finished; see findAlreadyPassedScheduleIds.
-    const resolvedDateByScheduleId = new Map(
-      candidatesRunningOnAny(matchCandidates, serviceDates, dateChoice).map(
-        ({ candidate, serviceDate }) => [candidate.scheduleId, serviceDate],
-      ),
-    );
-    alreadyPassedScheduleIds = await findAlreadyPassedScheduleIds(
+    const passed = await findAlreadyPassedScheduleIds(
       pool,
       [...latestActivationByScheduleId].map(([scheduleId, activation]) => ({
         scheduleId,
@@ -923,6 +1026,7 @@ export async function resolveFreshRunMatch(
       tiplocs,
       asOf,
     );
+    alreadyPassedScheduleIds = new Set([...passed, ...cancelledScheduleIds]);
   }
   const matchResult = resolveRunMatch(
     matchCandidates,

@@ -5149,3 +5149,37 @@ Owner report: Berth steps for R1 3217 -> 5221 said "took too long" at 90, 30 and
 - [ ] Integration tests run on CI (not run locally).
 
 No migration needed.
+
+## Fix — cancelled TRUST runs no longer tie with the real train (2026-10-26)
+
+Owner report: across the maps (Carlisle and Preston checked) many trains had no schedule and no
+delay colour. PX/CL link coverage, a steady ~80–85% on Saturday 24 October and on recent Mondays,
+fell from ~80% to ~40% through Monday 26 October. Storm cancellations the day before (reason
+`XW`) left Sunday's cancelled runs "activated" inside the ADR 0008 `[today, yesterday]` probe.
+Most had never moved, so the "already passed" filter could never drop them, and each tied with
+Monday's real train at the TRUST-activation tier. The resolver never read `trust_cancellation`.
+
+- [x] `cancellationRulesOutRun` (`packages/domain/src/trust/cancellation.ts`), owner-approved
+      rule, decided on the run's latest cancellation row (a reinstatement is a later row):
+  - `AT ORIGIN` / `ON CALL` / `OUT OF PLAN`, not reinstated: the run is not the train here;
+  - `EN ROUTE`, not reinstated: ruled out if the run resolved to yesterday, or if the
+    cancellation point lies strictly before this berth's first calling point;
+  - reinstated, or an unknown type: never evidence.
+- [x] `findCancelledScheduleIds` (`packages/database/src/runResolution.ts`) applies it to each
+      candidate's activation for the day it resolved to (never another day's run of the same
+      daily schedule), bounded by `withinTrustRun` and `asOf`. `resolveFreshRunMatch` excludes
+      those candidates before any tier, alongside the already-passed set, and for unscoped
+      berths too.
+- [x] Tests: unit (`cancellation.test.ts`); integration (`currentRun.integration.test.ts`)
+      covering CL 2C32 (yesterday cancelled at origin), PX 1Y50 (cancelled on call), CL 1S63
+      (reinstated, so it stays ambiguous) and part-cancellations short of and beyond the berth.
+- [x] Verified read-only against production data before deploy: every position-scoped ambiguous
+      case sampled at 16:00 matched today's train (37–111 ms per resolution).
+
+Known limitations:
+
+- A train cancelled while standing in a berth shows as unmatched, not as the service it is no
+  longer running (owner-accepted).
+- Berths with no SMART coverage are still `headcode_only` and usually stay ambiguous on a busy
+  headcode; they recover their link by step-chain from a matched neighbour, as before.
+- No migration needed. Today's links were repaired with `repair-run-links` after deploy.

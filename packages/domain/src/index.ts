@@ -193,6 +193,7 @@ export {
   type TrustMovementEventKind,
   type TrustMovementVariation,
 } from "./trust/garnerMovement.js";
+export { cancellationRulesOutRun, type LatestTrustCancellation } from "./trust/cancellation.js";
 export {
   delayBandForMinutesLate,
   delayBandForMovement,

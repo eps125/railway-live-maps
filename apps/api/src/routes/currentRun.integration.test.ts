@@ -445,6 +445,22 @@ async function seedCancellation(
   );
 }
 
+/** A TRUST cancellation of a given `type` (`AT ORIGIN`, `ON CALL`, `EN ROUTE`, ...) or, with
+ * `reinstate` 1, a reinstatement — at `createdAt`, so it can sit inside a backdated run. */
+async function seedTypedCancellation(
+  trustId: string,
+  type: string | null,
+  locStanox: string,
+  reinstate: 0 | 1,
+  createdAt: Date = new Date(),
+): Promise<void> {
+  await pool.query(
+    `insert into trust_cancellation (trust_id, created, reason, type, loc_stanox, reinstate)
+     values ($1, $2, 'XW', $3, $4, $5)`,
+    [trustId, createdAt, type, locStanox, reinstate],
+  );
+}
+
 async function seedLocationReference(
   tiploc: string,
   name: string,
@@ -1692,6 +1708,179 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       } finally {
         await app.close();
       }
+    });
+  });
+
+  describe("cancelled TRUST runs are not the train here (2026-10-26)", () => {
+    async function seedStation(
+      area: string,
+      berth: string,
+    ): Promise<{
+      tiploc: string;
+      stanox: string;
+    }> {
+      const tiploc = `CX${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Cancel Test Station", stanox);
+      await seedSmartBerthStep(area, berth, stanox);
+      return { tiploc, stanox };
+    }
+
+    async function currentRun(area: string, berth: string) {
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/${berth}/current-run`,
+          headers: await authHeaders(),
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json();
+      } finally {
+        await app.close();
+      }
+    }
+
+    it("drops yesterday's run cancelled at origin, matching today's — the CL 2C32 real case", async () => {
+      // Sunday's G85487 was activated and cancelled at origin (storm, XW), never moving; with no
+      // movement it can never be shown finished, so it tied with Monday's G85489 all day.
+      const area = uniqueArea();
+      const { tiploc, stanox } = await seedStation(area, "0041");
+      await seedOccupiedBerth(area, "0041", "2X41");
+      const yesterday = londonYesterdayDateString();
+
+      const yesterdaysId = await seedScheduleForDateRange("2X41", "P", yesterday, yesterday);
+      await seedScheduleLocation(yesterdaysId, 1, tiploc, "LO", { departure: "1416" });
+      const activatedAt = new Date(`${yesterday}T13:16:00Z`);
+      const yesterdaysTrustId = await seedActivationAt(yesterdaysId, activatedAt);
+      await seedTypedCancellation(
+        yesterdaysTrustId,
+        "AT ORIGIN",
+        stanox,
+        0,
+        new Date(activatedAt.getTime() + 60_000),
+      );
+
+      const todaysId = await seedScheduleForDateRange(
+        "2X41",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(todaysId, 1, tiploc, "LO", { departure: "1511" });
+      await seedActivation(todaysId, "2X41");
+
+      const body = await currentRun(area, "0041");
+      expect(body.matchStatus).toBe("matched");
+      expect(body.matchBasis).toBe("trust_activation");
+      expect(body.effective.scheduleId).toBe(String(todaysId));
+    });
+
+    it("drops today's run cancelled on call — the PX 1Y50 real case", async () => {
+      const area = uniqueArea();
+      const { tiploc, stanox } = await seedStation(area, "0042");
+      await seedOccupiedBerth(area, "0042", "1X42");
+
+      const cancelledId = await seedScheduleForDateRange(
+        "1X42",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(cancelledId, 1, tiploc, "LO", { departure: "0500" });
+      const cancelledTrustId = await seedActivation(cancelledId, "1X42");
+      await seedTypedCancellation(cancelledTrustId, "ON CALL", stanox, 0);
+
+      const runningId = await seedScheduleForDateRange(
+        "1X42",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(runningId, 1, tiploc, "LO", { departure: "1500" });
+      await seedActivation(runningId, "1X42");
+
+      const body = await currentRun(area, "0042");
+      expect(body.matchStatus).toBe("matched");
+      expect(body.effective.scheduleId).toBe(String(runningId));
+    });
+
+    it("keeps a reinstated run, so a genuine clash stays ambiguous — the CL 1S63 real case", async () => {
+      const area = uniqueArea();
+      const { tiploc, stanox } = await seedStation(area, "0043");
+      await seedOccupiedBerth(area, "0043", "1X43");
+
+      const reinstatedId = await seedScheduleForDateRange(
+        "1X43",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(reinstatedId, 1, tiploc, "LO", { departure: "1100" });
+      const reinstatedTrustId = await seedActivation(reinstatedId, "1X43");
+      await seedTypedCancellation(
+        reinstatedTrustId,
+        "AT ORIGIN",
+        stanox,
+        0,
+        new Date(Date.now() - 60_000),
+      );
+      await seedTypedCancellation(reinstatedTrustId, null, stanox, 1);
+
+      const otherId = await seedScheduleForDateRange(
+        "1X43",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(otherId, 1, tiploc, "LO", { departure: "1100" });
+      await seedActivation(otherId, "1X43");
+
+      const body = await currentRun(area, "0043");
+      expect(body.matchStatus).toBe("ambiguous");
+      expect(body.matchBasis).toBe("trust_activation");
+    });
+
+    it("drops today's part-cancelled run only when it terminates short of this berth", async () => {
+      const area = uniqueArea();
+      const { tiploc } = await seedStation(area, "0044");
+      await seedOccupiedBerth(area, "0044", "1X44");
+      const before = `CB${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const beforeStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      const after = `CA${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const afterStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(before, "Before Station", beforeStanox);
+      await seedLocationReference(after, "After Station", afterStanox);
+
+      // Terminated short beyond this station: still on its way here, kept.
+      const shortBeyondId = await seedScheduleForDateRange(
+        "1X44",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(shortBeyondId, 1, before, "LO", { departure: "1400" });
+      await seedScheduleLocation(shortBeyondId, 2, tiploc, "LI", { departure: "1430" });
+      await seedScheduleLocation(shortBeyondId, 3, after, "LT", { arrival: "1500" });
+      const shortBeyondTrustId = await seedActivation(shortBeyondId, "1X44");
+      await seedTypedCancellation(shortBeyondTrustId, "EN ROUTE", afterStanox, 0);
+
+      // Terminated short before this station: never coming here, dropped.
+      const shortBeforeId = await seedScheduleForDateRange(
+        "1X44",
+        "P",
+        londonTodayDateString(),
+        londonTodayDateString(),
+      );
+      await seedScheduleLocation(shortBeforeId, 1, before, "LO", { departure: "1400" });
+      await seedScheduleLocation(shortBeforeId, 2, tiploc, "LI", { departure: "1430" });
+      await seedScheduleLocation(shortBeforeId, 3, after, "LT", { arrival: "1500" });
+      const shortBeforeTrustId = await seedActivation(shortBeforeId, "1X44");
+      await seedTypedCancellation(shortBeforeTrustId, "EN ROUTE", beforeStanox, 0);
+
+      const body = await currentRun(area, "0044");
+      expect(body.matchStatus).toBe("matched");
+      expect(body.effective.scheduleId).toBe(String(shortBeyondId));
     });
   });
 

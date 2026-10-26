@@ -68,6 +68,9 @@ export const BerthDelaySchema = z.object({
   description: z.string(),
   band: DelayBandSchema.exclude(["none"]),
   matchConfidence: z.enum(["solid", "weak"]),
+  /** Milestone 97b (docs/adr/0021): the band is the held-train estimate, not a TRUST report.
+   * Optional so older clients and servers keep working; missing means a TRUST band. */
+  estimated: z.boolean().optional(),
 });
 export type BerthDelay = z.infer<typeof BerthDelaySchema>;
 
@@ -199,6 +202,8 @@ export const DelayUpdatedMessageSchema = z.object({
   description: z.string(),
   band: DelayBandSchema,
   matchConfidence: z.enum(["solid", "weak"]),
+  /** Milestone 97b: see `BerthDelaySchema.estimated`. */
+  estimated: z.boolean().optional(),
 });
 export type DelayUpdatedMessage = z.infer<typeof DelayUpdatedMessageSchema>;
 

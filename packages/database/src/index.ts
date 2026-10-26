@@ -197,3 +197,19 @@ export {
   type TouchedTrain,
   type DelayBandProjectionResult,
 } from "./delayBands.js";
+export {
+  findHeldTrainCandidates,
+  loadRunTrustStates,
+  loadScheduleLocations,
+  loadTiplocStanoxes,
+  loadBerthStanoxes,
+  loadBerthAllowances,
+  loadOpenTdFeedGaps,
+  loadCurrentBerthsForDescriptions,
+  loadActiveEstimates,
+  recordEstimateChanges,
+  type HeldTrainCandidate,
+  type RunTrustState,
+  type ScheduleLocationRow,
+  type EstimateChangeRow,
+} from "./heldDelays.js";

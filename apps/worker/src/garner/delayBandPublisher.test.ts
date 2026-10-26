@@ -9,6 +9,7 @@ const row = (tdArea: string, berth: string, band: BerthDelayRow["band"]): BerthD
   runKey: "7",
   matchConfidence: "weak",
   band,
+  estimated: false,
 });
 
 describe("delayMessagesFor (Milestone 82)", () => {

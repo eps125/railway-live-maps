@@ -301,6 +301,7 @@ describe("trust delay bands (Milestone 82, integration)", () => {
         runKey,
         matchConfidence: "weak",
         band: "minor",
+        estimated: false,
       },
     ]);
     expect((await at(22)).map((row) => row.band)).toEqual(["severe"]);
@@ -460,6 +461,7 @@ describe("trust delay bands (Milestone 82, integration)", () => {
       runKey,
       matchConfidence: "solid",
       band: "on_time",
+      estimated: false,
     };
     expect(await findMapDelaysAt(pool, berths, new Date())).toEqual([onTime]);
     expect(await findOpenBerthsForTrustIds(pool, [trustId], berths)).toEqual([

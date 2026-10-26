@@ -99,6 +99,13 @@ const baseSchema = z.object({
     .string()
     .default("false")
     .transform((value) => value === "true"),
+  // Milestone 97b (docs/adr/0021): `ingest-garner`'s held-train delay estimate. On by default
+  // (owner request); set to "false" to stop recording estimates — the map then shows TRUST bands
+  // only, and any estimate already in force ends at its next report.
+  HELD_DELAY_ESTIMATE_ENABLED: z
+    .string()
+    .default("true")
+    .transform((value) => value === "true"),
   // Milestone 10: how often the `snapshot-maps-daemon` role writes a `map_state_snapshot` per
   // effective published map version. Snapshots are a cache/audit of the same reconstruction
   // `/state?at=` performs — 5 min is ample; not latency-sensitive.

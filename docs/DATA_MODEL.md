@@ -603,6 +603,21 @@ run link reaches (`berth_occupancy_run_link` → `train_run.cif_schedule_id` →
 rebuildable: delete the rows and reset the checkpoint, and it re-fills the last 24 h. Read by the
 WebSocket snapshot, `/delays` (live and playback) and the `delay.updated` push.
 
+### `estimated_delay_band_change` (Milestone 97b, migration 0054, docs/adr/0021)
+
+One row each time a run's **estimated** lateness band changes (`on_time` / `minor` /
+`moderate` / `severe`, with `minutes_late` and `basis` `timing_point` / `held_in_berth`), or its
+estimate ends (`band = 'cleared'`, with `clear_reason`).
+
+- Recorded by `ingest-garner`'s held-train sweep.
+- Keyed by the activation TRUST id, bounded by `activated_at`, like `trust_delay_band_change`.
+  Lineage is the occupancy whose hold produced it (or the berth the run was in when it ended).
+- The band shown for a run at T is the estimate in force at T (newest row at or before T, unless
+  `cleared`), otherwise its TRUST band.
+- A check constraint ties `minutes_late` / `basis` / `clear_reason` to the band.
+
+Not rebuildable by replay: it records what the sweep saw live, like `map_state_snapshot`.
+
 ### `berth_dwell_profile` (Milestone 97a, migration 0053, docs/adr/0021)
 
 One row per `(td_area, berth_code)`: the berth's normal occupancy time, the "berth allowance" the

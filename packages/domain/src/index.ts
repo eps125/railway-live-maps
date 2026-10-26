@@ -195,6 +195,19 @@ export {
 } from "./trust/garnerMovement.js";
 export { cancellationRulesOutRun, type LatestTrustCancellation } from "./trust/cancellation.js";
 export {
+  ESTIMATE_CARRY_LIMIT_MINUTES,
+  estimateHeldDelay,
+  londonWallClockToInstant,
+  nextRunEstimate,
+  parseCifAllowanceMinutes,
+  scheduleDayOffset,
+  type HeldDelayBlockReason,
+  type HeldDelayInput,
+  type HeldDelayResult,
+  type RunEstimateChange,
+  type RunEstimateState,
+} from "./trust/heldDelay.js";
+export {
   BERTH_ALLOWANCE_DEFAULT_MINUTES,
   BERTH_ALLOWANCE_FLOOR_MINUTES,
   BERTH_ALLOWANCE_MIN_SAMPLES,

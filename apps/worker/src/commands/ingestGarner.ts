@@ -12,6 +12,7 @@ import {
 } from "../garner/bridge.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
 import { MapBindingsCache, projectAndPublishDelayBands } from "../garner/delayBandPublisher.js";
+import { HeldDelaySweep } from "../garner/heldDelaySweep.js";
 
 const TICK_INTERVAL_MS = 20 * 1000;
 const REFERENCE_EVERY_N_TICKS = 15; // ~5 min
@@ -96,6 +97,7 @@ export async function runIngestGarner(config: Config): Promise<void> {
     console.error("ingest-garner: redis client error (delay publish may be degraded):", error);
   });
   const mapBindings = new MapBindingsCache(pg);
+  const heldDelaySweep = config.HELD_DELAY_ESTIMATE_ENABLED ? new HeldDelaySweep() : null;
 
   console.log(
     `ingest-garner: starting (garner ${config.GARNER_DB_HOST}:${config.GARNER_DB_PORT}/${config.GARNER_DB_NAME}, ` +
@@ -136,8 +138,13 @@ export async function runIngestGarner(config: Config): Promise<void> {
       // allowed to stop the rest of the tick — schedule and allocation sync matter more than
       // delay colours (and it fails every tick until migration 0044 is applied).
       try {
-        const delays = await projectAndPublishDelayBands(pg, redisClient, mapBindings);
-        if (delays.changesRecorded > 0 || delays.published > 0) {
+        const delays = await projectAndPublishDelayBands(
+          pg,
+          redisClient,
+          mapBindings,
+          heldDelaySweep,
+        );
+        if (delays.changesRecorded > 0 || delays.estimateChanges > 0 || delays.published > 0) {
           console.log("ingest-garner: delay bands", delays);
         }
       } catch (error) {

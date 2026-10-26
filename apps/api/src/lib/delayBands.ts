@@ -34,6 +34,7 @@ export async function computeDelayBands(
       description: row.description,
       band: row.band,
       matchConfidence: row.matchConfidence,
+      ...(row.estimated ? { estimated: true } : {}),
     });
   }
   return delays;

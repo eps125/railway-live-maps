@@ -127,7 +127,8 @@ future) for that moment, rounded down to the whole minute, for playback.
       "elementId": "el-0455",
       "description": "6M35",
       "band": "moderate",
-      "matchConfidence": "weak"
+      "matchConfidence": "weak",
+      "estimated": true
     }
   ]
 }
@@ -141,6 +142,11 @@ the minutes (owner, 2026-09-29). A berth is listed only when its occupancy carri
 computed per request from TRUST movements. `runKey` is RLM's own run id, never a TRUST or CIF id.
 `description` is the headcode the band belongs to; a client colours only a berth still showing
 it. Answers are shared between viewers: 10 s live, 5 min per playback minute.
+
+Milestone 97b (docs/adr/0021): `estimated: true` (omitted otherwise) means the band is the
+held-train estimate — the train has been standing longer than its timetable allows since TRUST
+last reported — rather than a TRUST report. It's recorded by `ingest-garner` in
+`estimated_delay_band_change`, and it can only be later than TRUST says.
 
 ### `GET /api/v1/maps/{slug}/events?from=&to=&after=&limit=`
 
@@ -583,8 +589,8 @@ address, bit }`; `state` is the signal's absolute `blank` | `on` | `off`, only s
   `sequence` order (a batch's berth and signal deltas are sorted by sequence before publishing).
 - `quality.updated`
 - `delay.updated` (Milestone 82) — `{ type, eventAt, runKey, elementId, description, band,
-matchConfidence }`, the same fields as `/delays` entries, plus `band: "none"` to take a colour
-  away. Published by `ingest-garner` only when openrail-eps reports on a train currently in a
+matchConfidence, estimated? }`, the same fields as `/delays` entries, plus `band: "none"` to take a colour
+  away. Also sent when a held train's estimated band changes or its estimate ends (Milestone 97b). Published by `ingest-garner` only when openrail-eps reports on a train currently in a
   berth on this map — never per berth step. Absolute state, so a duplicate is harmless. It has
   **no `sequence`**: it is not part of the TD berth stream, and clients apply it without touching
   their sequence tracking. The snapshot's `state.delays` (optional; missing means none known)

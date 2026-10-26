@@ -1,7 +1,9 @@
 # ADR 0021 — Estimated delay for a train that is held
 
 Status: **Accepted in principle** (2026-10-26). Owner answered the open questions the same day.
-The allowance check has been run against production (see "Evidence"). Milestone 97a (maintenance jobs and berth allowances) is built; 97b and 97c are not yet.
+The allowance check has been run against production (see "Evidence"). Milestone 97a (maintenance
+jobs and berth allowances) and 97b (the estimate, live and in playback) are built; 97c (the popup
+delay line) is not yet.
 
 ## Context
 
@@ -29,7 +31,10 @@ has arrived since it entered that berth**, its lateness is the worst of:
 2. **Booked timing point** (stations, loops, junctions, the origin): if this berth maps (by SMART
    STANOX → TIPLOC) to a location in the train's schedule that it has not yet left, lateness is at
    least `now − booked WTT departure` (or the WTT pass time for a pass). A booked dwell is
-   allowed for automatically, since only the departure time counts.
+   allowed for automatically, since only the departure time counts. Before the run's first TRUST
+   report this applies only at its origin (added 2026-10-26 after the production dry run: 1S75
+   had no report since activation, yet its headcode had sat in a Preston berth for over an hour,
+   so nothing showed the service had ever started).
 3. **Held in a plain berth**: lateness is at least
    `reported lateness at entry + time in berth − berth allowance − booked allowances still ahead`
    (see below for both allowances). Applied only when the run already has a TRUST report (owner,
@@ -136,6 +141,7 @@ another, so the live site is never starved by one big read.
 | 10  | A TRUST report arrives saying 12L while the estimate was 32L                                     | 12L      | estimate dropped; TRUST wins                            | moderate→on time |
 | 11  | Held before its first TRUST report, between timing points                                        | none     | none (rule 3 needs a report)                            | as now           |
 | 12  | 5L, standing 30 min, but the same headcode was interposed two berths ahead 10 min ago            | 5L       | none (likely missed step)                               | on time          |
+| 13  | No TRUST report since activation; headcode in a mid-route station berth an hour after booked dep | none     | none (rule 2 needs a report away from the origin)       | as now           |
 
 Scenario 9 is the timezone/date boundary case: CIF WTT times are local (Europe/London) on the
 run's traffic day, with `next_day` for times after midnight. They're converted with the same
@@ -171,14 +177,22 @@ about 0.8 of a 1.15-minute allowance. The query took about 1 s on temporary tabl
   - `link_backfill` — today's `repair-run-links --areas`, the step a newly mapped area needs
     before its history gets delay colours. This replaces running that
     command by hand.
-- **Sweep** in `ingest-garner`, next to the existing delay-band projection, every ~30 s. It reads
-  the open, linked occupancies in mapped areas (a few hundred to a few thousand rows, using the
-  open-occupancy index) and computes the estimate. When the _band_ changes it records the change
-  and pushes `delay.updated` with `estimated: true`. Bands change only at 15/30/60, so pushes stay
-  rare.
-- **`estimated_delay_band_change`**: a separate table, never mixed into `trust_delay_band_change`,
-  keyed by occupancy so re-runs are idempotent. Playback (`findMapDelaysAt`) reads both and takes
-  the later in force, so history shows the same colours the live map did.
+- **Sweep** in `ingest-garner`, every tick (20 s), after the TRUST delay-band projection and
+  before the delay push. It reads the open, linked occupancies in mapped berths and computes the
+  estimate (production dry run, 26 October evening: 97 trains, about 250 ms a tick once its
+  reference caches are warm). When a run's estimated _band_ changes it records the change, and
+  the push sends `delay.updated` with `estimated: true`. Bands change only at 15/30/60, so pushes
+  stay rare. Switched by `HELD_DELAY_ESTIMATE_ENABLED` (default on).
+- **An estimate belongs to the run, not the berth.** A train held 108 minutes at Lancaster stays
+  red as it steps into the next berth, until TRUST reports again. It ends (a `cleared` row) when:
+  - TRUST reports something newer;
+  - a guard applies (cancelled, terminated, feed gap, likely missed step);
+  - no berth has re-produced it for 30 minutes.
+- **`estimated_delay_band_change`** (migration 0054): a separate table, never mixed into
+  `trust_delay_band_change`, keyed by the activation TRUST id like it, with the occupancy as
+  lineage. `findMapDelaysAt` (snapshot, `/delays`, playback) and `findOpenBerthsForTrustIds`
+  (push) both show the estimate in force at the time asked about, otherwise the TRUST band. So
+  history shows the same colours the live map did.
 - **Popup:** the public and logged-in views both get the delay line. The estimate's working
   ("standing 30 min…") is in both.
 

@@ -219,6 +219,8 @@ export interface BerthDelayRow {
   runKey: string;
   matchConfidence: "solid" | "weak";
   band: DelayBand;
+  /** Milestone 97b (docs/adr/0021): `band` is the held-train estimate, not a TRUST report. */
+  estimated: boolean;
 }
 
 interface BerthDelaySqlRow {
@@ -228,6 +230,7 @@ interface BerthDelaySqlRow {
   run_key: string;
   match_confidence: "solid" | "weak";
   band: DelayBand;
+  estimated: boolean;
 }
 
 function toBerthDelayRow(row: BerthDelaySqlRow): BerthDelayRow {
@@ -238,7 +241,21 @@ function toBerthDelayRow(row: BerthDelaySqlRow): BerthDelayRow {
     runKey: row.run_key,
     matchConfidence: row.match_confidence,
     band: row.band,
+    estimated: row.estimated,
   };
+}
+
+/** SQL: the estimate in force at `at` (a timestamptz expression) for the run activated as
+ * `a.trust_id` / `a.created` — joined as `e`; `e.band` is null when there is none or it was
+ * cleared. Milestone 97b (docs/adr/0021). */
+function estimateInForce(at: string): string {
+  return `left join lateral (
+       select e.band from estimated_delay_band_change e
+       where e.trust_id = a.trust_id and e.effective_at <= ${at}
+         and ${withinTrustRun("e.effective_at", "a.created")}
+       order by e.effective_at desc, e.id desc limit 1
+     ) e0 on true
+     left join lateral (select nullif(e0.band, 'cleared') as band) e on true`;
 }
 
 /**
@@ -285,7 +302,8 @@ export async function findMapDelaysAt(
        where r.superseded_by is null and r.cif_schedule_id is not null
      )
      select runs.td_area, runs.berth_code, runs.description, runs.run_id::text as run_key,
-            runs.match_confidence, b.band
+            runs.match_confidence, coalesce(e.band, b.band) as band,
+            e.band is not null as estimated
      from runs
      cross join lateral (
        select ta.trust_id, ta.created from trust_activation ta
@@ -294,14 +312,15 @@ export async function findMapDelaysAt(
          and ta.created <= $4::timestamptz
        order by ta.created desc limit 1
      ) a
-     cross join lateral (
+     left join lateral (
        -- This run's bands only: the same trust id a month earlier was another train.
        select c.band from trust_delay_band_change c
        where c.trust_id = a.trust_id and c.effective_at <= $4::timestamptz
          and ${withinTrustRun("c.effective_at", "a.created")}
        order by c.effective_at desc, c.id desc limit 1
-     ) b
-     where b.band <> 'none'`,
+     ) b on true
+     ${estimateInForce("$4::timestamptz")}
+     where coalesce(e.band, b.band, 'none') <> 'none'`,
     [
       berths.map((b) => b.tdArea),
       berths.map((b) => b.berth),
@@ -362,7 +381,8 @@ export async function findOpenBerthsForTrustIds(
        where r.superseded_by is null and r.cif_schedule_id is not null
      )
      select runs.td_area, runs.berth_code, runs.description, runs.run_id::text as run_key,
-            runs.match_confidence, a.trust_id, coalesce(b.band, 'none') as band
+            runs.match_confidence, a.trust_id, coalesce(e.band, b.band, 'none') as band,
+            e.band is not null as estimated
      from runs
      cross join lateral (
        select ta.trust_id, ta.created from trust_activation ta
@@ -375,6 +395,7 @@ export async function findOpenBerthsForTrustIds(
        where c.trust_id = a.trust_id and ${withinTrustRun("c.effective_at", "a.created")}
        order by c.effective_at desc, c.id desc limit 1
      ) b on true
+     ${estimateInForce("now()")}
      where a.trust_id = any($1::text[])`,
     [
       trustIds,

@@ -5244,3 +5244,46 @@ Known limitations:
 - A redeploy mid-job restarts that job from the beginning. Both kinds are idempotent, so only the
   time is lost.
 - Migration 0053 must be applied on production (new tables only, no locks on existing ones).
+
+### 97b — The estimate, live and in playback
+
+- [x] `estimateHeldDelay` (`packages/domain/src/trust/heldDelay.ts`): rules 1–3 and the guards
+      of ADR 0021, with every scenario as a test. Also:
+  - `parseCifAllowanceMinutes`;
+  - `scheduleDayOffset`: garner's `next_day` is set per location from its first time only, so a
+    time over six hours before the origin departure is also the next day;
+  - `londonWallClockToInstant`: calendar arithmetic, tested on both 2026 clock-change days.
+- [x] `nextRunEstimate`: an estimate belongs to the run. It is carried into the next berth until
+      TRUST reports again, and ends on a guard or after 30 minutes without being re-produced. A
+      change is recorded only when the band moves.
+- [x] Migration 0054: `estimated_delay_band_change`.
+- [x] `packages/database/src/heldDelays.ts`: the candidate query (same shape as the delay push),
+      batched reads of TRUST state, schedule locations, CORPUS, SMART, allowances, feed gaps and
+      same-headcode berths, plus reading and recording estimates.
+- [x] `HeldDelaySweep` (`apps/worker/src/garner/heldDelaySweep.ts`): runs in `ingest-garner`
+      every tick, between the TRUST band projection and the push. Schedules are cached for an
+      hour, reference data for 10 minutes. `buildHeldDelayInput` (pure) places the berth in the
+      schedule and counts the allowances ahead. Switched by `HELD_DELAY_ESTIMATE_ENABLED`
+      (default on).
+- [x] `findMapDelaysAt` / `findOpenBerthsForTrustIds` show the estimate in force, so the
+      snapshot, `/delays`, playback and the push all agree; rows carry `estimated`. Protocol:
+      optional `estimated` on `BerthDelay` and `delay.updated`.
+- [x] Production dry run before deploy (read-only, recording off):
+  - 97 trains in mapped berths, about 250 ms per tick once caches are warm;
+  - the large estimates checked by hand: PX 1S72 arrived 71 late and still standing, so 85 late;
+    PX 1Y99 23 late; R1 2K44 23 late;
+  - PX 0133 / 1S75 had no TRUST report since activation yet sat in a Preston berth for over an
+    hour. Rule 2 was then limited to the origin until a run's first report (scenario 13).
+- [x] Tests:
+  - unit: estimator (24), input builder (7);
+  - integration: the sweep sets, shows, keeps and clears an estimate, with playback before and
+    after; a short hold estimates nothing; existing delay-band tests updated for `estimated`.
+
+Known limitations:
+
+- Not rebuildable by replay. Estimates are recorded as the sweep saw them live, so a gap in
+  `ingest-garner` is a gap in estimates.
+- A Change of Identity's later reports aren't followed: the run's activation TRUST id only.
+- A run with an EN ROUTE cancellation in force gets no estimate, even before its cancellation
+  point (conservative).
+- Nothing in the web app shows `estimated` yet. The popup line is 97c.

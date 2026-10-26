@@ -5,6 +5,7 @@ import {
   type BerthDelayRow,
 } from "@railway/database";
 import type { DelayUpdatedMessage } from "@railway/protocol";
+import type { HeldDelaySweep } from "./heldDelaySweep.js";
 
 /** What `ingest-garner` needs from Redis to push a band: a plain PUBLISH. Band messages are
  * absolute state, so unlike berth deltas they need no dedupe script. */
@@ -86,6 +87,7 @@ export function delayMessagesFor(
           description: row.description,
           band: row.band,
           matchConfidence: row.matchConfidence,
+          ...(row.estimated ? { estimated: true } : {}),
         },
       });
     }
@@ -96,6 +98,10 @@ export function delayMessagesFor(
 export interface DelayBandTickSummary {
   movementsRead: number;
   changesRecorded: number;
+  /** Milestone 97b: held trains looked at, estimates in force, estimate rows recorded. */
+  heldCandidates: number;
+  estimatesActive: number;
+  estimateChanges: number;
   published: number;
 }
 
@@ -114,8 +120,17 @@ export async function projectAndPublishDelayBands(
   pool: Pool,
   redis: DelayPublishTarget | null,
   maps: MapBindingsCache,
+  /** Milestone 97b (docs/adr/0021): null when `HELD_DELAY_ESTIMATE_ENABLED` is off. */
+  sweep: HeldDelaySweep | null = null,
 ): Promise<DelayBandTickSummary> {
-  const summary: DelayBandTickSummary = { movementsRead: 0, changesRecorded: 0, published: 0 };
+  const summary: DelayBandTickSummary = {
+    movementsRead: 0,
+    changesRecorded: 0,
+    heldCandidates: 0,
+    estimatesActive: 0,
+    estimateChanges: 0,
+    published: 0,
+  };
   const touched = new Set<string>();
   for (let i = 0; i < MAX_BATCHES_PER_TICK; i++) {
     const result = await projectTrustDelayBands(pool);
@@ -123,6 +138,21 @@ export async function projectAndPublishDelayBands(
     summary.changesRecorded += result.changesRecorded;
     for (const train of result.touched) touched.add(train.trustId);
     if (result.movementsRead === 0) break;
+  }
+
+  // Milestone 97b: after the TRUST bands (so a report just mirrored ends an estimate this tick),
+  // before the push (so the push carries the estimate where one is in force). Never allowed to
+  // stop the TRUST bands being pushed.
+  if (sweep) {
+    try {
+      const held = await sweep.run(pool, mappedBerths(await maps.current()));
+      summary.heldCandidates = held.candidates;
+      summary.estimatesActive = held.activeEstimates;
+      summary.estimateChanges = held.changesRecorded;
+      for (const trustId of held.changedTrustIds) touched.add(trustId);
+    } catch (error) {
+      console.error("ingest-garner: held-train delay estimate failed (TRUST bands kept):", error);
+    }
   }
 
   if (!redis || touched.size === 0) return summary;

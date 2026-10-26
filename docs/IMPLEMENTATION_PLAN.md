@@ -5287,3 +5287,31 @@ Known limitations:
 - A run with an EN ROUTE cancellation in force gets no estimate, even before its cancellation
   point (conservative).
 - Nothing in the web app shows `estimated` yet. The popup line is 97c.
+
+### 97c — The popup delay line, for every visitor
+
+- [x] `GET .../current-run` gains `delay` in both the full and the public (anonymous) response
+      (owner, 2026-10-26: delay visible to everyone, not just logged-in users). It gives the
+      minutes late (signed), the band, `estimated`, the estimate's basis / carried / standing
+      since, and the last TRUST report.
+- [x] Live, the estimate is worked out at the click (`computeHeldDelayEstimate`, the sweep's own
+      input builder, moved into `packages/database/src/heldDelays.ts`), so its minutes are
+      current. Otherwise it is the recorded estimate in force (`findEstimateInForce`): carried
+      from an earlier berth, or in playback. A live "blocked" drops a recorded estimate the
+      sweep hasn't cleared yet. The rules are the pure `popupDelay` (`apps/api/src/lib/popupDelay.ts`).
+- [x] Web (`RunPopup.tsx`, `DelayLine`): a "Delay" row with the band swatch, for example
+      **Estimated** 32 min late, with a one-line explanation ("Standing since 14:00, longer than
+      trains normally take here. Last report: departed Preston 13:58, 5 min late"), or TRUST's
+      own "12 min late" / "On time" / "3 min early" with where and when it was reported.
+      Times are in Europe/London.
+- [x] Tests:
+  - unit: `popupDelay` (6), and the input builder's tests moved with it;
+  - component: an anonymous estimated line, a full-view TRUST line, and no line;
+  - integration (`currentRun.integration.test.ts`): an anonymous TRUST delay, and a carried
+    estimate.
+- [x] Docs: `docs/API_CONTRACT.md` (`delay` on the current-run response), ADR 0021 status.
+
+Known limitations:
+
+- The live popup and the map colour can briefly disagree at a band boundary. The popup works
+  the estimate out at the click; the map changes on the sweep's next 20-second tick.

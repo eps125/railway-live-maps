@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DELAY_BAND_COLORS } from "./delayBands.js";
 
 /**
  * The live map's click-a-berth popup (docs/PROJECT_SPEC.md §5).
@@ -151,6 +152,8 @@ interface FullCurrentRunResponse {
   note: string;
   effective: EffectiveSchedule | null;
   candidateSchedules: CandidateSchedule[];
+  /** Milestone 97c. Optional so an older API without it still renders. */
+  delay?: PopupDelay | null;
   unitAllocation: UnitAllocationEntry[];
 }
 
@@ -168,7 +171,27 @@ interface PublicCurrentRunResponse {
   occupancyEnteredAt: string | null;
   matchStatus: "matched";
   effective: PublicEffectiveSchedule | null;
+  delay?: PopupDelay | null;
   unitAllocation: UnitAllocationEntry[];
+}
+
+/** Milestone 97c (docs/adr/0021): the delay line, in both views. `estimated` is the held-train
+ * estimate, which can only be later than TRUST says. */
+export interface PopupDelay {
+  minutesLate: number | null;
+  band: "none" | "on_time" | "minor" | "moderate" | "severe";
+  estimated: boolean;
+  estimate: {
+    basis: "timing_point" | "held_in_berth";
+    carried: boolean;
+    standingSince: string | null;
+  } | null;
+  lastReport: {
+    minutesLate: number | null;
+    eventKind: "departure" | "arrival" | "arrival_destination" | "unknown";
+    locationName: string | null;
+    at: string | null;
+  } | null;
 }
 
 type CurrentRunResponse = FullCurrentRunResponse | PublicCurrentRunResponse;
@@ -252,6 +275,69 @@ function formatLondonClock(iso: string): string {
     second: "2-digit",
     hourCycle: "h23",
   }).format(d);
+}
+
+/** "12 min late", "On time", "3 min early" — or null when nothing says how late. */
+export function lateness(minutes: number | null): string | null {
+  if (minutes === null) return null;
+  if (minutes === 0) return "On time";
+  return minutes > 0 ? `${minutes} min late` : `${-minutes} min early`;
+}
+
+function hhmm(iso: string | null): string | null {
+  if (!iso) return null;
+  return formatLondonClock(iso).slice(0, 5);
+}
+
+const REPORT_KIND: Record<NonNullable<PopupDelay["lastReport"]>["eventKind"], string> = {
+  departure: "departed",
+  arrival: "arrived",
+  arrival_destination: "arrived",
+  unknown: "reported",
+};
+
+/** The last TRUST report, in words: "departed Preston 17:30, 5 min late". */
+export function lastReportText(report: NonNullable<PopupDelay["lastReport"]>): string {
+  const where = report.locationName ? ` ${report.locationName}` : "";
+  const when = hhmm(report.at);
+  const how = lateness(report.minutesLate);
+  return `${REPORT_KIND[report.eventKind]}${where}${when ? ` ${when}` : ""}${how ? `, ${how.toLowerCase()}` : ""}`;
+}
+
+/** Milestone 97c (docs/adr/0021): the delay line every visitor sees, marked when estimated. */
+export function DelayLine({ delay }: { delay: PopupDelay | null | undefined }): JSX.Element | null {
+  if (!delay) return null;
+  const headline = lateness(delay.minutesLate) ?? "No delay information";
+  const colours = delay.band === "none" ? null : DELAY_BAND_COLORS[delay.band];
+  let detail: string | null = null;
+  if (delay.estimated && delay.estimate) {
+    const since = hhmm(delay.estimate.standingSince);
+    detail = delay.estimate.carried
+      ? "Held earlier and not reported since"
+      : delay.estimate.basis === "timing_point"
+        ? `Still here after its booked departure${since ? `; standing since ${since}` : ""}`
+        : `Standing${since ? ` since ${since}` : ""}, longer than trains normally take here`;
+    if (delay.lastReport) detail += `. Last report: ${lastReportText(delay.lastReport)}`;
+  } else if (delay.lastReport) {
+    detail = `Last report: ${lastReportText(delay.lastReport)}`;
+  }
+  return (
+    <dl className="run-popup__delay">
+      <dt>Delay</dt>
+      <dd>
+        {colours ? (
+          <span
+            className="map-page__delay-swatch"
+            style={{ background: colours.fill, borderColor: colours.stroke }}
+            aria-hidden="true"
+          />
+        ) : null}
+        {delay.estimated ? <strong>Estimated </strong> : null}
+        {delay.estimated ? headline.toLowerCase() : headline}
+        {detail ? <span className="run-popup__delay-detail">{detail}</span> : null}
+      </dd>
+    </dl>
+  );
 }
 
 function formatIso(iso: string | null): string {
@@ -499,6 +585,8 @@ function RunPopupMemberSection({
             <dt>Entered</dt>
             <dd>{formatIso(data.occupancyEnteredAt)}</dd>
           </dl>
+
+          <DelayLine delay={data.delay} />
 
           {isFullResponse(data) ? (
             <>

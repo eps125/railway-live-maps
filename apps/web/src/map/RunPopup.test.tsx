@@ -856,3 +856,112 @@ describe("RunPopup in playback (Milestone 57)", () => {
     expect(await screen.findByText("· at 23:50:00")).toBeInTheDocument();
   });
 });
+
+describe("RunPopup delay line (Milestone 97c)", () => {
+  function renderPopup() {
+    render(
+      <RunPopup
+        elementId="berth-7"
+        displayName="Berth 7"
+        tdArea="PX"
+        berth="0518"
+        onClose={() => {}}
+      />,
+    );
+  }
+
+  it("shows an anonymous visitor the estimated delay, marked Estimated, with its working", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "PX",
+            berth: "0518",
+            headcode: "1S66",
+            occupancyEnteredAt: "2026-11-02T14:00:00.000Z",
+            matchStatus: "matched",
+            effective: {
+              originTiploc: "MNCRIAP",
+              originName: "Manchester Airport",
+              destinationTiploc: "EDINBUR",
+              destinationName: "Edinburgh",
+              operatorCode: "TP",
+              locations: [],
+            },
+            delay: {
+              minutesLate: 32,
+              band: "moderate",
+              estimated: true,
+              estimate: {
+                basis: "held_in_berth",
+                carried: false,
+                standingSince: "2026-11-02T14:00:00.000Z",
+              },
+              lastReport: {
+                minutesLate: 5,
+                eventKind: "departure",
+                locationName: "Preston",
+                at: "2026-11-02T13:58:00.000Z",
+              },
+            },
+            unitAllocation: [],
+          }),
+        ),
+      ),
+    );
+    renderPopup();
+
+    expect(await screen.findByText("Delay")).toBeInTheDocument();
+    expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(screen.getByText("32 min late")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Standing since 14:00, longer than trains normally take here. Last report: departed Preston 13:58, 5 min late",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows TRUST's own lateness, unmarked, on the full view", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(
+            baseBody({
+              delay: {
+                minutesLate: -3,
+                band: "on_time",
+                estimated: false,
+                estimate: null,
+                lastReport: {
+                  minutesLate: -3,
+                  eventKind: "arrival",
+                  locationName: "Lancaster",
+                  at: "2026-11-02T13:58:00.000Z",
+                },
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+    renderPopup();
+
+    expect(await screen.findByText("3 min early")).toBeInTheDocument();
+    expect(screen.queryByText("Estimated")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Last report: arrived Lancaster 13:58, 3 min early"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no delay line when the API has none", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(baseBody()))),
+    );
+    renderPopup();
+    expect(await screen.findByText("2A16")).toBeInTheDocument();
+    expect(screen.queryByText("Delay")).not.toBeInTheDocument();
+  });
+});

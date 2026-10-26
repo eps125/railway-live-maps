@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { HeldTrainCandidate, ScheduleLocationRow } from "@railway/database";
-import { buildHeldDelayInput, type HeldDelayContext } from "./heldDelaySweep.js";
+import {
+  buildHeldDelayInput,
+  type HeldDelayContext,
+  type HeldTrainCandidate,
+  type ScheduleLocationRow,
+} from "./heldDelays.js";
 
 const DEPARTURE_LATE = 1 | (2 << 3);
 const ARRIVAL_ON_TIME = 2 | (1 << 3);

@@ -316,7 +316,7 @@ excluded, since its own note already says to verify it. On a solid match, an ano
 instead gets a reduced shape: just
 `{ tdArea, berth, headcode, occupancyEnteredAt, matchStatus: "matched", effective:
 { originTiploc, originName, destinationTiploc, destinationName, operatorCode, locations } | null,
-unitAllocation }` — no `note`, `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
+delay, unitAllocation }` — no `note`, `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
 `effective`'s TRUST/CIF/movement fields. `note`'s "matched by TRUST activation/STP precedence/
 verify this" language is resolver-internal and meaningless without `matchBasis` to read it
 against, so it stays on the full (logged-in) response only (owner request, 2026-09-14). This is
@@ -335,6 +335,42 @@ always establishes or corrects the link afterward so a later physical step can c
 a lineage-shortcut match never rewrites it, so its `step_chain`/`boundary_correlated` provenance
 isn't lost. Every field on this response otherwise behaves identically regardless of which path
 produced the match.
+
+**Delay (Milestone 97c, docs/adr/0021), shown to every visitor regardless of login:** `delay` —
+`null` when the matched run has no TRUST activation, or neither a report nor an estimate.
+Otherwise:
+
+```json
+{
+  "minutesLate": 32,
+  "band": "moderate",
+  "estimated": true,
+  "estimate": {
+    "basis": "held_in_berth",
+    "carried": false,
+    "standingSince": "2026-11-02T14:00:00.000Z"
+  },
+  "lastReport": {
+    "minutesLate": 5,
+    "eventKind": "departure",
+    "locationName": "Preston",
+    "at": "2026-11-02T13:58:00.000Z"
+  }
+}
+```
+
+- `minutesLate` is signed (negative = early), or `null` when TRUST gave no minutes (or an off-route
+  report).
+- `band` is `none` / `on_time` / `minor` / `moderate` / `severe`, as for the delay colours.
+- `estimated: true` is the held-train estimate, which can only be later than TRUST says.
+  - `estimate.basis` is `timing_point` (still here after its booked departure) or `held_in_berth`
+    (standing longer than trains normally take here).
+  - `estimate.carried` is true when it was made in an earlier berth and stands until TRUST
+    reports again; `standingSince` is then null.
+- Live, the estimate is worked out at the click, so its minutes are current. In playback (`?at=`)
+  the popup shows the estimate recorded at that moment, which is what the map was coloured by.
+- `lastReport` is the run's latest TRUST report (`eventKind` `departure` / `arrival` /
+  `arrival_destination` / `unknown`). The full response also keeps `effective.latestMovement`.
 
 **Unit/stock allocation (owner request, same day), shown to every visitor regardless of login:**
 `unitAllocation` — an array, one entry per **currently allocated** unit in the formation (ordered

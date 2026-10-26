@@ -82,6 +82,9 @@ afterAll(async () => {
     // docs/adr/0009: the mirrored "change" tables — cleaned up first since none of them carry a
     // foreign key back to trust_activation (ADR 0002's deliberate choice), so ordering here is
     // just tidiness, not a constraint requirement.
+    await pool.query("delete from estimated_delay_band_change where trust_id = any($1::text[])", [
+      createdTrustIds,
+    ]);
     await pool.query("delete from trust_changeorigin where trust_id = any($1::text[])", [
       createdTrustIds,
     ]);
@@ -1881,6 +1884,85 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       const body = await currentRun(area, "0044");
       expect(body.matchStatus).toBe("matched");
       expect(body.effective.scheduleId).toBe(String(shortBeyondId));
+    });
+  });
+
+  describe("the delay line (Milestone 97c, docs/adr/0021)", () => {
+    const LATE_DEPARTURE = 1 | (2 << 3);
+
+    async function seedMatchedRun(berth: string, headcode: string) {
+      const area = uniqueArea();
+      const tiploc = `DL${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+      const stanox = randomUUID().replace(/-/g, "").slice(0, 5);
+      await seedLocationReference(tiploc, "Delay Test Station", stanox);
+      await seedSmartBerthStep(area, berth, stanox);
+      await seedOccupiedBerth(area, berth, headcode);
+      const today = londonTodayDateString();
+      const scheduleId = await seedScheduleForDateRange(headcode, "P", today, today);
+      await seedScheduleLocation(scheduleId, 1, tiploc, "LO", { departure: "2359" });
+      const trustId = await seedActivation(scheduleId, headcode);
+      // Reported 7 late before the train entered this berth.
+      await pool.query(
+        `insert into trust_movement (trust_id, created, platform, loc_stanox, actual_timestamp, timetable_variation, flags)
+         values ($1, now() - interval '10 minutes', '1', '99999', now() - interval '10 minutes', 7, $2)`,
+        [trustId, LATE_DEPARTURE],
+      );
+      return { area, trustId };
+    }
+
+    async function currentRunAnonymously(area: string, berth: string) {
+      const app = await buildApp();
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/td/areas/${area}/berths/${berth}/current-run`,
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json();
+      } finally {
+        await app.close();
+      }
+    }
+
+    it("shows every visitor TRUST's lateness and where it was last reported", async () => {
+      const { area } = await seedMatchedRun("0061", "1X61");
+      const body = await currentRunAnonymously(area, "0061");
+      expect(body.delay).toEqual({
+        minutesLate: 7,
+        band: "on_time",
+        estimated: false,
+        estimate: null,
+        lastReport: {
+          minutesLate: 7,
+          eventKind: "departure",
+          locationName: null,
+          at: expect.any(String),
+        },
+      });
+    });
+
+    it("shows a held-train estimate carried from an earlier berth, marked estimated", async () => {
+      const { area, trustId } = await seedMatchedRun("0062", "1X62");
+      const activation = await pool.query<{ created: Date }>(
+        `select created from trust_activation where trust_id = $1`,
+        [trustId],
+      );
+      await pool.query(
+        `insert into estimated_delay_band_change (
+           trust_id, activated_at, band, minutes_late, basis, td_area, berth_code,
+           berth_occupancy_id, occupancy_entered_at, effective_at
+         ) values ($1, $2, 'severe', 75, 'timing_point', $3, '0001', 1, now() - interval '5 minutes',
+                   now() - interval '1 minute')`,
+        [trustId, activation.rows[0]!.created, area],
+      );
+      const body = await currentRunAnonymously(area, "0062");
+      expect(body.delay).toMatchObject({
+        minutesLate: 75,
+        band: "severe",
+        estimated: true,
+        estimate: { basis: "timing_point", carried: true, standingSince: null },
+        lastReport: { minutesLate: 7 },
+      });
     });
   });
 

@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import {
+  buildHeldDelayInput,
   findHeldTrainCandidates,
   loadActiveEstimates,
   loadBerthAllowances,
@@ -12,142 +13,14 @@ import {
   recordEstimateChanges,
   type EstimateChangeRow,
   type HeldTrainCandidate,
-  type RunTrustState,
   type ScheduleLocationRow,
 } from "@railway/database";
-import {
-  BERTH_ALLOWANCE_DEFAULT_MINUTES,
-  decodeTrustMovementFlags,
-  estimateHeldDelay,
-  londonWallClockToInstant,
-  nextRunEstimate,
-  parseCifAllowanceMinutes,
-  parseCifTimeToMinutes,
-  scheduleDayOffset,
-  signedVariationMinutes,
-  type HeldDelayInput,
-  type RunEstimateState,
-} from "@railway/domain";
+import { estimateHeldDelay, nextRunEstimate, type RunEstimateState } from "@railway/domain";
 
 /** Reference data the sweep keeps between ticks: schedules don't change under a running train,
  * SMART and CORPUS change at most daily, allowances only when an admin recalculates them. */
 const SCHEDULE_CACHE_MS = 60 * 60 * 1000;
 const REFERENCE_CACHE_MS = 10 * 60 * 1000;
-
-export interface HeldDelayContext {
-  now: Date;
-  trust: RunTrustState | undefined;
-  locations: readonly ScheduleLocationRow[];
-  tiplocStanox: ReadonlyMap<string, string>;
-  berthStanoxes: readonly string[];
-  berthAllowanceMinutes: number | undefined;
-  feedGapAreas: ReadonlySet<string | null>;
-  sameDescriptionBerths: ReadonlyArray<{ tdArea: string; berth: string; eventAt: Date }>;
-}
-
-/**
- * Milestone 97b (docs/adr/0021): turns one held-train candidate and the data read for it into
- * `estimateHeldDelay`'s input. Pure, so the schedule-position rules are unit-tested.
- *
- *  - The berth's location in the schedule is the first visit to one of its SMART STANOXes at or
- *    after the last TRUST report's location (strictly after it if that report was a departure or
- *    pass from there: that visit is done).
- *  - Allowances "still ahead" are those recorded at the last reported location and at every
- *    later location before the next one with a STANOX (where TRUST would report next). An
- *    allowance belongs to the section after its timing point (measured, ADR 0021 "Evidence").
- */
-export function buildHeldDelayInput(
-  candidate: HeldTrainCandidate,
-  ctx: HeldDelayContext,
-): HeldDelayInput {
-  const stanoxOf = (tiploc: string) => ctx.tiplocStanox.get(tiploc) ?? null;
-  const berthStanoxes = new Set(ctx.berthStanoxes);
-  const raw = ctx.trust?.latestReport ?? null;
-
-  let lastReport: HeldDelayInput["lastReport"] = null;
-  let lastReportSeq: number | null = null;
-  let leftReportedLocation = false;
-  if (raw) {
-    const decoded = decodeTrustMovementFlags(raw.flags);
-    const hasMinutes =
-      typeof raw.timetableVariation === "number" && Number.isFinite(raw.timetableVariation);
-    const minutesLate =
-      !hasMinutes && (decoded.variation === "late" || decoded.variation === "early")
-        ? null
-        : decoded.variation === "off_route"
-          ? null
-          : signedVariationMinutes(raw.timetableVariation, decoded.variation);
-    lastReport = {
-      minutesLate,
-      actualAt: raw.actualAt,
-      kind: decoded.eventKind,
-      terminated: decoded.terminated,
-      atThisBerthLocation: raw.locStanox !== null && berthStanoxes.has(raw.locStanox),
-    };
-    const reported = ctx.locations.filter(
-      (loc) => raw.locStanox !== null && stanoxOf(loc.tiploc) === raw.locStanox,
-    );
-    lastReportSeq = reported.length > 0 ? Math.min(...reported.map((loc) => loc.seqNo)) : null;
-    leftReportedLocation = decoded.eventKind === "departure";
-  }
-
-  const berthLocation =
-    ctx.locations.find((loc) => {
-      const stanox = stanoxOf(loc.tiploc);
-      if (stanox === null || !berthStanoxes.has(stanox)) return false;
-      if (lastReportSeq === null) return true;
-      return leftReportedLocation ? loc.seqNo > lastReportSeq : loc.seqNo >= lastReportSeq;
-    }) ?? null;
-
-  let timingPoint: HeldDelayInput["timingPoint"] = null;
-  const atDestination = berthLocation?.recordIdentity === "LT";
-  if (berthLocation && !atDestination) {
-    const kind = berthLocation.departure ? "departure" : berthLocation.pass ? "pass" : null;
-    const time = parseCifTimeToMinutes(berthLocation.departure ?? berthLocation.pass);
-    if (kind && time !== null) {
-      const originDeparture = parseCifTimeToMinutes(ctx.locations[0]?.departure ?? null);
-      timingPoint = {
-        kind,
-        atOrigin: berthLocation.recordIdentity === "LO",
-        bookedAt: londonWallClockToInstant(
-          candidate.trafficDay,
-          time,
-          scheduleDayOffset(time, originDeparture, berthLocation.nextDay),
-        ),
-      };
-    }
-  }
-
-  let allowancesAheadMinutes = 0;
-  if (lastReportSeq !== null) {
-    for (const loc of ctx.locations) {
-      if (loc.seqNo < lastReportSeq) continue;
-      if (loc.seqNo > lastReportSeq && stanoxOf(loc.tiploc) !== null) break;
-      allowancesAheadMinutes +=
-        parseCifAllowanceMinutes(loc.engineeringAllowance) +
-        parseCifAllowanceMinutes(loc.pathingAllowance) +
-        parseCifAllowanceMinutes(loc.performanceAllowance);
-    }
-  }
-
-  const cancellation = ctx.trust?.latestCancellation ?? null;
-  return {
-    now: ctx.now,
-    occupancyEnteredAt: candidate.enteredAt,
-    lastReport,
-    timingPoint,
-    atDestination,
-    berthAllowanceMinutes: ctx.berthAllowanceMinutes ?? BERTH_ALLOWANCE_DEFAULT_MINUTES,
-    allowancesAheadMinutes,
-    cancelled: cancellation !== null && cancellation.reinstate === 0,
-    feedGap: ctx.feedGapAreas.has(null) || ctx.feedGapAreas.has(candidate.tdArea),
-    seenElsewhere: ctx.sameDescriptionBerths.some(
-      (other) =>
-        !(other.tdArea === candidate.tdArea && other.berth === candidate.berth) &&
-        other.eventAt.getTime() > candidate.enteredAt.getTime(),
-    ),
-  };
-}
 
 export interface HeldDelaySweepResult {
   candidates: number;

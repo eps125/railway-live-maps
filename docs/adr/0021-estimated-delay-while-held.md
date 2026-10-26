@@ -1,9 +1,9 @@
 # ADR 0021 — Estimated delay for a train that is held
 
 Status: **Accepted in principle** (2026-10-26). Owner answered the open questions the same day.
-The allowance check has been run against production (see "Evidence"). Milestone 97a (maintenance
-jobs and berth allowances) and 97b (the estimate, live and in playback) are built; 97c (the popup
-delay line) is not yet.
+The allowance check has been run against production (see "Evidence"). Built in full as
+Milestone 97a (maintenance jobs and berth allowances), 97b (the estimate, live and in playback)
+and 97c (the popup delay line for every visitor).
 
 ## Context
 

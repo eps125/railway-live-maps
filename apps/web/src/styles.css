@@ -695,6 +695,19 @@ legend {
   font-size: 0.72rem;
 }
 
+/* Milestone 97c: the popup's delay line — band swatch, headline, and a one-line explanation. */
+.run-popup__delay .map-page__delay-swatch {
+  margin-right: 0.4rem;
+  vertical-align: baseline;
+}
+
+.run-popup__delay-detail {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+}
+
 .map-inspector__title {
   display: flex;
   align-items: flex-start;

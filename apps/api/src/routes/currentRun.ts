@@ -19,10 +19,14 @@ import {
   londonMinutesSinceMidnight,
   fetchTrustChanges,
   withinTrustRun,
+  computeHeldDelayEstimate,
+  findEstimateInForce,
   type CandidateScheduleRow,
   type ActivationRow,
 } from "@railway/database";
+import type { HeldDelayResult } from "@railway/domain";
 import { apiError } from "../lib/queryRange.js";
+import { popupDelay, type PopupDelay } from "../lib/popupDelay.js";
 import { locationToJson, type CifLocationRowLike } from "./schedule.js";
 import { SESSION_COOKIE_NAME, getSession } from "../auth/session.js";
 
@@ -524,6 +528,8 @@ export async function registerCurrentRunRoutes(
       }
 
       let effective: EffectiveScheduleFull | null = null;
+      // Milestone 97c (docs/adr/0021): the delay line, in both the full and the public view.
+      let delay: PopupDelay | null = null;
       if (effectiveRow) {
         // `effectiveTrafficDay` is always set whenever `effectiveRow` is (both branches above set
         // it together) — `?? today` only guards TypeScript's narrowing, never a real fallback.
@@ -609,6 +615,70 @@ export async function registerCurrentRunRoutes(
         }
 
         const flags = latestMovement ? decodeTrustMovementFlags(latestMovement.flags) : null;
+
+        if (activation) {
+          // A late/early report with no minutes, or an off-route one, says nothing about how late
+          // (same rule as the delay colours' `delayBandForMovement`).
+          const reportedMinutes =
+            latestMovement && flags
+              ? flags.variation === "off_route" ||
+                ((flags.variation === "late" || flags.variation === "early") &&
+                  latestMovement.timetable_variation === null)
+                ? null
+                : signedVariationMinutes(latestMovement.timetable_variation, flags.variation)
+              : null;
+          const run = { trustId: activation.trust_id, activatedAt: activation.created };
+          // Live only: worked out now, so the minutes are current. Playback shows what was
+          // recorded at the time, which is what the map was coloured by.
+          let live: HeldDelayResult | null = null;
+          if (!at && occupancy && effectiveTrafficDay) {
+            try {
+              live = (
+                await computeHeldDelayEstimate(
+                  pool,
+                  {
+                    tdArea,
+                    berth,
+                    description: headcode,
+                    occupancyId: occupancy.id,
+                    enteredAt: occupancy.enteredAt,
+                    runKey: "",
+                    matchConfidence: isSolidMatch ? "solid" : "weak",
+                    cifScheduleId: String(effectiveRow.id),
+                    trafficDay: effectiveTrafficDay,
+                    ...run,
+                  },
+                  referenceNow,
+                )
+              ).result;
+            } catch (error) {
+              app.log.error({ error }, "held-train delay estimate failed for popup");
+            }
+          }
+          const stored = await findEstimateInForce(pool, run, referenceNow);
+          delay = popupDelay({
+            lastReport:
+              latestMovement && flags
+                ? {
+                    minutesLate: reportedMinutes,
+                    eventKind: flags.eventKind,
+                    locationName: movementLocationName,
+                    at: latestMovement.actual_timestamp
+                      ? latestMovement.actual_timestamp.toISOString()
+                      : null,
+                  }
+                : null,
+            live,
+            stored: stored
+              ? {
+                  minutesLate: stored.minutesLate,
+                  basis: stored.basis,
+                  sameOccupancy: occupancy !== null && stored.occupancyId === String(occupancy.id),
+                }
+              : null,
+            standingSince: occupancy ? occupancy.enteredAt.toISOString() : occupancyEnteredAt,
+          });
+        }
 
         // docs/adr/0009: the run's current origin/destination — the static schedule's LO/LT tiploc,
         // overridden when a Change of Origin / part-cancellation is in effect. `effectiveRow.*`
@@ -764,6 +834,7 @@ export async function registerCurrentRunRoutes(
           occupancyEnteredAt,
           matchStatus: "matched" as const,
           effective: effective ? toPublicEffective(effective) : null,
+          delay,
           unitAllocation,
         };
       }
@@ -779,6 +850,7 @@ export async function registerCurrentRunRoutes(
         positionScoped,
         note: matchNote(matchStatus, matchBasis, positionScoped),
         effective,
+        delay,
         candidateSchedules,
         unitAllocation,
       };

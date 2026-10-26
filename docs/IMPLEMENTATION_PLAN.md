@@ -5315,3 +5315,32 @@ Known limitations:
 
 - The live popup and the map colour can briefly disagree at a band boundary. The popup works
   the estimate out at the click; the map changes on the sweep's next 20-second tick.
+
+## Fix — the playback popup showed today's delay, not the delay at the moment replayed (2026-10-26)
+
+Owner report: replaying earlier today, the popup's delay was the train's most recent one. The
+map's colours were right (`findMapDelaysAt` reads the band in force at the moment), but the popup
+read the run's latest TRUST report with no upper bound at `at`. That fed both the 97c delay line
+and the full view's "Latest report".
+
+- [x] `GET .../current-run?at=`: the latest TRUST movement is now the latest **recorded by `at`**
+      (`created <= at`), as `resolveFreshRunMatch`'s `asOf` already did.
+- [x] Same bound on the popup's other "latest" reads: TRUST changes (`fetchTrustChanges` gains
+      `asOf`: identity, origin, part-cancellation and location changes) and the unit allocation
+      (reports by `at`).
+- [x] Regression test (`currentRun.integration.test.ts`, playback): a report 5 late known at the
+      instant and a later one 50 late. Before the fix the popup said 50; now it says 5, with no
+      origin change that came later. Live requests are unchanged.
+
+## Change — the delay line's explanation is for admins only (2026-10-26)
+
+Owner request: non-admins should not see the explanation under the delay (for example "Last
+report: departed GARSTANG & CATTERALL 18:47, 72 min late").
+
+- [x] `popupDelay(…, { withExplanation })`: for anyone but an admin session, `estimate` and
+      `lastReport` are null. The popup then shows just the delay, marked Estimated when it is. Done
+      in the API response, so a non-admin never receives it.
+- [x] Tests: unit (no explanation); integration (anonymous and editor get none, admin gets the
+      last report); component (an estimated line with no explanation).
+- Unchanged: a logged-in non-admin's full view still has its existing "Latest report" section
+  (Milestone 34), which is separate from the delay line.

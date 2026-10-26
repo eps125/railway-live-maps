@@ -91,3 +91,25 @@ describe("popupDelay", () => {
     ).toMatchObject({ minutesLate: null, band: "none", estimated: false });
   });
 });
+
+describe("popupDelay for non-admins (owner, 2026-10-26)", () => {
+  it("keeps the delay and the Estimated mark but drops the explanation", () => {
+    expect(
+      popupDelay(
+        {
+          lastReport: report,
+          live: { kind: "estimate", minutesLate: 72, basis: "held_in_berth" },
+          stored: null,
+          standingSince,
+        },
+        { withExplanation: false },
+      ),
+    ).toEqual({
+      minutesLate: 72,
+      band: "severe",
+      estimated: true,
+      estimate: null,
+      lastReport: null,
+    });
+  });
+});

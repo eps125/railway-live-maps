@@ -965,3 +965,43 @@ describe("RunPopup delay line (Milestone 97c)", () => {
     expect(screen.queryByText("Delay")).not.toBeInTheDocument();
   });
 });
+
+describe("RunPopup delay line without an explanation (non-admin, 2026-10-26)", () => {
+  it("shows just the estimated delay when the API sends no working", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            tdArea: "PX",
+            berth: "0518",
+            headcode: "4Z55",
+            occupancyEnteredAt: "2026-11-02T14:00:00.000Z",
+            matchStatus: "matched",
+            effective: null,
+            delay: {
+              minutesLate: 72,
+              band: "severe",
+              estimated: true,
+              estimate: null,
+              lastReport: null,
+            },
+            unitAllocation: [],
+          }),
+        ),
+      ),
+    );
+    render(
+      <RunPopup
+        elementId="berth-7"
+        displayName="Berth 7"
+        tdArea="PX"
+        berth="0518"
+        onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByText("72 min late")).toBeInTheDocument();
+    expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(document.querySelector(".run-popup__delay-detail")).not.toBeInTheDocument();
+  });
+});

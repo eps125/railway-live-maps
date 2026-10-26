@@ -369,6 +369,9 @@ Otherwise:
     reports again; `standingSince` is then null.
 - Live, the estimate is worked out at the click, so its minutes are current. In playback (`?at=`)
   the popup shows the estimate recorded at that moment, which is what the map was coloured by.
+- **Admins only (owner, 2026-10-26):** `estimate` and `lastReport`, the explanation behind the
+  delay, are `null` for anyone else (anonymous or a non-admin login), who see just the delay and
+  whether it is estimated. Removed server-side, not hidden by the UI.
 - `lastReport` is the run's latest TRUST report (`eventKind` `departure` / `arrival` /
   `arrival_destination` / `unknown`). The full response also keeps `effective.latestMovement`.
 

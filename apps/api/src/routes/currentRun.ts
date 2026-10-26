@@ -260,6 +260,8 @@ async function queryUnitAllocation(
   pool: Pool,
   cifTrainUid: string,
   serviceDate: string,
+  /** Playback: the formation as reported by this moment. Omitted = now. */
+  asOf: Date | null = null,
 ): Promise<UnitAllocationEntry[]> {
   // garner's `train_allocation` is an append-only log of allocation *reports*, not a mutable
   // "current formation" table (its own migration comment assumed the latter) — every time control
@@ -275,8 +277,9 @@ async function queryUnitAllocation(
     `select distinct on ("position") unit_no, "position", fleet_id, vehicles, reported
      from train_allocation
      where cif_train_uid = $1 and schedule_start_date = $2::date
+       and ($3::timestamptz is null or coalesce(reported, synced_at) <= $3::timestamptz)
      order by "position" asc, coalesce(reported, synced_at) desc, id desc`,
-    [cifTrainUid, serviceDate],
+    [cifTrainUid, serviceDate, asOf ? asOf.toISOString() : null],
   );
   return result.rows.map((row) => ({
     unitNo: row.unit_no,
@@ -328,8 +331,15 @@ export async function registerCurrentRunRoutes(
       // Owner request (2026-09-13): optional auth — never required to view the map or this
       // popup at all, only to see full detail. A missing/invalid cookie is just "anonymous",
       // never a 401 (this route stays public, matching every other live-map read).
-      const isAuthenticated =
-        (await getSession(redis, request.cookies[SESSION_COOKIE_NAME], sessionTtlSeconds)) !== null;
+      const session = await getSession(
+        redis,
+        request.cookies[SESSION_COOKIE_NAME],
+        sessionTtlSeconds,
+      );
+      const isAuthenticated = session !== null;
+      // Owner request (2026-10-26): the delay line's explanation (the estimate's working and the
+      // last TRUST report) is for admins only; everyone else sees just the delay.
+      const isAdmin = session?.role === "admin";
 
       // Milestone 57: `?at=<iso>` asks this same question about a past moment, so the playback
       // map's click-a-berth popup behaves like the live one. Everything time-dependent below
@@ -556,6 +566,7 @@ export async function registerCurrentRunRoutes(
               activation.created,
               effectiveRow.origin_tiploc,
               effectiveRow.destination_tiploc,
+              at,
             )
           : null;
 
@@ -578,9 +589,12 @@ export async function registerCurrentRunRoutes(
                       gbtt_timestamp, timetable_variation, flags, next_report_stanox
                from trust_movement
                where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+                 -- Playback: the latest report known at the moment asked about, not today's
+                 -- (owner report 2026-10-26: the replayed popup showed the current delay).
+                 and ($3::timestamptz is null or created <= $3::timestamptz)
                order by actual_timestamp desc nulls last, created desc
                limit 1`,
-              [trustChanges?.trustIdChain ?? [activation.trust_id], activation.created],
+              [trustChanges?.trustIdChain ?? [activation.trust_id], activation.created, at],
             )
           ).rows[0];
         }
@@ -656,28 +670,32 @@ export async function registerCurrentRunRoutes(
             }
           }
           const stored = await findEstimateInForce(pool, run, referenceNow);
-          delay = popupDelay({
-            lastReport:
-              latestMovement && flags
+          delay = popupDelay(
+            {
+              lastReport:
+                latestMovement && flags
+                  ? {
+                      minutesLate: reportedMinutes,
+                      eventKind: flags.eventKind,
+                      locationName: movementLocationName,
+                      at: latestMovement.actual_timestamp
+                        ? latestMovement.actual_timestamp.toISOString()
+                        : null,
+                    }
+                  : null,
+              live,
+              stored: stored
                 ? {
-                    minutesLate: reportedMinutes,
-                    eventKind: flags.eventKind,
-                    locationName: movementLocationName,
-                    at: latestMovement.actual_timestamp
-                      ? latestMovement.actual_timestamp.toISOString()
-                      : null,
+                    minutesLate: stored.minutesLate,
+                    basis: stored.basis,
+                    sameOccupancy:
+                      occupancy !== null && stored.occupancyId === String(occupancy.id),
                   }
                 : null,
-            live,
-            stored: stored
-              ? {
-                  minutesLate: stored.minutesLate,
-                  basis: stored.basis,
-                  sameOccupancy: occupancy !== null && stored.occupancyId === String(occupancy.id),
-                }
-              : null,
-            standingSince: occupancy ? occupancy.enteredAt.toISOString() : occupancyEnteredAt,
-          });
+              standingSince: occupancy ? occupancy.enteredAt.toISOString() : occupancyEnteredAt,
+            },
+            { withExplanation: isAdmin },
+          );
         }
 
         // docs/adr/0009: the run's current origin/destination — the static schedule's LO/LT tiploc,
@@ -804,7 +822,12 @@ export async function registerCurrentRunRoutes(
       // popup's unconditional `unitAllocation.length` (no effective schedule -> blank page,
       // reported 2026-09-14 against PX 0127/0133, both `unmatched` today).
       const unitAllocation = effectiveRow
-        ? await queryUnitAllocation(pool, effectiveRow.cif_train_uid, effectiveTrafficDay ?? today)
+        ? await queryUnitAllocation(
+            pool,
+            effectiveRow.cif_train_uid,
+            effectiveTrafficDay ?? today,
+            at,
+          )
         : [];
 
       // Owner request (2026-09-13): a "solid" match — matched, and not the weakest unscoped

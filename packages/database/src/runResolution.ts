@@ -336,6 +336,9 @@ export async function fetchTrustChanges(
   activatedAt: Date,
   originTiploc: string | null,
   destinationTiploc: string | null,
+  /** Playback: only changes recorded by this moment (2026-10-26 — a replayed popup showed
+   * changes made after the moment being replayed). Omitted = now. */
+  asOf: Date | null = null,
 ): Promise<TrustChangeSummary> {
   const chain: string[] = [activationTrustId];
   let identityChangedAt: string | null = null;
@@ -344,8 +347,9 @@ export async function fetchTrustChanges(
     const result = await pool.query<{ created: Date; new_trust_id: string }>(
       `select created, new_trust_id from trust_changeid
        where trust_id = $1 and ${withinTrustRun("created", "$2::timestamptz")}
+         and ($3::timestamptz is null or created <= $3::timestamptz)
        order by created desc limit 1`,
-      [current, activatedAt],
+      [current, activatedAt, asOf],
     );
     const row = result.rows[0];
     if (!row || chain.includes(row.new_trust_id)) break;
@@ -360,8 +364,9 @@ export async function fetchTrustChanges(
     pool.query<{ created: Date; reason: string | null; loc_stanox: string | null }>(
       `select created, reason, loc_stanox from trust_changeorigin
        where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+         and ($3::timestamptz is null or created <= $3::timestamptz)
        order by created desc limit 1`,
-      [chain, activatedAt],
+      [chain, activatedAt, asOf],
     ),
     pool.query<{
       created: Date;
@@ -371,14 +376,16 @@ export async function fetchTrustChanges(
     }>(
       `select created, reason, loc_stanox, reinstate from trust_cancellation
        where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+         and ($3::timestamptz is null or created <= $3::timestamptz)
        order by created desc limit 1`,
-      [chain, activatedAt],
+      [chain, activatedAt, asOf],
     ),
     pool.query<{ created: Date; original_stanox: string; stanox: string }>(
       `select created, original_stanox, stanox from trust_changelocation
        where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+         and ($3::timestamptz is null or created <= $3::timestamptz)
        order by created asc`,
-      [chain, activatedAt],
+      [chain, activatedAt, asOf],
     ),
   ]);
 

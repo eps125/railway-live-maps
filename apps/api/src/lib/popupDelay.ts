@@ -15,13 +15,15 @@ export interface PopupDelay {
   minutesLate: number | null;
   band: DelayBand;
   estimated: boolean;
-  /** Only when `estimated`: why, and since when the train has been standing. */
+  /** Only when `estimated`, and only for admins: why, and since when the train has been
+   * standing. */
   estimate: {
     basis: "timing_point" | "held_in_berth";
     /** The estimate was made in an earlier berth and is being carried until TRUST reports. */
     carried: boolean;
     standingSince: string | null;
   } | null;
+  /** Admins only (owner, 2026-10-26): the run's latest TRUST report. */
   lastReport: {
     minutesLate: number | null;
     eventKind: TrustMovementEventKind;
@@ -44,7 +46,20 @@ export interface PopupDelayInputs {
   standingSince: string | null;
 }
 
-export function popupDelay(inputs: PopupDelayInputs): PopupDelay | null {
+/** Owner request (2026-10-26): the explanation — the estimate's working and the last TRUST
+ * report — is shown to admins only. Without it, `estimate` and `lastReport` are null and the
+ * popup shows just the delay (marked Estimated when it is). Removed here, server-side, so a
+ * non-admin response never carries it. */
+export function popupDelay(
+  inputs: PopupDelayInputs,
+  options: { withExplanation: boolean } = { withExplanation: true },
+): PopupDelay | null {
+  const delay = popupDelayFull(inputs);
+  if (!delay || options.withExplanation) return delay;
+  return { ...delay, estimate: null, lastReport: null };
+}
+
+function popupDelayFull(inputs: PopupDelayInputs): PopupDelay | null {
   const { lastReport, live, stored, standingSince } = inputs;
   if (live?.kind === "estimate") {
     return {

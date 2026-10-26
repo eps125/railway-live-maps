@@ -1924,7 +1924,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
       }
     }
 
-    it("shows every visitor TRUST's lateness and where it was last reported", async () => {
+    it("shows every visitor TRUST's lateness, and only an admin where it was last reported", async () => {
       const { area } = await seedMatchedRun("0061", "1X61");
       const body = await currentRunAnonymously(area, "0061");
       expect(body.delay).toEqual({
@@ -1932,13 +1932,36 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         band: "on_time",
         estimated: false,
         estimate: null,
-        lastReport: {
-          minutesLate: 7,
-          eventKind: "departure",
-          locationName: null,
-          at: expect.any(String),
-        },
+        lastReport: null,
       });
+
+      for (const role of ["editor", "admin"] as const) {
+        const app = await buildApp();
+        try {
+          const token = await createSession(
+            fakeRedis,
+            { userId: randomUUID(), username: `test-${role}`, role },
+            SESSION_TTL_SECONDS,
+          );
+          const response = await app.inject({
+            method: "GET",
+            url: `/api/v1/td/areas/${area}/berths/0061/current-run`,
+            headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+          });
+          expect(response.json().delay.lastReport).toEqual(
+            role === "admin"
+              ? {
+                  minutesLate: 7,
+                  eventKind: "departure",
+                  locationName: null,
+                  at: expect.any(String),
+                }
+              : null,
+          );
+        } finally {
+          await app.close();
+        }
+      }
     });
 
     it("shows a held-train estimate carried from an earlier berth, marked estimated", async () => {
@@ -1960,8 +1983,9 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         minutesLate: 75,
         band: "severe",
         estimated: true,
-        estimate: { basis: "timing_point", carried: true, standingSince: null },
-        lastReport: { minutesLate: 7 },
+        // The working behind it is for admins only.
+        estimate: null,
+        lastReport: null,
       });
     });
   });
@@ -2582,6 +2606,64 @@ describe("GET .../current-run?at= (playback, Milestone 57 integration)", () => {
   // activation since the traffic day began with no upper bound, so a past instant showed the
   // train's most recent run (today's trust id, movements and delay) instead of the one on the
   // berth then. Both the stored-link and the fresh-resolution branch looked it up that way.
+  it("shows the delay and TRUST changes known at the instant, not later ones (owner report 2026-10-26)", async () => {
+    // Replaying earlier today, the popup showed the train's current delay: the latest TRUST
+    // report, origin change and allocation were read with no upper bound at `at`.
+    const area = uniqueArea();
+    const enteredAt = new Date(Date.now() - 40 * 60_000);
+    const leftAt = new Date(Date.now() - 35 * 60_000);
+    const headcode = uniqueHeadcode();
+    const { occupancyId } = await seedClosedOccupancy(area, "0107", headcode, enteredAt, leftAt);
+    const scheduleId = await seedSchedule(headcode, "P");
+    const trustId = await seedActivationAt(scheduleId, new Date(enteredAt.getTime() - 5 * 60_000));
+    const trafficDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(
+      enteredAt,
+    );
+    await seedRunLink(
+      occupancyId,
+      enteredAt,
+      scheduleId,
+      `U${scheduleId}`,
+      trafficDay,
+      area,
+      "0107",
+    );
+    const LATE_DEPARTURE = 1 | (2 << 3);
+    const report = async (minutesAgo: number, minutesLate: number) =>
+      pool.query(
+        `insert into trust_movement (trust_id, created, platform, loc_stanox, actual_timestamp, timetable_variation, flags)
+         values ($1, $2, '1', '12345', $2, $3, $4)`,
+        [trustId, new Date(Date.now() - minutesAgo * 60_000), minutesLate, LATE_DEPARTURE],
+      );
+    await report(42, 5); // known at the instant
+    await report(10, 50); // reported later
+    const originTiploc = `PB${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+    const originStanox = randomUUID().replace(/-/g, "").slice(0, 5);
+    await seedLocationReference(originTiploc, "Later Origin", originStanox);
+    await pool.query(
+      `insert into trust_changeorigin (trust_id, created, reason, loc_stanox) values ($1, now() - interval '10 minutes', 'OP', $2)`,
+      [trustId, originStanox],
+    );
+
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/td/areas/${area}/berths/0107/current-run?at=${encodeURIComponent(
+          new Date(enteredAt.getTime() + 60_000).toISOString(),
+        )}`,
+        headers: await authHeaders(),
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.delay).toMatchObject({ minutesLate: 5, estimated: false });
+      expect(body.effective.latestMovement.variationMinutes).toBe(5);
+      expect(body.effective.originChange).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
   it.each([
     ["a stored run link", true],
     ["fresh resolution", false],

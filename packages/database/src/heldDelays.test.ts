@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { estimateHeldDelay } from "@railway/domain";
 import {
   buildHeldDelayInput,
   type HeldDelayContext,
@@ -70,6 +71,7 @@ function ctx(overrides: Partial<HeldDelayContext> = {}): HeldDelayContext {
         flags: DEPARTURE_LATE,
         timetableVariation: 5,
         actualAt: new Date("2026-11-02T13:37:00Z"),
+        plannedAt: null,
       },
       latestReceivedAt: new Date("2026-11-02T13:37:20Z"),
       latestCancellation: null,
@@ -117,6 +119,7 @@ describe("buildHeldDelayInput", () => {
             flags: ARRIVAL_ON_TIME,
             timetableVariation: 0,
             actualAt: new Date("2026-11-02T13:58:00Z"),
+            plannedAt: null,
           },
         },
       }),
@@ -137,6 +140,7 @@ describe("buildHeldDelayInput", () => {
             flags: ARRIVAL_DESTINATION_TERMINATED,
             timetableVariation: 0,
             actualAt: new Date("2026-11-02T15:00:00Z"),
+            plannedAt: null,
           },
         },
       }),
@@ -187,5 +191,111 @@ describe("buildHeldDelayInput", () => {
       feedGap: false,
       seenElsewhere: false,
     });
+  });
+});
+
+describe("buildHeldDelayInput — repeated visits to the same place (owner report 2026-10-26, PX 3S58)", () => {
+  // 3S58 (H49507) on 26 October: Preston twice and Farington Curve Jn four times.
+  const LOCS = [
+    loc(1, "WIGANDD", "LO", { departure: "1703" }),
+    loc(14, "FRNGTNC", "LI", { pass: "1818H" }),
+    loc(16, "PRST", "LI", { arrival: "1824", departure: "1833" }),
+    loc(19, "FRNGTNC", "LI", { pass: "1840" }),
+    loc(20, "RUFDORD", "LI", { arrival: "1854", departure: "1858" }),
+    loc(23, "FRNGTNC", "LI", { pass: "1943H" }),
+    loc(25, "PRST", "LI", { arrival: "1948", departure: "2045" }),
+    loc(28, "FRNGTNC", "LI", { pass: "2051H" }),
+    loc(57, "WIGANDD", "LT", { arrival: "0053", nextDay: true }),
+  ];
+  const STANOXES = new Map([
+    ["WIGANDD", "35150"],
+    ["FRNGTNC", "30150"],
+    ["PRST", "30120"],
+    ["RUFDORD", "30155"],
+  ]);
+  const DEPARTURE_LATE = 1 | (2 << 3);
+  const ARRIVAL_LATE = 2 | (2 << 3);
+  const train: HeldTrainCandidate = { ...candidate, trafficDay: "2026-10-26", description: "3S58" };
+  const context = (
+    now: string,
+    report: { stanox: string; flags: number; late: number; actual: string },
+    berthStanox: string,
+    planned: boolean,
+  ): HeldDelayContext => ({
+    now: new Date(now),
+    trust: {
+      trustId: "353S58CU26",
+      latestReport: {
+        locStanox: report.stanox,
+        flags: report.flags,
+        timetableVariation: report.late,
+        actualAt: new Date(report.actual),
+        plannedAt: planned
+          ? new Date(new Date(report.actual).getTime() - report.late * 60_000)
+          : null,
+      },
+      latestReceivedAt: new Date(report.actual),
+      latestCancellation: null,
+    },
+    locations: LOCS,
+    tiplocStanox: STANOXES,
+    berthStanoxes: [berthStanox],
+    berthAllowanceMinutes: 1,
+    feedGapAreas: new Set(),
+    sameDescriptionBerths: [],
+  });
+
+  for (const planned of [true, false]) {
+    const label = planned ? "TRUST's planned time" : "actual time less lateness";
+    it(`at Farington on the way back, measures from its third pass, not its first (${label})`, () => {
+      // Last seen departing Farington 18:46, 6 late (its 18:40 pass); back at Farington at 19:56.
+      const input = buildHeldDelayInput(
+        { ...train, enteredAt: new Date("2026-10-26T19:56:21Z") },
+        context(
+          "2026-10-26T19:56:34Z",
+          { stanox: "30150", flags: DEPARTURE_LATE, late: 6, actual: "2026-10-26T18:46:00Z" },
+          "30150",
+          planned,
+        ),
+      );
+      expect(input.timingPoint?.bookedAt).toEqual(new Date("2026-10-26T19:43:30Z"));
+      // Was 76 late against the 18:40 pass; 13 against the right one.
+      expect(estimateHeldDelay(input)).toEqual({
+        kind: "estimate",
+        minutesLate: 13,
+        basis: "timing_point",
+      });
+    });
+
+    it(`in the Preston platform, waits for its 20:45 departure, not the 18:33 one (${label})`, () => {
+      // Arrived at its second Preston call 20:03, 15 late; booked to wait until 20:45.
+      const input = buildHeldDelayInput(
+        { ...train, enteredAt: new Date("2026-10-26T20:02:00Z") },
+        context(
+          "2026-10-26T20:40:00Z",
+          { stanox: "30120", flags: ARRIVAL_LATE, late: 15, actual: "2026-10-26T20:03:00Z" },
+          "30120",
+          planned,
+        ),
+      );
+      expect(input.timingPoint?.bookedAt).toEqual(new Date("2026-10-26T20:45:00Z"));
+      // Was about 127 late against 18:33; not late yet against 20:45.
+      expect(estimateHeldDelay(input)).toEqual({ kind: "none" });
+    });
+  }
+
+  it("never measures against a visit booked before the last report, whatever the report matched", () => {
+    // A report at a place the schedule doesn't call at gives no visit to match; the berth's
+    // earlier Preston call (18:33) is still ruled out by the 19:48 booked time of the report.
+    const input = buildHeldDelayInput(
+      { ...train, enteredAt: new Date("2026-10-26T20:02:00Z") },
+      context(
+        "2026-10-26T20:40:00Z",
+        { stanox: "99999", flags: ARRIVAL_LATE, late: 15, actual: "2026-10-26T20:03:00Z" },
+        "30120",
+        true,
+      ),
+    );
+    expect(input.timingPoint?.bookedAt).toEqual(new Date("2026-10-26T20:45:00Z"));
   });
 });

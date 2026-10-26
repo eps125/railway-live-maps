@@ -131,6 +131,8 @@ export interface RunTrustState {
     flags: number | null;
     timetableVariation: number | null;
     actualAt: Date;
+    /** The booked (WTT) time of the event reported: which visit to a location it was. */
+    plannedAt: Date | null;
   } | null;
   /** When the run's newest report arrived (`trust_movement.created`). */
   latestReceivedAt: Date | null;
@@ -153,17 +155,20 @@ export async function loadRunTrustStates(
     flags: number | null;
     timetable_variation: number | null;
     actual_timestamp: Date | null;
+    planned_timestamp: Date | null;
     received_at: Date | null;
     cancel_type: string | null;
     cancel_reinstate: number | null;
     has_cancellation: boolean;
   }>(
     `select p.trust_id, m.loc_stanox, m.flags, m.timetable_variation, m.actual_timestamp,
+            m.planned_timestamp,
             r.received_at, c.type as cancel_type, c.reinstate as cancel_reinstate,
             c.trust_id is not null as has_cancellation
        from unnest($1::text[], $2::timestamptz[]) as p(trust_id, activated_at)
        left join lateral (
-         select m.loc_stanox, m.flags, m.timetable_variation, m.actual_timestamp
+         select m.loc_stanox, m.flags, m.timetable_variation, m.actual_timestamp,
+                m.planned_timestamp
            from trust_movement m
           where m.trust_id = p.trust_id and m.actual_timestamp is not null
             and ${withinTrustRun("m.created", "p.activated_at")}
@@ -192,6 +197,7 @@ export async function loadRunTrustStates(
             flags: row.flags,
             timetableVariation: row.timetable_variation,
             actualAt: row.actual_timestamp,
+            plannedAt: row.planned_timestamp,
           }
         : null,
       latestReceivedAt: row.received_at,
@@ -471,9 +477,31 @@ export function buildHeldDelayInput(
   const berthStanoxes = new Set(ctx.berthStanoxes);
   const raw = ctx.trust?.latestReport ?? null;
 
+  // Owner report, 2026-10-26 (PX, 3S58): a schedule can visit the same place several times
+  // (3S58 called at Preston twice and passed Farington Curve Jn four times). Taking the first
+  // visit measured a train standing at Preston at 20:40 against its 18:33 departure (about 120
+  // late) when it was booked to wait until 20:45. So every visit is placed in time, and the
+  // report is matched to the visit whose booked time it carries.
+  const originDeparture = parseCifTimeToMinutes(ctx.locations[0]?.departure ?? null);
+  const bookedInstant = (loc: ScheduleLocationRow, event: "arrival" | "departure"): Date | null => {
+    const raw =
+      event === "arrival"
+        ? (loc.arrival ?? loc.pass ?? loc.departure)
+        : (loc.departure ?? loc.pass ?? loc.arrival);
+    const minutes = parseCifTimeToMinutes(raw);
+    if (minutes === null) return null;
+    return londonWallClockToInstant(
+      candidate.trafficDay,
+      minutes,
+      scheduleDayOffset(minutes, originDeparture, loc.nextDay),
+    );
+  };
+
   let lastReport: HeldDelayInput["lastReport"] = null;
   let lastReportSeq: number | null = null;
   let leftReportedLocation = false;
+  // The booked time of the last report's event: TRUST's own, or actual time less lateness.
+  let reportPlannedAt: Date | null = null;
   if (raw) {
     const decoded = decodeTrustMovementFlags(raw.flags);
     const hasMinutes =
@@ -491,10 +519,26 @@ export function buildHeldDelayInput(
       terminated: decoded.terminated,
       atThisBerthLocation: raw.locStanox !== null && berthStanoxes.has(raw.locStanox),
     };
+    reportPlannedAt =
+      raw.plannedAt ??
+      (minutesLate !== null ? new Date(raw.actualAt.getTime() - minutesLate * 60_000) : null);
     const reported = ctx.locations.filter(
       (loc) => raw.locStanox !== null && stanoxOf(loc.tiploc) === raw.locStanox,
     );
-    lastReportSeq = reported.length > 0 ? Math.min(...reported.map((loc) => loc.seqNo)) : null;
+    const event = decoded.eventKind === "departure" ? "departure" : "arrival";
+    const planned = reportPlannedAt;
+    const visit =
+      planned === null
+        ? reported[0]
+        : reported.reduce<ScheduleLocationRow | undefined>((best, loc) => {
+            const at = bookedInstant(loc, event);
+            if (!at) return best;
+            if (!best) return loc;
+            const bestAt = bookedInstant(best, event);
+            const gap = Math.abs(at.getTime() - planned.getTime());
+            return !bestAt || gap < Math.abs(bestAt.getTime() - planned.getTime()) ? loc : best;
+          }, undefined);
+    lastReportSeq = (visit ?? reported[0])?.seqNo ?? null;
     leftReportedLocation = decoded.eventKind === "departure";
   }
 
@@ -502,6 +546,13 @@ export function buildHeldDelayInput(
     ctx.locations.find((loc) => {
       const stanox = stanoxOf(loc.tiploc);
       if (stanox === null || !berthStanoxes.has(stanox)) return false;
+      // Defence in depth: a held train's lateness grows at most a minute a minute, so the visit
+      // it's at can't be booked before the event TRUST last reported. A visit that is would
+      // make the estimate later than physically possible — it's the wrong one.
+      if (reportPlannedAt) {
+        const leaveBy = bookedInstant(loc, "departure");
+        if (leaveBy && leaveBy.getTime() < reportPlannedAt.getTime() - 60_000) return false;
+      }
       if (lastReportSeq === null) return true;
       return leftReportedLocation ? loc.seqNo > lastReportSeq : loc.seqNo >= lastReportSeq;
     }) ?? null;
@@ -512,7 +563,6 @@ export function buildHeldDelayInput(
     const kind = berthLocation.departure ? "departure" : berthLocation.pass ? "pass" : null;
     const time = parseCifTimeToMinutes(berthLocation.departure ?? berthLocation.pass);
     if (kind && time !== null) {
-      const originDeparture = parseCifTimeToMinutes(ctx.locations[0]?.departure ?? null);
       timingPoint = {
         kind,
         atOrigin: berthLocation.recordIdentity === "LO",

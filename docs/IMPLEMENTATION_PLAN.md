@@ -5379,3 +5379,24 @@ Known limitations:
 - It uses today's map bindings and berth allowances, not those in force at the time.
 - It uses run links as they stand now, including any made after the moment replayed (the live
   sweep links within seconds, so the difference is small).
+
+## Fix — held-train estimates measured against the wrong visit to a repeated location (2026-10-26)
+
+Owner report (PX, 3S58 / H49507, a Wigan–Preston–Ormskirk–Preston–Colne circuit): it showed about
+120 late waiting in the Preston platform, then 10 on departure, then 137 again leaving Preston.
+The schedule calls at Preston twice and passes Farington Curve Jn four times. `buildHeldDelayInput`
+matched the last TRUST report to the **first** visit at its STANOX, so later visits were measured
+against earlier booked times: the platform wait against 18:33 instead of 20:45, and the Farington
+pass after leaving Preston against 18:40 instead of 20:51½.
+
+- [x] The report is matched to the visit whose booked time it carries: TRUST's `planned_timestamp`
+      (now loaded with the latest report), or actual time less lateness when that's missing.
+- [x] Defence in depth: a held train's lateness grows at most a minute a minute, so the berth's
+      visit can never be booked before the event TRUST last reported (1 minute's tolerance). Any
+      earlier visit is ignored, whatever the report matched.
+- [x] Regression tests from 3S58's real schedule: Farington on the way back (76 before, 13 now),
+      the Preston platform wait (about 127 before, not late now), with and without TRUST's
+      planned time, and the "never earlier than the report" bound on its own. They fail on the old
+      code.
+- Live estimates already recorded between 18:27 and the fix stay as they were (a backfill never
+  rewrites live rows). The Friday–Monday backfill was re-run with the fix.

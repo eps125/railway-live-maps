@@ -116,6 +116,10 @@ export interface MapRendererProps {
   /** Milestone 65: in playback, the position a boundary link carries to the adjacent map so it
    * opens in playback at the same moment, instead of going back to live. Null or absent: live. */
   playbackLink?: { atIso: string; speed: number; playing: boolean } | null;
+  /** Milestone 98: keep the view in the address bar (`?x=&y=&z=`), so a copied link opens at
+   * the same place and zoom, and start from a view the address already carries. The public map
+   * only. */
+  syncViewWithUrl?: boolean;
 }
 
 export interface ViewBox {
@@ -917,6 +921,44 @@ function writeSavedView(mapId: string, v: ViewBox): void {
   }
 }
 
+/** Milestone 98 (owner request 2026-10-27, "like traksy"): the view as it appears in the address
+ * bar — `x`/`y` the map point in the middle of the window, in whole map units, and `z` the zoom
+ * as a percentage of the default magnification (`z=100` is how a first visit opens). Zoom is a
+ * magnification, not an area, so a link opened on a phone shows the same place at the same
+ * readable size rather than squeezing a desktop-sized area into a small screen. */
+export function readUrlView(search: string): MapView | null {
+  const params = new URLSearchParams(search);
+  const x = params.get("x");
+  const y = params.get("y");
+  if (x === null || y === null || x.trim() === "" || y.trim() === "") return null;
+  const cx = Number(x);
+  const cy = Number(y);
+  if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+  const z = Number(params.get("z") ?? "100");
+  const percent = Number.isFinite(z) && z > 0 ? z : 100;
+  // The renderer clamps the magnification to what this map and window allow.
+  return { cx, cy, scale: percent / 100 / DEFAULT_UNITS_PER_PX };
+}
+
+/** Milestone 98: write the view into the address bar with `replaceState` (no history entries),
+ * dropping the arrival-only `boundary`/`center` parameters — once the map has opened there, the
+ * address says where the visitor is looking, not where they came in. */
+export function writeUrlView(view: MapView): void {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("boundary");
+    url.searchParams.delete("center");
+    url.searchParams.set("x", String(Math.round(view.cx)));
+    url.searchParams.set("y", String(Math.round(view.cy)));
+    url.searchParams.set("z", String(Math.round(view.scale * DEFAULT_UNITS_PER_PX * 100)));
+    if (url.toString() !== window.location.href) {
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+  } catch {
+    /* ignore — the map still works, a copied link just opens at the default view */
+  }
+}
+
 /** A fixed-magnification view centred on the map's content. `pxW/pxH` are the real container
  * pixel size when known (so the zoom is genuinely constant across screens); before the
  * container is measured, nominal values keep the first paint sensible. Centres on the author-set
@@ -1336,6 +1378,7 @@ export function MapRenderer({
   atIso = null,
   highlightElementIds = EMPTY_IDS,
   playbackLink = null,
+  syncViewWithUrl = false,
 }: MapRendererProps): JSX.Element {
   // 2026-09-27 (owner report: labels, station names and a shunt neck clipped on Blackpool): the
   // bounding box holds only element anchor points — a berth's top-left, where text starts, a
@@ -1360,9 +1403,14 @@ export function MapRenderer({
     return { w: el?.clientWidth || NOMINAL_WIDTH, h: el?.clientHeight || NOMINAL_HEIGHT };
   }
 
-  /** Where to start: an explicit element to centre on (Milestone 31), else the remembered view,
-   * else the fixed-magnification default. Worked out for a given window size. */
+  /** Where to start: a view in the address (Milestone 98 — a shared link, a refresh, or switching
+   * between live and playback, which remounts the renderer), else an explicit element to centre
+   * on (Milestone 31), else the remembered view, else the fixed-magnification default. The
+   * address view comes first because it is the visitor's latest position: `boundary`/`center` are
+   * dropped from the address once it holds a view. Worked out for a given window size. */
   function startingView(w: number, h: number): { view: MapView; remembered: boolean } {
+    const fromUrl = syncViewWithUrl ? readUrlView(window.location.search) : null;
+    if (fromUrl) return { view: fromUrl, remembered: true };
     const centre = centerElementId
       ? elementCenterPoint(bundle.elementsById[centerElementId])
       : null;
@@ -1392,8 +1440,9 @@ export function MapRenderer({
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const saveTimer = useRef<number | undefined>(undefined);
 
-  /** Publishes the current view (for tests and debugging) and remembers it, debounced so a drag
-   * doesn't hammer localStorage (traksy.uk behaviour). */
+  /** Publishes the current view (for tests and debugging) and remembers it — and, on the public
+   * map, puts it in the address (Milestone 98) — debounced so a drag doesn't hammer localStorage
+   * or `replaceState` (traksy.uk behaviour). */
   function viewChanged(): void {
     const { w, h } = windowSize();
     const box = viewToViewBox(view.current!, w, h);
@@ -1402,10 +1451,14 @@ export function MapRenderer({
     scrollRef.current?.setAttribute("data-view", `${box.x} ${box.y} ${box.width} ${box.height}`);
     maybeRecull(box);
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(
-      () => writeSavedView(bundle.mapId, box),
-      VIEW_SAVE_DEBOUNCE_MS,
-    );
+    const v = { ...view.current! };
+    const path = window.location.pathname;
+    saveTimer.current = window.setTimeout(() => {
+      writeSavedView(bundle.mapId, box);
+      // A boundary link may have moved to another map before this map unmounted: never write
+      // this map's view into that map's address.
+      if (syncViewWithUrl && window.location.pathname === path) writeUrlView(v);
+    }, VIEW_SAVE_DEBOUNCE_MS);
   }
 
   /** Scrolls the window to the current view. The browser clamps at the edges; the scroll event

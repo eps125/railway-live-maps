@@ -11,6 +11,8 @@ import {
   clampScale,
   wheelZoomFactor,
   zoomAroundPoint,
+  readUrlView,
+  writeUrlView,
   MIN_ZOOM_WIDTH,
   WORLD_MARGIN,
   ZOOM_SETTLE_MS,
@@ -1862,12 +1864,136 @@ describe("native scrolling (Milestone 73)", () => {
     expect([x, y, width, height].map((n) => Math.round(n!))).toEqual([100, 50, 1200, 700]);
   });
 
+  describe("view in the address (Milestone 98)", () => {
+    afterEach(() => window.history.replaceState(null, "", "/"));
+    const doc = () =>
+      bundle({
+        boundingBox: { minX: 0, minY: 0, maxX: 5000, maxY: 2000 },
+        elementsById: {
+          "boundary-1": {
+            id: "boundary-1",
+            layerId: "layer-visible",
+            zIndex: 0,
+            type: "boundary",
+            x: 4000,
+            y: 100,
+            name: "Carlisle PSB",
+          },
+        },
+      });
+    const settle = () =>
+      act(() => new Promise<void>((resolve) => setTimeout(resolve, 450 /* save debounce */)));
+
+    it("opens at the view a shared link carries, ahead of a boundary and a remembered view", () => {
+      window.localStorage.setItem(
+        "mtm.mapView.lancaster",
+        JSON.stringify({ x: 100, y: 50, width: 1200, height: 700 }),
+      );
+      window.history.replaceState(null, "", "/map/lancaster?x=2500&y=1000&z=200");
+      const { container } = render(
+        <MapRenderer
+          bundle={doc()}
+          berths={{}}
+          signals={{}}
+          centerElementId="boundary-1"
+          syncViewWithUrl
+        />,
+      );
+      const [x, y, width, height] = view(container.querySelector("svg")!);
+      // z=200: twice the default magnification (1.4 map units per pixel → 0.7).
+      expect(width).toBeCloseTo(1200 * 0.7);
+      expect(height).toBeCloseTo(700 * 0.7);
+      expect(x! + width! / 2).toBeCloseTo(2500);
+      expect(y! + height! / 2).toBeCloseTo(1000);
+    });
+
+    it("after arriving by a boundary link, the address holds the view instead of the boundary", async () => {
+      window.history.replaceState(
+        null,
+        "",
+        "/map/lancaster?boundary=Carlisle%20PSB&at=2026-09-20T10%3A00%3A00.000Z&speed=5",
+      );
+      const before = window.history.length;
+      const { container } = render(
+        <MapRenderer
+          bundle={doc()}
+          berths={{}}
+          signals={{}}
+          centerElementId="boundary-1"
+          syncViewWithUrl
+        />,
+      );
+      const svg = container.querySelector("svg")!;
+      fireEvent.pointerDown(svg, { pointerId: 1, clientX: 300, clientY: 100 });
+      fireEvent.pointerMove(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+      fireEvent.pointerUp(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+      await settle();
+
+      const params = new URLSearchParams(window.location.search);
+      const [x, y, width, height] = view(svg);
+      expect(params.has("boundary")).toBe(false);
+      expect(Number(params.get("x"))).toBe(Math.round(x! + width! / 2));
+      expect(Number(params.get("y"))).toBe(Math.round(y! + height! / 2));
+      expect(params.get("z")).toBe("100");
+      // The playback position is left alone, and nothing was added to the history.
+      expect(params.get("at")).toBe("2026-09-20T10:00:00.000Z");
+      expect(params.get("speed")).toBe("5");
+      expect(window.history.length).toBe(before);
+    });
+
+    it("never writes this map's view into another map's address", async () => {
+      window.history.replaceState(null, "", "/map/lancaster");
+      const { container } = render(
+        <MapRenderer bundle={doc()} berths={{}} signals={{}} syncViewWithUrl />,
+      );
+      const svg = container.querySelector("svg")!;
+      fireEvent.pointerDown(svg, { pointerId: 1, clientX: 300, clientY: 100 });
+      fireEvent.pointerMove(svg, { pointerId: 1, clientX: 200, clientY: 100 });
+      window.history.pushState(null, "", "/map/carlisle?boundary=Lancaster");
+      await settle();
+      expect(window.location.search).toBe("?boundary=Lancaster");
+    });
+
+    it("leaves the address alone unless asked (the editor and tests)", async () => {
+      window.history.replaceState(null, "", "/map/lancaster?boundary=Carlisle%20PSB");
+      render(<MapRenderer bundle={doc()} berths={{}} signals={{}} />);
+      await settle();
+      expect(window.location.search).toBe("?boundary=Carlisle%20PSB");
+    });
+  });
+
   it("keeps a finite view in a container that has no size yet (hidden panel)", () => {
     const { container } = render(<MapRenderer bundle={bundle()} berths={{}} signals={{}} />);
     const svg = container.querySelector("svg")!;
     fireEvent.pointerDown(svg, { pointerId: 1, clientX: 100, clientY: 100 });
     fireEvent.pointerMove(svg, { pointerId: 1, clientX: 40, clientY: 90 });
     expect(view(svg).every(Number.isFinite)).toBe(true);
+  });
+});
+
+describe("readUrlView / writeUrlView (Milestone 98)", () => {
+  afterEach(() => window.history.replaceState(null, "", "/"));
+
+  it("reads the centre and zoom, defaulting the zoom and ignoring a broken view", () => {
+    expect(readUrlView("?x=2500&y=-40&z=150")).toEqual({ cx: 2500, cy: -40, scale: 1.5 / 1.4 });
+    expect(readUrlView("?x=10&y=20")).toEqual({ cx: 10, cy: 20, scale: 1 / 1.4 });
+    expect(readUrlView("?x=10&y=20&z=0")?.scale).toBeCloseTo(1 / 1.4);
+    expect(readUrlView("?x=10")).toBeNull();
+    expect(readUrlView("?x=&y=20")).toBeNull();
+    expect(readUrlView("?x=abc&y=20")).toBeNull();
+    expect(readUrlView("?boundary=Carlisle")).toBeNull();
+  });
+
+  it("round-trips through the address, rounded, dropping boundary and center", () => {
+    window.history.replaceState(null, "", "/map/preston?boundary=North&center=el-1&speed=2");
+    writeUrlView({ cx: 1234.6, cy: 55.2, scale: 2 / 1.4 });
+    const url = new URL(window.location.href);
+    expect(url.pathname).toBe("/map/preston");
+    expect(url.searchParams.has("boundary")).toBe(false);
+    expect(url.searchParams.has("center")).toBe(false);
+    expect(url.searchParams.get("speed")).toBe("2");
+    expect(url.search).toContain("x=1235&y=55&z=200");
+    expect(readUrlView(url.search)?.scale).toBeCloseTo(2 / 1.4);
   });
 });
 

@@ -306,6 +306,7 @@ export function MapView({
           delayBands={liveDelayBands}
           centerElementId={resolvedCenterElementId}
           highlightElementIds={highlight}
+          syncViewWithUrl
         />
       ) : (
         <PlaybackView
@@ -433,6 +434,7 @@ function PlaybackView({
         centerElementId={centerElementId}
         highlightElementIds={highlight}
         playbackLink={{ atIso: pb.atIso, speed: pb.speed, playing: pb.playing }}
+        syncViewWithUrl
       />
       {sClassPanel ? sClassPanel(pb.atIso) : null}
     </>

@@ -149,7 +149,8 @@ export function App(): JSX.Element {
     // cares about it. Re-evaluated on every render, so it stays in sync with `navigate()`-driven
     // route changes (which re-render App via useRoute's own state) without needing its own effect.
     // Milestone 32 adds `?boundary=<name>`, the same click-through pattern from a boundary
-    // element on the adjacent map instead of a places search.
+    // element on the adjacent map instead of a places search. Milestone 98: both are arrival-only —
+    // once the map opens, MapRenderer replaces them with the view (`?x=&y=&z=`), which wins.
     const searchParams = new URLSearchParams(window.location.search);
     const centerElementId = searchParams.get("center");
     const centerBoundaryName = searchParams.get("boundary");

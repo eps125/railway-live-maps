@@ -5400,3 +5400,36 @@ pass after leaving Preston against 18:40 instead of 20:51½.
       code.
 - Live estimates already recorded between 18:27 and the fix stay as they were (a backfill never
   rewrites live rows). The Friday–Monday backfill was re-run with the fix.
+
+## Milestone 98 — Shareable map links: view in the address (2026-10-27)
+
+Owner request ("like traksy"): as the map is moved, the address bar should follow, so copying it
+takes someone to the same place, zoom and playback moment. The `?boundary=` a boundary link
+arrived with should not stay in the address once the visitor has moved on.
+
+- [x] The public map writes its view to the address with `replaceState` (no history entries),
+      on the same 400 ms debounce as the remembered per-map view: `x`/`y` the map point in the
+      middle of the window (whole map units), `z` the zoom as a percentage of the default
+      magnification (`z=100` is how a first visit opens).
+- [x] Zoom is a magnification, not an area: a link opened on a phone shows the same place at the
+      same readable size, a smaller area around it, rather than a desktop-sized area squeezed
+      onto a small screen. The renderer still clamps it to what the map and window allow.
+- [x] Arrival parameters `boundary` and `center` are dropped once the map writes its view.
+- [x] Starting view order: address view, then `center`/`boundary` element, then the remembered
+      view, then the default. The address view first also keeps the position when switching
+      between live and playback (which remounts the renderer); before, that jumped back to the
+      arrival boundary.
+- [x] Playback (`at`, `speed`, `play`) was already in the address (2026-09-30) and is untouched;
+      both writers only touch their own parameters. A live link carries no time, so it opens live.
+- [x] A write still pending when a boundary link moves to another map is discarded, never written
+      into the new map's address.
+- [x] Opt-in renderer prop `syncViewWithUrl`; only the public map sets it.
+- [x] Tests: parsing (defaults, broken values), round trip, starting from the address ahead of a
+      boundary and a remembered view, boundary dropped after a pan with playback kept and no
+      history entries, no cross-map write, address untouched without the prop.
+
+Known limitations:
+
+- A pan made in the 400 ms before clicking a boundary link isn't in the history entry that Back
+  returns to; Back lands where the address last settled.
+- Toggles (empty berths, delay colours) are per-viewer preferences and are not in the link.

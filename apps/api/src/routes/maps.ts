@@ -165,7 +165,9 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         );
       }
 
-      const { sourceSequence, berths, signals, crossings, routes, quality } = historical
+      // Milestone 92 fix (2026-10-27): `trts` was left out, so playback seeking to a moment while a
+      // TRTS was lit showed it dark until the bit next changed.
+      const { sourceSequence, berths, signals, crossings, routes, trts, quality } = historical
         ? await reconstructStateAt(pool, version.compiled_runtime_bundle, at)
         : await computeLiveState(pool, version.compiled_runtime_bundle, now);
 
@@ -181,6 +183,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         signals,
         crossings,
         routes,
+        trts,
       };
     },
   );

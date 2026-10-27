@@ -194,6 +194,9 @@ describe("GET /api/v1/maps/:slug/live (integration)", () => {
           crossings: {},
           // Milestone 64 / ADR 0016: likewise for routes.
           routes: {},
+          // Milestone 92: likewise for TRTS — the snapshot once left this out, so a TRTS lit
+          // before the page loaded never showed.
+          trts: {},
           // Milestone 82: no berth is linked to a late train here.
           delays: [],
         },

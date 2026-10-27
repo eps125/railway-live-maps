@@ -107,7 +107,9 @@ export async function registerLiveMapRoutes(
       });
 
       const live = await computeLiveState(pool, version.compiled_runtime_bundle, now);
-      const { sourceSequence, berths, signals, crossings, routes } = live;
+      // Milestone 92 fix (2026-10-27): `trts` was left out here, so a TRTS lit before the page
+      // loaded never showed — only a `trts.updated` arriving afterwards could light it.
+      const { sourceSequence, berths, signals, crossings, routes, trts } = live;
       // Outage details are admin-only (owner, 2026-10-10): redacted once here, for this socket.
       const quality = qualityForViewer(live.quality, request.viewer);
       // Milestone 82: the bands in force now. Best-effort — the map must still load if this
@@ -126,7 +128,7 @@ export async function registerLiveMapRoutes(
         type: "snapshot",
         protocolVersion: LIVE_PROTOCOL_VERSION,
         sequence: sourceSequence,
-        state: { mode: "live", quality, berths, signals, crossings, routes, delays },
+        state: { mode: "live", quality, berths, signals, crossings, routes, trts, delays },
       };
       socket.send(JSON.stringify(snapshot));
 

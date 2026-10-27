@@ -4772,6 +4772,14 @@ delay-band fixture's run took "today" as its traffic day while being activated 9
 it now takes its activation's London date. Verified at 00:25 BST: 6 failures without the fix, 57/57
 with it.
 
+Follow-up (2026-10-27, owner report): a TRTS lit before the page loaded, or before the moment
+playback jumped to, never showed; signals and routes did. Both the live WebSocket snapshot
+(`routes/liveMap.ts`) and `/state` (`routes/maps.ts`, used for live load and every playback seek)
+resolved TRTS but listed their response fields by hand and left `trts` out, so only a later
+`trts.updated` could light the dot. Both now include it. Regression:
+`trtsState.integration.test.ts` (lit at a moment between the bit setting and clearing) and the
+snapshot shape in `liveMap.integration.test.ts`; both fail without the fix.
+
 ## Milestone 93 — Recovered TD backfill from a secondary capture (2026-10-16/17, ADR 0020)
 
 The first CT 116 native-ZFS cutover attempt (2026-10-16 ~00:55 BST,

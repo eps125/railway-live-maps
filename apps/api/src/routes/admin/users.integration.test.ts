@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createPool, createUser, setUserActive } from "@railway/database";
+import { createPool, createUser, findUserTypeByName } from "@railway/database";
 import { registerAdminUserRoutes } from "./users.js";
+import { createSiteAccess } from "../../lib/siteAccess.js";
+import { viewerWith } from "../../lib/testViewers.js";
+import type { Viewer } from "../../lib/viewer.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -12,35 +15,48 @@ function requireEnv(name: string): string {
 }
 
 const pool = createPool({ connectionString: requireEnv("DATABASE_URL") });
+const siteAccess = createSiteAccess(pool, { timers: false });
+
+let adminTypeId = "";
+let editorTypeId = "";
+let enhancedEditorTypeId = "";
 
 function freshUsername(prefix: string): string {
   return `${prefix}-${randomUUID()}`;
 }
 
 /** See the identical helper's doc comment in `packages/database/src/users.integration.test.ts` —
- * the "last active admin" guard is a global-state check, and this suite's tests all share one
- * real database with no per-test transaction rollback, so a test needs to neutralize any admin
- * accounts it didn't create itself before asserting "this is *the* last one." */
-async function withOnlyTheseAdminsActive<T>(
+ * the "last manager" guard is a global-state check, and this suite's tests all share one real
+ * database with no per-test transaction rollback, so a test needs to neutralize every other
+ * active user before asserting "this is *the* last one." */
+async function withOnlyTheseUsersActive<T>(
   db: Pool,
   keepActiveIds: string[],
   fn: () => Promise<T>,
 ): Promise<T> {
   const { rows: others } = await db.query<{ id: string }>(
-    `select id from app_user where role = 'admin' and is_active = true and id != all($1::bigint[])`,
+    `select id::text from app_user where is_active = true and id != all($1::bigint[])`,
     [keepActiveIds],
   );
-  for (const row of others) await setUserActive(db, row.id, false);
+  const ids = others.map((row) => row.id);
+  await db.query(`update app_user set is_active = false where id = any($1::bigint[])`, [ids]);
   try {
     return await fn();
   } finally {
-    for (const row of others) await setUserActive(db, row.id, true);
+    await db.query(`update app_user set is_active = true where id = any($1::bigint[])`, [ids]);
   }
 }
 
-async function buildApp() {
+/** The routes run as `viewer` (an Admin by default) — the scope's permission hook is covered in
+ * `server.integration.test.ts`. */
+async function buildApp(viewer: Viewer = viewerWith()) {
   const app = Fastify();
-  await registerAdminUserRoutes(app, { pool });
+  app.decorateRequest("viewer", null);
+  app.decorateRequest("authSession", null);
+  app.addHook("onRequest", async (request) => {
+    request.viewer = viewer;
+  });
+  await registerAdminUserRoutes(app, { pool, siteAccess });
   await app.ready();
   return app;
 }
@@ -51,6 +67,12 @@ async function buildApp() {
  * `apps/api/src/server.integration.test.ts`; this file is about the CRUD behavior once inside).
  */
 describe("admin user routes (integration)", () => {
+  beforeAll(async () => {
+    adminTypeId = (await findUserTypeByName(pool, "Admin"))!.id;
+    editorTypeId = (await findUserTypeByName(pool, "Editor"))!.id;
+    enhancedEditorTypeId = (await findUserTypeByName(pool, "Enhanced Editor"))!.id;
+  });
+
   afterAll(async () => {
     await pool.end();
   });
@@ -62,11 +84,12 @@ describe("admin user routes (integration)", () => {
     const createResponse = await app.inject({
       method: "POST",
       url: "/api/v1/admin/users",
-      payload: { username, password: "hunter2hunter2", role: "editor" },
+      payload: { username, password: "hunter2hunter2", userTypeId: editorTypeId },
     });
     expect(createResponse.statusCode).toBe(201);
     const created = createResponse.json();
-    expect(created.role).toBe("editor");
+    expect(created.userTypeId).toBe(editorTypeId);
+    expect(created.userTypeName).toBe("Editor");
     expect(created.username).toBe(username.toLowerCase());
     expect(created).not.toHaveProperty("passwordHash");
     expect(created).not.toHaveProperty("password");
@@ -81,12 +104,12 @@ describe("admin user routes (integration)", () => {
   it("rejects a duplicate username with 409", async () => {
     const app = await buildApp();
     const username = freshUsername("dup");
-    await createUser(pool, { username, password: "hunter2hunter2", role: "editor" });
+    await createUser(pool, { username, password: "hunter2hunter2", userTypeId: editorTypeId });
 
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/admin/users",
-      payload: { username, password: "hunter2hunter2", role: "editor" },
+      payload: { username, password: "hunter2hunter2", userTypeId: editorTypeId },
     });
     expect(response.statusCode).toBe(409);
     expect(response.json().error.code).toBe("DUPLICATE_USERNAME");
@@ -99,33 +122,33 @@ describe("admin user routes (integration)", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/admin/users",
-      payload: { username: freshUsername("short-pw"), password: "short", role: "editor" },
+      payload: { username: freshUsername("short-pw"), password: "short", userTypeId: editorTypeId },
     });
     expect(response.statusCode).toBe(400);
     await app.close();
   });
 
-  it("PATCH updates role and isActive independently", async () => {
+  it("PATCH updates the user type and isActive independently", async () => {
     const app = await buildApp();
     const other = await createUser(pool, {
       username: freshUsername("keeps-admin-alive"),
       password: "hunter2hunter2",
-      role: "admin",
+      userTypeId: adminTypeId,
     });
     void other;
     const user = await createUser(pool, {
       username: freshUsername("patchable"),
       password: "hunter2hunter2",
-      role: "editor",
+      userTypeId: editorTypeId,
     });
 
     const roleResponse = await app.inject({
       method: "PATCH",
       url: `/api/v1/admin/users/${user.id}`,
-      payload: { role: "admin" },
+      payload: { userTypeId: adminTypeId },
     });
     expect(roleResponse.statusCode).toBe(200);
-    expect(roleResponse.json().role).toBe("admin");
+    expect(roleResponse.json().userTypeName).toBe("Admin");
 
     const activeResponse = await app.inject({
       method: "PATCH",
@@ -134,12 +157,12 @@ describe("admin user routes (integration)", () => {
     });
     expect(activeResponse.statusCode).toBe(200);
     expect(activeResponse.json().isActive).toBe(false);
-    // The role change from the previous request must have stuck.
-    expect(activeResponse.json().role).toBe("admin");
+    // The type change from the previous request must have stuck.
+    expect(activeResponse.json().userTypeName).toBe("Admin");
 
     // Both `other` and `user` end up as admin accounts left in the shared test database — safe:
-    // any later test asserting a specific "last admin" state uses `withOnlyTheseAdminsActive`
-    // above, which neutralizes stray admins like these for the duration of its own assertions.
+    // any later test asserting a specific "last manager" state uses `withOnlyTheseUsersActive`
+    // above, which neutralizes stray accounts like these for the duration of its own assertions.
     await app.close();
   });
 
@@ -148,10 +171,10 @@ describe("admin user routes (integration)", () => {
     const admin = await createUser(pool, {
       username: freshUsername("sole-admin"),
       password: "hunter2hunter2",
-      role: "admin",
+      userTypeId: adminTypeId,
     });
 
-    await withOnlyTheseAdminsActive(pool, [admin.id], async () => {
+    await withOnlyTheseUsersActive(pool, [admin.id], async () => {
       const response = await app.inject({
         method: "PATCH",
         url: `/api/v1/admin/users/${admin.id}`,
@@ -160,6 +183,50 @@ describe("admin user routes (integration)", () => {
       expect(response.statusCode).toBe(409);
       expect(response.json().error.code).toBe("LAST_ADMIN");
     });
+
+    await app.close();
+  });
+
+  it("refuses to give, change or remove a type holding permissions the requester lacks", async () => {
+    // An Enhanced Editor with admin.users added, but none of the other admin permissions.
+    const enhancedEditor = (await findUserTypeByName(pool, "Enhanced Editor"))!;
+    const app = await buildApp(viewerWith([...enhancedEditor.permissions, "admin.users"]));
+
+    const giveAdmin = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/users",
+      payload: {
+        username: freshUsername("escalate"),
+        password: "hunter2hunter2",
+        userTypeId: adminTypeId,
+      },
+    });
+    expect(giveAdmin.statusCode).toBe(403);
+
+    const giveEditor = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/users",
+      payload: {
+        username: freshUsername("allowed"),
+        password: "hunter2hunter2",
+        userTypeId: enhancedEditorTypeId,
+      },
+    });
+    expect(giveEditor.statusCode).toBe(201);
+
+    const admin = await createUser(pool, {
+      username: freshUsername("untouchable"),
+      password: "hunter2hunter2",
+      userTypeId: adminTypeId,
+    });
+    const demote = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/admin/users/${admin.id}`,
+      payload: { userTypeId: editorTypeId },
+    });
+    expect(demote.statusCode).toBe(403);
+    const remove = await app.inject({ method: "DELETE", url: `/api/v1/admin/users/${admin.id}` });
+    expect(remove.statusCode).toBe(403);
 
     await app.close();
   });
@@ -180,7 +247,7 @@ describe("admin user routes (integration)", () => {
     const user = await createUser(pool, {
       username: freshUsername("deletable"),
       password: "hunter2hunter2",
-      role: "editor",
+      userTypeId: editorTypeId,
     });
 
     const first = await app.inject({ method: "DELETE", url: `/api/v1/admin/users/${user.id}` });

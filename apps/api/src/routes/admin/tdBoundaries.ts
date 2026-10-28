@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
+import { actorName } from "../../lib/viewer.js";
 import { apiError } from "../../lib/queryRange.js";
 
 export interface TdBoundaryRoutesDeps {
@@ -77,7 +78,7 @@ export async function registerTdBoundaryRoutes(
       return apiError("VALIDATION_ERROR", "notes must be a string when provided");
     }
 
-    const createdBy = request.authSession?.username ?? "unknown";
+    const createdBy = actorName(request) ?? "unknown";
     try {
       const result = await pool.query<TdBoundaryRow>(
         `insert into td_area_boundary (area_a, berth_a, area_b, berth_b, notes, created_by)

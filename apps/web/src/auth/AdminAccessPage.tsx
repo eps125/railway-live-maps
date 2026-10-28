@@ -9,14 +9,22 @@ import {
   fromDateTimeLocal,
   toDateTimeLocal,
 } from "./accessCodeFormat.js";
+import type { UserTypesResponse } from "./AdminUserTypesPage.js";
 
-type Scope = "site" | "all_maps" | "maps";
+/** Milestone 99 (docs/adr/0022 §4): a code gives a user type or its own permission list, and may
+ * be limited to named maps. */
+type GrantKind = "user_type" | "custom";
+type MapLimit = "none" | "maps";
 
 interface AccessCode {
   id: string;
   label: string;
   code: string;
-  scope: Scope;
+  grantKind: GrantKind;
+  userTypeId: string | null;
+  userTypeName: string | null;
+  permissions: string[];
+  mapLimit: MapLimit;
   mapIds: string[];
   maxUses: number | null;
   useCount: number;
@@ -85,13 +93,40 @@ const STATUS_TEXT: Record<AccessCode["status"], string> = {
   used_up: "Used up",
 };
 
-function scopeText(code: Pick<AccessCode, "scope" | "mapIds">, maps: MapOption[]): string {
-  if (code.scope === "site") return "All public maps";
-  if (code.scope === "all_maps") return "All maps (public or not)";
+function grantText(
+  code: Pick<AccessCode, "grantKind" | "userTypeName" | "permissions">,
+  types: UserTypesResponse | null,
+): string {
+  if (code.grantKind === "user_type") return `The ${code.userTypeName ?? "?"} user type`;
+  const labels = code.permissions.map(
+    (key) => types?.permissions.find((p) => p.key === key)?.label ?? key,
+  );
+  return `Custom: ${labels.join(", ") || "nothing"}`;
+}
+
+function mapsText(code: Pick<AccessCode, "mapLimit" | "mapIds">, maps: MapOption[]): string {
+  if (code.mapLimit === "none") return "Whichever its permissions allow";
   const names = code.mapIds
     .map((id) => maps.find((map) => map.id === id)?.name)
     .filter((name): name is string => Boolean(name));
   return `Only: ${names.join(", ") || "no maps"}`;
+}
+
+/** The editor permissions a code would give, for the form's warning. */
+function editorPermissionsGiven(
+  types: UserTypesResponse | null,
+  grantKind: GrantKind,
+  userTypeId: string,
+  permissions: string[],
+): string[] {
+  if (!types) return [];
+  const given =
+    grantKind === "user_type"
+      ? (types.types.find((type) => type.id === userTypeId)?.permissions ?? [])
+      : permissions;
+  return types.permissions
+    .filter((p) => p.category === "editor" && given.includes(p.key))
+    .map((p) => p.label);
 }
 
 function grantState(grant: Grant): "active" | "expired" | "revoked" {
@@ -101,7 +136,8 @@ function grantState(grant: Grant): "active" | "expired" | "revoked" {
 
 /**
  * Milestone 84 (docs/adr/0018 §6): Admin › Access codes — switch the site between open and
- * code-required, create codes (generated or custom; whole site or chosen maps; use limit; how long
+ * code-required, create codes (generated or custom; a user type or a custom permission set
+ * (Milestone 99), optionally limited to chosen maps; use limit; how long
  * each use lasts; optional last-entry date), view each code's uses and activity with flags that may
  * mean sharing, change or end a single use, and revoke codes.
  */
@@ -109,6 +145,7 @@ export function AdminAccessPage(): JSX.Element {
   const [mode, setMode] = useState<"open" | "code_required" | null>(null);
   const [codes, setCodes] = useState<AccessCode[] | null>(null);
   const [maps, setMaps] = useState<MapOption[]>([]);
+  const [types, setTypes] = useState<UserTypesResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [openCodeId, setOpenCodeId] = useState<string | null>(null);
@@ -120,17 +157,19 @@ export function AdminAccessPage(): JSX.Element {
 
   async function load(): Promise<void> {
     try {
-      const [settingsRes, codesRes, mapsRes] = await Promise.all([
+      const [settingsRes, codesRes, mapsRes, typesRes] = await Promise.all([
         fetch("/api/v1/admin/settings"),
         fetch("/api/v1/admin/access-codes"),
         fetch("/api/v1/editor/maps"),
+        fetch("/api/v1/admin/user-types"),
       ]);
-      for (const response of [settingsRes, codesRes, mapsRes]) {
+      for (const response of [settingsRes, codesRes, mapsRes, typesRes]) {
         if (!response.ok) {
           setLoadError(await extractError(response, `Failed to load (${response.status})`));
           return;
         }
       }
+      setTypes(await readApiJson<UserTypesResponse>(typesRes));
       setMode(
         (
           await readApiJson<{ settings: { site_access_mode: "open" | "code_required" } }>(
@@ -221,14 +260,15 @@ export function AdminAccessPage(): JSX.Element {
           </label>
         </fieldset>
         <p className="field-hint">
-          Signed-in users never need a code. A code that names maps also shows those maps when the
-          site is open, even if they are not public.
+          Signed-in users never need a code. &ldquo;Open&rdquo; gives everyone the permissions of
+          the &ldquo;No user (public)&rdquo; type (set in User types); a code adds its own on top.
         </p>
       </section>
 
       {creating ? (
         <CodeForm
           maps={maps}
+          types={types}
           onCancel={() => setCreating(false)}
           onSubmit={async (body) => {
             if (
@@ -273,7 +313,11 @@ export function AdminAccessPage(): JSX.Element {
               <dl className="admin-map-row__facts">
                 <div>
                   <dt>Gives</dt>
-                  <dd>{scopeText(code, maps)}</dd>
+                  <dd>{grantText(code, types)}</dd>
+                </div>
+                <div>
+                  <dt>Maps</dt>
+                  <dd>{mapsText(code, maps)}</dd>
                 </div>
                 <div>
                   <dt>Uses</dt>
@@ -408,6 +452,7 @@ export function AdminAccessPage(): JSX.Element {
               {editingCodeId === code.id && (
                 <CodeForm
                   maps={maps}
+                  types={types}
                   existing={code}
                   onCancel={() => setEditingCodeId(null)}
                   onSubmit={async (body) => {
@@ -436,7 +481,10 @@ export function AdminAccessPage(): JSX.Element {
 interface CodeFormBody {
   label: string;
   code?: string;
-  scope: Scope;
+  grantKind: GrantKind;
+  userTypeId: string | null;
+  permissions: string[];
+  mapLimit: MapLimit;
   mapIds: string[];
   maxUses: number | null;
   accessSeconds: number;
@@ -447,11 +495,13 @@ interface CodeFormBody {
 /** Create (no `existing`) or edit a code. A code's text can only be chosen when creating it. */
 function CodeForm({
   maps,
+  types,
   existing,
   onSubmit,
   onCancel,
 }: {
   maps: MapOption[];
+  types: UserTypesResponse | null;
   existing?: AccessCode;
   onSubmit: (body: CodeFormBody | Omit<CodeFormBody, "code">) => Promise<void>;
   onCancel: () => void;
@@ -459,7 +509,21 @@ function CodeForm({
   const [label, setLabel] = useState(existing?.label ?? "");
   const [customCode, setCustomCode] = useState(false);
   const [code, setCode] = useState("");
-  const [scope, setScope] = useState<Scope>(existing?.scope ?? "site");
+  // A code can give a type only if the type is not built in and has no admin permission.
+  const grantableTypes = (types?.types ?? []).filter((type) => type.codeGrantable);
+  const grantablePermissions = (types?.permissions ?? []).filter((p) => p.codeGrantable);
+  const [grantKind, setGrantKind] = useState<GrantKind>(existing?.grantKind ?? "user_type");
+  const [userTypeId, setUserTypeId] = useState(
+    existing?.userTypeId ??
+      grantableTypes.find((type) => type.name === "Basic User")?.id ??
+      grantableTypes[0]?.id ??
+      "",
+  );
+  const [permissions, setPermissions] = useState<string[]>(
+    existing?.permissions.length ? existing.permissions : ["site.view", "maps.view_public"],
+  );
+  const [mapLimit, setMapLimit] = useState<MapLimit>(existing?.mapLimit ?? "none");
+  const editorGiven = editorPermissionsGiven(types, grantKind, userTypeId, permissions);
   const [mapIds, setMapIds] = useState<string[]>(existing?.mapIds ?? []);
   const [limited, setLimited] = useState(existing ? existing.maxUses !== null : false);
   const [maxUses, setMaxUses] = useState(String(existing?.maxUses ?? 1));
@@ -484,8 +548,11 @@ function CodeForm({
         setSaving(true);
         const body: CodeFormBody = {
           label,
-          scope,
-          mapIds: scope === "maps" ? mapIds : [],
+          grantKind,
+          userTypeId: grantKind === "user_type" ? userTypeId : null,
+          permissions: grantKind === "custom" ? permissions : [],
+          mapLimit,
+          mapIds: mapLimit === "maps" ? mapIds : [],
           maxUses: limited ? Number(maxUses) : null,
           accessSeconds,
           validUntil: fromDateTimeLocal(validUntil),
@@ -534,24 +601,85 @@ function CodeForm({
       )}
 
       <fieldset className="access-code-form__group">
-        <legend>Gives access to</legend>
-        <label className="field field--checkbox">
-          <input type="radio" checked={scope === "site"} onChange={() => setScope("site")} />
-          All public maps
-        </label>
+        <legend>Gives</legend>
         <label className="field field--checkbox">
           <input
             type="radio"
-            checked={scope === "all_maps"}
-            onChange={() => setScope("all_maps")}
+            checked={grantKind === "user_type"}
+            onChange={() => setGrantKind("user_type")}
           />
-          All maps (including ones that are not public)
+          A user type
+        </label>
+        {grantKind === "user_type" && (
+          <label className="field">
+            User type
+            <select value={userTypeId} onChange={(e) => setUserTypeId(e.target.value)}>
+              {grantableTypes.map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="field field--checkbox">
+          <input
+            type="radio"
+            checked={grantKind === "custom"}
+            onChange={() => setGrantKind("custom")}
+          />
+          Chosen permissions
+        </label>
+        {grantKind === "custom" && (
+          <div className="access-permissions">
+            {grantablePermissions.map((permission) => (
+              <label
+                key={permission.key}
+                className="field field--checkbox"
+                title={permission.description}
+              >
+                <input
+                  type="checkbox"
+                  checked={permissions.includes(permission.key)}
+                  onChange={(e) =>
+                    setPermissions((current) =>
+                      e.target.checked
+                        ? [...current, permission.key]
+                        : current.filter((key) => key !== permission.key),
+                    )
+                  }
+                />
+                {permission.label}
+              </label>
+            ))}
+          </div>
+        )}
+        {editorGiven.length > 0 && (
+          <p className="access-warning" role="note">
+            <span className="access-warning__icon" aria-hidden="true">
+              ⚠
+            </span>
+            <span>
+              This code gives editor permissions ({editorGiven.join(", ")}). That is unusual: anyone
+              holding it can change maps without an account. Changes are logged as &ldquo;code:
+              {label || "label"}&rdquo;.
+            </span>
+          </p>
+        )}
+        <p className="field-hint">A code can never give an admin permission.</p>
+      </fieldset>
+
+      <fieldset className="access-code-form__group">
+        <legend>Maps</legend>
+        <label className="field field--checkbox">
+          <input type="radio" checked={mapLimit === "none"} onChange={() => setMapLimit("none")} />
+          Whichever maps its permissions allow
         </label>
         <label className="field field--checkbox">
-          <input type="radio" checked={scope === "maps"} onChange={() => setScope("maps")} />
+          <input type="radio" checked={mapLimit === "maps"} onChange={() => setMapLimit("maps")} />
           Only these maps (even if they are not public)
         </label>
-        {scope === "maps" && (
+        {mapLimit === "maps" && (
           <div className="admin-map-settings__groups">
             {maps.map((map) => (
               <label key={map.id} className="field field--checkbox">

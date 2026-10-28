@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import Fastify from "fastify";
+import { appAs } from "../lib/testViewers.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
@@ -161,7 +161,7 @@ afterAll(async () => {
 });
 
 async function buildApp() {
-  const app = Fastify();
+  const app = appAs();
   await registerMapRoutes(app, { pool });
   await app.ready();
   return app;

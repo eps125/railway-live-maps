@@ -5441,3 +5441,62 @@ Known limitations:
 - A pan made in the 400 ms before clicking a boundary link isn't in the history entry that Back
   returns to; Back lands where the address last settled.
 - Toggles (empty berths, delay colours) are per-viewer preferences and are not in the link.
+
+## Milestone 99 — User types and a permission matrix (2026-10-28, ADR 0022)
+
+Owner request: replace the fixed `editor`/`admin` roles (Milestone 29) with admin-editable user
+types, each with a permission matrix, and let access codes (Milestone 84) give a user type or a
+custom permission set, optionally limited to chosen maps. Design approved 2026-10-28 with these
+decisions: map management is Admin only; access codes and the audit log are Admin only but each on
+its own permission; a code may give editor permissions (the form warns) but never admin ones; the
+site access mode becomes the public type's permissions; each train popup row is its own permission.
+
+- [x] Permission registry in code (`packages/database/src/permissions.ts`, 34 permissions in six
+      categories: viewing, map, train popup, editor, tools, admin) mirrored by a `permission`
+      table every grant references; the API refuses to start if they disagree.
+- [x] Migration 0056: `permission`, `user_type`, `user_type_permission`, `app_user.user_type_id`,
+      `access_code.grant_kind` / `user_type_id` / `map_limit`, `access_code_permission`. Seeds the
+      six types (No user (public), Basic User, Enhanced User, Editor, Enhanced Editor, Admin) and
+      maps every user and code without loss: admin → Admin, editor → Enhanced Editor; `site` codes
+      → Basic User, `all_maps` → Enhanced User, `maps` → Basic User limited to its maps; the public
+      type gets Basic User's permissions only if the site was `open`. Database rules: Admin holds
+      everything (`grants_all`); no user has the public type; no code carries an admin permission
+      or gives the public/Admin type or a type with admin permissions.
+- [x] Server-side checks replace every role check: `requirePermission` per scope in `server.ts`,
+      `needs(...)` per route, one table for the editor's write routes
+      (`apps/api/src/lib/editorPermissions.ts`), map visibility from `maps.view_public` /
+      `maps.view_all`, `site.view` instead of the site mode, and per-viewer responses: no
+      `/events` or past `?at=` without `map.playback`, no delay bands (REST or WebSocket) without
+      `map.delay_colours`, signal numbers stripped from definitions without `map.signal_numbers`,
+      feed-gap details by `map.feed_gap_details`, and the train popup's fields by `popup.*`.
+- [x] Permissions are read from Postgres per request (cached a few seconds, cleared on any change),
+      not the Redis session: a change applies on the next request; a deactivated user's session
+      stops working at once.
+- [x] Guards: nobody can give a user, type or code a permission they don't hold; the last active
+      user holding `admin.users` + `admin.user_types` cannot be deactivated, deleted or moved, and
+      the matrix cannot be changed to leave nobody holding them; Admin can't be changed; types in
+      use can't be deleted.
+- [x] API: `GET/POST/PATCH/DELETE /api/v1/admin/user-types`; users take `userTypeId`; codes take
+      `grantKind` / `userTypeId` / `permissions` / `mapLimit`; `/auth/me` and `/access/status`
+      return `permissions`. Changes made through a code are recorded as `code:<label>`.
+- [x] Web: Admin › User types (the matrix, with save/undo, create/rename/delete), user type
+      selects on Admin › Users, the access-code form (type or chosen permissions, map limit, a
+      warning triangle when editor permissions are given), and every gate (admin pages, Admin hub
+      and Berths hub cards, editor publish and make-module, map playback / delay colours / signal
+      numbers / S-Class panel) driven by permissions. The popup renders whichever rows arrive.
+- [x] Worker `manage-users`: `--type <name>` (and `set-type`); `--role admin|editor` still works.
+- [x] Tests: registry vs migration, seeded matrix, guards and triggers (database integration),
+      viewer/visibility/guard units, user-type and code end-to-end (`userTypes.integration.test.ts`),
+      the existing auth/access/visibility/popup suites ported, web matrix and code form tests.
+
+Production: migration 0056 hand-applied (after checking `schema_migrations`), then deployed.
+
+Known limitations / follow-ups:
+
+- `app_user.role`, `access_code.scope` and the `site_access_mode` setting are still written but
+  unread, for rollback; drop them in a later migration once the owner approves.
+- The Site settings "Open" switch only adds `site.view` and `maps.view_public` to the public type;
+  anything else guests should have (playback, delay colours, popup rows) is ticked in the matrix.
+- The editor UI does not yet switch to read-only for a type with `editor.view` but not
+  `maps.edit`; the API refuses its saves (`403`) and autosave reports the failure.
+- Groups still add restricted maps on top of a type, as before; they are not part of the matrix.

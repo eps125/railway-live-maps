@@ -3,94 +3,139 @@ import fastifyCookie from "@fastify/cookie";
 import { describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import type { Redis } from "ioredis";
+import type { ActiveGrant, Permission, PermissionMatrix } from "@railway/database";
 import {
+  buildViewer,
   mapVisibilityHook,
   mapVisibilitySql,
+  requirePermission,
   siteAccessHook,
   viewerMayUseSite,
   type Viewer,
 } from "./viewer.js";
 import type { SiteAccess } from "./siteAccess.js";
+import { editorRoutePermission } from "./editorPermissions.js";
 
-const GUEST: Viewer = { user: null, grant: null, siteMode: "open" };
-const EDITOR: Viewer = {
-  user: { id: "7", username: "ed", role: "editor" },
-  grant: null,
-  siteMode: "open",
-};
-const ADMIN: Viewer = {
-  user: { id: "1", username: "boss", role: "admin" },
-  grant: null,
-  siteMode: "open",
-};
+const BASIC: Permission[] = ["site.view", "maps.view_public", "map.playback"];
+
+/** Types: 1 public, 2 basic, 3 group-scoped editor, 4 all-maps, 5 admin-ish. */
+function matrix(publicPermissions: Permission[] = BASIC): PermissionMatrix {
+  return {
+    publicTypeId: "1",
+    byType: new Map<string, ReadonlySet<Permission>>([
+      ["1", new Set(publicPermissions)],
+      ["2", new Set(BASIC)],
+      ["3", new Set<Permission>([...BASIC, "editor.view", "maps.edit"])],
+      ["4", new Set<Permission>([...BASIC, "maps.view_all"])],
+      ["5", new Set<Permission>([...BASIC, "maps.view_all", "admin.users", "admin.user_types"])],
+    ]),
+  };
+}
+
 const EXPIRES = new Date("2030-01-01T00:00:00Z");
-const SITE_GRANT = { id: "40", codeId: "4", scope: "site" as const, expiresAt: EXPIRES };
-const MAPS_GRANT = { id: "50", codeId: "5", scope: "maps" as const, expiresAt: EXPIRES };
+type GrantInput = Parameters<typeof buildViewer>[2];
+function grant(over: Partial<NonNullable<GrantInput>>): GrantInput {
+  return {
+    id: "40",
+    codeId: "4",
+    codeLabel: "test",
+    expiresAt: EXPIRES,
+    mapLimit: "none",
+    userTypeId: null,
+    permissions: [],
+    ...over,
+  };
+}
+
+const OPEN = matrix();
+const CLOSED = matrix([]);
+const guest = (m = OPEN, g: GrantInput = null): Viewer => buildViewer(m, null, g);
+const editor = (m = OPEN, g: GrantInput = null): Viewer =>
+  buildViewer(m, { id: "7", username: "ed", userTypeId: "3" }, g);
+const admin = (): Viewer => buildViewer(OPEN, { id: "1", username: "boss", userTypeId: "5" }, null);
+
+describe("buildViewer (Milestone 99)", () => {
+  it("gives everyone the public type's permissions, plus their type's and their code's", () => {
+    expect([...guest().permissions].sort()).toEqual([...BASIC].sort());
+    expect(editor().permissions.has("maps.edit")).toBe(true);
+    expect(guest(CLOSED).permissions.size).toBe(0);
+    const coded = guest(CLOSED, grant({ userTypeId: "4" }));
+    expect(coded.permissions.has("maps.view_all")).toBe(true);
+    expect(coded.userPermissions.size).toBe(0);
+  });
+
+  it("never lets a code carry an admin permission, whatever is stored", () => {
+    const coded = guest(CLOSED, grant({ userTypeId: "5" }));
+    expect(coded.permissions.has("admin.users")).toBe(false);
+    const custom = guest(CLOSED, grant({ permissions: ["site.view", "admin.users"] }));
+    expect([...custom.permissions]).toEqual(["site.view"]);
+  });
+});
 
 describe("mapVisibilitySql", () => {
-  it("a guest sees public maps only", () => {
-    expect(mapVisibilitySql(GUEST, "m", 3)).toEqual({ sql: "m.visibility = 'public'", params: [] });
-  });
-
-  it("a user also sees restricted maps shared with one of their groups", () => {
-    const { sql, params } = mapVisibilitySql(EDITOR, "x", 4);
-    expect(sql).toContain("x.visibility = 'public' or exists");
-    expect(sql).toContain("mvg.map_id = x.id and aug.user_id = $4::bigint");
-    expect(params).toEqual(["7"]);
-  });
-
-  it("an admin sees every map", () => {
-    expect(mapVisibilitySql(ADMIN, "m", 1)).toEqual({ sql: "true", params: [] });
-  });
-
-  it("Milestone 84: a site-wide code sees public maps, like any guest", () => {
-    expect(mapVisibilitySql({ ...GUEST, grant: SITE_GRANT }, "m", 1)).toEqual({
+  it("a guest on an open site sees public maps only", () => {
+    expect(mapVisibilitySql(guest(), "m", 3)).toEqual({
       sql: "m.visibility = 'public'",
       params: [],
     });
   });
 
-  it("Milestone 84: a code naming maps adds them (restricted too) on an open site", () => {
-    const { sql, params } = mapVisibilitySql({ ...GUEST, grant: MAPS_GRANT }, "m", 2);
-    expect(sql).toContain("m.visibility = 'public' or (m.kind = 'map' and exists");
-    expect(sql).toContain("acm.code_id = $2::bigint");
-    expect(params).toEqual(["5"]);
+  it("a guest without view permissions sees nothing", () => {
+    expect(mapVisibilitySql(guest(CLOSED), "m", 1)).toEqual({ sql: "false", params: [] });
   });
 
-  it("an all-maps code sees every map, public or not, but never a module (2026-10-12)", () => {
-    const ALL_MAPS_GRANT = { ...SITE_GRANT, scope: "all_maps" as const };
-    expect(mapVisibilitySql({ ...GUEST, grant: ALL_MAPS_GRANT }, "m", 1)).toEqual({
-      sql: "(m.visibility = 'public' or m.kind = 'map')",
+  it("a user also sees restricted maps shared with one of their groups", () => {
+    const { sql, params } = mapVisibilitySql(editor(), "x", 4);
+    expect(sql).toContain("x.visibility = 'public' or exists");
+    expect(sql).toContain("mvg.map_id = x.id and aug.user_id = $4::bigint");
+    expect(params).toEqual(["7"]);
+  });
+
+  it("maps.view_all from the user's type sees every map", () => {
+    expect(mapVisibilitySql(admin(), "m", 1)).toEqual({ sql: "true", params: [] });
+  });
+
+  it("a code giving public maps on a closed site sees public maps", () => {
+    expect(mapVisibilitySql(guest(CLOSED, grant({ userTypeId: "2" })), "m", 1)).toEqual({
+      sql: "m.visibility = 'public'",
       params: [],
     });
-    // The same while the site needs a code: it is not a "named maps only" code.
-    expect(
-      mapVisibilitySql({ ...GUEST, grant: ALL_MAPS_GRANT, siteMode: "code_required" }, "m", 1).sql,
-    ).toContain("m.kind = 'map'");
   });
 
-  it("a code naming maps never opens a module, even if one is attached to it (2026-10-12)", () => {
-    const { sql } = mapVisibilitySql(
-      { ...GUEST, grant: MAPS_GRANT, siteMode: "code_required" },
-      "m",
-      1,
-    );
-    expect(sql).toContain("m.kind = 'map' and exists");
+  it("a code giving all maps sees every map, never a module (2026-10-12)", () => {
+    expect(mapVisibilitySql(guest(CLOSED, grant({ userTypeId: "4" })), "m", 1)).toEqual({
+      sql: "m.kind = 'map'",
+      params: [],
+    });
   });
 
-  it("Milestone 84: while the site needs a code, a code naming maps gives exactly those maps", () => {
+  it("a code limited to maps gives exactly those maps (restricted too), never a module", () => {
     const { sql, params } = mapVisibilitySql(
-      { ...GUEST, grant: MAPS_GRANT, siteMode: "code_required" },
+      guest(CLOSED, grant({ userTypeId: "4", mapLimit: "maps" })),
       "m",
       1,
     );
     expect(sql).not.toContain("visibility = 'public'");
+    expect(sql).toContain("m.kind = 'map' and exists");
     expect(sql).toContain("acm.code_id = $1::bigint");
-    expect(params).toEqual(["5"]);
+    expect(params).toEqual(["4"]);
   });
 
-  it("Milestone 84: a user with a code gets their groups' maps and the code's maps", () => {
-    const { sql, params } = mapVisibilitySql({ ...EDITOR, grant: MAPS_GRANT }, "m", 3);
+  it("on an open site a map-limited code adds its maps to the public ones", () => {
+    const { sql } = mapVisibilitySql(
+      guest(OPEN, grant({ userTypeId: "2", mapLimit: "maps" })),
+      "m",
+      2,
+    );
+    expect(sql).toContain("m.visibility = 'public' or (m.kind = 'map' and exists");
+  });
+
+  it("a user with a code gets their groups' maps and the code's maps", () => {
+    const { sql, params } = mapVisibilitySql(
+      editor(OPEN, grant({ codeId: "5", userTypeId: "2", mapLimit: "maps" })),
+      "m",
+      3,
+    );
     expect(sql).toContain("aug.user_id = $3::bigint");
     expect(sql).toContain("acm.code_id = $4::bigint");
     expect(params).toEqual(["7", "5"]);
@@ -98,12 +143,21 @@ describe("mapVisibilitySql", () => {
 });
 
 describe("viewerMayUseSite", () => {
-  it("lets anyone in on an open site, and only users or code holders when a code is needed", () => {
-    expect(viewerMayUseSite(GUEST)).toBe(true);
-    const closed = { ...GUEST, siteMode: "code_required" as const };
-    expect(viewerMayUseSite(closed)).toBe(false);
-    expect(viewerMayUseSite({ ...closed, grant: SITE_GRANT })).toBe(true);
-    expect(viewerMayUseSite({ ...EDITOR, siteMode: "code_required" })).toBe(true);
+  it("needs site.view, from any source", () => {
+    expect(viewerMayUseSite(guest())).toBe(true);
+    expect(viewerMayUseSite(guest(CLOSED))).toBe(false);
+    expect(viewerMayUseSite(guest(CLOSED, grant({ userTypeId: "2" })))).toBe(true);
+    expect(viewerMayUseSite(editor(CLOSED))).toBe(true);
+  });
+});
+
+describe("editorRoutePermission", () => {
+  it("names the write routes, and defaults to view for reads and edit for other writes", () => {
+    expect(editorRoutePermission("POST", "/api/v1/editor/maps/:slug/publish")).toBe("maps.publish");
+    expect(editorRoutePermission("PUT", "/api/v1/editor/maps/:slug/draft")).toBe("maps.edit");
+    expect(editorRoutePermission("POST", "/api/v1/editor/maps/:slug/validate")).toBe("editor.view");
+    expect(editorRoutePermission("GET", "/api/v1/editor/maps/:slug/draft")).toBe("editor.view");
+    expect(editorRoutePermission("POST", "/api/v1/editor/something/new")).toBe("maps.edit");
   });
 });
 
@@ -116,6 +170,32 @@ function fakeRedis(sessions: Record<string, unknown>): Redis {
     expire: async () => 1,
   } as unknown as Redis;
 }
+
+function fakeSiteAccess(
+  m: PermissionMatrix,
+  grants: Record<string, ActiveGrant> = {},
+  users: Record<string, string> = { "7": "3", "1": "5" },
+): SiteAccess & { noted: string[] } {
+  const noted: string[] = [];
+  return {
+    noted,
+    matrix: async () => m,
+    userAccess: async (userId) => (users[userId] ? { userTypeId: users[userId]! } : null),
+    grantForToken: async (token) => (token ? (grants[token] ?? null) : null),
+    noteActivity: (grantId, ip) => {
+      noted.push(`${grantId}@${ip}`);
+    },
+    invalidate: () => undefined,
+    flush: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+const SESSIONS = {
+  "editor-token": { userId: "7", username: "ed" },
+  "admin-token": { userId: "1", username: "boss" },
+  "gone-token": { userId: "99", username: "deleted" },
+};
 
 /** A map table of slug → { visible-to-guest, visible-to-user-7 }. */
 function fakePool(maps: Record<string, { guest: boolean; user: boolean }>): Pool {
@@ -130,51 +210,51 @@ function fakePool(maps: Record<string, { guest: boolean; user: boolean }>): Pool
   } as unknown as Pool;
 }
 
-async function buildApp(pool: Pool, redis: Redis) {
-  const app = Fastify();
-  await app.register(fastifyCookie);
-  app.decorateRequest("authSession", null);
-  app.decorateRequest("viewer", null);
-  app.addHook("preHandler", mapVisibilityHook({ pool, redis, sessionTtlSeconds: 60 }));
-  app.get<{ Params: { slug: string } }>("/maps/:slug", async (request) => ({
-    slug: request.params.slug,
-    viewer: request.viewer,
-  }));
-  app.get("/list", async (request) => ({ viewer: request.viewer }));
-  return app;
-}
-
 describe("mapVisibilityHook", () => {
   const pool = fakePool({
     lancaster: { guest: true, user: true },
     "staff-map": { guest: false, user: true },
     "admin-map": { guest: false, user: false },
   });
-  const redis = fakeRedis({
-    "editor-token": { userId: "7", username: "ed", role: "editor" },
-    "admin-token": { userId: "1", username: "boss", role: "admin" },
-  });
+
+  async function buildApp() {
+    const app = Fastify();
+    await app.register(fastifyCookie);
+    app.decorateRequest("authSession", null);
+    app.decorateRequest("viewer", null);
+    app.addHook(
+      "preHandler",
+      mapVisibilityHook({
+        pool,
+        redis: fakeRedis(SESSIONS),
+        sessionTtlSeconds: 60,
+        siteAccess: fakeSiteAccess(OPEN),
+      }),
+    );
+    app.get<{ Params: { slug: string } }>("/maps/:slug", async (request) => ({
+      slug: request.params.slug,
+      user: request.viewer?.user ?? null,
+    }));
+    app.get("/list", async (request) => ({ user: request.viewer?.user ?? null }));
+    return app;
+  }
 
   it("answers 404 MAP_NOT_FOUND for a map the viewer may not see, never 403", async () => {
-    const app = await buildApp(pool, redis);
+    const app = await buildApp();
     const response = await app.inject({ method: "GET", url: "/maps/staff-map" });
     expect(response.statusCode).toBe(404);
     expect(response.json().error.code).toBe("MAP_NOT_FOUND");
   });
 
-  it("lets a group member through to a restricted map, and an admin through to any map", async () => {
-    const app = await buildApp(pool, redis);
+  it("lets a group member through to a restricted map, and maps.view_all through to any", async () => {
+    const app = await buildApp();
     const asEditor = await app.inject({
       method: "GET",
       url: "/maps/staff-map",
       cookies: { rlm_session: "editor-token" },
     });
     expect(asEditor.statusCode).toBe(200);
-    expect(asEditor.json().viewer).toEqual({
-      user: { id: "7", username: "ed", role: "editor" },
-      grant: null,
-      siteMode: "open",
-    });
+    expect(asEditor.json().user).toEqual({ id: "7", username: "ed", userTypeId: "3" });
 
     const editorToAdminMap = await app.inject({
       method: "GET",
@@ -192,55 +272,82 @@ describe("mapVisibilityHook", () => {
   });
 
   it("passes a public map and an unknown slug through (the route decides not-found)", async () => {
-    const app = await buildApp(pool, redis);
+    const app = await buildApp();
     expect((await app.inject({ method: "GET", url: "/maps/lancaster" })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: "/maps/nowhere" })).statusCode).toBe(200);
   });
 
-  it("resolves the viewer on routes without a slug, and treats an expired session as a guest", async () => {
-    const app = await buildApp(pool, redis);
-    const response = await app.inject({
-      method: "GET",
-      url: "/list",
-      cookies: { rlm_session: "expired-token" },
-    });
-    expect(response.json().viewer).toEqual({ user: null, grant: null, siteMode: "open" });
+  it("treats an expired session, or one whose user is gone or inactive, as a guest", async () => {
+    const app = await buildApp();
+    for (const token of ["expired-token", "gone-token"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/list",
+        cookies: { rlm_session: token },
+      });
+      expect(response.json().user).toBeNull();
+    }
   });
 });
 
-function fakeSiteAccess(
-  mode: "open" | "code_required",
-  grants: Record<string, typeof SITE_GRANT>,
-): SiteAccess & { noted: string[] } {
-  const noted: string[] = [];
-  return {
-    noted,
-    siteMode: async () => mode,
-    grantForToken: async (token) => {
-      const grant = token ? grants[token] : undefined;
-      return grant ? { ...grant, codeLabel: "test" } : null;
-    },
-    noteActivity: (grantId, ip) => {
-      noted.push(`${grantId}@${ip}`);
-    },
-    invalidate: () => undefined,
-    flush: async () => undefined,
-    close: async () => undefined,
-  };
-}
+describe("requirePermission", () => {
+  async function buildApp(permission: Permission) {
+    const app = Fastify();
+    await app.register(fastifyCookie);
+    app.decorateRequest("authSession", null);
+    app.decorateRequest("viewer", null);
+    app.addHook(
+      "preHandler",
+      requirePermission(permission, {
+        redis: fakeRedis(SESSIONS),
+        sessionTtlSeconds: 60,
+        siteAccess: fakeSiteAccess(CLOSED),
+      }),
+    );
+    app.get("/x", async () => ({ ok: true }));
+    return app;
+  }
 
-describe("siteAccessHook (Milestone 84)", () => {
+  it("401s a visitor with no login and no code, 403s anyone else lacking it, passes holders", async () => {
+    const app = await buildApp("maps.edit");
+    expect((await app.inject({ method: "GET", url: "/x" })).statusCode).toBe(401);
+    const asAdmin = await app.inject({
+      method: "GET",
+      url: "/x",
+      cookies: { rlm_session: "admin-token" },
+    });
+    expect(asAdmin.statusCode).toBe(403);
+    expect(asAdmin.json().error.code).toBe("FORBIDDEN");
+    const asEditor = await app.inject({
+      method: "GET",
+      url: "/x",
+      cookies: { rlm_session: "editor-token" },
+    });
+    expect(asEditor.statusCode).toBe(200);
+  });
+});
+
+describe("siteAccessHook", () => {
   const token = "a".repeat(64);
+  const basicGrant: ActiveGrant = {
+    id: "40",
+    codeId: "4",
+    expiresAt: EXPIRES,
+    codeLabel: "test",
+    grantKind: "user_type",
+    userTypeId: "2",
+    permissions: [],
+    mapLimit: "none",
+  };
 
   async function gatedApp(siteAccess: SiteAccess) {
     const app = Fastify();
     await app.register(fastifyCookie);
     app.decorateRequest("authSession", null);
     app.decorateRequest("viewer", null);
-    const redis = fakeRedis({ "editor-token": { userId: "7", username: "ed", role: "editor" } });
     app.addHook(
       "onRequest",
-      siteAccessHook({ redis, sessionTtlSeconds: 60, siteAccess: siteAccess }),
+      siteAccessHook({ redis: fakeRedis(SESSIONS), sessionTtlSeconds: 60, siteAccess }),
     );
     for (const url of [
       "/api/v1/maps",
@@ -253,8 +360,8 @@ describe("siteAccessHook (Milestone 84)", () => {
     return app;
   }
 
-  it("asks a guest without a code for one, on every API route but login, access and health", async () => {
-    const app = await gatedApp(fakeSiteAccess("code_required", {}));
+  it("asks a visitor without site.view for a code, on every API route but login, access and health", async () => {
+    const app = await gatedApp(fakeSiteAccess(CLOSED));
     const blocked = await app.inject({ method: "GET", url: "/api/v1/maps" });
     expect(blocked.statusCode).toBe(401);
     expect(blocked.json().error.code).toBe("ACCESS_CODE_REQUIRED");
@@ -264,7 +371,7 @@ describe("siteAccessHook (Milestone 84)", () => {
   });
 
   it("lets in a code holder (counting the request) and a logged-in user", async () => {
-    const siteAccess = fakeSiteAccess("code_required", { [token]: SITE_GRANT });
+    const siteAccess = fakeSiteAccess(CLOSED, { [token]: basicGrant });
     const app = await gatedApp(siteAccess);
     const withCode = await app.inject({
       method: "GET",
@@ -283,8 +390,22 @@ describe("siteAccessHook (Milestone 84)", () => {
     expect(asUser.statusCode).toBe(200);
   });
 
-  it("does nothing on an open site", async () => {
-    const app = await gatedApp(fakeSiteAccess("open", {}));
+  it("does nothing when the public type has site.view", async () => {
+    const app = await gatedApp(fakeSiteAccess(OPEN));
     expect((await app.inject({ method: "GET", url: "/api/v1/maps" })).statusCode).toBe(200);
+  });
+});
+
+describe("a closed site's public type (Milestone 99)", () => {
+  it("gives a guest nothing while it lacks site.view, whatever else it keeps", () => {
+    const closedButTicked = matrix(["maps.view_public", "map.playback"]);
+    expect(guest(closedButTicked).permissions.size).toBe(0);
+    // ... so a map-limited code gives exactly its maps.
+    const { sql } = mapVisibilitySql(
+      guest(closedButTicked, grant({ userTypeId: "2", mapLimit: "maps" })),
+      "m",
+      1,
+    );
+    expect(sql).not.toContain("visibility = 'public'");
   });
 });

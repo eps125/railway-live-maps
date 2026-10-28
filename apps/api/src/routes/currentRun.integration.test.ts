@@ -3,10 +3,16 @@ import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import type { Redis } from "ioredis";
 import { afterAll, describe, expect, it } from "vitest";
-import { createPool } from "@railway/database";
+import { createPool, PERMISSION_KEYS, type Permission } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
 import { registerCurrentRunRoutes } from "./currentRun.js";
-import { createSession, SESSION_COOKIE_NAME } from "../auth/session.js";
+import {
+  createSession,
+  getSession,
+  SESSION_COOKIE_NAME,
+  type SessionData,
+} from "../auth/session.js";
+import { viewerWith } from "../lib/testViewers.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -53,7 +59,7 @@ const SESSION_TTL_SECONDS = 3600;
 async function authHeaders(): Promise<{ cookie: string }> {
   const token = await createSession(
     fakeRedis,
-    { userId: randomUUID(), username: "test-editor", role: "editor" },
+    { userId: randomUUID(), username: "test-editor", role: "editor" } as SessionData,
     SESSION_TTL_SECONDS,
   );
   return { cookie: `${SESSION_COOKIE_NAME}=${token}` };
@@ -509,14 +515,54 @@ async function seedTrainAllocation(
   createdTrainAllocationIds.push(id);
 }
 
+/** Milestone 99 (docs/adr/0022): the popup's rows follow `popup.*` permissions. These are the
+ * seeded Basic User (a guest here) and Editor sets; a session marked `role: "admin"` gets every
+ * permission. (The real viewer resolution is covered in `userTypes.integration.test.ts`.) */
+const BASIC_PERMISSIONS: Permission[] = [
+  "site.view",
+  "maps.view_public",
+  "map.playback",
+  "map.delay_colours",
+  "popup.headcode",
+  "popup.delay",
+  "popup.origin_destination",
+  "popup.calling_points",
+  "popup.formation",
+];
+const EDITOR_PERMISSIONS: Permission[] = [
+  ...BASIC_PERMISSIONS,
+  "maps.view_all",
+  "map.signal_numbers",
+  "popup.schedule",
+  "popup.match_details",
+  "popup.weak_matches",
+  "popup.candidates",
+  "popup.trust",
+  "popup.latest_report",
+  "editor.view",
+  "maps.edit",
+];
+
 async function buildApp() {
   const app = Fastify();
   await app.register(fastifyCookie);
-  await registerCurrentRunRoutes(app, {
-    pool,
-    redis: fakeRedis,
-    sessionTtlSeconds: SESSION_TTL_SECONDS,
+  app.decorateRequest("viewer", null);
+  app.decorateRequest("authSession", null);
+  app.addHook("onRequest", async (request) => {
+    const session = (await getSession(
+      fakeRedis,
+      request.cookies[SESSION_COOKIE_NAME],
+      SESSION_TTL_SECONDS,
+    )) as (SessionData & { role?: string }) | null;
+    request.viewer = session
+      ? viewerWith(session.role === "admin" ? PERMISSION_KEYS : EDITOR_PERMISSIONS, {
+          id: session.userId,
+          username: session.username,
+          userTypeId: "0",
+        })
+      : viewerWith(BASIC_PERMISSIONS, null);
   });
+  await registerCurrentRunRoutes(app, { pool });
   await app.ready();
   return app;
 }
@@ -1940,7 +1986,7 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         try {
           const token = await createSession(
             fakeRedis,
-            { userId: randomUUID(), username: `test-${role}`, role },
+            { userId: randomUUID(), username: `test-${role}`, role } as SessionData,
             SESSION_TTL_SECONDS,
           );
           const response = await app.inject({

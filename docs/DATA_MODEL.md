@@ -691,10 +691,12 @@ Do not add an area-retention filter. Storage control must use compression, parti
 
 - `username` (unique, stored/looked-up case-insensitively — normalized to lowercase)
 - `password_hash` (bcrypt)
-- `role` — `check (role in ('admin', 'editor'))`; owner explicitly wanted a real multi-user,
-  role-based table rather than a single `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` env-var credential,
-  so more accounts/levels can be added later without a schema rewrite (widen the check constraint
-  for a third role if one's ever needed)
+- `user_type_id` (Milestone 99, migration 0056) — not null, references `user_type`
+  (`on delete restrict`); a trigger refuses the public type. What the user can do.
+- `role` — `check (role in ('admin', 'editor'))`. **Unread since Milestone 99**: still written
+  (`admin` for the Admin type, `editor` otherwise) so the previous release can be rolled back to; to
+  be dropped by a later migration with owner approval. Owner explicitly wanted a real multi-user
+  table rather than a single `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` env-var credential.
 - `is_active`
 - `created_at` / `updated_at` / `last_login_at`
 
@@ -702,11 +704,31 @@ The durable identity/role record — not the source of truth for "who is current
 which is a Redis-only opaque session token (§1 principle: Redis is cache/coordination, never
 source of truth for anything that must survive a restart; losing a session just forces a
 re-login). No table seeds an initial row: the first admin is created via the worker's
-`manage-users create --role admin` CLI, run once by hand — see `docs/ARCHITECTURE.md` §12.
+`manage-users create --type Admin` CLI, run once by hand — see `docs/ARCHITECTURE.md` §12. The
+session holds only the user id and name; the user's type is read from Postgres on each request
+(cached a few seconds in the API, cleared on change), so type and matrix changes apply at once.
+
+### `permission`, `user_type`, `user_type_permission` (Milestone 99, migration 0056, docs/adr/0022)
+
+`permission`: one row per key of the registry in `packages/database/src/permissions.ts`
+(`site.view`, `maps.view_public`, `map.playback`, `popup.trust`, `admin.users`, ...). Every stored
+grant references it, so an unknown permission cannot be stored; the API refuses to start if the
+table and the registry disagree. Adding a permission = a registry entry + a migration row.
+
+`user_type`: `name` (unique case-insensitively), `description`, `sort_order`, `system_key`
+(`public` = every anonymous visitor's type, `admin`, or null) and `grants_all` (true only for
+`admin`: every permission, including ones added later, with no matrix rows — a check ties it to
+`system_key = 'admin'`). Seeded: No user (public), Basic User, Enhanced User, Editor, Enhanced
+Editor, Admin. The public type's permissions replace Milestone 84's `site_access_mode` (`open` =
+it holds `site.view`).
+
+`user_type_permission (user_type_id, permission)`: the matrix. A trigger refuses an `admin.*`
+permission on a type that an access code gives.
 
 ### `user_group`, `app_user_group` (Milestone 83, migration 0046)
 
-Groups decide which restricted maps a user can see; roles still decide what they can do. Group
+Groups decide which restricted maps a user can see; user types (Milestone 99; roles before it)
+decide what they can do. Group
 names are unique case-insensitively. Membership `(user_id, group_id)` cascades from both sides.
 The migration seeds an **Editors** group containing every user that existed at the time.
 
@@ -727,7 +749,11 @@ admin "purge access code" route does.
 ### `access_code`, `access_code_map`, `access_grant`, `access_grant_activity` (Milestone 84, migration 0047)
 
 `access_code`: `label`, `code` (kept viewable — owner decision) and `code_normalized` (upper case,
-no spaces/dashes; unique; what entry matches), `scope` (`site` = every public map / `all_maps` = every map, public or not / `maps` = only the maps named; a module can never be named — migration 0050), `max_uses` (null =
+no spaces/dashes; unique; what entry matches), `grant_kind` (Milestone 99: `user_type` → the
+`user_type_id` type's permissions, or `custom` → the rows in `access_code_permission`), `map_limit`
+(`none` = the maps its permissions allow / `maps` = exactly the maps in `access_code_map`, restricted
+ones included; a module can never be named — migration 0050), `scope` (Milestone 84's `site` /
+`all_maps` / `maps`; **unread since Milestone 99**, still written for rollback), `max_uses` (null =
 unlimited) and `use_count` (constraint: never above the limit), `access_seconds`, `valid_until`,
 `notes`, created/revoked by and when. `access_code_map` lists a maps-only code's maps (cascades
 both ways).
@@ -740,6 +766,13 @@ change it), `revoked_at`/`revoked_by`, first IP and user agent, last seen time a
 written by the API in 30-second batches and deleted after 90 days.
 
 `app_setting.site_access_mode` (`open` / `code_required`) is seeded `open` by the same migration.
+**Unread since Milestone 99** — the public user type's `site.view` is the mode; migration 0056
+copied it across (`open` gave the public type Basic User's permissions).
+
+`access_code_permission (code_id, permission)` (Milestone 99): a `custom` code's permissions. A
+check refuses any `admin.*` permission; a trigger on `access_code` refuses the public type, Admin,
+or a type holding an `admin.*` permission. Migration 0056 mapped existing codes: `site` → Basic
+User, `all_maps` → Enhanced User, `maps` → Basic User with `map_limit = 'maps'`.
 
 ### Map modules (Milestone 85, migration 0048, docs/adr/0019)
 

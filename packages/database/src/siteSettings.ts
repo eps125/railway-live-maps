@@ -5,21 +5,19 @@ import type { Queryable } from "./checkpoint.js";
  * Each known key has a type and a default here, so a missing row (or a malformed value) always
  * reads back as the default rather than breaking a page.
  */
+/** Milestone 84's site mode. Since Milestone 99 (docs/adr/0022 §5) it is not stored as a setting
+ * but read from the public user type: `open` when guests hold `site.view`. */
 export type SiteAccessMode = "open" | "code_required";
 
 export const SITE_SETTING_DEFAULTS = {
   /** Group the public map list by region (with an A–Z toggle) instead of A–Z only. */
   map_list_region_grouping: false as boolean,
-  /** Milestone 84: `code_required` asks guests for an access code before anything else. */
-  site_access_mode: "open" as SiteAccessMode,
 } as const;
 
 /** Settings whose value must be one of a fixed list. */
 const SITE_SETTING_CHOICES: Partial<
   Record<keyof typeof SITE_SETTING_DEFAULTS, readonly unknown[]>
-> = {
-  site_access_mode: ["open", "code_required"],
-};
+> = {};
 
 export type SiteSettingKey = keyof typeof SITE_SETTING_DEFAULTS;
 export type SiteSettings = { [K in SiteSettingKey]: (typeof SITE_SETTING_DEFAULTS)[K] };

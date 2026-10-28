@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { readApiJson } from "./editor/apiJson.js";
+import { useCan } from "./auth/permissions.js";
 import { navigate } from "./useRoute.js";
 import {
   filterMaps,
@@ -54,13 +55,6 @@ const STATUS_LABEL: Record<MapListEntry["liveDataStatus"], string> = {
   unknown: "No data",
 };
 
-export interface LandingPageProps {
-  /** Any editor-or-admin session gets a per-map "Edit" link and the "Unpublished maps" list. */
-  canEdit: boolean;
-  /** An admin also gets a link to Admin › Maps, where maps are created, renamed and deleted. */
-  isAdmin: boolean;
-}
-
 function linkTo(path: string) {
   return {
     href: path,
@@ -77,7 +71,12 @@ function linkTo(path: string) {
  * by region when the admin has turned grouping on (the visitor can switch to A–Z), with a filter
  * box once the list is long. Map management moved to Admin › Maps.
  */
-export function LandingPage({ canEdit, isAdmin }: LandingPageProps): JSX.Element {
+export function LandingPage(): JSX.Element {
+  // Milestone 99: `editor.view` gives a per-map "Edit" link and the "Unpublished maps" list;
+  // `maps.manage` a link to Admin › Maps, where maps are created, renamed and deleted.
+  const can = useCan();
+  const canEdit = can("editor.view");
+  const canManage = can("maps.manage");
   const [maps, setMaps] = useState<MapListEntry[] | null>(null);
   const [regionGrouping, setRegionGrouping] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -208,7 +207,7 @@ export function LandingPage({ canEdit, isAdmin }: LandingPageProps): JSX.Element
               </button>
             </div>
           )}
-          {isAdmin && (
+          {canManage && (
             <a className="landing-page__manage-link" {...linkTo("/admin/maps")}>
               Manage maps
             </a>

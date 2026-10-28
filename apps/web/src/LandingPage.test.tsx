@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PermissionsProvider } from "./auth/permissions.js";
 import { LandingPage } from "./LandingPage.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -67,7 +68,11 @@ describe("LandingPage", () => {
   it("lists every map A–Z with no region headings or toggle when grouping is off", async () => {
     stubFetch((url) => (url === "/api/v1/maps" ? jsonResponse(MAPS_BODY) : undefined));
 
-    const { container } = render(<LandingPage isAdmin={false} canEdit={false} />);
+    const { container } = render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
 
     await screen.findByRole("link", { name: "Lancaster" });
     expect(mapNamesInOrder(container)).toEqual([
@@ -88,7 +93,11 @@ describe("LandingPage", () => {
       url === "/api/v1/maps" ? jsonResponse({ ...MAPS_BODY, regionGrouping: true }) : undefined,
     );
 
-    const { container, unmount } = render(<LandingPage isAdmin={false} canEdit={false} />);
+    const { container, unmount } = render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     await screen.findByRole("link", { name: "Lancaster" });
 
     const headings = [...container.querySelectorAll(".map-group__title")].map((h) => h.textContent);
@@ -114,7 +123,11 @@ describe("LandingPage", () => {
 
     // The choice survives a reload.
     unmount();
-    const again = render(<LandingPage isAdmin={false} canEdit={false} />);
+    const again = render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     await within(again.container).findByRole("link", { name: "Lancaster" });
     expect(again.container.querySelectorAll(".map-group__title")).toHaveLength(0);
   });
@@ -126,7 +139,11 @@ describe("LandingPage", () => {
         : undefined,
     );
 
-    render(<LandingPage isAdmin={false} canEdit={false} />);
+    render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     expect(await screen.findByText("Not public")).toBeInTheDocument();
   });
 
@@ -144,7 +161,11 @@ describe("LandingPage", () => {
       return undefined;
     });
 
-    render(<LandingPage isAdmin={false} canEdit={true} />);
+    render(
+      <PermissionsProvider permissions={new Set(["editor.view"])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
 
     expect(await screen.findAllByRole("link", { name: "Edit" })).toHaveLength(4);
     const unpublished = within(await screen.findByRole("region", { name: "Unpublished maps" }));
@@ -162,7 +183,11 @@ describe("LandingPage", () => {
       return undefined;
     });
 
-    render(<LandingPage isAdmin={true} canEdit={true} />);
+    render(
+      <PermissionsProvider permissions={new Set(["editor.view", "maps.manage"])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     expect(await screen.findByRole("link", { name: "Manage maps" })).toHaveAttribute(
       "href",
       "/admin/maps",
@@ -174,7 +199,11 @@ describe("LandingPage", () => {
     many.push(map("carlisle", "Carlisle", { description: "Border city", region: NORTH_WEST }));
     stubFetch((url) => (url === "/api/v1/maps" ? jsonResponse({ maps: many }) : undefined));
 
-    const { container } = render(<LandingPage isAdmin={false} canEdit={false} />);
+    const { container } = render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     await screen.findByRole("link", { name: "Carlisle" });
 
     fireEvent.change(screen.getByLabelText("Filter maps"), { target: { value: "border" } });
@@ -222,7 +251,11 @@ describe("LandingPage", () => {
       return undefined;
     });
 
-    const { container } = render(<LandingPage isAdmin={false} canEdit={false} />);
+    const { container } = render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     await screen.findByRole("link", { name: "Lancaster" });
 
     fireEvent.change(screen.getByLabelText(/name, crs, tiploc or stanox/i), {
@@ -261,7 +294,11 @@ describe("LandingPage", () => {
       url === "/api/v1/maps" ? jsonResponse(MAPS_BODY) : jsonResponse({ results: [] }),
     );
 
-    render(<LandingPage isAdmin={false} canEdit={false} />);
+    render(
+      <PermissionsProvider permissions={new Set([])}>
+        <LandingPage />
+      </PermissionsProvider>,
+    );
     await screen.findByRole("link", { name: "Lancaster" });
 
     const searchInput = screen.getByLabelText(/name, crs, tiploc or stanox/i);

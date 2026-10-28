@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
 
-export type UserRole = "admin" | "editor";
-
+/** Milestone 99 (docs/adr/0022): a user's type and every permission they hold. */
 export interface SessionUser {
   username: string;
-  role: UserRole;
+  userType: { id: string; name: string | null };
+  permissions: string[];
 }
 
 export type SessionState =
@@ -21,8 +21,9 @@ export interface UseSessionResult {
   logout: () => Promise<void>;
 }
 
-/** Milestone 29: the frontend's single source of truth for "who is logged in, and at what role" —
- * gates the Editor/Admin nav links and the `/editor`, `/admin/users` routes in `App.tsx`. A 401
+/** Milestone 29: the frontend's single source of truth for "who is logged in" — and, since
+ * Milestone 99, what they may do (`permissions`), which gates the Admin link and the editor and
+ * admin routes in `App.tsx`. A 401
  * from `/api/v1/auth/me` is the normal "not logged in" case, not an error. */
 export function useSession(): UseSessionResult {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
@@ -55,9 +56,4 @@ export function useSession(): UseSessionResult {
   }, []);
 
   return { session, refresh, logout };
-}
-
-export function roleAtLeast(role: UserRole, minRole: UserRole): boolean {
-  const rank: Record<UserRole, number> = { editor: 1, admin: 2 };
-  return rank[role] >= rank[minRole];
 }

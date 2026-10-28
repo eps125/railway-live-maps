@@ -11,6 +11,7 @@ import {
   type MaintenanceJobKind,
 } from "@railway/database";
 import { TD_PROJECTION_VERSION } from "@railway/domain";
+import { actorName } from "../../lib/viewer.js";
 import { apiError } from "../../lib/queryRange.js";
 import { audit } from "../../lib/audit.js";
 
@@ -221,7 +222,7 @@ export async function registerMaintenanceRoutes(
       kind: validated.kind,
       tdAreas: validated.tdAreas,
       params: validated.params,
-      requestedBy: request.authSession?.username ?? "unknown",
+      requestedBy: actorName(request) ?? "unknown",
     });
     await audit(
       pool,

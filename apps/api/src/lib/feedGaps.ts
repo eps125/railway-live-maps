@@ -34,15 +34,16 @@ export interface FeedGapWarnings {
 }
 
 /**
- * Owner, 2026-10-10: outage details are for admins only. Everyone else gets `status` and the
- * bare `incomplete` flag — never the list (times, areas, reasons). Applied where a response is
- * built for a particular viewer, so the details are not sent at all rather than merely hidden.
+ * Owner, 2026-10-10: outage details are not for everyone — since Milestone 99 they need
+ * `map.feed_gap_details`. Everyone else gets `status` and the bare `incomplete` flag — never the
+ * list (times, areas, reasons). Applied where a response is built for a particular viewer, so the
+ * details are not sent at all rather than merely hidden.
  */
 export function qualityForViewer<Q extends { gaps: string[]; incomplete?: boolean }>(
   quality: Q,
-  viewer: { user: { role: string } | null } | null | undefined,
+  viewer: { permissions: ReadonlySet<string> } | null | undefined,
 ): Q {
-  if (viewer?.user?.role === "admin") return quality;
+  if (viewer?.permissions.has("map.feed_gap_details")) return quality;
   return { ...quality, gaps: [] };
 }
 

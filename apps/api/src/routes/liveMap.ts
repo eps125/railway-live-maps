@@ -14,6 +14,7 @@ import { currentVersionForSlug, liveDataStatus, tdAreasFromBundle } from "../lib
 import { feedGapWarnings, qualityForViewer } from "../lib/feedGaps.js";
 import { computeLiveState, type QualityState } from "../lib/liveState.js";
 import { computeDelayBands } from "../lib/delayBands.js";
+import { can } from "../lib/viewer.js";
 import type { LiveDeltaSource } from "../live/deltaSource.js";
 
 export interface LiveMapRoutesDeps {
@@ -68,6 +69,7 @@ export async function registerLiveMapRoutes(
       // sourceSequence is known, then replay only what it doesn't already reflect.
       let lastSentSequence = 0;
       let buffering = true;
+      const delaysAllowed = can(request.viewer, "map.delay_colours");
       const buffered: LiveDeltaMessage[] = [];
       // Milestone 82: `delay.updated` has no sequence, so it can't go through the drain's
       // sequence filter — held separately and sent, in arrival order, after the snapshot.
@@ -92,6 +94,8 @@ export async function registerLiveMapRoutes(
           return;
         }
         if (message.type === "delay.updated") {
+          // Milestone 99: delay bands only for viewers with `map.delay_colours`.
+          if (!delaysAllowed) return;
           if (buffering) {
             bufferedDelays.push(message);
           } else if (socket.readyState === socket.OPEN) {
@@ -116,7 +120,8 @@ export async function registerLiveMapRoutes(
       // fails (e.g. before migration 0044 is applied); it just shows no delay colours.
       let delays: BerthDelay[] = [];
       try {
-        delays = await computeDelayBands(pool, version.compiled_runtime_bundle, now);
+        if (delaysAllowed)
+          delays = await computeDelayBands(pool, version.compiled_runtime_bundle, now);
       } catch (error) {
         request.log.error({ error, slug }, "liveMap: delay bands unavailable for snapshot");
       }

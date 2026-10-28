@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { Queryable } from "./checkpoint.js";
+import { isPermission, type Permission } from "./permissions.js";
 
 /**
  * Milestone 84 (docs/adr/0018 §6): temporary guest access codes. A code is entered on the access
@@ -7,9 +8,15 @@ import type { Queryable } from "./checkpoint.js";
  * only an opaque random token per grant; this module stores and looks up its SHA-256 hash.
  */
 
-/** `site`: every public map. `all_maps`: every map, public or not (owner, 2026-10-12).
- * `maps`: only the maps the code names. A module is never a map for any of them. */
-export type AccessCodeScope = "site" | "all_maps" | "maps";
+/**
+ * Milestone 99 (docs/adr/0022 §4): what a code gives — a user type's permissions (`user_type`),
+ * or its own list (`custom`). A code never gives an admin permission.
+ */
+export type AccessCodeGrantKind = "user_type" | "custom";
+
+/** `none`: the maps its permissions allow. `maps`: exactly the maps the code names (restricted
+ * ones included), whatever its permissions say. A module is never a map for either. */
+export type AccessCodeMapLimit = "none" | "maps";
 
 /** No 0/O, 1/I/L: a generated code is read aloud or copied by hand. */
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -69,7 +76,12 @@ export interface AccessCodeInput {
   label: string;
   /** Custom code text; omitted to generate one. */
   code?: string | undefined;
-  scope: AccessCodeScope;
+  grantKind: AccessCodeGrantKind;
+  /** Required for `user_type`; ignored for `custom`. */
+  userTypeId: string | null;
+  /** Required for `custom`; ignored for `user_type`. */
+  permissions: Permission[];
+  mapLimit: AccessCodeMapLimit;
   mapIds: string[];
   maxUses: number | null;
   accessSeconds: number;
@@ -81,7 +93,12 @@ export interface AccessCodeSummary {
   id: string;
   label: string;
   code: string;
-  scope: AccessCodeScope;
+  grantKind: AccessCodeGrantKind;
+  userTypeId: string | null;
+  userTypeName: string | null;
+  /** `custom` codes only (empty for `user_type`). */
+  permissions: Permission[];
+  mapLimit: AccessCodeMapLimit;
   mapIds: string[];
   maxUses: number | null;
   useCount: number;
@@ -101,7 +118,11 @@ interface AccessCodeRow {
   id: string;
   label: string;
   code: string;
-  scope: AccessCodeScope;
+  grant_kind: AccessCodeGrantKind;
+  user_type_id: string | null;
+  user_type_name: string | null;
+  permissions: string[];
+  map_limit: AccessCodeMapLimit;
   map_ids: string[];
   max_uses: number | null;
   use_count: number;
@@ -127,7 +148,11 @@ function toSummary(row: AccessCodeRow, now: Date): AccessCodeSummary {
     id: row.id,
     label: row.label,
     code: row.code,
-    scope: row.scope,
+    grantKind: row.grant_kind,
+    userTypeId: row.user_type_id,
+    userTypeName: row.user_type_name,
+    permissions: row.permissions.filter(isPermission),
+    mapLimit: row.map_limit,
     mapIds: row.map_ids,
     maxUses: row.max_uses,
     useCount: row.use_count,
@@ -144,7 +169,11 @@ function toSummary(row: AccessCodeRow, now: Date): AccessCodeSummary {
 }
 
 const CODE_SELECT = `
-  select c.id::text, c.label, c.code, c.scope, c.max_uses, c.use_count, c.access_seconds,
+  select c.id::text, c.label, c.code, c.grant_kind, c.user_type_id::text,
+         (select t.name from user_type t where t.id = c.user_type_id) as user_type_name,
+         coalesce((select array_agg(p.permission order by p.permission)
+                     from access_code_permission p where p.code_id = c.id), '{}') as permissions,
+         c.map_limit, c.max_uses, c.use_count, c.access_seconds,
          c.valid_until, c.notes, c.created_by, c.created_at, c.revoked_at,
          coalesce((select array_agg(acm.map_id::text order by acm.map_id)
                      from access_code_map acm where acm.code_id = c.id), '{}') as map_ids,
@@ -189,6 +218,38 @@ async function setCodeMaps(db: Queryable, codeId: string, mapIds: string[]): Pro
   ]);
 }
 
+async function setCodePermissions(
+  db: Queryable,
+  codeId: string,
+  permissions: Permission[],
+): Promise<void> {
+  await db.query(`delete from access_code_permission where code_id = $1`, [codeId]);
+  await db.query(
+    `insert into access_code_permission (code_id, permission) select $1, unnest($2::text[])`,
+    [codeId, [...new Set(permissions)]],
+  );
+}
+
+/** The pre-Milestone-99 `scope`, still written so the previous release can be rolled back to. */
+async function legacyScope(
+  db: Queryable,
+  grantKind: AccessCodeGrantKind,
+  userTypeId: string | null,
+  permissions: Permission[],
+  mapLimit: AccessCodeMapLimit,
+): Promise<"site" | "all_maps" | "maps"> {
+  if (mapLimit === "maps") return "maps";
+  let granted: string[] = permissions;
+  if (grantKind === "user_type" && userTypeId) {
+    const { rows } = await db.query<{ permission: string }>(
+      `select permission from user_type_permission where user_type_id = $1`,
+      [userTypeId],
+    );
+    granted = rows.map((row) => row.permission);
+  }
+  return granted.includes("maps.view_all") ? "all_maps" : "site";
+}
+
 /** Creates a code (generating its text unless `input.code` is given). Run inside a transaction. */
 export async function createAccessCode(
   db: Queryable,
@@ -198,15 +259,19 @@ export async function createAccessCode(
   const code = input.code?.trim() || generateAccessCode();
   try {
     const { rows } = await db.query<{ id: string }>(
-      `insert into access_code (label, code, code_normalized, scope, max_uses, access_seconds,
-                                valid_until, notes, created_by)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `insert into access_code (label, code, code_normalized, scope, grant_kind, user_type_id,
+                                map_limit, max_uses, access_seconds, valid_until, notes,
+                                created_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        returning id::text`,
       [
         input.label.trim(),
         code,
         normalizeAccessCode(code),
-        input.scope,
+        await legacyScope(db, input.grantKind, input.userTypeId, input.permissions, input.mapLimit),
+        input.grantKind,
+        input.grantKind === "user_type" ? input.userTypeId : null,
+        input.mapLimit,
         input.maxUses,
         input.accessSeconds,
         input.validUntil,
@@ -215,7 +280,8 @@ export async function createAccessCode(
       ],
     );
     const id = rows[0]!.id;
-    await setCodeMaps(db, id, input.scope === "maps" ? input.mapIds : []);
+    await setCodePermissions(db, id, input.grantKind === "custom" ? input.permissions : []);
+    await setCodeMaps(db, id, input.mapLimit === "maps" ? input.mapIds : []);
     return (await findAccessCode(db, id))!;
   } catch (error) {
     if (isUniqueViolation(error)) throw new DuplicateAccessCodeError();
@@ -225,7 +291,10 @@ export async function createAccessCode(
 
 export interface AccessCodeUpdate {
   label?: string | undefined;
-  scope?: AccessCodeScope | undefined;
+  grantKind?: AccessCodeGrantKind | undefined;
+  userTypeId?: string | null | undefined;
+  permissions?: Permission[] | undefined;
+  mapLimit?: AccessCodeMapLimit | undefined;
   mapIds?: string[] | undefined;
   maxUses?: number | null | undefined;
   accessSeconds?: number | undefined;
@@ -256,10 +325,17 @@ export async function updateAccessCode(
   ) {
     throw new MaxUsesBelowUseCountError(current.useCount);
   }
+  const grantKind = update.grantKind ?? current.grantKind;
+  const userTypeId = grantKind === "user_type" ? (update.userTypeId ?? current.userTypeId) : null;
+  const permissions = grantKind === "custom" ? (update.permissions ?? current.permissions) : [];
+  const mapLimit = update.mapLimit ?? current.mapLimit;
   await db.query(
     `update access_code
         set label = coalesce($2, label),
-            scope = coalesce($3, scope),
+            scope = $3,
+            grant_kind = $11,
+            user_type_id = $12,
+            map_limit = $13,
             max_uses = case when $4::boolean then $5 else max_uses end,
             access_seconds = coalesce($6, access_seconds),
             valid_until = case when $7::boolean then $8 else valid_until end,
@@ -268,7 +344,7 @@ export async function updateAccessCode(
     [
       id,
       update.label?.trim() ?? null,
-      update.scope ?? null,
+      await legacyScope(db, grantKind, userTypeId, permissions, mapLimit),
       update.maxUses !== undefined,
       update.maxUses ?? null,
       update.accessSeconds ?? null,
@@ -276,11 +352,14 @@ export async function updateAccessCode(
       update.validUntil ?? null,
       update.notes !== undefined,
       update.notes?.trim() || null,
+      grantKind,
+      userTypeId,
+      mapLimit,
     ],
   );
-  const scope = update.scope ?? current.scope;
-  if (update.mapIds !== undefined || update.scope !== undefined) {
-    await setCodeMaps(db, id, scope === "maps" ? (update.mapIds ?? current.mapIds) : []);
+  await setCodePermissions(db, id, permissions);
+  if (update.mapIds !== undefined || update.mapLimit !== undefined) {
+    await setCodeMaps(db, id, mapLimit === "maps" ? (update.mapIds ?? current.mapIds) : []);
   }
   return findAccessCode(db, id);
 }
@@ -434,9 +513,14 @@ export async function redeemAccessCode(
 export interface ActiveGrant {
   id: string;
   codeId: string;
-  scope: AccessCodeScope;
   expiresAt: Date;
   codeLabel: string;
+  grantKind: AccessCodeGrantKind;
+  /** The type whose permissions apply (`user_type` codes); read from the live matrix. */
+  userTypeId: string | null;
+  /** `custom` codes' own permissions. */
+  permissions: Permission[];
+  mapLimit: AccessCodeMapLimit;
 }
 
 /** The grant behind a browser's token, if it is still valid (not expired, not revoked, its code
@@ -449,11 +533,17 @@ export async function findActiveGrant(
   const { rows } = await db.query<{
     id: string;
     code_id: string;
-    scope: AccessCodeScope;
     expires_at: Date;
     label: string;
+    grant_kind: AccessCodeGrantKind;
+    user_type_id: string | null;
+    permissions: string[];
+    map_limit: AccessCodeMapLimit;
   }>(
-    `select g.id::text, g.code_id::text, c.scope, g.expires_at, c.label
+    `select g.id::text, g.code_id::text, g.expires_at, c.label, c.grant_kind,
+            c.user_type_id::text, c.map_limit,
+            coalesce((select array_agg(p.permission) from access_code_permission p
+                       where p.code_id = c.id), '{}') as permissions
        from access_grant g
        join access_code c on c.id = g.code_id
       where g.token_hash = $1 and g.revoked_at is null and c.revoked_at is null
@@ -465,9 +555,12 @@ export async function findActiveGrant(
     ? {
         id: row.id,
         codeId: row.code_id,
-        scope: row.scope,
         expiresAt: row.expires_at,
         codeLabel: row.label,
+        grantKind: row.grant_kind,
+        userTypeId: row.user_type_id,
+        permissions: row.permissions.filter(isPermission),
+        mapLimit: row.map_limit,
       }
     : null;
 }

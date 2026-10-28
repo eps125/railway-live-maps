@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import type { Redis } from "ioredis";
-import type { UserRole } from "@railway/database";
 
 /**
  * Milestone 29: server-side sessions live only in Redis (CLAUDE.md: "Redis only for ephemeral
@@ -11,10 +10,20 @@ import type { UserRole } from "@railway/database";
  */
 export const SESSION_COOKIE_NAME = "rlm_session";
 
+/** Milestone 99 (docs/adr/0022): no role or permissions here — a user's type is read from
+ * Postgres on each request, so changes apply at once. (Sessions made before Milestone 99 also
+ * carry a `role`, which nothing reads.) */
 export interface SessionData {
   userId: string;
   username: string;
-  role: UserRole;
+}
+
+declare module "fastify" {
+  interface FastifyRequest {
+    /** The logged-in session, set when the viewer is resolved (`lib/viewer.ts`). `null` for a
+     * guest, or a session whose user has been deactivated or deleted. */
+    authSession: SessionData | null;
+  }
 }
 
 function sessionKey(token: string): string {

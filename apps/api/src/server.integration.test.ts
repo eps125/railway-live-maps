@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPool, createUser } from "@railway/database";
+import { createPool, createUser, findUserTypeByName } from "@railway/database";
 import { buildServer } from "./server.js";
 import type { Config } from "./config.js";
+
+/** Milestone 99: users have a user type (by its seeded name) instead of a role. */
+async function typeIdOf(
+  db: Parameters<typeof findUserTypeByName>[0],
+  name: string,
+): Promise<string> {
+  return (await findUserTypeByName(db, name))!.id;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -76,7 +84,11 @@ describe("buildServer: role-based route gating (integration)", () => {
 
     const pool = createPool({ connectionString: testConfig().DATABASE_URL });
     const username = `editor-${randomUUID()}`;
-    await createUser(pool, { username, password: "correct-horse-battery", role: "editor" });
+    await createUser(pool, {
+      username,
+      password: "correct-horse-battery",
+      userTypeId: await typeIdOf(pool, "Editor"),
+    });
     await pool.end();
 
     const cookie = await loginAndGetCookie(built.app, username, "correct-horse-battery");
@@ -129,7 +141,11 @@ describe("buildServer: role-based route gating (integration)", () => {
 
     const pool = createPool({ connectionString: testConfig().DATABASE_URL });
     const username = `admin-${randomUUID()}`;
-    await createUser(pool, { username, password: "correct-horse-battery", role: "admin" });
+    await createUser(pool, {
+      username,
+      password: "correct-horse-battery",
+      userTypeId: await typeIdOf(pool, "Admin"),
+    });
     await pool.end();
 
     const cookie = await loginAndGetCookie(built.app, username, "correct-horse-battery");

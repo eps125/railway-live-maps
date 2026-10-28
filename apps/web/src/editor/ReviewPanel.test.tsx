@@ -1,6 +1,20 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
+import { PermissionsProvider } from "../auth/permissions.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReviewPanel, type ModuleChange } from "./ReviewPanel.js";
+
+/** Milestone 99: publishing needs `maps.publish`. */
+function render(
+  ui: ReactElement,
+  permissions: readonly string[] = ["editor.view", "maps.publish"],
+) {
+  return rtlRender(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <PermissionsProvider permissions={new Set(permissions)}>{children}</PermissionsProvider>
+    ),
+  });
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -124,5 +138,15 @@ describe("ReviewPanel module publish choice", () => {
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
     await screen.findByText(/Published version 5/);
     expect(sent[0]).not.toHaveProperty("publishModules");
+  });
+
+  it("offers no publish button without maps.publish (Milestone 99)", async () => {
+    stubFetch([], null);
+    render(<ReviewPanel slug="crewe-colwich" syncedRevision={7} onPublished={vi.fn()} />, [
+      "editor.view",
+      "maps.edit",
+    ]);
+    expect(await screen.findByText(/Publishing needs the Publish permission/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
   });
 });

@@ -2731,3 +2731,83 @@ legend {
     opacity: 0;
   }
 }
+
+/* Milestone 99 (docs/adr/0022): Admin › User types — the permission matrix. The first column
+ * (permission and its help text) stays readable while the type columns scroll sideways. */
+.user-types-page {
+  max-width: 1200px;
+}
+
+.permission-matrix th,
+.permission-matrix td {
+  vertical-align: top;
+}
+
+.permission-matrix__type {
+  min-width: 6.5rem;
+  text-align: center;
+}
+
+.permission-matrix__type span,
+.permission-matrix__permission span {
+  display: block;
+}
+
+.permission-matrix__count {
+  font-weight: normal;
+  font-size: 0.75rem;
+  color: var(--color-text-faint);
+}
+
+.permission-matrix__permission {
+  position: sticky;
+  left: 0;
+  min-width: 14rem;
+  background: var(--color-bg);
+  font-weight: normal;
+  color: var(--color-text);
+}
+
+.permission-matrix__category th {
+  padding-top: 0.9rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+}
+
+.permission-matrix__cell {
+  text-align: center;
+}
+
+.permission-matrix__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.8rem 0 1.4rem;
+}
+
+/* Milestone 99: an access code giving editor permissions is unusual — the form says so. */
+.access-warning {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--color-warning);
+  border-radius: 6px;
+  color: var(--color-warning);
+  font-size: 0.85rem;
+}
+
+.access-warning__icon {
+  flex: none;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.access-permissions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.1rem 1rem;
+}

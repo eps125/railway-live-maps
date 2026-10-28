@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import Fastify from "fastify";
+import { appAs, viewerWith } from "../../lib/testViewers.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import { TD_S_STATE_PROJECTION_VERSION } from "@railway/domain";
@@ -117,7 +117,7 @@ afterAll(async () => {
 });
 
 async function buildApp() {
-  const app = Fastify();
+  const app = appAs(viewerWith(undefined, { id: "0", username: "owner", userTypeId: "0" }));
   app.decorateRequest("authSession", null);
   app.addHook("preHandler", async (request) => {
     (request as unknown as { authSession: { username: string } }).authSession = {

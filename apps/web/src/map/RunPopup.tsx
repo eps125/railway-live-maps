@@ -76,7 +76,7 @@ interface EffectiveMovement {
 }
 
 /** docs/adr/0009: a change currently in effect for this run's origin/destination — full/
- * authenticated response only (see `PublicEffectiveSchedule`'s own comment). `originTiploc`/
+ * shown with `popup.schedule` (Milestone 99). `originTiploc`/
  * `destinationTiploc` on `EffectiveSchedule` are already the *current* values; this is only the
  * "what it used to be, and when" detail. */
 interface EffectiveChangeDetail {
@@ -114,17 +114,6 @@ interface EffectiveSchedule {
   locations: EffectiveLocation[];
 }
 
-/** Owner request (2026-09-13): the anonymous, reduced view of a matched schedule —
- * departure-board-style, none of the resolver-internal or TRUST-operational fields. */
-interface PublicEffectiveSchedule {
-  originTiploc: string | null;
-  originName: string | null;
-  destinationTiploc: string | null;
-  destinationName: string | null;
-  operatorCode: string | null;
-  locations: EffectiveLocation[];
-}
-
 /** Owner request (2026-09-13): real unit/stock allocation, shown to every visitor regardless of
  * login — mirrored from garner's `train_allocation`. Ordered by formation `position`. */
 interface UnitAllocationEntry {
@@ -135,43 +124,34 @@ interface UnitAllocationEntry {
   reportedAt: string | null;
 }
 
-/** Milestone 34 (docs/adr/0006). `positionScoped` says whether `candidateSchedules` was narrowed
+/**
+ * Milestone 99 (docs/adr/0022): one response shape, carrying only the rows this viewer's
+ * `popup.*` permissions allow — a missing field is a row not to show. (Before Milestone 99 there
+ * were two fixed shapes, anonymous and logged-in.)
+ *
+ * Milestone 34 (docs/adr/0006). `positionScoped` says whether `candidateSchedules` was narrowed
  * to schedules calling near this berth (SMART data) — false means no SMART coverage exists for
  * this berth at all, so `matchBasis` (when matched/ambiguous) is always the weakest
- * `headcode_only` tier regardless of which internal rule actually picked among the unscoped set. */
-interface FullCurrentRunResponse {
+ * `headcode_only` tier regardless of which internal rule actually picked among the unscoped set.
+ */
+interface CurrentRunResponse {
   tdArea: string;
   berth: string;
-  description: string | null;
+  description?: string | null;
   headcode: string;
   occupancyEnteredAt: string | null;
   matchStatus: "matched" | "ambiguous" | "unmatched";
-  matchBasis:
+  /** `popup.match_details`. */
+  matchBasis?:
     "trust_activation" | "stp_precedence" | "station_berth_timetable" | "headcode_only" | null;
-  positionScoped: boolean;
-  note: string;
-  effective: EffectiveSchedule | null;
-  candidateSchedules: CandidateSchedule[];
-  /** Milestone 97c. Optional so an older API without it still renders. */
+  positionScoped?: boolean;
+  note?: string;
+  effective: Partial<EffectiveSchedule> | null;
+  /** `popup.candidates`. */
+  candidateSchedules?: CandidateSchedule[];
+  /** Milestone 97c (`popup.delay`). Optional so an older API without it still renders. */
   delay?: PopupDelay | null;
-  unitAllocation: UnitAllocationEntry[];
-}
-
-/** Owner request (2026-09-13): what an anonymous (no session cookie) visitor gets on a "solid"
- * match — the API never sends this shape unless `matchStatus` is `matched` and position-scoped
- * (not the weakest `headcode_only` tier); anything else 404s and the popup closes itself rather
- * than showing a reduced view of an ambiguous/unmatched/unreliable result. No `note` either
- * (owner request, 2026-09-14) — the resolver-internal "matched by TRUST activation/STP
- * precedence/verify this" language has no `matchBasis` to interpret it against out here, so it
- * stays backend-only, on the full response. */
-interface PublicCurrentRunResponse {
-  tdArea: string;
-  berth: string;
-  headcode: string;
-  occupancyEnteredAt: string | null;
-  matchStatus: "matched";
-  effective: PublicEffectiveSchedule | null;
-  delay?: PopupDelay | null;
+  /** `popup.formation` (empty without it). */
   unitAllocation: UnitAllocationEntry[];
 }
 
@@ -192,13 +172,6 @@ export interface PopupDelay {
     locationName: string | null;
     at: string | null;
   } | null;
-}
-
-type CurrentRunResponse = FullCurrentRunResponse | PublicCurrentRunResponse;
-
-/** The two response shapes are distinguished by a field only the full one ever carries. */
-function isFullResponse(data: CurrentRunResponse): data is FullCurrentRunResponse {
-  return "candidateSchedules" in data;
 }
 
 export interface RunPopupMember {
@@ -244,7 +217,7 @@ const VARIATION_LABELS: Record<EffectiveMovement["variationStatus"], string> = {
   off_route: "off route",
 };
 
-const MATCH_BASIS_LABELS: Record<NonNullable<FullCurrentRunResponse["matchBasis"]>, string> = {
+const MATCH_BASIS_LABELS: Record<NonNullable<CurrentRunResponse["matchBasis"]>, string> = {
   trust_activation: "TRUST activation today",
   stp_precedence: "STP precedence",
   station_berth_timetable: "closest scheduled call at this station to now",
@@ -442,32 +415,57 @@ function UnitAllocationSection({
   );
 }
 
-function FullEffectiveDetail({ data }: { data: FullCurrentRunResponse }): JSX.Element | null {
+/** The schedule rows the API sent (Milestone 99: each is a permission of its own). */
+function EffectiveDetail({ data }: { data: CurrentRunResponse }): JSX.Element | null {
   const effective = data.effective;
   if (!effective) return null;
+  const hasRoute = "originTiploc" in effective;
   return (
     <>
       <dl>
-        <dt>Schedule</dt>
-        <dd>
-          {effective.trainUid} · {STP_LABELS[effective.stpIndicator] ?? effective.stpIndicator}
-        </dd>
-        <dt>Picked by</dt>
-        <dd>{data.matchBasis ? MATCH_BASIS_LABELS[data.matchBasis] : "—"}</dd>
-        <dt>Operator</dt>
-        <dd>{effective.operatorCode ?? "—"}</dd>
-        <dt>Service code</dt>
-        <dd>{effective.serviceCode ?? "—"}</dd>
-        <dt>Origin</dt>
-        <dd>
-          {formatLocation(effective.originTiploc, effective.originName)}
-          {effective.originChange ? changeSuffix(effective.originChange) : ""}
-        </dd>
-        <dt>Destination</dt>
-        <dd>
-          {formatLocation(effective.destinationTiploc, effective.destinationName)}
-          {effective.destinationChange ? changeSuffix(effective.destinationChange) : ""}
-        </dd>
+        {effective.trainUid !== undefined && effective.stpIndicator !== undefined ? (
+          <>
+            <dt>Schedule</dt>
+            <dd>
+              {effective.trainUid} · {STP_LABELS[effective.stpIndicator] ?? effective.stpIndicator}
+            </dd>
+          </>
+        ) : null}
+        {data.matchBasis !== undefined ? (
+          <>
+            <dt>Picked by</dt>
+            <dd>{data.matchBasis ? MATCH_BASIS_LABELS[data.matchBasis] : "—"}</dd>
+          </>
+        ) : null}
+        {hasRoute ? (
+          <>
+            <dt>Operator</dt>
+            <dd>{effective.operatorCode ?? "—"}</dd>
+          </>
+        ) : null}
+        {effective.serviceCode !== undefined ? (
+          <>
+            <dt>Service code</dt>
+            <dd>{effective.serviceCode ?? "—"}</dd>
+          </>
+        ) : null}
+        {hasRoute ? (
+          <>
+            <dt>Origin</dt>
+            <dd>
+              {formatLocation(effective.originTiploc ?? null, effective.originName ?? null)}
+              {effective.originChange ? changeSuffix(effective.originChange) : ""}
+            </dd>
+            <dt>Destination</dt>
+            <dd>
+              {formatLocation(
+                effective.destinationTiploc ?? null,
+                effective.destinationName ?? null,
+              )}
+              {effective.destinationChange ? changeSuffix(effective.destinationChange) : ""}
+            </dd>
+          </>
+        ) : null}
       </dl>
 
       {effective.activation ? (
@@ -490,9 +488,9 @@ function FullEffectiveDetail({ data }: { data: FullCurrentRunResponse }): JSX.El
           <dt>WTT ID</dt>
           <dd>{effective.activation.scheduleWttId ?? "—"}</dd>
         </dl>
-      ) : (
+      ) : effective.activation === null ? (
         <p className="map-inspector__note">No TRUST activation seen for this schedule today.</p>
-      )}
+      ) : null}
 
       {effective.latestMovement ? (
         <dl>
@@ -516,27 +514,7 @@ function FullEffectiveDetail({ data }: { data: FullCurrentRunResponse }): JSX.El
         </dl>
       ) : null}
 
-      <LocationsTable locations={effective.locations} />
-    </>
-  );
-}
-
-/** Owner request (2026-09-13): anonymous, reduced departure-board-style view — the API only ever
- * sends this shape on a solid match, so there's no "picked by"/ambiguity detail to show. */
-function PublicEffectiveDetail({ data }: { data: PublicCurrentRunResponse }): JSX.Element | null {
-  const effective = data.effective;
-  if (!effective) return null;
-  return (
-    <>
-      <dl>
-        <dt>Operator</dt>
-        <dd>{effective.operatorCode ?? "—"}</dd>
-        <dt>Origin</dt>
-        <dd>{formatLocation(effective.originTiploc, effective.originName)}</dd>
-        <dt>Destination</dt>
-        <dd>{formatLocation(effective.destinationTiploc, effective.destinationName)}</dd>
-      </dl>
-      <LocationsTable locations={effective.locations} />
+      {effective.locations ? <LocationsTable locations={effective.locations} /> : null}
     </>
   );
 }
@@ -588,18 +566,12 @@ function RunPopupMemberSection({
 
           <DelayLine delay={data.delay} />
 
-          {isFullResponse(data) ? (
-            <>
-              <p className="map-inspector__note">{data.note}</p>
-              <FullEffectiveDetail data={data} />
-            </>
-          ) : (
-            <PublicEffectiveDetail data={data} />
-          )}
+          {data.note ? <p className="map-inspector__note">{data.note}</p> : null}
+          <EffectiveDetail data={data} />
 
           <UnitAllocationSection unitAllocation={data.unitAllocation} />
 
-          {isFullResponse(data) ? (
+          {data.candidateSchedules ? (
             data.candidateSchedules.length > 0 ? (
               <>
                 <p className="map-inspector__note">

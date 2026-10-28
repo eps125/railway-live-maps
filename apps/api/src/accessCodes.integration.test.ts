@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createPool, createUser, setSiteSetting } from "@railway/database";
+import { createPool, createUser, setPublicSiteMode, findUserTypeByName } from "@railway/database";
 import { buildServer } from "./server.js";
 import type { Config } from "./config.js";
+
+/** Milestone 99: users have a user type (by its seeded name) instead of a role. */
+async function typeIdOf(
+  db: Parameters<typeof findUserTypeByName>[0],
+  name: string,
+): Promise<string> {
+  return (await findUserTypeByName(db, name))!.id;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -96,6 +104,8 @@ async function setMode(mode: "open" | "code_required") {
 const publicSlug = `code-public-${suffix}`;
 const restrictedSlug = `code-restricted-${suffix}`;
 let restrictedMapId: string;
+let basicTypeId: string;
+let enhancedTypeId: string;
 
 /**
  * Milestone 84 (docs/adr/0018 §6): access codes end to end through the real server — entering a
@@ -107,8 +117,14 @@ describe("access codes (integration)", () => {
     const built = await buildServer(testConfig());
     app = built.app;
     close = built.close;
+    basicTypeId = await typeIdOf(pool, "Basic User");
+    enhancedTypeId = await typeIdOf(pool, "Enhanced User");
     const admin = `codes-admin-${suffix}`;
-    await createUser(pool, { username: admin, password: PASSWORD, role: "admin" });
+    await createUser(pool, {
+      username: admin,
+      password: PASSWORD,
+      userTypeId: await typeIdOf(pool, "Admin"),
+    });
     const login = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -121,7 +137,7 @@ describe("access codes (integration)", () => {
 
   afterAll(async () => {
     // Never leave the shared test database asking for codes.
-    await setSiteSetting(pool, "site_access_mode", "open", "test");
+    await setPublicSiteMode(pool, "open");
     await close();
     await pool.end();
   });
@@ -160,7 +176,9 @@ describe("access codes (integration)", () => {
   it("a whole-site code lets a guest in for its access period, and is counted", async () => {
     const created = await createCode({
       label: `Site code ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 3600,
     });
@@ -171,7 +189,7 @@ describe("access codes (integration)", () => {
       const entered = await redeem(created.code.toLowerCase().replace("-", " "));
       expect(entered.statusCode).toBe(200);
       const status = entered.json();
-      expect(status).toMatchObject({ access: "code", allowed: true, scope: "site" });
+      expect(status).toMatchObject({ access: "code", allowed: true, mapLimit: "none" });
       const expiresIn = new Date(status.expiresAt).getTime() - Date.now();
       expect(expiresIn).toBeGreaterThan(3500_000);
       expect(expiresIn).toBeLessThanOrEqual(3600_000);
@@ -210,7 +228,9 @@ describe("access codes (integration)", () => {
   it("an all-maps code shows every map, public or not, also when the site needs a code (2026-10-12)", async () => {
     const created = await createCode({
       label: `All maps code ${suffix}`,
-      scope: "all_maps",
+      grantKind: "user_type",
+      userTypeId: enhancedTypeId,
+      mapLimit: "none",
       mapIds: [],
       maxUses: 5,
       accessSeconds: 3600,
@@ -237,7 +257,7 @@ describe("access codes (integration)", () => {
       const status = (
         await app.inject({ method: "GET", url: "/api/v1/access/status", headers: { cookie } })
       ).json();
-      expect(status).toMatchObject({ access: "code", allowed: true, scope: "all_maps", maps: [] });
+      expect(status).toMatchObject({ access: "code", allowed: true, mapLimit: "none", maps: [] });
     } finally {
       await setMode("open");
     }
@@ -256,7 +276,9 @@ describe("access codes (integration)", () => {
         headers: { cookie: adminCookie },
         payload: {
           label: `Module code ${suffix}`,
-          scope: "maps",
+          grantKind: "user_type",
+          userTypeId: basicTypeId,
+          mapLimit: "maps",
           mapIds: [restrictedMapId, moduleId],
           maxUses: null,
           accessSeconds: 3600,
@@ -271,7 +293,9 @@ describe("access codes (integration)", () => {
   it("a maps-only code shows its maps — restricted ones too — and, when required, only those", async () => {
     const created = await createCode({
       label: `Maps code ${suffix}`,
-      scope: "maps",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "maps",
       mapIds: [restrictedMapId],
       maxUses: 5,
       accessSeconds: 3600,
@@ -317,7 +341,9 @@ describe("access codes (integration)", () => {
   it("a code stops at its use limit, its last-entry date, and when revoked", async () => {
     const once = await createCode({
       label: `Once ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: 1,
       accessSeconds: 600,
     });
@@ -328,7 +354,9 @@ describe("access codes (integration)", () => {
 
     const lapsed = await createCode({
       label: `Lapsed ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 600,
       validUntil: new Date(Date.now() - 60_000).toISOString(),
@@ -339,7 +367,9 @@ describe("access codes (integration)", () => {
 
     const revoked = await createCode({
       label: `Revoked ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 3600,
     });
@@ -364,7 +394,9 @@ describe("access codes (integration)", () => {
   it("an admin can end or extend one use after it was entered", async () => {
     const created = await createCode({
       label: `Adjust ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 600,
     });
@@ -406,7 +438,9 @@ describe("access codes (integration)", () => {
     const custom = await createCode({
       label: `Custom ${suffix}`,
       code: `open-day-${suffix}`.slice(0, 20),
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: 3,
       accessSeconds: 3600,
     });
@@ -418,7 +452,9 @@ describe("access codes (integration)", () => {
       payload: {
         label: "dup",
         code: `OPEN DAY ${suffix}`.slice(0, 20).toUpperCase(),
-        scope: "site",
+        grantKind: "user_type",
+        userTypeId: basicTypeId,
+        mapLimit: "none",
         maxUses: null,
         accessSeconds: 3600,
       },
@@ -429,7 +465,15 @@ describe("access codes (integration)", () => {
       method: "POST",
       url: "/api/v1/admin/access-codes",
       headers: { cookie: adminCookie },
-      payload: { label: "x", scope: "maps", mapIds: [], maxUses: null, accessSeconds: 3600 },
+      payload: {
+        label: "x",
+        grantKind: "user_type",
+        userTypeId: basicTypeId,
+        mapLimit: "maps",
+        mapIds: [],
+        maxUses: null,
+        accessSeconds: 3600,
+      },
     });
     expect(noMaps.statusCode).toBe(400);
 
@@ -447,7 +491,9 @@ describe("access codes (integration)", () => {
   it("re-enabling a revoked code brings back the uses the revoke ended, not ones ended singly", async () => {
     const created = await createCode({
       label: `Restore ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 3600,
     });
@@ -497,7 +543,9 @@ describe("access codes (integration)", () => {
   it("deleting a code removes it and its uses for good, and is audited", async () => {
     const created = await createCode({
       label: `Delete ${suffix}`,
-      scope: "maps",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "maps",
       mapIds: [restrictedMapId],
       maxUses: null,
       accessSeconds: 3600,
@@ -530,7 +578,9 @@ describe("access codes (integration)", () => {
   it("purging a code removes it and every audit entry about it, unrecorded", async () => {
     const created = await createCode({
       label: `Purge ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 3600,
     });
@@ -579,7 +629,11 @@ describe("access codes (integration)", () => {
 
   it("purge is admin only", async () => {
     const editor = `codes-editor-${suffix}`;
-    await createUser(pool, { username: editor, password: PASSWORD, role: "editor" });
+    await createUser(pool, {
+      username: editor,
+      password: PASSWORD,
+      userTypeId: await typeIdOf(pool, "Editor"),
+    });
     const login = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -588,7 +642,9 @@ describe("access codes (integration)", () => {
     const editorCookie = cookieFrom(login, "rlm_session");
     const created = await createCode({
       label: `Not yours ${suffix}`,
-      scope: "site",
+      grantKind: "user_type",
+      userTypeId: basicTypeId,
+      mapLimit: "none",
       maxUses: null,
       accessSeconds: 3600,
     });

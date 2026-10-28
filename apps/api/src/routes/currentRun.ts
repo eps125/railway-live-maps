@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import type { Redis } from "ioredis";
 import {
   TD_PROJECTION_VERSION,
   decodeTrustMovementFlags,
@@ -28,12 +27,10 @@ import type { HeldDelayResult } from "@railway/domain";
 import { apiError } from "../lib/queryRange.js";
 import { popupDelay, type PopupDelay } from "../lib/popupDelay.js";
 import { locationToJson, type CifLocationRowLike } from "./schedule.js";
-import { SESSION_COOKIE_NAME, getSession } from "../auth/session.js";
+import { can, GUEST_VIEWER, type Viewer } from "../lib/viewer.js";
 
 export interface CurrentRunRoutesDeps {
   pool: Pool;
-  redis: Redis;
-  sessionTtlSeconds: number;
 }
 
 /**
@@ -157,7 +154,7 @@ interface UnitAllocationEntry {
  * 2026-09-17 reading: its own location is the run's new effective destination — TRUST has no
  * dedicated "change of destination" message), in effect for the matched run right now. `null`
  * when nothing of that kind has happened. Full/authenticated response only — see
- * `toPublicEffective`'s own doc comment for why: this reads as resolver-internal/diagnostic detail,
+ * `effectiveForViewer`: shown only with `popup.schedule` (Milestone 99) — this reads as resolver-internal/diagnostic detail,
  * the same reasoning that already keeps TRUST ids and the `deduced` flag out of the public view. */
 interface EffectiveChangeDetail {
   previousTiploc: string | null;
@@ -177,7 +174,7 @@ interface EffectiveIdentityChange {
   newHeadcode: string | null;
 }
 
-/** The full, authenticated-only shape of the resolved schedule's detail. `toPublicEffective`
+/** The full shape of the resolved schedule's detail. `effectiveForViewer`
  * below reduces this to the anonymous view. */
 interface EffectiveScheduleFull {
   scheduleId: string;
@@ -229,26 +226,43 @@ interface EffectiveScheduleFull {
   locations: (ReturnType<typeof locationToJson> & { locationName: string | null })[];
 }
 
-/** Owner request (2026-09-13): the anonymous, "reduced" view of a matched schedule —
- * departure-board-style (headcode is returned separately at the top level; origin/destination/
- * calling points/operator here), never TRUST IDs, CIF schedule IDs, the `deduced` flag, or raw
- * movement/variation detail, which read as operational/diagnostic rather than public-facing. */
-function toPublicEffective(effective: EffectiveScheduleFull): {
-  originTiploc: string | null;
-  originName: string | null;
-  destinationTiploc: string | null;
-  destinationName: string | null;
-  operatorCode: string | null;
-  locations: EffectiveScheduleFull["locations"];
-} {
-  return {
-    originTiploc: effective.originTiploc,
-    originName: effective.originName,
-    destinationTiploc: effective.destinationTiploc,
-    destinationName: effective.destinationName,
-    operatorCode: effective.operatorCode,
-    locations: effective.locations,
-  };
+/**
+ * Milestone 99 (docs/adr/0022): every row of the train popup is its own permission, so the
+ * response carries only the fields the viewer may see — never sent and hidden. Before Milestone
+ * 99 this was two fixed shapes: the anonymous, departure-board-style view (owner request
+ * 2026-09-13: origin, destination, calling points, operator) and the full logged-in one; the
+ * seeded Basic User and Editor types reproduce exactly those two.
+ */
+function effectiveForViewer(
+  effective: EffectiveScheduleFull,
+  viewer: Viewer,
+): Partial<EffectiveScheduleFull> | null {
+  const out: Partial<EffectiveScheduleFull> = {};
+  if (can(viewer, "popup.origin_destination")) {
+    out.operatorCode = effective.operatorCode;
+    out.originTiploc = effective.originTiploc;
+    out.originName = effective.originName;
+    out.destinationTiploc = effective.destinationTiploc;
+    out.destinationName = effective.destinationName;
+  }
+  if (can(viewer, "popup.schedule")) {
+    out.scheduleId = effective.scheduleId;
+    out.trainUid = effective.trainUid;
+    out.stpIndicator = effective.stpIndicator;
+    out.source = effective.source;
+    out.trainStatus = effective.trainStatus;
+    out.serviceCode = effective.serviceCode;
+    out.category = effective.category;
+    out.originChange = effective.originChange;
+    out.destinationChange = effective.destinationChange;
+  }
+  if (can(viewer, "popup.trust")) {
+    out.activation = effective.activation;
+    out.identityChange = effective.identityChange;
+  }
+  if (can(viewer, "popup.latest_report")) out.latestMovement = effective.latestMovement;
+  if (can(viewer, "popup.calling_points")) out.locations = effective.locations;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** Owner request (2026-09-13): real unit/stock allocation for the matched train, mirrored from
@@ -321,25 +335,20 @@ export async function registerCurrentRunRoutes(
   app: FastifyInstance,
   deps: CurrentRunRoutesDeps,
 ): Promise<void> {
-  const { pool, redis, sessionTtlSeconds } = deps;
+  const { pool } = deps;
 
   app.get<{ Params: { tdArea: string; berth: string }; Querystring: { at?: string } }>(
     "/api/v1/td/areas/:tdArea/berths/:berth/current-run",
     async (request, reply) => {
       const { tdArea, berth } = request.params;
 
-      // Owner request (2026-09-13): optional auth — never required to view the map or this
-      // popup at all, only to see full detail. A missing/invalid cookie is just "anonymous",
-      // never a 401 (this route stays public, matching every other live-map read).
-      const session = await getSession(
-        redis,
-        request.cookies[SESSION_COOKIE_NAME],
-        sessionTtlSeconds,
-      );
-      const isAuthenticated = session !== null;
-      // Owner request (2026-10-26): the delay line's explanation (the estimate's working and the
-      // last TRUST report) is for admins only; everyone else sees just the delay.
-      const isAdmin = session?.role === "admin";
+      // Milestone 99: what this popup may show depends on the viewer's `popup.*` permissions
+      // (resolved by the site-access hook). Without `popup.headcode` there is no popup at all.
+      const viewer = request.viewer ?? GUEST_VIEWER;
+      if (!can(viewer, "popup.headcode")) {
+        reply.code(404);
+        return apiError("NO_PUBLIC_DETAIL", "Train details are not available");
+      }
 
       // Milestone 57: `?at=<iso>` asks this same question about a past moment, so the playback
       // map's click-a-berth popup behaves like the live one. Everything time-dependent below
@@ -353,6 +362,10 @@ export async function registerCurrentRunRoutes(
           return apiError("INVALID_AT", "`at` must be an ISO 8601 timestamp");
         }
         at = parsed;
+        if (!can(viewer, "map.playback")) {
+          reply.code(403);
+          return apiError("FORBIDDEN", 'Requires the "map.playback" permission');
+        }
       }
       const referenceNow = at ?? new Date();
 
@@ -694,7 +707,8 @@ export async function registerCurrentRunRoutes(
                 : null,
               standingSince: occupancy ? occupancy.enteredAt.toISOString() : occupancyEnteredAt,
             },
-            { withExplanation: isAdmin },
+            // Owner request (2026-10-26): the working behind a delay is a permission of its own.
+            { withExplanation: can(viewer, "popup.delay_explanation") },
           );
         }
 
@@ -836,46 +850,33 @@ export async function registerCurrentRunRoutes(
       // `isSolidMatch` is computed per-branch above (Milestone 39: a lineage match's solidity
       // follows its inherited `match_confidence`, capped at whatever produced it originally,
       // rather than being re-derived from `matchBasis` alone).
-      if (!isAuthenticated && !isSolidMatch) {
+      // A viewer without `popup.weak_matches` sees only solid matches: ambiguous, unmatched and
+      // headcode-only matches read as resolver internals ("verify before trusting this"), not
+      // public fact (owner request 2026-09-13).
+      if (!can(viewer, "popup.weak_matches") && !isSolidMatch) {
         reply.code(404);
         return apiError(
           "NO_PUBLIC_DETAIL",
-          "No confirmed match to show without logging in — this berth's identification is either ambiguous, unmatched, or too weak to show publicly",
+          "No confirmed match to show — this berth's identification is either ambiguous, unmatched, or too weak to show",
         );
       }
 
-      if (!isAuthenticated) {
-        // Reduced, departure-board-style view — see toPublicEffective's own doc comment for
-        // exactly what's withheld and why. Owner request (2026-09-14): no `note` either — its
-        // "matched by TRUST activation / STP precedence / verify this" language is resolver
-        // internals, meaningless (and a little alarming) to a visitor with no matchBasis to
-        // interpret it against; that explanation stays for the logged-in, full response only.
-        return {
-          tdArea,
-          berth,
-          headcode,
-          occupancyEnteredAt,
-          matchStatus: "matched" as const,
-          effective: effective ? toPublicEffective(effective) : null,
-          delay,
-          unitAllocation,
-        };
-      }
-
+      const matchDetails = can(viewer, "popup.match_details");
       return {
         tdArea,
         berth,
         description: headcode,
         headcode,
         occupancyEnteredAt,
-        matchStatus,
-        matchBasis,
-        positionScoped,
-        note: matchNote(matchStatus, matchBasis, positionScoped),
-        effective,
-        delay,
-        candidateSchedules,
-        unitAllocation,
+        // Without `popup.weak_matches` only solid matches reach here.
+        matchStatus: matchDetails ? matchStatus : ("matched" as const),
+        ...(matchDetails
+          ? { matchBasis, positionScoped, note: matchNote(matchStatus, matchBasis, positionScoped) }
+          : {}),
+        effective: effective ? effectiveForViewer(effective, viewer) : null,
+        delay: can(viewer, "popup.delay") ? delay : null,
+        ...(can(viewer, "popup.candidates") ? { candidateSchedules } : {}),
+        unitAllocation: can(viewer, "popup.formation") ? unitAllocation : [],
       };
     },
   );

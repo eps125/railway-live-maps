@@ -9,16 +9,17 @@ const quality = {
   incomplete: true,
 };
 
-describe("qualityForViewer (owner, 2026-10-10: outage details are admin-only)", () => {
-  it("gives an admin the full list", () => {
-    expect(qualityForViewer(quality, { user: { role: "admin" } })).toEqual(quality);
+describe("qualityForViewer (owner, 2026-10-10; Milestone 99: map.feed_gap_details)", () => {
+  it("gives a viewer with map.feed_gap_details the full list", () => {
+    expect(qualityForViewer(quality, { permissions: new Set(["map.feed_gap_details"]) })).toEqual(
+      quality,
+    );
   });
 
   it.each([
     ["a guest", null],
-    ["an access-code viewer", { user: null }],
-    ["an editor", { user: { role: "editor" } }],
-    ["a viewer account", { user: { role: "viewer" } }],
+    ["a viewer with no permissions", { permissions: new Set<string>() }],
+    ["an editor without it", { permissions: new Set(["editor.view", "maps.edit"]) }],
   ])("gives %s only the status and the incomplete flag", (_who, viewer) => {
     expect(qualityForViewer(quality, viewer)).toEqual({
       status: "stale",

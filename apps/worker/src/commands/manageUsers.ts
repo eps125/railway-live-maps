@@ -4,14 +4,14 @@ import {
   deleteUser,
   DuplicateUsernameError,
   findUserByUsername,
-  isUserRole,
-  LastAdminGuardError,
+  findUserTypeByName,
+  InvalidUserTypeError,
+  LastManagerGuardError,
   listUsers,
   setUserActive,
   updateUserPassword,
-  updateUserRole,
+  updateUserType,
   type AppUser,
-  type UserRole,
 } from "@railway/database";
 import type { Config } from "../config.js";
 
@@ -22,7 +22,7 @@ import type { Config } from "../config.js";
  * which means there is no bootstrap row anywhere — the very first admin account has to come from
  * somewhere outside the (auth-gated) API itself. This command is that "somewhere," run once by
  * hand against the deployed worker container (`docker exec ... node dist/index.js manage-users
- * create --username ... --role admin`), matching this repo's existing pattern of one-shot
+ * create --username ... --type Admin`), matching this repo's existing pattern of one-shot
  * operational CLI commands (`publish-map`, `prune-partitions`) rather than a magic seed row or a
  * plaintext credential anywhere in Git. Once at least one admin exists, day-to-day user management
  * goes through the web UI (`/api/v1/admin/users`) instead.
@@ -30,6 +30,10 @@ import type { Config } from "../config.js";
  * A password is accepted via `--password <value>` or the `MANAGE_USERS_PASSWORD` env var (the
  * latter lets an operator avoid a plaintext password ending up in their shell history) — never
  * both silently preferring one without saying so.
+ *
+ * Milestone 99 (docs/adr/0022): users have a user type, named with `--type "<name>"` (e.g.
+ * `--type Admin`, `--type "Enhanced Editor"`); `--role admin|editor` is still accepted as
+ * shorthand for the Admin / Enhanced Editor types.
  */
 function findFlag(argv: string[], name: string): string | undefined {
   const idx = argv.indexOf(`--${name}`);
@@ -53,17 +57,26 @@ function resolvePassword(argv: string[]): string | { error: string } {
   return password;
 }
 
-function resolveRole(argv: string[]): UserRole | { error: string } {
+/** `--type <name>`, or the old `--role admin|editor` (Admin / Enhanced Editor). */
+async function resolveUserType(
+  pool: ReturnType<typeof createPool>,
+  argv: string[],
+): Promise<string | { error: string }> {
   const role = findFlag(argv, "role");
-  if (!role || !isUserRole(role)) {
-    return { error: 'manage-users: --role must be "admin" or "editor"' };
+  const name =
+    findFlag(argv, "type") ??
+    (role === "admin" ? "Admin" : role === "editor" ? "Enhanced Editor" : undefined);
+  if (!name) return { error: 'manage-users: --type "<user type name>" is required' };
+  const type = await findUserTypeByName(pool, name);
+  if (!type || type.systemKey === "public") {
+    return { error: `manage-users: no user type named "${name}" can be given to a user` };
   }
-  return role;
+  return type.id;
 }
 
 function printUser(user: AppUser): void {
   console.log(
-    `  ${user.id}\t${user.username}\t${user.role}\t${user.isActive ? "active" : "inactive"}\t` +
+    `  ${user.id}\t${user.username}\t${user.userTypeName}\t${user.isActive ? "active" : "inactive"}\t` +
       `created ${user.createdAt.toISOString()}\t` +
       `last login ${user.lastLoginAt ? user.lastLoginAt.toISOString() : "never"}`,
   );
@@ -89,15 +102,15 @@ export async function runManageUsers(config: Config, argv: string[]): Promise<vo
           process.exitCode = 1;
           return;
         }
-        const role = resolveRole(rest);
-        if (typeof role !== "string") {
-          console.error(role.error);
+        const userTypeId = await resolveUserType(pool, rest);
+        if (typeof userTypeId !== "string") {
+          console.error(userTypeId.error);
           process.exitCode = 1;
           return;
         }
         try {
-          const user = await createUser(pool, { username, password, role });
-          console.log(`manage-users: created "${user.username}" (${user.role})`);
+          const user = await createUser(pool, { username, password, userTypeId });
+          console.log(`manage-users: created "${user.username}" (${user.userTypeName})`);
         } catch (error) {
           if (error instanceof DuplicateUsernameError) {
             console.error(`manage-users create: ${error.message}`);
@@ -115,25 +128,28 @@ export async function runManageUsers(config: Config, argv: string[]): Promise<vo
           console.log("manage-users: no users exist yet — create the first admin with `create`");
           return;
         }
-        console.log("  id\tusername\trole\tstatus\tcreated\tlast login");
+        console.log("  id\tusername\tuser type\tstatus\tcreated\tlast login");
         for (const user of users) printUser(user);
         return;
       }
 
+      case "set-type":
       case "set-role": {
         const username = findFlag(rest, "username");
-        const role = resolveRole(rest);
         if (!username) {
-          console.error("manage-users set-role: --username <name> is required");
+          console.error(`manage-users ${action}: --username <name> is required`);
           process.exitCode = 1;
           return;
         }
-        if (typeof role !== "string") {
-          console.error(role.error);
+        const userTypeId = await resolveUserType(pool, rest);
+        if (typeof userTypeId !== "string") {
+          console.error(userTypeId.error);
           process.exitCode = 1;
           return;
         }
-        await withUserByUsername(pool, username, (user) => updateUserRole(pool, user.id, role));
+        await withUserByUsername(pool, username, (user) =>
+          updateUserType(pool, user.id, userTypeId),
+        );
         return;
       }
 
@@ -189,7 +205,7 @@ export async function runManageUsers(config: Config, argv: string[]): Promise<vo
       default:
         console.error(
           `manage-users: unknown action "${action ?? ""}". Expected one of: create, list, ` +
-            "set-role, set-password, set-active, delete",
+            "set-type, set-password, set-active, delete",
         );
         process.exitCode = 1;
     }
@@ -217,10 +233,10 @@ async function withUserByUsername(
       return;
     }
     console.log(
-      `manage-users: updated "${updated.username}" (${updated.role}, ${updated.isActive ? "active" : "inactive"})`,
+      `manage-users: updated "${updated.username}" (${updated.userTypeName}, ${updated.isActive ? "active" : "inactive"})`,
     );
   } catch (error) {
-    if (error instanceof LastAdminGuardError) {
+    if (error instanceof LastManagerGuardError || error instanceof InvalidUserTypeError) {
       console.error(`manage-users: ${error.message}`);
       process.exitCode = 1;
       return;

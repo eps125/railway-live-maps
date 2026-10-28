@@ -109,11 +109,8 @@ export async function registerEditorStateRoutes(
         asOf: now.toISOString(),
         sourceSequence,
         mode: "live" as const,
-        // Outage details are admin-only (owner, 2026-10-10) — editors included.
-        quality: qualityForViewer(
-          quality,
-          request.authSession ? { user: { role: request.authSession.role } } : null,
-        ),
+        // Outage details need `map.feed_gap_details` (owner, 2026-10-10; Milestone 99).
+        quality: qualityForViewer(quality, request.viewer),
         berths,
         signals,
       };

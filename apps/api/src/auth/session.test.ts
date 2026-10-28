@@ -48,12 +48,12 @@ describe("session store", () => {
     const redis = new FakeRedis();
     const token = await createSession(
       redis as unknown as Redis,
-      { userId: "1", username: "matt", role: "admin" },
+      { userId: "1", username: "matt" },
       3600,
     );
 
     const session = await getSession(redis as unknown as Redis, token, 3600);
-    expect(session).toEqual({ userId: "1", username: "matt", role: "admin" });
+    expect(session).toEqual({ userId: "1", username: "matt" });
   });
 
   it("returns null for a missing or undefined token, without throwing", async () => {
@@ -66,7 +66,7 @@ describe("session store", () => {
     const redis = new FakeRedis();
     const token = await createSession(
       redis as unknown as Redis,
-      { userId: "2", username: "editor1", role: "editor" },
+      { userId: "2", username: "editor1" },
       3600,
     );
 

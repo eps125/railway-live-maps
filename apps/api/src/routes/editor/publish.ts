@@ -12,6 +12,7 @@ import { apiError } from "../../lib/queryRange.js";
 import { validateDraftInContext } from "../../editor/validateWithContext.js";
 import { getDraft } from "../../editor/draftStore.js";
 import { audit } from "../../lib/audit.js";
+import { actorName } from "../../lib/viewer.js";
 import {
   assembleFromPublished,
   cascadeInTransaction,
@@ -265,7 +266,7 @@ export async function registerEditorPublishRoutes(
           errors: validation.errors,
         });
       }
-      const publishedBy = request.authSession?.username ?? body.publishedBy ?? "editor";
+      const publishedBy = actorName(request) ?? body.publishedBy ?? "editor";
 
       const client = await pool.connect();
       try {

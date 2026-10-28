@@ -16,13 +16,18 @@ import {
   UnknownMapError,
   updateAccessCode,
   updateGrantExpiry,
+  findUserType,
+  isCodeGrantable,
+  isPermission,
   type AccessCodeDetail,
-  type AccessCodeScope,
   type AccessCodeSummary,
   type AccessCodeUpdate,
+  type Permission,
 } from "@railway/database";
 import { apiError } from "../../lib/queryRange.js";
 import { audit } from "../../lib/audit.js";
+import { actorName, GUEST_VIEWER } from "../../lib/viewer.js";
+import { permissionsWithinViewer } from "../../lib/permissionGuards.js";
 import type { SiteAccess } from "../../lib/siteAccess.js";
 
 export interface AccessCodeAdminRoutesDeps {
@@ -46,7 +51,12 @@ function codeResponse(code: AccessCodeSummary) {
     id: code.id,
     label: code.label,
     code: code.code,
-    scope: code.scope,
+    // Milestone 99 (docs/adr/0022 §4): a user type, or a custom permission set.
+    grantKind: code.grantKind,
+    userTypeId: code.userTypeId,
+    userTypeName: code.userTypeName,
+    permissions: code.permissions,
+    mapLimit: code.mapLimit,
     mapIds: code.mapIds,
     maxUses: code.maxUses,
     useCount: code.useCount,
@@ -97,7 +107,19 @@ function parseCodeFields(
   requireAll: boolean,
 ): Parsed<AccessCodeUpdate & { code?: string }> {
   const out: AccessCodeUpdate & { code?: string } = {};
-  const { label, code, scope, mapIds, maxUses, accessSeconds, validUntil, notes } = body;
+  const {
+    label,
+    code,
+    grantKind,
+    userTypeId,
+    permissions,
+    mapLimit,
+    mapIds,
+    maxUses,
+    accessSeconds,
+    validUntil,
+    notes,
+  } = body;
 
   if (label !== undefined || requireAll) {
     if (typeof label !== "string" || !label.trim() || label.trim().length > LABEL_MAX_LENGTH) {
@@ -115,11 +137,32 @@ function parseCodeFields(
     }
     out.code = code;
   }
-  if (scope !== undefined || requireAll) {
-    if (scope !== "site" && scope !== "all_maps" && scope !== "maps") {
-      return { ok: false, message: 'scope must be "site", "all_maps" or "maps"' };
+  if (grantKind !== undefined || requireAll) {
+    if (grantKind !== "user_type" && grantKind !== "custom") {
+      return { ok: false, message: 'grantKind must be "user_type" or "custom"' };
     }
-    out.scope = scope as AccessCodeScope;
+    out.grantKind = grantKind;
+  }
+  if (userTypeId !== undefined && userTypeId !== null) {
+    if (typeof userTypeId !== "string" || !/^\d+$/.test(userTypeId)) {
+      return { ok: false, message: "userTypeId must be a user type id" };
+    }
+    out.userTypeId = userTypeId;
+  }
+  if (permissions !== undefined) {
+    if (!Array.isArray(permissions) || !permissions.every(isPermission)) {
+      return { ok: false, message: "permissions must be an array of known permissions" };
+    }
+    if (!permissions.every(isCodeGrantable)) {
+      return { ok: false, message: "an access code cannot give an admin permission" };
+    }
+    out.permissions = permissions;
+  }
+  if (mapLimit !== undefined || requireAll) {
+    if (mapLimit !== "none" && mapLimit !== "maps") {
+      return { ok: false, message: 'mapLimit must be "none" or "maps"' };
+    }
+    out.mapLimit = mapLimit;
   }
   if (mapIds !== undefined) {
     if (
@@ -184,6 +227,50 @@ export async function registerAccessCodeAdminRoutes(
 ): Promise<void> {
   const { pool, siteAccess } = deps;
 
+  /**
+   * Checks what a code would give once `fields` are applied over `before`: a type a code may
+   * carry (not the public type, not Admin, no admin permissions), at least one permission for a
+   * custom code, at least one map when limited to maps — and nothing beyond what the requester
+   * holds themselves (docs/adr/0022 §3). Returns an error message, or null.
+   */
+  async function checkGrant(
+    request: { viewer: typeof GUEST_VIEWER | null },
+    fields: AccessCodeUpdate,
+    before: AccessCodeSummary | null,
+  ): Promise<{ status: 400 | 403; message: string } | null> {
+    const grantKind = fields.grantKind ?? before?.grantKind;
+    const mapLimit = fields.mapLimit ?? before?.mapLimit;
+    const mapIds = fields.mapIds ?? before?.mapIds ?? [];
+    if (mapLimit === "maps" && mapIds.length === 0) {
+      return { status: 400, message: "choose at least one map for a code limited to maps" };
+    }
+    let granted: Permission[];
+    if (grantKind === "user_type") {
+      const typeId = fields.userTypeId ?? before?.userTypeId ?? null;
+      const type = typeId ? await findUserType(pool, typeId) : null;
+      if (!type) return { status: 400, message: "choose the user type this code gives" };
+      if (type.systemKey !== null || !type.permissions.every(isCodeGrantable)) {
+        return {
+          status: 400,
+          message: `an access code cannot give the ${type.name} type (it is built in or holds admin permissions)`,
+        };
+      }
+      granted = type.permissions;
+    } else {
+      granted = fields.permissions ?? before?.permissions ?? [];
+      if (granted.length === 0) {
+        return { status: 400, message: "choose at least one permission for a custom code" };
+      }
+    }
+    if (!permissionsWithinViewer(granted, request.viewer ?? GUEST_VIEWER)) {
+      return {
+        status: 403,
+        message: "a code can only give permissions you hold yourself",
+      };
+    }
+    return null;
+  }
+
   async function inTransaction<T>(fn: (client: import("pg").PoolClient) => Promise<T>): Promise<T> {
     const client = await pool.connect();
     try {
@@ -222,9 +309,10 @@ export async function registerAccessCodeAdminRoutes(
         return apiError("VALIDATION_ERROR", parsed.message);
       }
       const fields = parsed.value;
-      if (fields.scope === "maps" && (fields.mapIds ?? []).length === 0) {
-        reply.code(400);
-        return apiError("VALIDATION_ERROR", "choose at least one map for a maps-only code");
+      const refused = await checkGrant(request, fields, null);
+      if (refused) {
+        reply.code(refused.status);
+        return apiError(refused.status === 403 ? "FORBIDDEN" : "VALIDATION_ERROR", refused.message);
       }
       try {
         const created = await inTransaction(async (client) => {
@@ -233,14 +321,17 @@ export async function registerAccessCodeAdminRoutes(
             {
               label: fields.label!,
               code: fields.code,
-              scope: fields.scope!,
+              grantKind: fields.grantKind!,
+              userTypeId: fields.userTypeId ?? null,
+              permissions: fields.permissions ?? [],
+              mapLimit: fields.mapLimit!,
               mapIds: fields.mapIds ?? [],
               maxUses: fields.maxUses ?? null,
               accessSeconds: fields.accessSeconds!,
               validUntil: fields.validUntil ?? null,
               notes: fields.notes ?? null,
             },
-            request.authSession?.username ?? null,
+            actorName(request),
           );
           await audit(
             client,
@@ -249,7 +340,10 @@ export async function registerAccessCodeAdminRoutes(
             { type: "access_code", id: code.id },
             {
               label: code.label,
-              scope: code.scope,
+              grantKind: code.grantKind,
+              userType: code.userTypeName,
+              permissions: code.permissions,
+              mapLimit: code.mapLimit,
               mapIds: code.mapIds,
               maxUses: code.maxUses,
               accessSeconds: code.accessSeconds,
@@ -288,11 +382,10 @@ export async function registerAccessCodeAdminRoutes(
         return apiError("ACCESS_CODE_NOT_FOUND", `No access code with id "${request.params.id}"`);
       }
       const fields = parsed.value;
-      const scope = fields.scope ?? before.scope;
-      const mapIds = fields.mapIds ?? before.mapIds;
-      if (scope === "maps" && mapIds.length === 0) {
-        reply.code(400);
-        return apiError("VALIDATION_ERROR", "choose at least one map for a maps-only code");
+      const refused = await checkGrant(request, fields, before);
+      if (refused) {
+        reply.code(refused.status);
+        return apiError(refused.status === 403 ? "FORBIDDEN" : "VALIDATION_ERROR", refused.message);
       }
       try {
         const updated = await inTransaction(async (client) => {
@@ -306,7 +399,10 @@ export async function registerAccessCodeAdminRoutes(
               label: code!.label,
               before: {
                 label: before.label,
-                scope: before.scope,
+                grantKind: before.grantKind,
+                userType: before.userTypeName,
+                permissions: before.permissions,
+                mapLimit: before.mapLimit,
                 mapIds: before.mapIds,
                 maxUses: before.maxUses,
                 accessSeconds: before.accessSeconds,
@@ -314,7 +410,10 @@ export async function registerAccessCodeAdminRoutes(
               },
               after: {
                 label: code!.label,
-                scope: code!.scope,
+                grantKind: code!.grantKind,
+                userType: code!.userTypeName,
+                permissions: code!.permissions,
+                mapLimit: code!.mapLimit,
                 mapIds: code!.mapIds,
                 maxUses: code!.maxUses,
                 accessSeconds: code!.accessSeconds,
@@ -345,7 +444,7 @@ export async function registerAccessCodeAdminRoutes(
         return apiError("ACCESS_CODE_NOT_FOUND", `No access code with id "${request.params.id}"`);
       }
       await inTransaction(async (client) => {
-        await revokeAccessCode(client, before.id, request.authSession?.username ?? null);
+        await revokeAccessCode(client, before.id, actorName(request));
         await audit(
           client,
           request,
@@ -413,7 +512,9 @@ export async function registerAccessCodeAdminRoutes(
           { type: "access_code", id: before.id },
           {
             label: before.label,
-            scope: before.scope,
+            grantKind: before.grantKind,
+            userType: before.userTypeName,
+            mapLimit: before.mapLimit,
             useCount: before.useCount,
             activeGrants: before.activeGrants,
           },
@@ -480,11 +581,7 @@ export async function registerAccessCodeAdminRoutes(
     "/api/v1/admin/access-grants/:id/revoke",
     async (request, reply) => {
       const result = await inTransaction(async (client) => {
-        const revoked = await revokeGrant(
-          client,
-          request.params.id,
-          request.authSession?.username ?? null,
-        );
+        const revoked = await revokeGrant(client, request.params.id, actorName(request));
         if (revoked) {
           await audit(
             client,

@@ -44,13 +44,17 @@ export async function registerAccessRoutes(
   async function status(request: Parameters<typeof resolveViewer>[0], fresh = false) {
     const viewer = await resolveViewer(request, deps, { fresh });
     const grant = viewer.grant;
+    const matrix = await deps.siteAccess.matrix();
     return {
-      mode: viewer.siteMode,
+      // Milestone 99 (docs/adr/0022 §5): the mode is the public type's `site.view`.
+      mode: matrix.byType.get(matrix.publicTypeId)?.has("site.view") ? "open" : "code_required",
       access: viewer.user ? "user" : grant ? "code" : "none",
       allowed: viewerMayUseSite(viewer),
       expiresAt: grant ? grant.expiresAt.toISOString() : null,
-      scope: grant?.scope ?? null,
-      maps: grant?.scope === "maps" ? await mapsForAccessCode(pool, grant.codeId) : [],
+      mapLimit: grant?.mapLimit ?? null,
+      maps: grant?.mapLimit === "maps" ? await mapsForAccessCode(pool, grant.codeId) : [],
+      // What this visitor may do, for showing and hiding UI (the API enforces each one itself).
+      permissions: [...viewer.permissions].sort(),
     };
   }
 

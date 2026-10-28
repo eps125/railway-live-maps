@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import { appAs } from "../lib/testViewers.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { registerMapRoutes } from "./maps.js";
@@ -61,7 +61,7 @@ describe("map routes", () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/maps" });
@@ -106,7 +106,7 @@ describe("map routes", () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/maps" });
@@ -129,7 +129,7 @@ describe("map routes", () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/definition" });
@@ -142,7 +142,7 @@ describe("map routes", () => {
 
   it("GET /api/v1/maps/:slug/definition 404s when no version is effective", async () => {
     const pool = fakePool(() => ({ rows: [] }));
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/maps/nowhere/definition" });
@@ -172,7 +172,7 @@ describe("map routes", () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/state" });
@@ -228,7 +228,7 @@ describe("map routes", () => {
       throw new Error(`unexpected query: ${text}`);
     });
 
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/state" });
@@ -260,7 +260,7 @@ describe("map routes", () => {
       if (text.includes("from feed_gap")) return { rows: [] };
       throw new Error(`unexpected query: ${text}`);
     });
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({
@@ -281,7 +281,7 @@ describe("map routes", () => {
 
   it("GET /api/v1/maps/:slug/state?at= 404s when no version was effective then", async () => {
     const pool = fakePool(() => ({ rows: [] }));
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({
@@ -295,7 +295,7 @@ describe("map routes", () => {
 
   it("GET /api/v1/maps/:slug/state?at= rejects a future timestamp", async () => {
     const pool = fakePool(() => ({ rows: [] }));
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({
@@ -336,7 +336,7 @@ describe("map routes", () => {
       }
       throw new Error(`unexpected query: ${text}`);
     });
-    const app = Fastify();
+    const app = appAs();
     await registerMapRoutes(app, { pool });
 
     const response = await app.inject({
@@ -413,7 +413,7 @@ describe("map routes", () => {
         throw new Error(`unexpected query: ${text}`);
       });
 
-      const app = Fastify();
+      const app = appAs();
       await registerMapRoutes(app, { pool });
       const response = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays" });
 
@@ -441,7 +441,7 @@ describe("map routes", () => {
         if (text.includes("from map_version mv")) return { rows: [] };
         throw new Error(`unexpected query: ${text}`);
       });
-      const app = Fastify();
+      const app = appAs();
       await registerMapRoutes(app, { pool });
       const response = await app.inject({ method: "GET", url: "/api/v1/maps/nowhere/delays" });
       expect(response.statusCode).toBe(404);
@@ -462,7 +462,7 @@ describe("map routes", () => {
         }
         throw new Error(`unexpected query: ${text}`);
       });
-      const app = Fastify();
+      const app = appAs();
       await registerMapRoutes(app, { pool });
       await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays" });
       await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays" });
@@ -483,7 +483,7 @@ describe("map routes", () => {
         }
         throw new Error(`unexpected query: ${text}`);
       });
-      const app = Fastify();
+      const app = appAs();
       await registerMapRoutes(app, { pool });
       const first = await app.inject({
         method: "GET",
@@ -503,7 +503,7 @@ describe("map routes", () => {
       const pool = fakePool((text) => {
         throw new Error(`unexpected query: ${text}`);
       });
-      const app = Fastify();
+      const app = appAs();
       await registerMapRoutes(app, { pool });
       const bad = await app.inject({ method: "GET", url: "/api/v1/maps/lancaster/delays?at=nope" });
       const future = await app.inject({

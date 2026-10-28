@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createPool, createUser } from "@railway/database";
+import { createPool, createUser, findUserTypeByName } from "@railway/database";
 import type { MapDocument } from "@railway/map-schema";
 import { buildServer } from "./server.js";
 import type { Config } from "./config.js";
+
+/** Milestone 99: users have a user type (by its seeded name) instead of a role. */
+async function typeIdOf(
+  db: Parameters<typeof findUserTypeByName>[0],
+  name: string,
+): Promise<string> {
+  return (await findUserTypeByName(db, name))!.id;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -163,7 +171,11 @@ describe("map modules (integration)", () => {
     app = built.app;
     close = built.close;
     const admin = `modules-admin-${suffix}`;
-    await createUser(pool, { username: admin, password: PASSWORD, role: "admin" });
+    await createUser(pool, {
+      username: admin,
+      password: PASSWORD,
+      userTypeId: await typeIdOf(pool, "Admin"),
+    });
     const login = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",

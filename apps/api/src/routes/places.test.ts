@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import { appAs } from "../lib/testViewers.js";
 import { describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { registerPlaceRoutes } from "./places.js";
@@ -16,7 +16,7 @@ describe("place routes", () => {
     const pool = fakePool(() => {
       throw new Error("should not query when q is missing");
     });
-    const app = Fastify();
+    const app = appAs();
     await registerPlaceRoutes(app, { pool });
 
     const missing = await app.inject({ method: "GET", url: "/api/v1/places/search" });
@@ -55,7 +55,7 @@ describe("place routes", () => {
         ],
       };
     });
-    const app = Fastify();
+    const app = appAs();
     await registerPlaceRoutes(app, { pool });
 
     const response = await app.inject({ method: "GET", url: "/api/v1/places/search?q=lancaster" });
@@ -89,7 +89,7 @@ describe("place routes", () => {
       calls.push(values ?? []);
       return { rows: [] };
     });
-    const app = Fastify();
+    const app = appAs();
     await registerPlaceRoutes(app, { pool });
 
     await app.inject({ method: "GET", url: "/api/v1/places/search?q=x&limit=9999" });

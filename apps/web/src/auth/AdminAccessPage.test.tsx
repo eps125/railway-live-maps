@@ -20,7 +20,11 @@ const CODE = {
   id: "3",
   label: "Signalling society visit",
   code: "K7QM-3XRP",
-  scope: "maps",
+  grantKind: "user_type",
+  userTypeId: "2",
+  userTypeName: "Basic User",
+  permissions: [],
+  mapLimit: "maps",
   mapIds: ["10"],
   maxUses: 10,
   useCount: 2,
@@ -33,6 +37,35 @@ const CODE = {
   activeGrants: 1,
   lastUsedAt: "2026-10-01T10:00:00Z",
   status: "active",
+};
+
+/** Milestone 99: the user types and permission registry the form offers. */
+const USER_TYPES = {
+  types: [
+    {
+      id: "2",
+      systemKey: null,
+      name: "Basic User",
+      permissions: ["site.view", "maps.view_public"],
+      codeGrantable: true,
+    },
+    {
+      id: "4",
+      systemKey: null,
+      name: "Editor",
+      permissions: ["site.view", "maps.view_public", "editor.view", "maps.edit"],
+      codeGrantable: true,
+    },
+    { id: "6", systemKey: "admin", name: "Admin", permissions: [], codeGrantable: false },
+  ],
+  permissions: [
+    { key: "site.view", category: "viewing", label: "Use the site", codeGrantable: true },
+    { key: "maps.view_public", category: "viewing", label: "Public maps", codeGrantable: true },
+    { key: "editor.view", category: "editor", label: "Open the editor", codeGrantable: true },
+    { key: "maps.edit", category: "editor", label: "Edit maps", codeGrantable: true },
+    { key: "admin.users", category: "admin", label: "Users and groups", codeGrantable: false },
+  ],
+  categories: [],
 };
 
 const DETAIL = {
@@ -80,6 +113,7 @@ function stub(extra?: (url: string, init?: RequestInit) => Response | undefined)
       );
     }
     if (url === "/api/v1/admin/access-codes/3") return Promise.resolve(jsonResponse(DETAIL));
+    if (url === "/api/v1/admin/user-types") return Promise.resolve(jsonResponse(USER_TYPES));
     throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -97,6 +131,7 @@ describe("AdminAccessPage", () => {
     render(<AdminAccessPage />);
     expect(await screen.findByText("K7QM-3XRP")).toBeInTheDocument();
     expect(screen.getByText("Only: Lancaster")).toBeInTheDocument();
+    expect(screen.getByText("The Basic User user type")).toBeInTheDocument();
     expect(screen.getByText("2 of 10")).toBeInTheDocument();
     expect(screen.getByText("1 day")).toBeInTheDocument();
   });
@@ -143,7 +178,10 @@ describe("AdminAccessPage", () => {
       expect(bodyOf(fetchMock, "/api/v1/admin/access-codes", "POST")).toEqual({
         label: "Open day",
         code: "OPENDAY26",
-        scope: "maps",
+        grantKind: "user_type",
+        userTypeId: "2",
+        permissions: [],
+        mapLimit: "maps",
         mapIds: ["10"],
         maxUses: 50,
         accessSeconds: 14400,
@@ -153,7 +191,7 @@ describe("AdminAccessPage", () => {
     );
   });
 
-  it("offers all public maps, all maps, or chosen maps — and never a module (2026-10-12)", async () => {
+  it("gives a user type or chosen permissions, never an admin one, and never a module", async () => {
     const fetchMock = stub((url, init) => {
       if (url === "/api/v1/editor/maps") {
         return jsonResponse({
@@ -164,28 +202,50 @@ describe("AdminAccessPage", () => {
         });
       }
       return url === "/api/v1/admin/access-codes" && init?.method === "POST"
-        ? jsonResponse({ ...CODE, scope: "all_maps", mapIds: [] }, 201)
+        ? jsonResponse({ ...CODE, grantKind: "custom", mapLimit: "none", mapIds: [] }, 201)
         : undefined;
     });
     const { container } = render(<AdminAccessPage />);
     fireEvent.click(await screen.findByRole("button", { name: "New access code" }));
     const form = within(container.querySelector<HTMLElement>(".access-code-form")!);
 
-    expect(form.getByLabelText("All public maps")).toBeInTheDocument();
+    // Admin is not a type a code can give.
+    const typeSelect = form.getByLabelText("User type") as HTMLSelectElement;
+    expect([...typeSelect.options].map((o) => o.text)).toEqual(["Basic User", "Editor"]);
+
     fireEvent.click(form.getByLabelText(/only these maps/i));
     expect(form.getByLabelText("Lancaster")).toBeInTheDocument();
     expect(form.queryByLabelText("Carnforth Junction module")).not.toBeInTheDocument();
+    fireEvent.click(form.getByLabelText(/whichever maps/i));
 
     fireEvent.change(form.getByLabelText(/label/i), { target: { value: "Staff visit" } });
-    fireEvent.click(form.getByLabelText(/^all maps/i));
+    fireEvent.click(form.getByLabelText("Chosen permissions"));
+    expect(form.queryByLabelText("Users and groups")).not.toBeInTheDocument();
+    expect(form.queryByRole("note")).not.toBeInTheDocument();
+    fireEvent.click(form.getByLabelText("Edit maps"));
+    // An editor permission on a code is unusual: the form says so.
+    expect(form.getByRole("note")).toHaveTextContent(/editor permissions \(Edit maps\)/);
     fireEvent.click(form.getByRole("button", { name: "Create code" }));
     await waitFor(() =>
       expect(bodyOf(fetchMock, "/api/v1/admin/access-codes", "POST")).toMatchObject({
         label: "Staff visit",
-        scope: "all_maps",
+        grantKind: "custom",
+        userTypeId: null,
+        permissions: ["site.view", "maps.view_public", "maps.edit"],
+        mapLimit: "none",
         mapIds: [],
       }),
     );
+  });
+
+  it("warns when the chosen user type gives editor permissions", async () => {
+    stub();
+    const { container } = render(<AdminAccessPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New access code" }));
+    const form = within(container.querySelector<HTMLElement>(".access-code-form")!);
+    expect(form.queryByRole("note")).not.toBeInTheDocument();
+    fireEvent.change(form.getByLabelText("User type"), { target: { value: "4" } });
+    expect(form.getByRole("note")).toHaveTextContent(/Open the editor, Edit maps/);
   });
 
   it("shows a code's uses with sharing flags, and changes or ends one use", async () => {

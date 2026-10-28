@@ -1,8 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createPool, createUser, recordAudit } from "@railway/database";
+import {
+  createPool,
+  createUser,
+  createUserType,
+  recordAudit,
+  findUserTypeByName,
+} from "@railway/database";
 import { buildServer } from "./server.js";
 import type { Config } from "./config.js";
+
+/** Milestone 99: users have a user type (by its seeded name) instead of a role. */
+async function typeIdOf(
+  db: Parameters<typeof findUserTypeByName>[0],
+  name: string,
+): Promise<string> {
+  return (await findUserTypeByName(db, name))!.id;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -85,13 +99,31 @@ describe("map visibility, groups and audit log (integration)", () => {
     app = built.app;
     close = built.close;
 
-    await createUser(pool, { username: names.admin, password: PASSWORD, role: "admin" });
+    // Milestone 99: the seeded Editor type sees every map, so a "group-scoped" editor — editor
+    // permissions without `maps.view_all` — is what still exercises group visibility.
+    if (!(await findUserTypeByName(pool, "Group-scoped editor (test)"))) {
+      const editor = (await findUserTypeByName(pool, "Editor"))!;
+      await createUserType(pool, {
+        name: "Group-scoped editor (test)",
+        permissions: editor.permissions.filter((p) => p !== "maps.view_all"),
+      });
+    }
+
+    await createUser(pool, {
+      username: names.admin,
+      password: PASSWORD,
+      userTypeId: await typeIdOf(pool, "Admin"),
+    });
     const member = await createUser(pool, {
       username: names.member,
       password: PASSWORD,
-      role: "editor",
+      userTypeId: await typeIdOf(pool, "Group-scoped editor (test)"),
     });
-    await createUser(pool, { username: names.outsider, password: PASSWORD, role: "editor" });
+    await createUser(pool, {
+      username: names.outsider,
+      password: PASSWORD,
+      userTypeId: await typeIdOf(pool, "Group-scoped editor (test)"),
+    });
 
     groupId = (
       await pool.query<{ id: string }>(

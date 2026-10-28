@@ -1,8 +1,11 @@
 import { navigate } from "../useRoute.js";
+import { useCan } from "./permissions.js";
 
 interface BerthTool {
   title: string;
   path: string;
+  /** Milestone 99: the permission that shows this tool. */
+  permission: string;
   description: string;
 }
 
@@ -12,6 +15,7 @@ const TOOLS: BerthTool[] = [
   {
     title: "Query Berths",
     path: "/admin/berths/query",
+    permission: "tools.berth_query",
     description:
       "Look up every recorded berth-to-berth step for a headcode across one or more train " +
       "describer areas and a date/time range.",
@@ -19,6 +23,7 @@ const TOOLS: BerthTool[] = [
   {
     title: "Berth steps",
     path: "/admin/berths/steps",
+    permission: "tools.berth_query",
     description:
       "Give a pair of berths (or just one) and see the date and time of the last 50 steps " +
       "between them (or at it), with each train's description.",
@@ -26,6 +31,7 @@ const TOOLS: BerthTool[] = [
   {
     title: "Berth explorer",
     path: "/admin/berths/explorer",
+    permission: "tools.berth_explorer",
     description:
       "See every berth a train describer area has used in the last 7 to 90 days, whether each " +
       "is on a map yet (including combined berths), and each berth's latest steps.",
@@ -33,6 +39,7 @@ const TOOLS: BerthTool[] = [
   {
     title: "S-Class explorer",
     path: "/admin/berths/s-class",
+    permission: "tools.s_class",
     description:
       "Watch any train describer area's live S-Class bits, see each bit's history, record what " +
       "a bit is (signal, route, ...) and import published definition tables. Includes " +
@@ -47,11 +54,12 @@ const TOOLS: BerthTool[] = [
  * bare index.
  */
 export function AdminBerthsPage(): JSX.Element {
+  const can = useCan();
   return (
     <div className="admin-users-page">
       <h2>Berths</h2>
       <div className="berths-hub">
-        {TOOLS.map((tool) => (
+        {TOOLS.filter((tool) => can(tool.permission)).map((tool) => (
           <a
             key={tool.path}
             className="berths-hub__tool"

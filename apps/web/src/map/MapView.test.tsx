@@ -1,7 +1,21 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
+import { PermissionsProvider } from "../auth/permissions.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MapView, writePlaybackParams } from "./MapView.js";
 import type { MapDefinitionResponse, MapStateResponse } from "./types.js";
+
+/** Milestone 99: map controls follow permissions — a guest on an open site, or an admin. */
+const GUEST = ["site.view", "maps.view_public", "map.playback", "map.delay_colours"];
+const ADMIN = [...GUEST, "map.signal_numbers", "map.s_class_panel"];
+
+function render(ui: ReactElement, permissions: readonly string[] = GUEST) {
+  return rtlRender(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <PermissionsProvider permissions={new Set(permissions)}>{children}</PermissionsProvider>
+    ),
+  });
+}
 
 const definition: MapDefinitionResponse = {
   mapSlug: "lancaster",
@@ -331,28 +345,28 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
     return fetchMock;
   }
 
-  it("offers the S-Class button to an admin only", async () => {
+  it("offers the S-Class button only with map.s_class_panel", async () => {
     stubFetch();
     const { unmount } = render(<MapView slug="lancaster" />);
     await screen.findByText("2A16");
     expect(screen.queryByRole("button", { name: "S-Class" })).toBeNull();
     unmount();
 
-    render(<MapView slug="lancaster" isAdmin />);
+    render(<MapView slug="lancaster" />, ADMIN);
     fireEvent.click(await screen.findByRole("button", { name: "S-Class" }));
     expect(
       await screen.findByRole("complementary", { name: "S-Class mini explorer" }),
     ).toBeVisible();
   });
 
-  it("offers the signal numbers checkbox to an admin only, and remembers it (ADR 0017)", async () => {
+  it("offers the signal numbers checkbox only with map.signal_numbers, and remembers it (ADR 0017)", async () => {
     stubFetch();
     const { unmount } = render(<MapView slug="lancaster" />);
     await screen.findByText("2A16");
     expect(screen.queryByLabelText("Signal numbers")).toBeNull();
     unmount();
 
-    const admin = render(<MapView slug="lancaster" isAdmin />);
+    const admin = render(<MapView slug="lancaster" />, ADMIN);
     const box = await screen.findByLabelText("Signal numbers");
     expect(box).not.toBeChecked();
     fireEvent.click(box);
@@ -360,9 +374,17 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
     expect(window.localStorage.getItem("rlm.showSignalNumbers")).toBe("true");
     admin.unmount();
 
-    render(<MapView slug="lancaster" isAdmin />);
+    render(<MapView slug="lancaster" />, ADMIN);
     expect(await screen.findByLabelText("Signal numbers")).toBeChecked();
     window.localStorage.removeItem("rlm.showSignalNumbers");
+  });
+
+  it("hides playback and delay colours without their permissions (Milestone 99)", async () => {
+    stubFetch();
+    render(<MapView slug="lancaster" />, ["site.view", "maps.view_public"]);
+    await screen.findByText("2A16");
+    expect(screen.queryByRole("button", { name: "Playback" })).toBeNull();
+    expect(screen.queryByLabelText("Delay colours")).toBeNull();
   });
 
   it("opens in playback at the position a boundary link carried, instead of live", async () => {

@@ -4,17 +4,27 @@ All public endpoints are versioned under `/api/v1`. Times are ISO 8601 UTC in re
 
 ## 1. Public REST
 
-**Site access mode (Milestone 84, docs/adr/0018 §6).** When an admin sets the site to
-`code_required`, every API request from a guest without a valid access code — except
-`/api/v1/auth/*`, `/api/v1/access/*` and `/health/*` — answers `401 ACCESS_CODE_REQUIRED`, and the
-WebSocket upgrade is refused. Logged-in users are never asked. A live socket whose viewer loses
+**Permissions (Milestone 99, docs/adr/0022).** Every route checks the viewer's permissions: the
+union of the public user type's (everyone has those), their own user type's when logged in, and
+their access code's. A visitor without `site.view` gets `401 ACCESS_CODE_REQUIRED` from every API
+request except `/api/v1/auth/*`, `/api/v1/access/*` and `/health/*`, and the WebSocket upgrade is
+refused — this is Milestone 84's `code_required` site mode, now "the public type lacks
+`site.view`". A route needing a permission the viewer lacks answers `401 UNAUTHENTICATED` to a
+visitor with no login and no code, `403 FORBIDDEN` to anyone else. A live socket whose viewer loses
 access (code expired or revoked, or the site switched) is closed (`1008`) within 30 s.
+
+On the public map routes: `?at=` in the past (playback) on `/definition`, `/state`, `/delays` and
+the train popup, and every `/events` request, need `map.playback`; `/delays` needs
+`map.delay_colours`, and the WebSocket leaves delay bands out of its snapshot and pushes without
+it; `/definition` leaves out each signal's number (`label`, `labelOffset`, `labelSource`) without
+`map.signal_numbers`; feed-gap details (`quality.gaps`) need `map.feed_gap_details`.
 
 ### `GET /api/v1/access/status`, `POST /api/v1/access/redeem`, `POST /api/v1/access/leave` (Milestone 84)
 
 Always reachable. `status` → `{ mode: "open" | "code_required", access: "user" | "code" | "none",
-allowed, expiresAt, scope: "site" | "all_maps" | "maps" | null, maps: [{ slug, name }] }` (`maps` lists a
-maps-only code's maps). `redeem` with `{ code }` — case, spaces and dashes ignored — sets the
+allowed, expiresAt, mapLimit: "none" | "maps" | null, maps: [{ slug, name }], permissions }` (`maps`
+lists a map-limited code's maps; `mode` is `open` when the public type holds `site.view`;
+`permissions` is every permission this visitor holds — Milestone 99, which replaced `scope`). `redeem` with `{ code }` — case, spaces and dashes ignored — sets the
 HttpOnly `rlm_access` cookie (an opaque token; only its hash is stored) and returns the same status
 shape; `401 INVALID_ACCESS_CODE` with `details.reason` `unknown` / `revoked` / `expired` / `used_up`;
 `429 RATE_LIMITED` per IP with the login limits. `leave` clears the cookie (`204`).
@@ -26,9 +36,11 @@ List published maps the viewer may see, with live-data status. Milestone 83 (doc
 publishedAt, mapVersion, liveDataStatus }], regionGrouping }`, maps by name. `regionGrouping` is the
 admin setting that groups the landing page by region.
 
-**Map visibility (Milestone 83).** A map is `public` or `restricted`. A restricted map is visible
-to admins, to members of the groups it is shared with, and (Milestone 84) to access codes naming
-it; to anyone else every `/api/v1/maps/{slug}/*` route (including the WebSocket) and every
+**Map visibility (Milestone 83; Milestone 99).** A map is `public` or `restricted`. A public map
+is visible with `maps.view_public`; every map with `maps.view_all` (from a user type, or from a
+code — a code never opens a module). A restricted map is also visible to members of the groups it
+is shared with, and (Milestone 84) to access codes limited to maps that name it (such a code gives
+exactly its maps); to anyone else every `/api/v1/maps/{slug}/*` route (including the WebSocket) and every
 `/api/v1/editor/maps/{slug}/*` route answers `404 MAP_NOT_FOUND`, exactly as for a map that does not
 exist. An open WebSocket is closed (`1008`) within 30 s of its map becoming hidden from the viewer.
 
@@ -309,18 +321,30 @@ merges it into the ordinary candidate pool, so it competes fairly through the sa
 `trust_activation`/ambiguity rules as everything else (CLAUDE.md rule 7 — two genuinely competing
 candidates still report `ambiguous`, never a silent guess).
 
-**Role-gated response (owner request, same day):** a logged-in session (any role) gets the full
-shape below. An anonymous request (no session cookie — viewing the map itself never needs one)
-gets `404 NO_PUBLIC_DETAIL` unless the match is **solid** — the weakest `headcode_only` tier is
-excluded, since its own note already says to verify it. On a solid match, an anonymous request
-instead gets a reduced shape: just
-`{ tdArea, berth, headcode, occupancyEnteredAt, matchStatus: "matched", effective:
-{ originTiploc, originName, destinationTiploc, destinationName, operatorCode, locations } | null,
-delay, unitAllocation }` — no `note`, `matchBasis`, `positionScoped`, `candidateSchedules`, or any of
-`effective`'s TRUST/CIF/movement fields. `note`'s "matched by TRUST activation/STP precedence/
-verify this" language is resolver-internal and meaningless without `matchBasis` to read it
-against, so it stays on the full (logged-in) response only (owner request, 2026-09-14). This is
-enforced server-side (the response itself is shaped differently), not left to the UI to hide.
+**Permission-gated rows (Milestone 99, docs/adr/0022; before it, owner request 2026-09-13 split
+anonymous from logged-in).** Each row of the popup is a `popup.*` permission, and a field the viewer
+may not see is left out of the response (removed server-side, not hidden by the UI):
+
+- no `popup.headcode` → `404 NO_PUBLIC_DETAIL` (no popup at all);
+- no `popup.weak_matches` → `404 NO_PUBLIC_DETAIL` unless the match is **solid** (the weakest
+  `headcode_only` tier is excluded, since its own note already says to verify it);
+- `popup.match_details` → `matchStatus` as resolved (otherwise always `"matched"`), `matchBasis`,
+  `positionScoped`, `note` (resolver-internal language, owner request 2026-09-14);
+- `popup.origin_destination` → `effective.operatorCode`, `originTiploc`/`Name`,
+  `destinationTiploc`/`Name`;
+- `popup.schedule` → `effective.scheduleId`, `trainUid`, `stpIndicator`, `source`, `trainStatus`,
+  `serviceCode`, `category`, `originChange`, `destinationChange`;
+- `popup.trust` → `effective.activation`, `identityChange`;
+- `popup.latest_report` → `effective.latestMovement`;
+- `popup.calling_points` → `effective.locations`;
+- `popup.delay` → `delay` (otherwise `null`); `popup.delay_explanation` → its `estimate` and
+  `lastReport` (below);
+- `popup.candidates` → `candidateSchedules`;
+- `popup.formation` → `unitAllocation` (otherwise `[]`).
+
+`effective` is `null` when none of its fields are allowed. The seeded Basic User type gets exactly
+the former anonymous shape and the Editor type the former logged-in one. `?at=` needs
+`map.playback` (`403`).
 
 **Sticky run-lineage matching (Milestone 39, docs/adr/0007):** before running the resolver above
 at all, the route checks whether the berth's currently open occupancy already carries a run link
@@ -369,9 +393,9 @@ Otherwise:
     reports again; `standingSince` is then null.
 - Live, the estimate is worked out at the click, so its minutes are current. In playback (`?at=`)
   the popup shows the estimate recorded at that moment, which is what the map was coloured by.
-- **Admins only (owner, 2026-10-26):** `estimate` and `lastReport`, the explanation behind the
-  delay, are `null` for anyone else (anonymous or a non-admin login), who see just the delay and
-  whether it is estimated. Removed server-side, not hidden by the UI.
+- **`popup.delay_explanation` only (owner, 2026-10-26: admins; Milestone 99: a permission):**
+  `estimate` and `lastReport`, the explanation behind the delay, are `null` for anyone else, who
+  see just the delay and whether it is estimated. Removed server-side, not hidden by the UI.
 - `lastReport` is the run's latest TRUST report (`eventKind` `departure` / `arrival` /
   `arrival_destination` / `unknown`). The full response also keeps `effective.latestMovement`.
 
@@ -654,30 +678,57 @@ The client tracks `sequence`. On a gap it discards uncertain deltas and fetches 
 
 ## 4a. Auth and admin API
 
-Milestone 29. Roles: `admin`, `editor` (`admin` satisfies any `editor`-gated route too).
+Milestone 29; Milestone 99 (docs/adr/0022) replaced the fixed `admin`/`editor` roles with user
+types and a permission matrix. Each route below names the permission it needs.
 
 - `POST /api/v1/auth/login` — body `{ username, password }`. Rate-limited per-IP and
   per-normalized-username (fixed window). On success sets the `rlm_session` HttpOnly/SameSite=Lax
   cookie (an opaque server-side session token, not a JWT — nothing in it to decode or forge) and
-  returns `{ username, role }`. `401` on bad credentials or an inactive account (same generic
+  returns `{ username, userType: { id, name } }`. `401` on bad credentials or an inactive account (same generic
   message either way — doesn't reveal which). `429` with `Retry-After` and
   `details.retryAfterSeconds` when rate-limited.
 - `POST /api/v1/auth/logout` — clears the session (idempotent; `204` even with no session).
-- `GET /api/v1/auth/me` — `{ username, role }` for the current session, `401` if not logged in.
-  Used by the frontend to decide whether to show the Editor/Users nav links at all.
-- `GET /api/v1/admin/users` (admin only) — `{ users: [...] }`, no password hashes. Each user
-  carries `groupIds` (Milestone 83).
-- `POST /api/v1/admin/users` (admin only) — body `{ username, password, role, groupIds? }`. `400`
-  for a missing/short (<8 char) password, invalid role or unknown group; `409 DUPLICATE_USERNAME`
-  for an existing one.
-- `PATCH /api/v1/admin/users/{id}` (admin only) — body may include any of `role`, `isActive`,
-  `password`, `groupIds` (replaces the user's groups); only the given fields change. `409 LAST_ADMIN` if the change would leave the system
-  with no active admin at all (demoting, deactivating, or — via `DELETE` below — removing the last
-  one). `404` for an unknown id.
-- `DELETE /api/v1/admin/users/{id}` (admin only) — `204` on success, `404` if already gone, same
-  `409 LAST_ADMIN` guard as `PATCH`.
+- `GET /api/v1/auth/me` — `{ username, userType: { id, name }, permissions }` for the current
+  session (`permissions`: every permission held — the user type's, the public type's and any access
+  code's), `401` if not logged in. The web app shows and hides UI from `permissions`; the API
+  enforces each one itself. A session whose user has been deactivated or deleted counts as no login.
+- `GET /api/v1/admin/users` (`admin.users`) — `{ users: [{ id, username, userTypeId,
+userTypeName, isActive, groupIds, createdAt, updatedAt, lastLoginAt }] }`, no password hashes.
+- `POST /api/v1/admin/users` (`admin.users`) — body `{ username, password, userTypeId, groupIds? }`.
+  `400` for a missing/short (<8 char) password, an unknown type, the public type, or an unknown
+  group; `409 DUPLICATE_USERNAME` for an existing one; `403` for a type holding a permission the
+  requester lacks (docs/adr/0022 §3).
+- `PATCH /api/v1/admin/users/{id}` (`admin.users`) — body may include any of `userTypeId`,
+  `isActive`, `password`, `groupIds` (replaces the user's groups); only the given fields change.
+  `403` when the user's current or new type holds a permission the requester lacks. `409
+LAST_ADMIN` if the change would leave no active user holding both `admin.users` and
+  `admin.user_types`. `404` for an unknown id.
+- `DELETE /api/v1/admin/users/{id}` (`admin.users`) — `204` on success, `404` if already gone, the
+  same `403` and `409 LAST_ADMIN` guards as `PATCH`.
 
-**Groups, regions, settings and the audit log (Milestone 83, docs/adr/0018), admin only.** Every
+**User types and the permission matrix (Milestone 99, docs/adr/0022).** Every change is audited
+(`user_type.create` / `update` / `delete`) and applies on each viewer's next request.
+
+- `GET /api/v1/admin/user-types` (any of `admin.user_types`, `admin.users`,
+  `admin.access_codes`) — `{ types: [{ id, systemKey: "public" | "admin" | null, name,
+description, sortOrder, grantsAll, permissions, userCount, codeCount, codeGrantable }],
+permissions: [{ key, category, label, description, codeGrantable }], categories: [{ key, label }]
+}`. `permissions` is the registry, in display order. Admin (`grantsAll`) lists every permission.
+- `POST /api/v1/admin/user-types` (`admin.user_types`) — `{ name, description?, sortOrder?,
+permissions }`. `409 DUPLICATE_NAME` (case-insensitive); `403` for a permission the requester
+  lacks.
+- `PATCH /api/v1/admin/user-types/{id}` (`admin.user_types`) — any of `name`, `description`,
+  `sortOrder`, `permissions` (the whole set). `403` when adding or removing a permission the
+  requester lacks; `409 SYSTEM_USER_TYPE` for Admin (never changes) or renaming the public type, or
+  an admin permission on a type an access code gives; `409 LAST_ADMIN` if no active user would hold
+  both `admin.users` and `admin.user_types`.
+- `DELETE /api/v1/admin/user-types/{id}` (`admin.user_types`) — `204`; `409 SYSTEM_USER_TYPE` for
+  the public and Admin types; `409 USER_TYPE_IN_USE` (`details.userCount`, `details.codeCount`)
+  while any user or code uses it.
+
+**Groups, regions, settings and the audit log (Milestone 83, docs/adr/0018).** Groups need
+`admin.users` (listing them also `maps.manage`); regions `maps.manage` (listing them also
+`admin.site_settings`); settings `admin.site_settings`; the audit log `admin.audit_log`. Every
 change below, and every user, map-settings, map create/delete and publish change, writes an
 `admin_audit_log` entry (append-only; the database rejects update and delete).
 
@@ -690,31 +741,42 @@ change below, and every user, map-settings, map create/delete and publish change
   region-less), `PUT /api/v1/admin/regions/order` `{ ids }` — every region id exactly once, first to
   last.
 - `GET /api/v1/admin/settings` — `{ settings: { map_list_region_grouping, site_access_mode } }`. `PATCH` with any of
-  the keys; `400` for an unknown key or a value of the wrong type.
+  the keys; `400` for an unknown key or a value of the wrong type. `site_access_mode` (Milestone 99)
+  is read from the public user type (`open` when it holds `site.view`); setting `open` gives it
+  `site.view` and `maps.view_public`, `code_required` takes `site.view` away.
 - `GET /api/v1/admin/audit-log?action=&user=&before=&limit=` — newest first. `action` is exact or a
   prefix ending in `.` (`map.`); `user` is a username; `before` is the previous page's
   `nextCursor`; `limit` default 50, max 200. `{ entries: [{ id, occurredAt, actorUsername, action,
 targetType, targetId, details, clientIp }], nextCursor }`.
 
-**Access codes (Milestone 84, docs/adr/0018 §6), admin only.** Every change is audited
+**Access codes (Milestone 84, docs/adr/0018 §6; Milestone 99, docs/adr/0022 §4),
+`admin.access_codes`.** Every change is audited
 (`access.code.create` / `update` / `revoke`, `access.grant.update` / `revoke`); the site mode is the
 `site_access_mode` setting (`open` / `code_required`) on `PATCH /api/v1/admin/settings`.
 
-- `GET /api/v1/admin/access-codes` — `{ codes: [{ id, label, code, scope, mapIds, maxUses,
+- `GET /api/v1/admin/access-codes` — `{ codes: [{ id, label, code, grantKind, userTypeId,
+userTypeName, permissions, mapLimit, mapIds, maxUses,
 useCount, accessSeconds, validUntil, notes, createdBy, createdAt, revokedAt, activeGrants,
 lastUsedAt, status }] }`, newest first. `status` is `active`, `revoked`, `expired` (past
   `validUntil`) or `used_up`. Codes stay viewable (owner decision).
-- `POST /api/v1/admin/access-codes` — `{ label, code?, scope, mapIds?, maxUses, accessSeconds,
-validUntil?, notes? }`. Without `code` one is generated (`XXXX-XXXX`, no 0/O/1/I/L); a custom
+- `POST /api/v1/admin/access-codes` — `{ label, code?, grantKind, userTypeId?, permissions?,
+mapLimit, mapIds?, maxUses, accessSeconds, validUntil?, notes? }`. Without `code` one is generated (`XXXX-XXXX`, no 0/O/1/I/L); a custom
   code is 4-32 letters/digits once spaces and dashes are removed (`409 DUPLICATE_CODE` if taken).
-  `scope` is `"site"` (every public map), `"all_maps"` (every map, public or not) or `"maps"`; `"maps"` needs at least one map, and a module id is rejected (`400`). `maxUses` `null` = unlimited. `accessSeconds` is how long
+  `grantKind` `"user_type"` gives that type's permissions (as the matrix stands at each request);
+  `"custom"` gives `permissions`. A code may give editor permissions but never an `admin.*` one,
+  nor the public or Admin type (`400`), and only permissions the requester holds (`403`).
+  `mapLimit` `"none"` = the maps its permissions allow; `"maps"` = exactly `mapIds` (restricted
+  ones included), which needs at least one map; a module id is rejected (`400`). (Replaces
+  Milestone 84's `scope`: `site` became Basic User, `all_maps` Enhanced User, `maps` Basic User +
+  `mapLimit: "maps"`.) `maxUses` `null` = unlimited. `accessSeconds` is how long
   each use lasts (a minute to a year), fixed from entry.
 - `GET /api/v1/admin/access-codes/{id}` — the code plus `flags` and `grants: [{ id, createdAt,
 expiresAt, revokedAt, revokedBy, firstIp, firstUserAgent, lastSeenAt, lastIp, distinctIps,
 requestCount, flags, activity: [{ hour, ip, userAgent, requestCount }] }]`. Flags:
   `many_ips` (one use from 3+ addresses), `simultaneous_ips` (2+ addresses in one hour),
   code-level `many_networks` (uses from 3+ IPv4 /24 or IPv6 /48 networks).
-- `PATCH /api/v1/admin/access-codes/{id}` — any of `label`, `scope`, `mapIds`, `maxUses` (not below
+- `PATCH /api/v1/admin/access-codes/{id}` — any of `label`, `grantKind`, `userTypeId`,
+  `permissions`, `mapLimit`, `mapIds`, `maxUses` (not below
   the uses so far), `accessSeconds` (future uses), `validUntil`, `notes`. The code text cannot change.
 - `POST /api/v1/admin/access-codes/{id}/revoke` — the code can't be entered again and every use of
   it ends.
@@ -730,7 +792,7 @@ requestCount, flags, activity: [{ hour, ip, userAgent, requestCount }] }]`. Flag
   later). `POST /api/v1/admin/access-grants/{id}/revoke` — end one use now.
 
 There is no self-registration and no password-reset flow — the first admin account is created via
-the worker's `manage-users create --role admin` one-shot CLI (no bootstrap row, no env-var
+the worker's `manage-users create --type Admin` one-shot CLI (`--role admin` still works) (no bootstrap row, no env-var
 credential — see `docs/ARCHITECTURE.md` §12); every account after that is managed through the
 admin-only "Users" page (`/admin/users` in the web app), which is this same API.
 
@@ -878,12 +940,15 @@ Editor-role read-only lookups (for binding signals in the editor):
 
 ## 4. Editor API
 
-**Protected (Milestone 29, see §4a):** every route below requires a valid session at the `editor`
-role or higher. A request with no session gets `401`; a session below the required role gets
-`403` (in practice `editor` is the lowest role, so any logged-in user passes this particular
-gate — `403` only shows up on the admin-only routes in §4a and `POST /api/v1/editor/maps` below).
+**Protected (Milestone 29; Milestone 99, docs/adr/0022):** every route below needs
+`editor.view`; `PUT .../draft` and `POST /api/v1/editor/berths/.../clear` also need `maps.edit`,
+`POST .../publish` needs `maps.publish`, and creating, renaming and deleting maps and making a
+module need `maps.manage` (republishing every map needs `maps.publish`). The table is
+`apps/api/src/lib/editorPermissions.ts`; an unlisted write route needs `maps.edit`. A request with
+no login and no code gets `401`; one without the permission `403`. An access code may give editor
+permissions, in which case changes are recorded as `code:<label>`.
 
-- `POST /api/v1/editor/maps` (**admin only**, Milestone 30) — body `{ slug, name }`. `slug` must
+- `POST /api/v1/editor/maps` (`maps.manage`, Milestone 30) — body `{ slug, name }`. `slug` must
   be lowercase letters/digits/single-hyphens (`^[a-z0-9]+(-[a-z0-9]+)*$`); `400 VALIDATION_ERROR`
   for a missing/malformed `slug` or a missing/empty `name`; `409 DUPLICATE_SLUG` if the slug is
   already taken (the existing map is left untouched). Creates the `map` row and seeds its initial

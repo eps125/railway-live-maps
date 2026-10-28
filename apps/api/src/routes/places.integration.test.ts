@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import Fastify from "fastify";
+import { appAs } from "../lib/testViewers.js";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPool } from "@railway/database";
 import { registerPlaceRoutes } from "./places.js";
@@ -77,7 +77,7 @@ async function publishMapWithPlace(
 }
 
 async function buildApp() {
-  const app = Fastify();
+  const app = appAs();
   await registerPlaceRoutes(app, { pool });
   await app.ready();
   return app;

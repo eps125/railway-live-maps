@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CompiledMapBundle } from "@railway/map-schema";
+import { useCan } from "../auth/permissions.js";
 import { useMapData } from "./useMapData.js";
 import { MapRenderer } from "./MapRenderer.js";
 import { LiveStatusBanner } from "./LiveStatusBanner.js";
@@ -22,8 +23,6 @@ export interface MapViewProps {
   /** Milestone 65: arrived by a boundary link from a map in playback — open in playback at the
    * same moment (`?at=&speed=&play=1`) rather than live. */
   initialPlayback?: { atMs: number; speed: number; playing: boolean } | null;
-  /** Milestone 65: an admin gets the S-Class mini explorer button. */
-  isAdmin?: boolean;
 }
 
 const S_CLASS_PANEL_KEY = "rlm.sClassPanelOpen";
@@ -153,16 +152,25 @@ export function MapView({
   centerElementId = null,
   centerBoundaryName = null,
   initialPlayback = null,
-  isAdmin = false,
 }: MapViewProps): JSX.Element {
+  // Milestone 99 (docs/adr/0022): each map control is a permission. The API enforces each one
+  // too (no events without playback, no bands without delay colours, no numbers in the
+  // definition without signal numbers) — this only hides controls that would do nothing.
+  const can = useCan();
+  const canPlayback = can("map.playback");
+  const canDelayColours = can("map.delay_colours");
+  const canSignalNumbers = can("map.signal_numbers");
+  const canSClassPanel = can("map.s_class_panel");
   const { definition, state, error, loading, connectionStatus, delays, liveRevision } =
     useMapData(slug);
-  const [playbackFrom, setPlaybackFrom] = useState<number | null>(initialPlayback?.atMs ?? null);
+  const [playbackFrom, setPlaybackFrom] = useState<number | null>(
+    canPlayback ? (initialPlayback?.atMs ?? null) : null,
+  );
   // The speed/play state this page arrived with (a boundary link or a refreshed playback URL)
   // applies to that first playback only: once the visitor returns to live, the Playback button
   // starts fresh at 1x, paused — not at whatever the page was loaded with.
   const [arrivalPlayback, setArrivalPlayback] = useState(initialPlayback);
-  const [sClassOpen, setSClassOpen] = useState<boolean>(() => isAdmin && readPanelOpen());
+  const [sClassOpen, setSClassOpen] = useState<boolean>(() => canSClassPanel && readPanelOpen());
   const [highlight, setHighlight] = useState<string[]>([]);
   const onHighlight = useCallback((ids: string[]) => setHighlight(ids), []);
 
@@ -174,8 +182,8 @@ export function MapView({
   }
   const [showEmptyBerths, setShowEmptyBerths] = useState<boolean>(readShowEmptyBerths);
   const [signalNumbersChosen, setSignalNumbersChosen] = useState<boolean>(readShowSignalNumbers);
-  // ADR 0017: signal numbers are admin-only for now; the choice only takes effect for an admin.
-  const showSignalNumbers = isAdmin && signalNumbersChosen;
+  // ADR 0017 / Milestone 99: the choice only takes effect with `map.signal_numbers`.
+  const showSignalNumbers = canSignalNumbers && signalNumbersChosen;
 
   function toggleSignalNumbers(): void {
     setSignalNumbersChosen((prev) => {
@@ -185,7 +193,8 @@ export function MapView({
     });
   }
 
-  const [delayColours, setDelayColours] = useState<boolean>(readDelayColours);
+  const [delayColoursChosen, setDelayColours] = useState<boolean>(readDelayColours);
+  const delayColours = canDelayColours && delayColoursChosen;
   // Live bands arrive on the map's WebSocket (snapshot + pushes when openrail-eps reports);
   // playback asks for its own moment inside PlaybackView.
   const liveBerths = state?.berths;
@@ -247,31 +256,35 @@ export function MapView({
               connectionStatus={connectionStatus}
               qualityStatus={state?.quality.status ?? "unknown"}
             />
-            <button
-              type="button"
-              className="map-page__mode-btn"
-              onClick={() => setPlaybackFrom(Date.now() - 15 * 60_000)}
-            >
-              Playback
-            </button>
+            {canPlayback ? (
+              <button
+                type="button"
+                className="map-page__mode-btn"
+                onClick={() => setPlaybackFrom(Date.now() - 15 * 60_000)}
+              >
+                Playback
+              </button>
+            ) : null}
           </>
         ) : null}
         <label className="map-page__toggle">
           <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
           Show empty berths
         </label>
-        <label className="map-page__toggle">
-          <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
-          Delay colours
-        </label>
+        {canDelayColours ? (
+          <label className="map-page__toggle">
+            <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
+            Delay colours
+          </label>
+        ) : null}
         {delayColours ? <DelayKey /> : null}
-        {isAdmin ? (
+        {canSignalNumbers ? (
           <label className="map-page__toggle">
             <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
             Signal numbers
           </label>
         ) : null}
-        {isAdmin ? (
+        {canSClassPanel ? (
           <button
             type="button"
             className="map-page__mode-btn"
@@ -321,7 +334,7 @@ export function MapView({
           centerElementId={resolvedCenterElementId}
           highlight={highlight}
           sClassPanel={
-            isAdmin && sClassOpen
+            canSClassPanel && sClassOpen
               ? (atIso) => (
                   <SClassMiniPanel
                     bundle={definition.definition}
@@ -339,7 +352,7 @@ export function MapView({
           }}
         />
       )}
-      {playbackFrom === null && isAdmin && sClassOpen ? (
+      {playbackFrom === null && canSClassPanel && sClassOpen ? (
         <SClassMiniPanel
           bundle={definition.definition}
           atIso={null}

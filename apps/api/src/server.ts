@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyCookie from "@fastify/cookie";
 import { Redis } from "ioredis";
-import { createPool } from "@railway/database";
+import { checkPermissionTable, createPool } from "@railway/database";
 import type { Config } from "./config.js";
 import { resolveCookieSecure } from "./config.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -24,14 +24,16 @@ import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
 import { registerBerthExplorerRoutes } from "./routes/admin/berthExplorer.js";
 import { registerSClassAdminRoutes, registerSClassEditorRoutes } from "./routes/admin/sClass.js";
 import { registerSiteAdminRoutes } from "./routes/admin/siteAdmin.js";
-import { requireRole } from "./auth/requireRole.js";
 import {
   mapAccessForSlug,
   mapVisibilityHook,
+  requirePermission,
   resolveViewer,
   siteAccessHook,
   viewerMayUseSite,
 } from "./lib/viewer.js";
+import { editorRouteGuard } from "./lib/editorPermissions.js";
+import { registerUserTypeRoutes } from "./routes/admin/userTypes.js";
 import { createSiteAccess } from "./lib/siteAccess.js";
 import { registerAccessRoutes } from "./routes/access.js";
 import { registerAccessCodeAdminRoutes } from "./routes/admin/accessCodes.js";
@@ -53,12 +55,20 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   const app = Fastify({ logger: true, trustProxy: true });
 
   const pool = createPool({ connectionString: config.DATABASE_URL });
+  // Milestone 99 (docs/adr/0022): the permission registry in code and the `permission` table
+  // must agree, or a grant could name something the code never checks (or vice versa).
+  const permissionDrift = await checkPermissionTable(pool);
+  if (permissionDrift.missingFromTable.length > 0 || permissionDrift.unknownInTable.length > 0) {
+    await pool.end();
+    throw new Error(
+      `Permission registry and table disagree (missing from table: ${permissionDrift.missingFromTable.join(", ") || "none"}; unknown in table: ${permissionDrift.unknownInTable.join(", ") || "none"}) — run the migrations`,
+    );
+  }
   const redis = new Redis(config.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
 
   await app.register(fastifyWebsocket);
   await app.register(fastifyCookie);
-  // Populated by requireRole's preHandler once a valid session is found; null for every other
-  // request (an unauthenticated one, or a route with no auth gate at all).
+  // Populated when the viewer is resolved (lib/viewer.ts) for a valid session; null otherwise.
   app.decorateRequest("authSession", null);
   // Milestone 83: who is looking, for map visibility (lib/viewer.ts).
   app.decorateRequest("viewer", null);
@@ -66,9 +76,9 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   const sessionTtlSeconds = config.SESSION_TTL_SECONDS;
   const cookieSecure = resolveCookieSecure(config);
 
-  // Milestone 84 (docs/adr/0018 §6): the site access mode and guest access codes. The root hook
-  // runs for every request, so in `code_required` mode nothing past `/api/v1/auth/*`,
-  // `/api/v1/access/*` and the health checks answers a guest without a valid code.
+  // Milestone 84 (docs/adr/0018 §6) / Milestone 99 (docs/adr/0022): guest access codes and the
+  // permission matrix. The root hook runs for every request, so a visitor without `site.view`
+  // reaches nothing past `/api/v1/auth/*`, `/api/v1/access/*` and the health checks.
   const siteAccess = createSiteAccess(pool);
   const visibilityDeps = { pool, redis, sessionTtlSeconds, siteAccess };
   app.addHook("onRequest", siteAccessHook(visibilityDeps));
@@ -79,6 +89,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
     redis,
     sessionTtlSeconds,
     cookieSecure,
+    siteAccess,
     loginRateLimit: {
       maxAttempts: config.LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
       windowSeconds: config.LOGIN_RATE_LIMIT_WINDOW_SECONDS,
@@ -98,7 +109,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await registerTdRoutes(app, { pool });
   await registerScheduleRoutes(app, { pool });
   await registerVstpRoutes(app, { pool });
-  await registerCurrentRunRoutes(app, { pool, redis, sessionTtlSeconds });
+  await registerCurrentRunRoutes(app, { pool });
 
   // Milestone 6: polling is the default delta source (no extra infrastructure required). When
   // LIVE_WS_REDIS_PUBSUB_ENABLED=true, a *dedicated* subscriber connection is used instead —
@@ -139,67 +150,95 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
     });
   });
 
-  // Milestone 29: editor routes are now always registered (the old `EDITOR_ENABLED` env-var gate
-  // is gone) but always require at least the "editor" role — `app.register` here creates an
-  // encapsulated Fastify context, so this `addHook` applies to every route `registerEditorRoutes`
-  // adds inside it and nothing outside it (docs/ARCHITECTURE.md §12).
+  // Milestone 29 / 99: editor routes are always registered, behind `editor.view`, with each write
+  // route's own permission (`maps.edit`, `maps.publish`) checked from one table
+  // (lib/editorPermissions.ts). `app.register` creates an encapsulated Fastify context, so these
+  // hooks apply to every route inside it and nothing outside it (docs/ARCHITECTURE.md §12).
   await app.register(async (editorScope) => {
-    editorScope.addHook("preHandler", requireRole("editor", { redis, sessionTtlSeconds }));
-    // Milestone 83: an editor cannot open a map they may not see (admins see every map).
+    editorScope.addHook("preHandler", requirePermission("editor.view", visibilityDeps));
+    editorScope.addHook("preHandler", editorRouteGuard);
+    // Milestone 83: an editor cannot open a map they may not see.
     editorScope.addHook("preHandler", mapVisibilityHook(visibilityDeps));
     await registerEditorRoutes(editorScope, { pool });
     // Milestone 36c: read-only S-Class areas/definitions for binding signals in the editor.
     await registerSClassEditorRoutes(editorScope, { pool });
   });
 
-  // Admin-only user management (Milestone 29) — same encapsulation trick, one level up.
+  // Users, groups, user types, site settings, the audit log and access codes. Each route checks
+  // its own permission (`admin.*`, or `maps.manage` for regions and group lists); the scope hook
+  // only resolves the viewer.
   await app.register(async (adminScope) => {
-    adminScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
-    await registerAdminUserRoutes(adminScope, { pool });
+    adminScope.addHook(
+      "preHandler",
+      requirePermission(
+        [
+          "admin.users",
+          "admin.user_types",
+          "admin.access_codes",
+          "admin.site_settings",
+          "admin.audit_log",
+          "maps.manage",
+        ],
+        visibilityDeps,
+      ),
+    );
+    await adminScope.register(async (usersScope) => {
+      usersScope.addHook("preHandler", requirePermission("admin.users", visibilityDeps));
+      await registerAdminUserRoutes(usersScope, { pool, siteAccess });
+    });
+    // Milestone 99: user types and the permission matrix.
+    await registerUserTypeRoutes(adminScope, { pool, siteAccess });
     // Milestone 83: groups, regions, site settings and the audit log.
     await registerSiteAdminRoutes(adminScope, {
       pool,
       onSettingsChanged: () => siteAccess.invalidate(),
     });
     // Milestone 84: access codes.
-    await registerAccessCodeAdminRoutes(adminScope, { pool, siteAccess });
+    await adminScope.register(async (codesScope) => {
+      codesScope.addHook("preHandler", requirePermission("admin.access_codes", visibilityDeps));
+      await registerAccessCodeAdminRoutes(codesScope, { pool, siteAccess });
+    });
   });
 
-  // Milestone 39 (docs/adr/0007): admin-only TD-area boundary curation — same gate as user
-  // management, since this is reference config, not day-to-day editor work.
-  await app.register(async (tdBoundaryScope) => {
-    tdBoundaryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
-    await registerTdBoundaryRoutes(tdBoundaryScope, { pool });
-    // Milestone 97a (docs/adr/0021): area maintenance jobs, same admin gate.
-    await registerMaintenanceRoutes(tdBoundaryScope, { pool });
+  // The tools (Milestones 36c, 39, 72, 97a) — one permission each.
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission("tools.td_boundaries", visibilityDeps));
+    await registerTdBoundaryRoutes(scope, { pool });
+  });
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission("tools.maintenance", visibilityDeps));
+    await registerMaintenanceRoutes(scope, { pool });
+  });
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission("tools.berth_query", visibilityDeps));
+    await registerBerthQueryRoutes(scope, { pool });
+  });
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission("tools.berth_explorer", visibilityDeps));
+    await registerBerthExplorerRoutes(scope, { pool });
+  });
+  // The S-Class explorer and definitions. Authoring/diagnostics only — never feeds displayed
+  // signal state. The snapshot route also serves the map's S-Class panel (`map.s_class_panel`);
+  // every other route needs `tools.s_class` (checked per route).
+  await app.register(async (scope) => {
+    scope.addHook(
+      "preHandler",
+      requirePermission(["tools.s_class", "map.s_class_panel"], visibilityDeps),
+    );
+    await registerSClassAdminRoutes(scope, { pool });
   });
 
-  // Admin-only ad hoc td_berth_event lookup ("Query Berths" under the web app's "Berths" nav) —
-  // same gate as the other admin diagnostics/reference-data scopes above.
-  await app.register(async (berthQueryScope) => {
-    berthQueryScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
-    await registerBerthQueryRoutes(berthQueryScope, { pool });
-    // Milestone 72: the Berth explorer, same admin gate.
-    await registerBerthExplorerRoutes(berthQueryScope, { pool });
+  // Milestone 30 / owner request 2026-09-13: creating, renaming and deleting maps (`maps.manage`).
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission("maps.manage", visibilityDeps));
+    await registerCreateMapRoute(scope, { pool });
+    await registerManageMapRoutes(scope, { pool });
   });
-
-  // Milestone 36c: the admin S-Class explorer + definitions (any area; web page under the admin
-  // "Berths" hub). Authoring/diagnostics only — never feeds displayed signal state.
-  await app.register(async (sClassScope) => {
-    sClassScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
-    await registerSClassAdminRoutes(sClassScope, { pool });
-  });
-
-  // Milestone 30: creating a map is admin-only, unlike the rest of `/api/v1/editor/*` above
-  // (which any `editor`-role session can use) — its own admin-gated scope rather than folding it
-  // into `editorScope`.
-  await app.register(async (adminMapScope) => {
-    adminMapScope.addHook("preHandler", requireRole("admin", { redis, sessionTtlSeconds }));
-    await registerCreateMapRoute(adminMapScope, { pool });
-    // Owner request (2026-09-13): rename (name/slug) and delete a map, same admin gate.
-    await registerManageMapRoutes(adminMapScope, { pool });
-    // Milestone 85: make a module from a selection; republish every map.
-    await registerAdminModuleRoutes(adminMapScope, { pool });
+  // Milestone 85: make a module from a selection (`maps.manage`); republish every map
+  // (`maps.publish`) — checked per route.
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission(["maps.manage", "maps.publish"], visibilityDeps));
+    await registerAdminModuleRoutes(scope, { pool });
   });
 
   const close = async (): Promise<void> => {

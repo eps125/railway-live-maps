@@ -9,25 +9,30 @@ import {
   DuplicateRegionNameError,
   findGroupById,
   findRegionById,
+  getPublicSiteMode,
   getSiteSettings,
   isSiteSettingKey,
   isValidSiteSettingValue,
   listAuditEntries,
   listGroups,
   listRegions,
+  setPublicSiteMode,
   setSiteSetting,
   updateGroup,
   updateRegion,
   type MapRegion,
+  type SiteAccessMode,
   type SiteSettings,
   type UserGroup,
 } from "@railway/database";
 import { apiError } from "../../lib/queryRange.js";
 import { audit } from "../../lib/audit.js";
+import { actorName } from "../../lib/viewer.js";
+import { needs } from "../../lib/viewer.js";
 
 export interface SiteAdminRoutesDeps {
   pool: Pool;
-  /** Called after settings change, so cached copies (the site access mode) are dropped. */
+  /** Called after settings change, so cached copies (the public type's permissions) are dropped. */
   onSettingsChanged?: () => void;
 }
 
@@ -75,12 +80,17 @@ export async function registerSiteAdminRoutes(
 
   // ---- Groups -------------------------------------------------------------------------------
 
-  app.get("/api/v1/admin/groups", async () => ({
-    groups: (await listGroups(pool)).map(groupResponse),
-  }));
+  app.get(
+    "/api/v1/admin/groups",
+    { preHandler: needs(["admin.users", "maps.manage"]) },
+    async () => ({
+      groups: (await listGroups(pool)).map(groupResponse),
+    }),
+  );
 
   app.post<{ Body: { name?: unknown; description?: unknown } }>(
     "/api/v1/admin/groups",
+    { preHandler: needs("admin.users") },
     async (request, reply) => {
       const { name, description } = request.body ?? {};
       if (!validName(name)) {
@@ -117,6 +127,7 @@ export async function registerSiteAdminRoutes(
 
   app.patch<{ Params: { id: string }; Body: { name?: unknown; description?: unknown } }>(
     "/api/v1/admin/groups/:id",
+    { preHandler: needs("admin.users") },
     async (request, reply) => {
       const { id } = request.params;
       const { name, description } = request.body ?? {};
@@ -163,92 +174,109 @@ export async function registerSiteAdminRoutes(
     },
   );
 
-  app.delete<{ Params: { id: string } }>("/api/v1/admin/groups/:id", async (request, reply) => {
-    const { id } = request.params;
-    const before = ID_PATTERN.test(id) ? await findGroupById(pool, id) : null;
-    if (!before || !(await deleteGroup(pool, id))) {
-      reply.code(404);
-      return apiError("GROUP_NOT_FOUND", `No group with id "${id}"`);
-    }
-    await audit(pool, request, "group.delete", { type: "group", id }, { name: before.name });
-    reply.code(204);
-    return null;
-  });
+  app.delete<{ Params: { id: string } }>(
+    "/api/v1/admin/groups/:id",
+    { preHandler: needs("admin.users") },
+    async (request, reply) => {
+      const { id } = request.params;
+      const before = ID_PATTERN.test(id) ? await findGroupById(pool, id) : null;
+      if (!before || !(await deleteGroup(pool, id))) {
+        reply.code(404);
+        return apiError("GROUP_NOT_FOUND", `No group with id "${id}"`);
+      }
+      await audit(pool, request, "group.delete", { type: "group", id }, { name: before.name });
+      reply.code(204);
+      return null;
+    },
+  );
 
   // ---- Regions ------------------------------------------------------------------------------
 
-  app.get("/api/v1/admin/regions", async () => ({
-    regions: (await listRegions(pool)).map(regionResponse),
-  }));
+  app.get(
+    "/api/v1/admin/regions",
+    { preHandler: needs(["maps.manage", "admin.site_settings"]) },
+    async () => ({
+      regions: (await listRegions(pool)).map(regionResponse),
+    }),
+  );
 
-  app.post<{ Body: { name?: unknown } }>("/api/v1/admin/regions", async (request, reply) => {
-    const { name } = request.body ?? {};
-    if (!validName(name)) {
-      reply.code(400);
-      return apiError(
-        "VALIDATION_ERROR",
-        `name is required (at most ${NAME_MAX_LENGTH} characters)`,
-      );
-    }
-    try {
-      const region = await createRegion(pool, { name });
-      await audit(
-        pool,
-        request,
-        "region.create",
-        { type: "region", id: region.id },
-        { name: region.name },
-      );
-      reply.code(201);
-      return regionResponse(region);
-    } catch (error) {
-      if (error instanceof DuplicateRegionNameError) {
-        reply.code(409);
-        return apiError("DUPLICATE_NAME", error.message);
+  app.post<{ Body: { name?: unknown } }>(
+    "/api/v1/admin/regions",
+    { preHandler: needs("maps.manage") },
+    async (request, reply) => {
+      const { name } = request.body ?? {};
+      if (!validName(name)) {
+        reply.code(400);
+        return apiError(
+          "VALIDATION_ERROR",
+          `name is required (at most ${NAME_MAX_LENGTH} characters)`,
+        );
       }
-      throw error;
-    }
-  });
+      try {
+        const region = await createRegion(pool, { name });
+        await audit(
+          pool,
+          request,
+          "region.create",
+          { type: "region", id: region.id },
+          { name: region.name },
+        );
+        reply.code(201);
+        return regionResponse(region);
+      } catch (error) {
+        if (error instanceof DuplicateRegionNameError) {
+          reply.code(409);
+          return apiError("DUPLICATE_NAME", error.message);
+        }
+        throw error;
+      }
+    },
+  );
 
   // Reorder: the full list of region ids, first to last.
-  app.put<{ Body: { ids?: unknown } }>("/api/v1/admin/regions/order", async (request, reply) => {
-    const ids = request.body?.ids;
-    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !ID_PATTERN.test(id))) {
-      reply.code(400);
-      return apiError("VALIDATION_ERROR", "ids must be an array of region ids");
-    }
-    const current = await listRegions(pool);
-    const known = new Set(current.map((region) => region.id));
-    if (
-      ids.length !== known.size ||
-      new Set(ids).size !== ids.length ||
-      ids.some((id) => !known.has(id))
-    ) {
-      reply.code(400);
-      return apiError("VALIDATION_ERROR", "ids must list every region exactly once");
-    }
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        `update map_region r set sort_order = o.position * 10
+  app.put<{ Body: { ids?: unknown } }>(
+    "/api/v1/admin/regions/order",
+    { preHandler: needs("maps.manage") },
+    async (request, reply) => {
+      const ids = request.body?.ids;
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !ID_PATTERN.test(id))) {
+        reply.code(400);
+        return apiError("VALIDATION_ERROR", "ids must be an array of region ids");
+      }
+      const current = await listRegions(pool);
+      const known = new Set(current.map((region) => region.id));
+      if (
+        ids.length !== known.size ||
+        new Set(ids).size !== ids.length ||
+        ids.some((id) => !known.has(id))
+      ) {
+        reply.code(400);
+        return apiError("VALIDATION_ERROR", "ids must list every region exactly once");
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          `update map_region r set sort_order = o.position * 10
            from unnest($1::bigint[]) with ordinality as o(id, position)
           where r.id = o.id`,
-        [ids],
-      );
-      await audit(client, request, "region.reorder", null, { ids });
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-    return { regions: (await listRegions(pool)).map(regionResponse) };
-  });
+          [ids],
+        );
+        await audit(client, request, "region.reorder", null, { ids });
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      return { regions: (await listRegions(pool)).map(regionResponse) };
+    },
+  );
 
   app.patch<{ Params: { id: string }; Body: { name?: unknown } }>(
     "/api/v1/admin/regions/:id",
+    { preHandler: needs("maps.manage") },
     async (request, reply) => {
       const { id } = request.params;
       const { name } = request.body ?? {};
@@ -284,86 +312,117 @@ export async function registerSiteAdminRoutes(
     },
   );
 
-  app.delete<{ Params: { id: string } }>("/api/v1/admin/regions/:id", async (request, reply) => {
-    const { id } = request.params;
-    const before = await findRegionById(pool, id);
-    if (!before || !(await deleteRegion(pool, id))) {
-      reply.code(404);
-      return apiError("REGION_NOT_FOUND", `No region with id "${id}"`);
-    }
-    await audit(
-      pool,
-      request,
-      "region.delete",
-      { type: "region", id },
-      {
-        name: before.name,
-        mapCount: before.mapCount,
-      },
-    );
-    reply.code(204);
-    return null;
-  });
+  app.delete<{ Params: { id: string } }>(
+    "/api/v1/admin/regions/:id",
+    { preHandler: needs("maps.manage") },
+    async (request, reply) => {
+      const { id } = request.params;
+      const before = await findRegionById(pool, id);
+      if (!before || !(await deleteRegion(pool, id))) {
+        reply.code(404);
+        return apiError("REGION_NOT_FOUND", `No region with id "${id}"`);
+      }
+      await audit(
+        pool,
+        request,
+        "region.delete",
+        { type: "region", id },
+        {
+          name: before.name,
+          mapCount: before.mapCount,
+        },
+      );
+      reply.code(204);
+      return null;
+    },
+  );
 
   // ---- Settings -----------------------------------------------------------------------------
 
-  app.get("/api/v1/admin/settings", async () => ({ settings: await getSiteSettings(pool) }));
+  /** The stored settings plus Milestone 84's `site_access_mode`, which since Milestone 99 is the
+   * public user type's `site.view` (docs/adr/0022 §5) and is changed through it. */
+  async function allSettings(): Promise<SiteSettings & { site_access_mode: SiteAccessMode }> {
+    return { ...(await getSiteSettings(pool)), site_access_mode: await getPublicSiteMode(pool) };
+  }
 
-  app.patch<{ Body: Record<string, unknown> }>("/api/v1/admin/settings", async (request, reply) => {
-    const body = request.body ?? {};
-    const entries = Object.entries(body);
-    if (entries.length === 0) {
-      reply.code(400);
-      return apiError("VALIDATION_ERROR", "at least one setting is required");
-    }
-    for (const [key, value] of entries) {
-      if (!isSiteSettingKey(key)) {
+  app.get("/api/v1/admin/settings", { preHandler: needs("admin.site_settings") }, async () => ({
+    settings: await allSettings(),
+  }));
+
+  app.patch<{ Body: Record<string, unknown> }>(
+    "/api/v1/admin/settings",
+    { preHandler: needs("admin.site_settings") },
+    async (request, reply) => {
+      const body = request.body ?? {};
+      const entries = Object.entries(body);
+      if (entries.length === 0) {
         reply.code(400);
-        return apiError("VALIDATION_ERROR", `unknown setting "${key}"`);
+        return apiError("VALIDATION_ERROR", "at least one setting is required");
       }
-      if (!isValidSiteSettingValue(key, value)) {
-        reply.code(400);
-        return apiError("VALIDATION_ERROR", `setting "${key}" has the wrong type`);
-      }
-    }
-    const before = await getSiteSettings(pool);
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
       for (const [key, value] of entries) {
-        const settingKey = key as keyof SiteSettings;
-        await setSiteSetting(
-          client,
-          settingKey,
-          value as SiteSettings[typeof settingKey],
-          request.authSession?.username ?? null,
-        );
-        await audit(
-          client,
-          request,
-          "setting.update",
-          { type: "setting", id: key },
-          {
-            before: before[settingKey],
-            after: value,
-          },
-        );
+        if (key === "site_access_mode") {
+          if (value !== "open" && value !== "code_required") {
+            reply.code(400);
+            return apiError(
+              "VALIDATION_ERROR",
+              'site_access_mode must be "open" or "code_required"',
+            );
+          }
+          continue;
+        }
+        if (!isSiteSettingKey(key)) {
+          reply.code(400);
+          return apiError("VALIDATION_ERROR", `unknown setting "${key}"`);
+        }
+        if (!isValidSiteSettingValue(key, value)) {
+          reply.code(400);
+          return apiError("VALIDATION_ERROR", `setting "${key}" has the wrong type`);
+        }
       }
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-    onSettingsChanged?.();
-    return { settings: await getSiteSettings(pool) };
-  });
+      const before = await allSettings();
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        for (const [key, value] of entries) {
+          const settingKey = key as keyof typeof before;
+          if (settingKey === "site_access_mode") {
+            await setPublicSiteMode(client, value as SiteAccessMode);
+          } else {
+            await setSiteSetting(
+              client,
+              settingKey,
+              value as SiteSettings[typeof settingKey],
+              actorName(request),
+            );
+          }
+          await audit(
+            client,
+            request,
+            "setting.update",
+            { type: "setting", id: key },
+            {
+              before: before[settingKey],
+              after: value,
+            },
+          );
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      onSettingsChanged?.();
+      return { settings: await allSettings() };
+    },
+  );
 
   // ---- Audit log ----------------------------------------------------------------------------
 
   app.get<{ Querystring: { action?: string; user?: string; before?: string; limit?: string } }>(
     "/api/v1/admin/audit-log",
+    { preHandler: needs("admin.audit_log") },
     async (request, reply) => {
       const { action, user, before } = request.query;
       if (before !== undefined && !ID_PATTERN.test(before)) {

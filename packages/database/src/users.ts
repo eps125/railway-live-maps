@@ -1,34 +1,23 @@
 import bcrypt from "bcryptjs";
 import type { Queryable } from "./checkpoint.js";
+import { countActiveManagers, isManagerSet, LastManagerGuardError } from "./userTypes.js";
+import { isPermission } from "./permissions.js";
 
 /**
  * Milestone 29 (docs/IMPLEMENTATION_PLAN.md): shared user CRUD + password hashing, used by both
  * `apps/api` (login) and `apps/worker` (the `manage-users` bootstrap/admin CLI) — see
  * `migrations/0029_app_user.sql` for why this lives here rather than as a second copy in each app.
+ *
+ * Milestone 99 (docs/adr/0022): a user's capabilities come from their user type, not a fixed
+ * role. `app_user.role` is still written (`admin` for the Admin type, `editor` otherwise) so the
+ * previous release can be rolled back to, but nothing reads it.
  */
-
-export const USER_ROLES = ["admin", "editor"] as const;
-export type UserRole = (typeof USER_ROLES)[number];
-
-/** Higher rank can do everything a lower rank can. Only two levels exist today; add a new entry
- * here (and to `USER_ROLES` + the `app_user_role_check` migration) if a third is ever needed. */
-export const USER_ROLE_RANK: Record<UserRole, number> = {
-  editor: 1,
-  admin: 2,
-};
-
-export function isUserRole(value: string): value is UserRole {
-  return (USER_ROLES as readonly string[]).includes(value);
-}
-
-export function roleSatisfies(role: UserRole, minRole: UserRole): boolean {
-  return USER_ROLE_RANK[role] >= USER_ROLE_RANK[minRole];
-}
 
 export interface AppUser {
   id: string;
   username: string;
-  role: UserRole;
+  userTypeId: string;
+  userTypeName: string;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -43,7 +32,8 @@ interface AppUserRow {
   id: string;
   username: string;
   password_hash: string;
-  role: string;
+  user_type_id: string;
+  user_type_name: string;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
@@ -54,13 +44,19 @@ function toAppUser(row: AppUserRow): AppUser {
   return {
     id: row.id,
     username: row.username,
-    role: row.role as UserRole,
+    userTypeId: row.user_type_id,
+    userTypeName: row.user_type_name,
     isActive: row.is_active,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at,
   };
 }
+
+const USER_SELECT = `
+  select u.id::text, u.username, u.password_hash, u.user_type_id::text, t.name as user_type_name,
+         u.is_active, u.created_at, u.updated_at, u.last_login_at
+    from app_user u join user_type t on t.id = u.user_type_id`;
 
 const BCRYPT_COST = 12;
 // A precomputed hash of a value nobody will ever supply. Comparing a login attempt for a
@@ -87,7 +83,7 @@ export async function findUserByUsername(
   db: Queryable,
   username: string,
 ): Promise<AppUserWithHash | null> {
-  const { rows } = await db.query<AppUserRow>(`select * from app_user where username = $1`, [
+  const { rows } = await db.query<AppUserRow>(`${USER_SELECT} where u.username = $1`, [
     normalizeUsername(username),
   ]);
   const row = rows[0];
@@ -95,40 +91,42 @@ export async function findUserByUsername(
 }
 
 export async function findUserById(db: Queryable, id: string): Promise<AppUser | null> {
-  const { rows } = await db.query<AppUserRow>(`select * from app_user where id = $1`, [id]);
+  const { rows } = await db.query<AppUserRow>(`${USER_SELECT} where u.id = $1`, [id]);
   const row = rows[0];
   return row ? toAppUser(row) : null;
 }
 
 export async function listUsers(db: Queryable): Promise<AppUser[]> {
-  const { rows } = await db.query<AppUserRow>(`select * from app_user order by created_at asc`);
+  const { rows } = await db.query<AppUserRow>(`${USER_SELECT} order by u.created_at asc`);
   return rows.map(toAppUser);
 }
 
-/** Counts active admins other than `excludingUserId` (pass `null` when creating/checking with no
- * user to exclude) — the basis for the "never remove the last admin" guard below. */
-export async function countOtherActiveAdmins(
-  db: Queryable,
-  excludingUserId: string | null,
-): Promise<number> {
-  const { rows } = await db.query<{ count: string }>(
-    `select count(*)::text as count
-     from app_user
-     where role = 'admin' and is_active = true
-       and ($1::bigint is null or id != $1::bigint)`,
-    [excludingUserId],
-  );
-  return Number(rows[0]?.count ?? "0");
+/** Thrown for a user type that doesn't exist, or that a user can't have (the public type). */
+export class InvalidUserTypeError extends Error {
+  constructor(id: string) {
+    super(`No user type ${id} can be given to a user`);
+    this.name = "InvalidUserTypeError";
+  }
 }
 
-/** Thrown when an action would leave the system with no active admin at all — self-hosted,
- * single-owner app with no "contact support to unlock your account" path, so this is a real
- * lockout risk worth refusing outright rather than a soft warning. */
-export class LastAdminGuardError extends Error {
-  constructor(action: string) {
-    super(`Refusing to ${action}: this is the last active admin account`);
-    this.name = "LastAdminGuardError";
-  }
+async function typeForUser(
+  db: Queryable,
+  userTypeId: string,
+): Promise<{ grantsAll: boolean; isManager: boolean }> {
+  if (!/^\d+$/.test(userTypeId)) throw new InvalidUserTypeError(userTypeId);
+  const { rows } = await db.query<{ grants_all: boolean; permissions: string[] }>(
+    `select t.grants_all,
+            coalesce((select array_agg(p.permission) from user_type_permission p
+                       where p.user_type_id = t.id), '{}') as permissions
+       from user_type t where t.id = $1 and t.system_key is distinct from 'public'`,
+    [userTypeId],
+  );
+  const row = rows[0];
+  if (!row) throw new InvalidUserTypeError(userTypeId);
+  return {
+    grantsAll: row.grants_all,
+    isManager: row.grants_all || isManagerSet(row.permissions.filter(isPermission)),
+  };
 }
 
 export class DuplicateUsernameError extends Error {
@@ -140,17 +138,23 @@ export class DuplicateUsernameError extends Error {
 
 export async function createUser(
   db: Queryable,
-  input: { username: string; password: string; role: UserRole },
+  input: { username: string; password: string; userTypeId: string },
 ): Promise<AppUser> {
+  const type = await typeForUser(db, input.userTypeId);
   const passwordHash = await hashPassword(input.password);
   try {
-    const { rows } = await db.query<AppUserRow>(
-      `insert into app_user (username, password_hash, role)
-       values ($1, $2, $3)
-       returning *`,
-      [normalizeUsername(input.username), passwordHash, input.role],
+    const { rows } = await db.query<{ id: string }>(
+      `insert into app_user (username, password_hash, role, user_type_id)
+       values ($1, $2, $3, $4)
+       returning id::text`,
+      [
+        normalizeUsername(input.username),
+        passwordHash,
+        type.grantsAll ? "admin" : "editor",
+        input.userTypeId,
+      ],
     );
-    return toAppUser(rows[0]!);
+    return (await findUserById(db, rows[0]!.id))!;
   } catch (error) {
     if (isUniqueViolation(error)) {
       throw new DuplicateUsernameError(normalizeUsername(input.username));
@@ -159,25 +163,24 @@ export async function createUser(
   }
 }
 
-export async function updateUserRole(
+/** Moves a user to another type. Refuses to leave nobody able to manage users and types. */
+export async function updateUserType(
   db: Queryable,
   id: string,
-  role: UserRole,
+  userTypeId: string,
 ): Promise<AppUser | null> {
-  if (role !== "admin") {
-    const current = await findUserById(db, id);
-    if (current?.role === "admin" && current.isActive) {
-      const remaining = await countOtherActiveAdmins(db, id);
-      if (remaining === 0) {
-        throw new LastAdminGuardError("change this user's role away from admin");
-      }
-    }
+  const type = await typeForUser(db, userTypeId);
+  const current = await findUserById(db, id);
+  if (!current) return null;
+  if (!type.isManager && current.isActive) {
+    const remaining = await countActiveManagers(db, { excludingUserId: id });
+    if (remaining === 0) throw new LastManagerGuardError("change this user's type");
   }
-  const { rows } = await db.query<AppUserRow>(
-    `update app_user set role = $1, updated_at = now() where id = $2 returning *`,
-    [role, id],
+  await db.query(
+    `update app_user set user_type_id = $1, role = $2, updated_at = now() where id = $3`,
+    [userTypeId, type.grantsAll ? "admin" : "editor", id],
   );
-  return rows[0] ? toAppUser(rows[0]) : null;
+  return findUserById(db, id);
 }
 
 export async function updateUserPassword(
@@ -186,11 +189,11 @@ export async function updateUserPassword(
   password: string,
 ): Promise<AppUser | null> {
   const passwordHash = await hashPassword(password);
-  const { rows } = await db.query<AppUserRow>(
-    `update app_user set password_hash = $1, updated_at = now() where id = $2 returning *`,
-    [passwordHash, id],
-  );
-  return rows[0] ? toAppUser(rows[0]) : null;
+  await db.query(`update app_user set password_hash = $1, updated_at = now() where id = $2`, [
+    passwordHash,
+    id,
+  ]);
+  return findUserById(db, id);
 }
 
 export async function setUserActive(
@@ -198,29 +201,19 @@ export async function setUserActive(
   id: string,
   isActive: boolean,
 ): Promise<AppUser | null> {
-  if (!isActive) {
-    const current = await findUserById(db, id);
-    if (current?.role === "admin") {
-      const remaining = await countOtherActiveAdmins(db, id);
-      if (remaining === 0) {
-        throw new LastAdminGuardError("deactivate this user");
-      }
-    }
+  if (!isActive && (await countActiveManagers(db, { excludingUserId: id })) === 0) {
+    throw new LastManagerGuardError("deactivate this user");
   }
-  const { rows } = await db.query<AppUserRow>(
-    `update app_user set is_active = $1, updated_at = now() where id = $2 returning *`,
-    [isActive, id],
-  );
-  return rows[0] ? toAppUser(rows[0]) : null;
+  await db.query(`update app_user set is_active = $1, updated_at = now() where id = $2`, [
+    isActive,
+    id,
+  ]);
+  return findUserById(db, id);
 }
 
 export async function deleteUser(db: Queryable, id: string): Promise<boolean> {
-  const current = await findUserById(db, id);
-  if (current?.role === "admin" && current.isActive) {
-    const remaining = await countOtherActiveAdmins(db, id);
-    if (remaining === 0) {
-      throw new LastAdminGuardError("delete this user");
-    }
+  if ((await countActiveManagers(db, { excludingUserId: id })) === 0) {
+    throw new LastManagerGuardError("delete this user");
   }
   const result = await db.query<{ id: string }>(`delete from app_user where id = $1 returning id`, [
     id,

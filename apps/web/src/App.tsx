@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { MapView } from "./map/MapView.js";
 import { EditorApp } from "./editor/EditorApp.js";
 import { LandingPage } from "./LandingPage.js";
 import { navigate, useNavigationCount, useRoute } from "./useRoute.js";
-import { useSession, roleAtLeast } from "./auth/useSession.js";
+import { useSession } from "./auth/useSession.js";
+import { PermissionsProvider, ROUTE_PERMISSIONS } from "./auth/permissions.js";
+import { AdminUserTypesPage } from "./auth/AdminUserTypesPage.js";
 import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
@@ -27,21 +29,9 @@ const accessUntil = new Intl.DateTimeFormat("en-GB", {
   minute: "2-digit",
 });
 
-/** Every admin-only route — a visit without an admin session redirects. */
-const ADMIN_ROUTES = new Set([
-  "adminHub",
-  "adminMaps",
-  "adminAuditLog",
-  "adminAccess",
-  "adminUsers",
-  "adminTdBoundaries",
-  "adminBerths",
-  "adminBerthQuery",
-  "adminBerthSteps",
-  "adminBerthExplorer",
-  "adminSClass",
-  "adminMaintenance",
-]);
+/** Every admin-area route — a visit without one of its permissions (auth/permissions.tsx)
+ * redirects. */
+const ADMIN_ROUTES = new Set(Object.keys(ROUTE_PERMISSIONS));
 
 export function App(): JSX.Element {
   const route = useRoute();
@@ -51,10 +41,19 @@ export function App(): JSX.Element {
   const { access, refresh: refreshAccess } = useAccess();
 
   const isAuthenticated = session.status === "authenticated";
-  const canEdit = isAuthenticated && roleAtLeast(session.user.role, "editor");
-  const isAdmin = isAuthenticated && roleAtLeast(session.user.role, "admin");
   const sessionLoading = session.status === "loading";
   const accessStatus = access.status === "ready" ? access.access : null;
+  // Milestone 99 (docs/adr/0022): what this visitor may do — their user type's permissions when
+  // logged in, else the public type's plus any access code's. UI only; the API enforces each.
+  const permissionList =
+    session.status === "authenticated"
+      ? session.user.permissions
+      : (accessStatus?.permissions ?? []);
+  const permissions = useMemo(() => new Set(permissionList), [permissionList.join(",")]);
+  const canOpen = (routeName: string): boolean =>
+    (ROUTE_PERMISSIONS[routeName] ?? []).some((p) => permissions.has(p));
+  const canEdit = permissions.has("editor.view");
+  const canOpenRoute = !ADMIN_ROUTES.has(route.name) || canOpen(route.name);
   const needsCode =
     accessStatus !== null && !accessStatus.allowed && !isAuthenticated && !sessionLoading;
 
@@ -65,14 +64,16 @@ export function App(): JSX.Element {
   // to load — send it to the landing page, where every map's own "Edit" link carries the slug.
   useEffect(() => {
     if (sessionLoading) return;
+    // An access code may give editor permissions (Milestone 99), so wait for the code check too.
+    if (access.status === "loading") return;
     if (route.name === "editor" && !canEdit) {
-      navigate("/rlm-login");
+      navigate(isAuthenticated ? "/" : "/rlm-login");
     } else if (route.name === "editorPicker") {
       navigate("/");
-    } else if (ADMIN_ROUTES.has(route.name) && !isAdmin) {
+    } else if (!canOpenRoute) {
       navigate(isAuthenticated ? "/" : "/rlm-login");
     }
-  }, [route.name, sessionLoading, canEdit, isAdmin, isAuthenticated]);
+  }, [route.name, sessionLoading, access.status, canEdit, canOpenRoute, isAuthenticated]);
 
   let main: JSX.Element;
   if (route.name === "login") {
@@ -101,48 +102,92 @@ export function App(): JSX.Element {
           // remount so each starts from its own draft.
           key={`${route.slug}|${navigationCount}`}
           slug={route.slug}
-          isAdmin={isAdmin}
           contextSlug={new URLSearchParams(window.location.search).get("in")}
         />
       );
   } else if (route.name === "adminHub") {
-    main = sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminHubPage />;
+    main =
+      sessionLoading || !canOpenRoute ? <p className="app-loading">Loading…</p> : <AdminHubPage />;
   } else if (route.name === "adminMaps") {
-    main = sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminMapsPage />;
+    main =
+      sessionLoading || !canOpenRoute ? <p className="app-loading">Loading…</p> : <AdminMapsPage />;
   } else if (route.name === "adminAuditLog") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminAuditLogPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminAuditLogPage />
+      );
   } else if (route.name === "adminAccess") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminAccessPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminAccessPage />
+      );
+  } else if (route.name === "adminUserTypes") {
+    main =
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminUserTypesPage />
+      );
   } else if (route.name === "adminUsers") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminUsersPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminUsersPage />
+      );
   } else if (route.name === "adminTdBoundaries") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <TdBoundariesPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <TdBoundariesPage />
+      );
   } else if (route.name === "adminBerths") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <AdminBerthsPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminBerthsPage />
+      );
   } else if (route.name === "adminBerthQuery") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthQueryPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <BerthQueryPage />
+      );
   } else if (route.name === "adminBerthSteps") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthStepsPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <BerthStepsPage />
+      );
   } else if (route.name === "adminBerthExplorer") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <BerthExplorerPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <BerthExplorerPage />
+      );
   } else if (route.name === "adminMaintenance") {
     main =
-      sessionLoading || !isAdmin ? (
+      sessionLoading || !canOpenRoute ? (
         <p className="app-loading">Loading…</p>
       ) : (
         <AdminMaintenancePage />
       );
   } else if (route.name === "adminSClass") {
     main =
-      sessionLoading || !isAdmin ? <p className="app-loading">Loading…</p> : <SClassExplorerPage />;
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <SClassExplorerPage />
+      );
   } else if (route.name === "map") {
     // Milestone 31: a places-search click-through carries `?center=<elementId>` — read directly
     // from the URL rather than teaching useRoute about query strings, since only this one route
@@ -175,88 +220,89 @@ export function App(): JSX.Element {
         centerElementId={centerElementId}
         centerBoundaryName={centerBoundaryName}
         initialPlayback={initialPlayback}
-        isAdmin={isAdmin}
       />
     );
   } else {
-    main = <LandingPage isAdmin={isAdmin} canEdit={canEdit} />;
+    main = <LandingPage />;
   }
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div className="app-header__brand">
-          <h1>Matts TD Mapping Project</h1>
-        </div>
-        <nav className="app-nav" aria-label="Primary">
-          {!needsCode && (
-            <a
-              className="app-nav__link"
-              href="/"
-              aria-current={route.name === "landing" ? "page" : undefined}
-              onClick={(e) => {
-                e.preventDefault();
-                navigate("/");
-              }}
-            >
-              Maps
-            </a>
-          )}
-          {isAdmin && (
-            <a
-              className="app-nav__link"
-              href="/admin"
-              aria-current={ADMIN_ROUTES.has(route.name) ? "page" : undefined}
-              onClick={(e) => {
-                e.preventDefault();
-                navigate("/admin");
-              }}
-            >
-              Admin
-            </a>
-          )}
-          {!isAuthenticated && accessStatus?.access === "code" && accessStatus.expiresAt && (
-            <span
-              className="app-nav__access"
-              title="You are using an access code. Forget it to return to the code page."
-            >
-              Access until {accessUntil.format(new Date(accessStatus.expiresAt))}
+    <PermissionsProvider permissions={permissions}>
+      <div className="app-shell">
+        <header className="app-header">
+          <div className="app-header__brand">
+            <h1>Matts TD Mapping Project</h1>
+          </div>
+          <nav className="app-nav" aria-label="Primary">
+            {!needsCode && (
+              <a
+                className="app-nav__link"
+                href="/"
+                aria-current={route.name === "landing" ? "page" : undefined}
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigate("/");
+                }}
+              >
+                Maps
+              </a>
+            )}
+            {canOpen("adminHub") && (
+              <a
+                className="app-nav__link"
+                href="/admin"
+                aria-current={ADMIN_ROUTES.has(route.name) ? "page" : undefined}
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigate("/admin");
+                }}
+              >
+                Admin
+              </a>
+            )}
+            {!isAuthenticated && accessStatus?.access === "code" && accessStatus.expiresAt && (
+              <span
+                className="app-nav__access"
+                title="You are using an access code. Forget it to return to the code page."
+              >
+                Access until {accessUntil.format(new Date(accessStatus.expiresAt))}
+                <button
+                  type="button"
+                  className="app-nav__link"
+                  onClick={() => {
+                    void fetch("/api/v1/access/leave", { method: "POST" }).then(() =>
+                      refreshAccess(),
+                    );
+                  }}
+                >
+                  Forget code
+                </button>
+              </span>
+            )}
+            {isAuthenticated ? (
               <button
                 type="button"
                 className="app-nav__link"
                 onClick={() => {
-                  void fetch("/api/v1/access/leave", { method: "POST" }).then(() =>
-                    refreshAccess(),
-                  );
+                  void logout().then(() => {
+                    void refreshAccess();
+                    navigate("/");
+                  });
                 }}
               >
-                Forget code
+                Log out ({session.user.username})
               </button>
-            </span>
-          )}
-          {isAuthenticated ? (
-            <button
-              type="button"
-              className="app-nav__link"
-              onClick={() => {
-                void logout().then(() => {
-                  void refreshAccess();
-                  navigate("/");
-                });
-              }}
-            >
-              Log out ({session.user.username})
-            </button>
-          ) : null}
-        </nav>
-      </header>
+            ) : null}
+          </nav>
+        </header>
 
-      <main className="app-main">{main}</main>
+        <main className="app-main">{main}</main>
 
-      <footer className="app-footer">
-        For information and enthusiast use only. Not official and not suitable for safety-critical
-        or operational decisions.
-      </footer>
-    </div>
+        <footer className="app-footer">
+          For information and enthusiast use only. Not official and not suitable for safety-critical
+          or operational decisions.
+        </footer>
+      </div>
+    </PermissionsProvider>
   );
 }

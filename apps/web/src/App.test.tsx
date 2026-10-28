@@ -37,7 +37,13 @@ describe("App", () => {
       "fetch",
       vi.fn((url: string) => {
         if (url.includes("/auth/me")) {
-          return Promise.resolve(jsonResponse({ username: "boss", role: "admin" }));
+          return Promise.resolve(
+            jsonResponse({
+              username: "boss",
+              userType: { id: "6", name: "Admin" },
+              permissions: ["site.view", "maps.view_public", "admin.users", "editor.view"],
+            }),
+          );
         }
         // The landing page's own `/api/v1/maps` fetch — a 404 renders gracefully as an error
         // message, which is fine here since the nav (this test's actual subject) doesn't depend

@@ -7,7 +7,16 @@ import type { LiveDeltaMessage } from "@railway/protocol";
 import { apiError, parseLimit, parseTimeRange } from "../lib/queryRange.js";
 import { currentVersionForSlug, tdAreasFromBundle, liveDataStatus } from "../lib/mapVersion.js";
 import { computeLiveState } from "../lib/liveState.js";
-import { GUEST_VIEWER, mapVisibilitySql } from "../lib/viewer.js";
+import { can, GUEST_VIEWER, mapVisibilitySql, type Viewer } from "../lib/viewer.js";
+import { withoutSignalNumbers } from "../lib/signalNumbers.js";
+import type { Permission } from "@railway/database";
+
+/** Milestone 99 (docs/adr/0022): a 403 body when the viewer lacks `permission`, else null. */
+function missing(viewer: Viewer | null, permission: Permission) {
+  return can(viewer ?? GUEST_VIEWER, permission)
+    ? null
+    : apiError("FORBIDDEN", `Requires the "${permission}" permission`);
+}
 import { computeDelayBands } from "../lib/delayBands.js";
 import { reconstructStateAt } from "../lib/reconstructState.js";
 import { qualityForViewer } from "../lib/feedGaps.js";
@@ -117,6 +126,14 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         reply.code(400);
         return apiError("INVALID_TIME_RANGE", "at must be a valid ISO 8601 timestamp");
       }
+      // A past version is a playback question (Milestone 99).
+      if (Date.now() - at.getTime() > LIVE_STATE_TOLERANCE_MS) {
+        const refused = missing(request.viewer, "map.playback");
+        if (refused) {
+          reply.code(403);
+          return refused;
+        }
+      }
 
       const version = await currentVersionForSlug(pool, request.params.slug, at);
       if (!version) {
@@ -132,7 +149,10 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         mapVersion: version.version_number,
         effectiveFrom: version.effective_from.toISOString(),
         effectiveTo: version.effective_to ? version.effective_to.toISOString() : null,
-        definition: version.compiled_runtime_bundle,
+        // Milestone 99: signal numbers are sent only to viewers with `map.signal_numbers`.
+        definition: can(request.viewer, "map.signal_numbers")
+          ? version.compiled_runtime_bundle
+          : withoutSignalNumbers(version.compiled_runtime_bundle),
       };
     },
   );
@@ -152,6 +172,13 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
       }
 
       const historical = now.getTime() - at.getTime() > LIVE_STATE_TOLERANCE_MS;
+      if (historical) {
+        const refused = missing(request.viewer, "map.playback");
+        if (refused) {
+          reply.code(403);
+          return refused;
+        }
+      }
       // Live → the version effective now; historical → the version effective at `at`
       // (docs/IMPLEMENTATION_PLAN.md M10: "Map-version selection by effective time").
       const version = await currentVersionForSlug(pool, request.params.slug, historical ? at : now);
@@ -200,6 +227,12 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
   app.get<{ Params: { slug: string }; Querystring: { at?: string } }>(
     "/api/v1/maps/:slug/delays",
     async (request, reply) => {
+      // Milestone 99: checked before the shared cache, so a cached answer never leaks.
+      const refused = missing(request.viewer, "map.delay_colours");
+      if (refused) {
+        reply.code(403);
+        return refused;
+      }
       const now = new Date();
       let at = now;
       let historical = false;
@@ -214,7 +247,14 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
           return apiError("INVALID_TIME_RANGE", "at must not be in the future");
         }
         historical = now.getTime() - parsed.getTime() > LIVE_STATE_TOLERANCE_MS;
-        if (historical) at = new Date(Math.floor(parsed.getTime() / 60_000) * 60_000);
+        if (historical) {
+          const noPlayback = missing(request.viewer, "map.playback");
+          if (noPlayback) {
+            reply.code(403);
+            return noPlayback;
+          }
+          at = new Date(Math.floor(parsed.getTime() / 60_000) * 60_000);
+        }
       }
 
       const cacheKey = historical
@@ -261,6 +301,11 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
     Params: { slug: string };
     Querystring: { from?: string; to?: string; after?: string; limit?: string };
   }>("/api/v1/maps/:slug/events", async (request, reply) => {
+    const refused = missing(request.viewer, "map.playback");
+    if (refused) {
+      reply.code(403);
+      return refused;
+    }
     const rangeResult = parseTimeRange(request.query);
     if (!rangeResult.ok) {
       reply.code(400);

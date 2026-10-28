@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { readApiJson } from "./apiJson.js";
+import { useCan } from "../auth/permissions.js";
 
 interface IdDiff {
   added: string[];
@@ -65,6 +66,7 @@ interface CascadeOutcome {
 }
 
 export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelProps): JSX.Element {
+  const canPublish = useCan()("maps.publish");
   const [diff, setDiff] = useState<DocumentDiff | null>(null);
   // Default: apply retroactively to all playback (owner decision 2026-09-11, see
   // docs/IMPLEMENTATION_PLAN.md) — omitting effectiveFrom from the request lets the API apply
@@ -208,84 +210,91 @@ export function ReviewPanel({ slug, syncedRevision, onPublished }: ReviewPanelPr
         </ul>
       ) : null}
 
-      <fieldset>
-        <legend>Publish</legend>
-        <label className="field field--checkbox">
-          <input
-            type="checkbox"
-            checked={applyToAllHistory}
-            onChange={(e) => setApplyToAllHistory(e.target.checked)}
-          />
-          Apply to all playback, including history (recommended)
-        </label>
-        {applyToAllHistory ? null : (
-          <label className="field">
-            Effective from
+      {/* Milestone 99: publishing is its own permission; the API refuses it without. */}
+      {canPublish ? (
+        <fieldset>
+          <legend>Publish</legend>
+          <label className="field field--checkbox">
             <input
-              type="datetime-local"
-              value={effectiveFrom}
-              onChange={(e) => setEffectiveFrom(e.target.value)}
+              type="checkbox"
+              checked={applyToAllHistory}
+              onChange={(e) => setApplyToAllHistory(e.target.checked)}
+            />
+            Apply to all playback, including history (recommended)
+          </label>
+          {applyToAllHistory ? null : (
+            <label className="field">
+              Effective from
+              <input
+                type="datetime-local"
+                value={effectiveFrom}
+                onChange={(e) => setEffectiveFrom(e.target.value)}
+              />
+            </label>
+          )}
+          {pendingModules.length > 0 ? (
+            <fieldset className="module-publish-choice">
+              <legend>Modules with unpublished changes</legend>
+              <ul className="module-publish-choice__list">
+                {pendingModules.map((change) => (
+                  <li key={change.slug}>
+                    <strong>{change.name ?? change.slug}</strong>{" "}
+                    {change.status === "never_published"
+                      ? "— never published"
+                      : `— changed since version ${change.publishedVersion}`}
+                  </li>
+                ))}
+              </ul>
+              <label className="field field--checkbox">
+                <input
+                  type="radio"
+                  name="module-publish-choice"
+                  checked={moduleChoice === "withModules"}
+                  onChange={() => setModuleChoice("withModules")}
+                />
+                Publish {pendingModules.length === 1 ? "this module" : "these modules"} with the map
+                (recommended)
+              </label>
+              <label className="field field--checkbox">
+                <input
+                  type="radio"
+                  name="module-publish-choice"
+                  checked={moduleChoice === "mapOnly"}
+                  onChange={() => setModuleChoice("mapOnly")}
+                />
+                Publish the map only, with the modules&apos; published versions
+              </label>
+              {moduleChoice === "mapOnly" && neverPublished.length > 0 ? (
+                <p role="alert" className="publish-result publish-result--error">
+                  {neverPublished.map((change) => change.name ?? change.slug).join(", ")}{" "}
+                  {neverPublished.length === 1 ? "has" : "have"} never been published, so the map
+                  can&apos;t be assembled without {neverPublished.length === 1 ? "it" : "them"}.
+                </p>
+              ) : null}
+            </fieldset>
+          ) : null}
+          <label className="field">
+            Published by
+            <input
+              value={publishedBy}
+              onChange={(e) => setPublishedBy(e.target.value)}
+              placeholder="your name"
             />
           </label>
-        )}
-        {pendingModules.length > 0 ? (
-          <fieldset className="module-publish-choice">
-            <legend>Modules with unpublished changes</legend>
-            <ul className="module-publish-choice__list">
-              {pendingModules.map((change) => (
-                <li key={change.slug}>
-                  <strong>{change.name ?? change.slug}</strong>{" "}
-                  {change.status === "never_published"
-                    ? "— never published"
-                    : `— changed since version ${change.publishedVersion}`}
-                </li>
-              ))}
-            </ul>
-            <label className="field field--checkbox">
-              <input
-                type="radio"
-                name="module-publish-choice"
-                checked={moduleChoice === "withModules"}
-                onChange={() => setModuleChoice("withModules")}
-              />
-              Publish {pendingModules.length === 1 ? "this module" : "these modules"} with the map
-              (recommended)
-            </label>
-            <label className="field field--checkbox">
-              <input
-                type="radio"
-                name="module-publish-choice"
-                checked={moduleChoice === "mapOnly"}
-                onChange={() => setModuleChoice("mapOnly")}
-              />
-              Publish the map only, with the modules&apos; published versions
-            </label>
-            {moduleChoice === "mapOnly" && neverPublished.length > 0 ? (
-              <p role="alert" className="publish-result publish-result--error">
-                {neverPublished.map((change) => change.name ?? change.slug).join(", ")}{" "}
-                {neverPublished.length === 1 ? "has" : "have"} never been published, so the map
-                can&apos;t be assembled without {neverPublished.length === 1 ? "it" : "them"}.
-              </p>
-            ) : null}
-          </fieldset>
-        ) : null}
-        <label className="field">
-          Published by
-          <input
-            value={publishedBy}
-            onChange={(e) => setPublishedBy(e.target.value)}
-            placeholder="your name"
-          />
-        </label>
-        <button
-          type="button"
-          className="btn btn--primary"
-          onClick={() => void publish()}
-          disabled={outcome.status === "publishing"}
-        >
-          {outcome.status === "publishing" ? "Publishing…" : "Publish"}
-        </button>
-      </fieldset>
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => void publish()}
+            disabled={outcome.status === "publishing"}
+          >
+            {outcome.status === "publishing" ? "Publishing…" : "Publish"}
+          </button>
+        </fieldset>
+      ) : (
+        <p className="map-inspector__note">
+          Publishing needs the Publish permission. Your changes are saved to the draft.
+        </p>
+      )}
 
       {outcome.status === "published" && outcome.kind === "map" ? (
         <div className="publish-result publish-result--success">

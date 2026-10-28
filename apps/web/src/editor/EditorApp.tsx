@@ -6,8 +6,6 @@ import { readApiJson } from "./apiJson.js";
 
 export interface EditorAppProps {
   slug: string;
-  /** Milestone 85: admins can make modules from a selection. */
-  isAdmin?: boolean;
   /** Milestone 85: editing a module inside this assembled map (`?in=`). */
   contextSlug?: string | null;
 }
@@ -24,11 +22,7 @@ interface DraftResponse {
  * panels). `App.tsx` already redirects an unauthenticated/under-privileged visit to `/rlm-login`
  * before this ever mounts (Milestone 29), so a 401/403 here would mean the session expired
  * mid-visit rather than a normal first-load case. */
-export function EditorApp({
-  slug,
-  isAdmin = false,
-  contextSlug = null,
-}: EditorAppProps): JSX.Element {
+export function EditorApp({ slug, contextSlug = null }: EditorAppProps): JSX.Element {
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,7 +67,6 @@ export function EditorApp({
         slug={slug}
         initialRevision={draft.revision}
         kind={draft.kind ?? "map"}
-        isAdmin={isAdmin}
         contextSlug={contextSlug}
       />
     </EditorStateProvider>

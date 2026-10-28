@@ -1,16 +1,25 @@
 import { useEffect, useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
-import type { UserRole } from "./useSession.js";
+import { navigate } from "../useRoute.js";
+import { useCan } from "./permissions.js";
 
 interface AdminUser {
   id: string;
   username: string;
-  role: UserRole;
+  /** Milestone 99 (docs/adr/0022): the user's type decides what they can do. */
+  userTypeId: string;
+  userTypeName: string;
   isActive: boolean;
   createdAt: string;
   lastLoginAt: string | null;
   /** Milestone 83: groups decide which restricted maps a user can see. */
   groupIds: string[];
+}
+
+interface UserTypeOption {
+  id: string;
+  name: string;
+  systemKey: "public" | "admin" | null;
 }
 
 interface Group {
@@ -34,8 +43,9 @@ async function extractError(response: Response, fallback: string): Promise<strin
  *
  * Milestone 29: admin-only "Users" page — the day-to-day way to add/manage accounts once at
  * least one admin exists (the very first admin has to come from the worker's `manage-users` CLI,
- * since nothing is logged in yet to use this page). Only rendered by `App.tsx` when the current
- * session's role is "admin"; the API independently enforces the same gate. */
+ * since nothing is logged in yet to use this page). Only rendered by `App.tsx` with the
+ * `admin.users` permission (Milestone 99); the API independently enforces the same gate, and
+ * refuses to give or change a type holding permissions the requester lacks. */
 export function AdminUsersPage(): JSX.Element {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -43,7 +53,9 @@ export function AdminUsersPage(): JSX.Element {
 
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState<UserRole>("editor");
+  const [userTypes, setUserTypes] = useState<UserTypeOption[]>([]);
+  const [newUserTypeId, setNewUserTypeId] = useState("");
+  const canEditTypes = useCan()("admin.user_types");
   const [newGroupIds, setNewGroupIds] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
 
@@ -54,9 +66,10 @@ export function AdminUsersPage(): JSX.Element {
 
   async function load(): Promise<void> {
     try {
-      const [response, groupsResponse] = await Promise.all([
+      const [response, groupsResponse, typesResponse] = await Promise.all([
         fetch("/api/v1/admin/users"),
         fetch("/api/v1/admin/groups"),
+        fetch("/api/v1/admin/user-types"),
       ]);
       if (!response.ok) {
         setLoadError(await extractError(response, `Failed to load users (${response.status})`));
@@ -71,6 +84,14 @@ export function AdminUsersPage(): JSX.Element {
       const body = await readApiJson<{ users: AdminUser[] }>(response);
       setUsers(body.users);
       setGroups((await readApiJson<{ groups: Group[] }>(groupsResponse)).groups);
+      if (typesResponse.ok) {
+        // A user is never the public type (that is every visitor without a login).
+        const types = (await readApiJson<{ types: UserTypeOption[] }>(typesResponse)).types.filter(
+          (type) => type.systemKey !== "public",
+        );
+        setUserTypes(types);
+        setNewUserTypeId((current) => current || (types[0]?.id ?? ""));
+      }
       setLoadError(null);
     } catch {
       setLoadError("Failed to load users.");
@@ -113,7 +134,7 @@ export function AdminUsersPage(): JSX.Element {
         body: JSON.stringify({
           username: newUsername,
           password: newPassword,
-          role: newRole,
+          userTypeId: newUserTypeId,
           groupIds: newGroupIds,
         }),
       });
@@ -123,7 +144,7 @@ export function AdminUsersPage(): JSX.Element {
       }
       setNewUsername("");
       setNewPassword("");
-      setNewRole("editor");
+
       setNewGroupIds([]);
       await load();
     } finally {
@@ -182,7 +203,7 @@ export function AdminUsersPage(): JSX.Element {
         <thead>
           <tr>
             <th>Username</th>
-            <th>Role</th>
+            <th>User type</th>
             <th>Status</th>
             <th>Groups</th>
             <th>Last login</th>
@@ -195,11 +216,18 @@ export function AdminUsersPage(): JSX.Element {
               <td>{user.username}</td>
               <td>
                 <select
-                  value={user.role}
-                  onChange={(e) => void patchUser(user.id, { role: e.target.value })}
+                  aria-label={`User type for ${user.username}`}
+                  value={user.userTypeId}
+                  onChange={(e) => void patchUser(user.id, { userTypeId: e.target.value })}
                 >
-                  <option value="editor">editor</option>
-                  <option value="admin">admin</option>
+                  {userTypes.some((type) => type.id === user.userTypeId) ? null : (
+                    <option value={user.userTypeId}>{user.userTypeName}</option>
+                  )}
+                  {userTypes.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.name}
+                    </option>
+                  ))}
                 </select>
               </td>
               <td>
@@ -266,12 +294,30 @@ export function AdminUsersPage(): JSX.Element {
           />
         </label>
         <label className="field">
-          Role
-          <select value={newRole} onChange={(e) => setNewRole(e.target.value as UserRole)}>
-            <option value="editor">editor</option>
-            <option value="admin">admin</option>
+          User type
+          <select value={newUserTypeId} onChange={(e) => setNewUserTypeId(e.target.value)}>
+            {userTypes.map((type) => (
+              <option key={type.id} value={type.id}>
+                {type.name}
+              </option>
+            ))}
           </select>
         </label>
+        {canEditTypes && (
+          <p className="map-inspector__note">
+            What each type can do is set in{" "}
+            <a
+              href="/admin/user-types"
+              onClick={(e) => {
+                e.preventDefault();
+                navigate("/admin/user-types");
+              }}
+            >
+              User types
+            </a>
+            .
+          </p>
+        )}
         {groups.length > 0 && (
           <fieldset className="users-form__groups">
             <legend>Groups</legend>

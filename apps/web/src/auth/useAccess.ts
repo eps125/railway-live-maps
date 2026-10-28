@@ -7,8 +7,11 @@ export interface AccessStatus {
   /** False only when the site needs a code and this visitor has neither a login nor a code. */
   allowed: boolean;
   expiresAt: string | null;
-  scope: "site" | "all_maps" | "maps" | null;
+  /** Milestone 99: `maps` when this visitor's code is limited to the maps listed. */
+  mapLimit: "none" | "maps" | null;
   maps: { slug: string; name: string }[];
+  /** Milestone 99: every permission this visitor holds (the public type's plus a code's). */
+  permissions: string[];
 }
 
 export type AccessState = { status: "loading" } | { status: "ready"; access: AccessStatus };
@@ -39,8 +42,9 @@ export function useAccess(): { access: AccessState; refresh: () => Promise<void>
           access: "none",
           allowed: true,
           expiresAt: null,
-          scope: null,
+          mapLimit: null,
           maps: [],
+          permissions: [],
         },
       });
     }

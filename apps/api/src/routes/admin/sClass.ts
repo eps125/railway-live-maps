@@ -14,6 +14,7 @@ import {
 import { fetchLiveSOverlay, fetchSByteFactsAt, type RawSOverlayRow } from "@railway/database";
 import { apiError, parseLimit } from "../../lib/queryRange.js";
 import { SClassActivityCache, activityQuery } from "./sClassActivity.js";
+import { actorName, needs } from "../../lib/viewer.js";
 
 /**
  * Milestone 36c (docs/IMPLEMENTATION_PLAN.md, docs/adr/0013): the admin S-Class explorer and
@@ -323,7 +324,7 @@ export async function registerSClassAdminRoutes(
     deps.activity ?? new SClassActivityCache(activityQuery(pool, TD_S_STATE_PROJECTION_VERSION));
 
   /** Every area with decoded S-Class state, for the explorer's area picker. */
-  app.get("/api/v1/admin/s-class/areas", async () => {
+  app.get("/api/v1/admin/s-class/areas", { preHandler: needs("tools.s_class") }, async () => {
     const result = await pool.query<{
       td_area: string;
       bytes: number;
@@ -362,6 +363,7 @@ export async function registerSClassAdminRoutes(
    */
   app.get<{ Params: { tdArea: string }; Querystring: { at?: string; windowSeconds?: string } }>(
     "/api/v1/admin/s-class/areas/:tdArea/snapshot",
+    { preHandler: needs(["tools.s_class", "map.s_class_panel"]) },
     async (request, reply) => {
       const { tdArea } = request.params;
       if (!isTdArea(tdArea)) {
@@ -468,6 +470,7 @@ export async function registerSClassAdminRoutes(
    * window can't pile up queries on the database (incident 2026-10-22). */
   app.get<{ Params: { tdArea: string }; Querystring: { windowHours?: string } }>(
     "/api/v1/admin/s-class/areas/:tdArea/bits",
+    { preHandler: needs("tools.s_class") },
     async (request, reply) => {
       const { tdArea } = request.params;
       if (!isTdArea(tdArea)) {
@@ -532,44 +535,48 @@ export async function registerSClassAdminRoutes(
   app.get<{
     Params: { tdArea: string; address: string; bit: string };
     Querystring: { before?: string; limit?: string };
-  }>("/api/v1/admin/s-class/areas/:tdArea/bits/:address/:bit/history", async (request, reply) => {
-    const address = canonicalAddress(request.params.address);
-    const bit = parseBit(request.params.bit);
-    if (!isTdArea(request.params.tdArea) || address === null || bit === null) {
-      reply.code(400);
-      return apiError("INVALID_BIT", "Expected a TD area, a hex address and a bit 0-7");
-    }
-    const before = request.query.before ? new Date(request.query.before) : new Date();
-    if (Number.isNaN(before.getTime())) {
-      reply.code(400);
-      return apiError("INVALID_TIME_RANGE", "before must be an ISO timestamp");
-    }
-    const limit = parseLimit(request.query.limit);
-    const result = await pool.query<{
-      event_at: Date;
-      previous_value: boolean | null;
-      new_value: boolean;
-      source_kind: string;
-    }>(
-      `select event_at, previous_value, new_value, source_kind
+  }>(
+    "/api/v1/admin/s-class/areas/:tdArea/bits/:address/:bit/history",
+    { preHandler: needs("tools.s_class") },
+    async (request, reply) => {
+      const address = canonicalAddress(request.params.address);
+      const bit = parseBit(request.params.bit);
+      if (!isTdArea(request.params.tdArea) || address === null || bit === null) {
+        reply.code(400);
+        return apiError("INVALID_BIT", "Expected a TD area, a hex address and a bit 0-7");
+      }
+      const before = request.query.before ? new Date(request.query.before) : new Date();
+      if (Number.isNaN(before.getTime())) {
+        reply.code(400);
+        return apiError("INVALID_TIME_RANGE", "before must be an ISO timestamp");
+      }
+      const limit = parseLimit(request.query.limit);
+      const result = await pool.query<{
+        event_at: Date;
+        previous_value: boolean | null;
+        new_value: boolean;
+        source_kind: string;
+      }>(
+        `select event_at, previous_value, new_value, source_kind
          from td_s_bit_transition
         where projection_version = $1 and td_area = $2 and address = $3 and bit_index = $4
           and event_at < $5
         order by event_at desc
         limit $6`,
-      [TD_S_STATE_PROJECTION_VERSION, request.params.tdArea, address, bit, before, limit],
-    );
-    const last = result.rows.at(-1);
-    return {
-      transitions: result.rows.map((row) => ({
-        eventAt: row.event_at.toISOString(),
-        previousValue: row.previous_value,
-        newValue: row.new_value,
-        sourceKind: row.source_kind,
-      })),
-      nextBefore: result.rows.length === limit && last ? last.event_at.toISOString() : null,
-    };
-  });
+        [TD_S_STATE_PROJECTION_VERSION, request.params.tdArea, address, bit, before, limit],
+      );
+      const last = result.rows.at(-1);
+      return {
+        transitions: result.rows.map((row) => ({
+          eventAt: row.event_at.toISOString(),
+          previousValue: row.previous_value,
+          newValue: row.new_value,
+          sourceKind: row.source_kind,
+        })),
+        nextBefore: result.rows.length === limit && last ? last.event_at.toISOString() : null,
+      };
+    },
+  );
 
   /** Suggestion: for one bit, the CA berth steps that most often happen within ±10 s of its
    * changes (split by the direction of the change). A signal returning to danger as a train
@@ -579,6 +586,7 @@ export async function registerSClassAdminRoutes(
     Querystring: { from?: string; to?: string };
   }>(
     "/api/v1/admin/s-class/areas/:tdArea/bits/:address/:bit/correlated-steps",
+    { preHandler: needs("tools.s_class") },
     async (request, reply) => {
       const { tdArea } = request.params;
       const address = canonicalAddress(request.params.address);
@@ -704,6 +712,7 @@ export async function registerSClassAdminRoutes(
     Querystring: { from?: string; to?: string; activeMeans?: string };
   }>(
     "/api/v1/admin/s-class/areas/:tdArea/bits/:address/:bit/route-candidates",
+    { preHandler: needs("tools.s_class") },
     async (request, reply) => {
       const { tdArea } = request.params;
       const address = canonicalAddress(request.params.address);
@@ -857,36 +866,39 @@ export async function registerSClassAdminRoutes(
   app.get<{
     Params: { tdArea: string };
     Querystring: { fromBerth?: string; toBerth?: string; from?: string; to?: string };
-  }>("/api/v1/admin/s-class/areas/:tdArea/correlated-bits", async (request, reply) => {
-    const { tdArea } = request.params;
-    const fromBerth = request.query.fromBerth?.trim().toUpperCase() ?? "";
-    const toBerth = request.query.toBerth?.trim().toUpperCase() ?? "";
-    if (!isTdArea(tdArea) || fromBerth === "" || toBerth === "") {
-      reply.code(400);
-      return apiError("INVALID_STEP", "Expected a TD area plus fromBerth and toBerth");
-    }
-    const range = correlationRange(request.query);
-    if (!range.ok) {
-      reply.code(400);
-      return apiError("INVALID_TIME_RANGE", range.message);
-    }
-    const stepCount = await pool.query<{ steps: number }>(
-      `select count(*)::int as steps
+  }>(
+    "/api/v1/admin/s-class/areas/:tdArea/correlated-bits",
+    { preHandler: needs("tools.s_class") },
+    async (request, reply) => {
+      const { tdArea } = request.params;
+      const fromBerth = request.query.fromBerth?.trim().toUpperCase() ?? "";
+      const toBerth = request.query.toBerth?.trim().toUpperCase() ?? "";
+      if (!isTdArea(tdArea) || fromBerth === "" || toBerth === "") {
+        reply.code(400);
+        return apiError("INVALID_STEP", "Expected a TD area plus fromBerth and toBerth");
+      }
+      const range = correlationRange(request.query);
+      if (!range.ok) {
+        reply.code(400);
+        return apiError("INVALID_TIME_RANGE", range.message);
+      }
+      const stepCount = await pool.query<{ steps: number }>(
+        `select count(*)::int as steps
          from td_berth_event
         where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
           and event_at >= $4 and event_at < $5`,
-      [tdArea, fromBerth, toBerth, range.from, range.to],
-    );
-    const bits = await pool.query<{
-      address: string;
-      bit_index: number;
-      new_value: boolean;
-      hits: number;
-      median_offset_seconds: number;
-    }>(
-      // Matched on time buckets, like correlated-steps above: a range join between two
-      // materialized CTEs can only nested-loop every step against every change of the area.
-      `with steps as materialized (
+        [tdArea, fromBerth, toBerth, range.from, range.to],
+      );
+      const bits = await pool.query<{
+        address: string;
+        bit_index: number;
+        new_value: boolean;
+        hits: number;
+        median_offset_seconds: number;
+      }>(
+        // Matched on time buckets, like correlated-steps above: a range join between two
+        // materialized CTEs can only nested-loop every step against every change of the area.
+        `with steps as materialized (
          select event_at, floor(extract(epoch from event_at) / $7)::bigint as bucket
            from td_berth_event
           where td_area = $1 and message_type = 'CA' and from_berth = $2 and to_berth = $3
@@ -921,49 +933,51 @@ export async function registerSClassAdminRoutes(
         group by address, bit_index, new_value
         order by hits desc
         limit 20`,
-      [
+        [
+          tdArea,
+          fromBerth,
+          toBerth,
+          range.from,
+          range.to,
+          TD_S_STATE_PROJECTION_VERSION,
+          CORRELATION_WINDOW_SECONDS,
+        ],
+      );
+      const definitions = await pool.query<DefinitionRow>(
+        `select * from s_class_definition where td_area = $1`,
+        [tdArea],
+      );
+      const definitionByBit = new Map(
+        definitions.rows.map((row) => [`${row.address}:${row.bit}`, row]),
+      );
+      const steps = stepCount.rows[0]?.steps ?? 0;
+      return {
         tdArea,
         fromBerth,
         toBerth,
-        range.from,
-        range.to,
-        TD_S_STATE_PROJECTION_VERSION,
-        CORRELATION_WINDOW_SECONDS,
-      ],
-    );
-    const definitions = await pool.query<DefinitionRow>(
-      `select * from s_class_definition where td_area = $1`,
-      [tdArea],
-    );
-    const definitionByBit = new Map(
-      definitions.rows.map((row) => [`${row.address}:${row.bit}`, row]),
-    );
-    const steps = stepCount.rows[0]?.steps ?? 0;
-    return {
-      tdArea,
-      fromBerth,
-      toBerth,
-      from: range.from.toISOString(),
-      to: range.to.toISOString(),
-      windowSeconds: CORRELATION_WINDOW_SECONDS,
-      steps,
-      bits: bits.rows.map((row) => {
-        const def = definitionByBit.get(`${row.address}:${row.bit_index}`);
-        return {
-          address: row.address,
-          bit: row.bit_index,
-          direction: row.new_value ? "set" : "cleared",
-          hits: row.hits,
-          ofSteps: steps,
-          medianOffsetSeconds: Number(row.median_offset_seconds),
-          definition: def ? definitionResponse(def) : null,
-        };
-      }),
-    };
-  });
+        from: range.from.toISOString(),
+        to: range.to.toISOString(),
+        windowSeconds: CORRELATION_WINDOW_SECONDS,
+        steps,
+        bits: bits.rows.map((row) => {
+          const def = definitionByBit.get(`${row.address}:${row.bit_index}`);
+          return {
+            address: row.address,
+            bit: row.bit_index,
+            direction: row.new_value ? "set" : "cleared",
+            hits: row.hits,
+            ofSteps: steps,
+            medianOffsetSeconds: Number(row.median_offset_seconds),
+            definition: def ? definitionResponse(def) : null,
+          };
+        }),
+      };
+    },
+  );
 
   app.get<{ Params: { tdArea: string } }>(
     "/api/v1/admin/s-class/areas/:tdArea/definitions",
+    { preHandler: needs("tools.s_class") },
     async (request, reply) => {
       if (!isTdArea(request.params.tdArea)) {
         reply.code(400);
@@ -979,6 +993,7 @@ export async function registerSClassAdminRoutes(
 
   app.put<{ Params: { tdArea: string; address: string; bit: string }; Body: unknown }>(
     "/api/v1/admin/s-class/areas/:tdArea/definitions/:address/:bit",
+    { preHandler: needs("tools.s_class") },
     async (request, reply) => {
       const { tdArea } = request.params;
       const address = canonicalAddress(request.params.address);
@@ -992,7 +1007,7 @@ export async function registerSClassAdminRoutes(
         reply.code(400);
         return apiError("INVALID_DEFINITION", parsed.message);
       }
-      const changedBy = request.authSession?.username ?? "unknown";
+      const changedBy = actorName(request) ?? "unknown";
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -1020,6 +1035,7 @@ export async function registerSClassAdminRoutes(
 
   app.delete<{ Params: { tdArea: string; address: string; bit: string } }>(
     "/api/v1/admin/s-class/areas/:tdArea/definitions/:address/:bit",
+    { preHandler: needs("tools.s_class") },
     async (request, reply) => {
       const { tdArea } = request.params;
       const address = canonicalAddress(request.params.address);
@@ -1050,7 +1066,7 @@ export async function registerSClassAdminRoutes(
           previous,
           next: null,
           importBatch: null,
-          changedBy: request.authSession?.username ?? "unknown",
+          changedBy: actorName(request) ?? "unknown",
         });
         await client.query("commit");
         reply.code(204);
@@ -1080,115 +1096,119 @@ export async function registerSClassAdminRoutes(
       dryRun?: boolean;
       overwriteConflicts?: boolean;
     };
-  }>("/api/v1/admin/s-class/areas/:tdArea/definitions/import", async (request, reply) => {
-    const { tdArea } = request.params;
-    const body = request.body ?? {};
-    if (!isTdArea(tdArea)) {
-      reply.code(400);
-      return apiError("INVALID_TD_AREA", "tdArea must be a two-character TD area code");
-    }
-    if (body.radix !== "hex" && body.radix !== "decimal") {
-      reply.code(400);
-      return apiError(
-        "RADIX_REQUIRED",
-        'radix must be "hex" or "decimal" — byte numbering differs between published tables and is never guessed',
-      );
-    }
-    const source = body.source ?? "wiki";
-    if (!DEFINITION_SOURCES.includes(source as DefinitionSource)) {
-      reply.code(400);
-      return apiError(
-        "INVALID_DEFINITION",
-        `source must be one of ${DEFINITION_SOURCES.join(", ")}`,
-      );
-    }
-    if (typeof body.text !== "string" || body.text.trim() === "") {
-      reply.code(400);
-      return apiError("EMPTY_IMPORT", "text is required");
-    }
-    const parsed = parseSClassDefinitionTable(body.text, body.radix as SClassByteRadix);
-    const existing = await pool.query<DefinitionRow>(
-      `select * from s_class_definition where td_area = $1`,
-      [tdArea],
-    );
-    const existingByBit = new Map(existing.rows.map((row) => [`${row.address}:${row.bit}`, row]));
-    const rows = parsed.definitions.map((definition) => {
-      const current = existingByBit.get(`${definition.address}:${definition.bit}`);
-      const status = !current
-        ? "new"
-        : current.label === definition.label &&
-            current.destination === definition.destination &&
-            current.kind === definition.kind
-          ? "unchanged"
-          : "conflict";
-      return {
-        line: definition.line,
-        address: definition.address,
-        bit: definition.bit,
-        kind: definition.kind,
-        label: definition.label,
-        destination: definition.destination,
-        status,
-        existing: current ? definitionResponse(current) : null,
-      };
-    });
-    const report = {
-      tdArea,
-      radix: body.radix,
-      source,
-      rows,
-      counts: {
-        new: rows.filter((r) => r.status === "new").length,
-        unchanged: rows.filter((r) => r.status === "unchanged").length,
-        conflict: rows.filter((r) => r.status === "conflict").length,
-        skippedUnidentified: parsed.skippedUnidentified,
-        ignoredLines: parsed.ignoredLines,
-      },
-      errors: parsed.errors,
-      warnings: parsed.warnings,
-    };
-
-    if (body.dryRun !== false) return { ...report, committed: false };
-    if (parsed.errors.length > 0) {
-      reply.code(422);
-      return apiError("IMPORT_HAS_ERRORS", "Fix the parse errors before importing", {
-        errors: parsed.errors,
-      });
-    }
-
-    const batch = randomUUID();
-    const changedBy = request.authSession?.username ?? "unknown";
-    const client = await pool.connect();
-    let applied = 0;
-    try {
-      await client.query("begin");
-      for (const row of rows) {
-        if (row.status === "unchanged") continue;
-        if (row.status === "conflict" && body.overwriteConflicts !== true) continue;
-        const outcome = await upsertDefinition(
-          client,
-          { tdArea, address: row.address, bit: row.bit },
-          {
-            kind: row.kind,
-            label: row.label,
-            destination: row.destination,
-            source: source as DefinitionSource,
-            notes: null,
-          },
-          changedBy,
-          batch,
-        );
-        if (outcome !== "unchanged") applied += 1;
+  }>(
+    "/api/v1/admin/s-class/areas/:tdArea/definitions/import",
+    { preHandler: needs("tools.s_class") },
+    async (request, reply) => {
+      const { tdArea } = request.params;
+      const body = request.body ?? {};
+      if (!isTdArea(tdArea)) {
+        reply.code(400);
+        return apiError("INVALID_TD_AREA", "tdArea must be a two-character TD area code");
       }
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-    return { ...report, committed: true, applied, importBatch: batch };
-  });
+      if (body.radix !== "hex" && body.radix !== "decimal") {
+        reply.code(400);
+        return apiError(
+          "RADIX_REQUIRED",
+          'radix must be "hex" or "decimal" — byte numbering differs between published tables and is never guessed',
+        );
+      }
+      const source = body.source ?? "wiki";
+      if (!DEFINITION_SOURCES.includes(source as DefinitionSource)) {
+        reply.code(400);
+        return apiError(
+          "INVALID_DEFINITION",
+          `source must be one of ${DEFINITION_SOURCES.join(", ")}`,
+        );
+      }
+      if (typeof body.text !== "string" || body.text.trim() === "") {
+        reply.code(400);
+        return apiError("EMPTY_IMPORT", "text is required");
+      }
+      const parsed = parseSClassDefinitionTable(body.text, body.radix as SClassByteRadix);
+      const existing = await pool.query<DefinitionRow>(
+        `select * from s_class_definition where td_area = $1`,
+        [tdArea],
+      );
+      const existingByBit = new Map(existing.rows.map((row) => [`${row.address}:${row.bit}`, row]));
+      const rows = parsed.definitions.map((definition) => {
+        const current = existingByBit.get(`${definition.address}:${definition.bit}`);
+        const status = !current
+          ? "new"
+          : current.label === definition.label &&
+              current.destination === definition.destination &&
+              current.kind === definition.kind
+            ? "unchanged"
+            : "conflict";
+        return {
+          line: definition.line,
+          address: definition.address,
+          bit: definition.bit,
+          kind: definition.kind,
+          label: definition.label,
+          destination: definition.destination,
+          status,
+          existing: current ? definitionResponse(current) : null,
+        };
+      });
+      const report = {
+        tdArea,
+        radix: body.radix,
+        source,
+        rows,
+        counts: {
+          new: rows.filter((r) => r.status === "new").length,
+          unchanged: rows.filter((r) => r.status === "unchanged").length,
+          conflict: rows.filter((r) => r.status === "conflict").length,
+          skippedUnidentified: parsed.skippedUnidentified,
+          ignoredLines: parsed.ignoredLines,
+        },
+        errors: parsed.errors,
+        warnings: parsed.warnings,
+      };
+
+      if (body.dryRun !== false) return { ...report, committed: false };
+      if (parsed.errors.length > 0) {
+        reply.code(422);
+        return apiError("IMPORT_HAS_ERRORS", "Fix the parse errors before importing", {
+          errors: parsed.errors,
+        });
+      }
+
+      const batch = randomUUID();
+      const changedBy = actorName(request) ?? "unknown";
+      const client = await pool.connect();
+      let applied = 0;
+      try {
+        await client.query("begin");
+        for (const row of rows) {
+          if (row.status === "unchanged") continue;
+          if (row.status === "conflict" && body.overwriteConflicts !== true) continue;
+          const outcome = await upsertDefinition(
+            client,
+            { tdArea, address: row.address, bit: row.bit },
+            {
+              kind: row.kind,
+              label: row.label,
+              destination: row.destination,
+              source: source as DefinitionSource,
+              notes: null,
+            },
+            changedBy,
+            batch,
+          );
+          if (outcome !== "unchanged") applied += 1;
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      return { ...report, committed: true, applied, importBatch: batch };
+    },
+  );
 }
 
 /**
@@ -1202,7 +1222,7 @@ export async function registerSClassEditorRoutes(
 ): Promise<void> {
   const { pool } = deps;
 
-  app.get("/api/v1/editor/s-class/areas", async () => {
+  app.get("/api/v1/editor/s-class/areas", { preHandler: needs("editor.view") }, async () => {
     const result = await pool.query<{ td_area: string }>(
       `select distinct td_area from td_s_current_state
         where projection_version = $1 and byte_value is not null
@@ -1214,6 +1234,7 @@ export async function registerSClassEditorRoutes(
 
   app.get<{ Params: { tdArea: string } }>(
     "/api/v1/editor/s-class/areas/:tdArea/definitions",
+    { preHandler: needs("editor.view") },
     async (request, reply) => {
       if (!isTdArea(request.params.tdArea)) {
         reply.code(400);

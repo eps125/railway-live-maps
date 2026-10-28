@@ -18,7 +18,8 @@ export type Route =
   | { name: "adminBerthSteps" }
   | { name: "adminBerthExplorer" }
   | { name: "adminSClass" }
-  | { name: "adminMaintenance" };
+  | { name: "adminMaintenance" }
+  | { name: "adminUserTypes" };
 
 /** Minimal hand-rolled router for the small set of route shapes this app needs (`/` the Milestone
  * 30 map-list landing page, `/map/:slug` the public map, `/editor/:slug` the Milestone 11/12
@@ -37,6 +38,7 @@ export function useRoute(): Route {
   }, []);
 
   if (pathname.startsWith("/rlm-login")) return { name: "login" };
+  if (pathname.startsWith("/admin/user-types")) return { name: "adminUserTypes" };
   if (pathname.startsWith("/admin/users")) return { name: "adminUsers" };
   // Milestone 83.
   if (pathname.startsWith("/admin/maps")) return { name: "adminMaps" };

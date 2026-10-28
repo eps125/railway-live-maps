@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Toolbar } from "./Toolbar.js";
+import { useCan } from "../auth/permissions.js";
 import { ToolPalette } from "./ToolPalette.js";
 import { EditorCanvas } from "./EditorCanvas.js";
 import { PropertyPanel } from "./PropertyPanel.js";
@@ -24,8 +25,6 @@ export interface EditorWorkspaceProps {
   initialRevision: number;
   /** Milestone 85: a module gets the Join tool and a Joins panel; a map gets the Modules panel. */
   kind?: "map" | "module";
-  /** Milestone 85: an admin can make a module from a selection. */
-  isAdmin?: boolean;
   /** Milestone 85: editing a module inside this assembled map (`?in=`) — the rest of the map is
    * drawn around it. */
   contextSlug?: string | null;
@@ -57,9 +56,10 @@ export function EditorWorkspace({
   slug,
   initialRevision,
   kind = "map",
-  isAdmin = false,
   contextSlug = null,
 }: EditorWorkspaceProps): JSX.Element {
+  // Milestone 85 / 99: making a module from a selection needs `maps.manage`.
+  const canMakeModule = useCan()("maps.manage");
   const [importError, setImportError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("design");
   const [signalToolOpen, setSignalToolOpen] = useState(false);
@@ -233,7 +233,7 @@ export function EditorWorkspace({
       <Toolbar
         onImportError={setImportError}
         onOpenSignalTool={() => setSignalToolOpen(true)}
-        onMakeModule={isAdmin && !isModule ? () => void makeModule() : undefined}
+        onMakeModule={canMakeModule && !isModule ? () => void makeModule() : undefined}
       />
       {importError ? (
         <p role="alert" className="editor-import-error">

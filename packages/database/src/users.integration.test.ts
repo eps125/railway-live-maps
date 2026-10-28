@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createPool } from "./pool.js";
 import {
-  countOtherActiveAdmins,
   createUser,
   deleteUser,
   DuplicateUsernameError,
   findUserByUsername,
-  LastAdminGuardError,
+  InvalidUserTypeError,
   setUserActive,
-  updateUserRole,
+  updateUserType,
 } from "./users.js";
+import { countActiveManagers, findUserTypeByName, LastManagerGuardError } from "./userTypes.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -25,93 +25,131 @@ function freshUsername(prefix: string): string {
   return `${prefix}-${randomUUID()}`;
 }
 
+let adminTypeId = "";
+let editorTypeId = "";
+let publicTypeId = "";
+
 /**
- * The "last active admin" guard is inherently a global-state check, and this integration suite
- * shares one real database across every test file in a `pnpm run test:integration` run (no
- * per-test transaction rollback) — so a test asserting "this is *the* last admin" would be flaky
- * against any other admin account left behind by another test (this file's own tests included).
- * This temporarily deactivates every admin account not in `keepActiveIds` for the duration of
- * `fn`, then restores them, so each guard assertion runs against a truly known admin population
- * regardless of what else exists in the database.
+ * The "last manager" guard is a global-state check, and this integration suite shares one real
+ * database across every test file (no per-test rollback) — so a test asserting "this is *the*
+ * last manager" would be flaky against any other admin left behind by another test. This
+ * temporarily deactivates every other active user for the duration of `fn`, then restores them.
  */
-async function withOnlyTheseAdminsActive<T>(
+async function withOnlyTheseUsersActive<T>(
   db: Pool,
   keepActiveIds: string[],
   fn: () => Promise<T>,
 ): Promise<T> {
   const { rows: others } = await db.query<{ id: string }>(
-    `select id from app_user where role = 'admin' and is_active = true and id != all($1::bigint[])`,
+    `select id::text from app_user where is_active = true and id != all($1::bigint[])`,
     [keepActiveIds],
   );
-  for (const row of others) await setUserActive(db, row.id, false);
+  await db.query(`update app_user set is_active = false where id = any($1::bigint[])`, [
+    others.map((row) => row.id),
+  ]);
   try {
     return await fn();
   } finally {
-    for (const row of others) await setUserActive(db, row.id, true);
+    await db.query(`update app_user set is_active = true where id = any($1::bigint[])`, [
+      others.map((row) => row.id),
+    ]);
   }
 }
 
-describe("users (integration, migration 0029_app_user.sql)", () => {
+describe("users (integration, migrations 0029 + 0056)", () => {
+  beforeAll(async () => {
+    adminTypeId = (await findUserTypeByName(pool, "Admin"))!.id;
+    editorTypeId = (await findUserTypeByName(pool, "Editor"))!.id;
+    publicTypeId = (await findUserTypeByName(pool, "No user (public)"))!.id;
+  });
+
   afterAll(async () => {
     await pool.end();
   });
 
-  it("creates a user, finds it case-insensitively, and rejects a duplicate username", async () => {
+  it("creates a user with a type, finds it case-insensitively, and rejects a duplicate", async () => {
     const username = freshUsername("Case-Test");
     const created = await createUser(pool, {
       username,
       password: "hunter2hunter2",
-      role: "editor",
+      userTypeId: editorTypeId,
     });
-    expect(created.role).toBe("editor");
+    expect(created.userTypeId).toBe(editorTypeId);
+    expect(created.userTypeName).toBe("Editor");
     expect(created.isActive).toBe(true);
 
     const found = await findUserByUsername(pool, username.toUpperCase());
     expect(found?.id).toBe(created.id);
 
     await expect(
-      createUser(pool, { username: username.toLowerCase(), password: "irrelevant", role: "admin" }),
+      createUser(pool, {
+        username: username.toLowerCase(),
+        password: "irrelevant",
+        userTypeId: adminTypeId,
+      }),
     ).rejects.toBeInstanceOf(DuplicateUsernameError);
   });
 
-  it("refuses to demote, deactivate or delete the last active admin", async () => {
-    const username = freshUsername("lone-admin");
-    const admin = await createUser(pool, { username, password: "hunter2hunter2", role: "admin" });
+  it("never gives a user the public type", async () => {
+    await expect(
+      createUser(pool, {
+        username: freshUsername("public"),
+        password: "hunter2hunter2",
+        userTypeId: publicTypeId,
+      }),
+    ).rejects.toBeInstanceOf(InvalidUserTypeError);
+  });
 
-    await withOnlyTheseAdminsActive(pool, [admin.id], async () => {
-      expect(await countOtherActiveAdmins(pool, admin.id)).toBe(0);
+  it("keeps the legacy role column in step for rollback", async () => {
+    const user = await createUser(pool, {
+      username: freshUsername("legacy"),
+      password: "hunter2hunter2",
+      userTypeId: adminTypeId,
+    });
+    const role = async (): Promise<string> =>
+      (await pool.query<{ role: string }>(`select role from app_user where id = $1`, [user.id]))
+        .rows[0]!.role;
+    expect(await role()).toBe("admin");
+    await updateUserType(pool, user.id, editorTypeId);
+    expect(await role()).toBe("editor");
+  });
 
-      await expect(updateUserRole(pool, admin.id, "editor")).rejects.toBeInstanceOf(
-        LastAdminGuardError,
+  it("refuses to move, deactivate or delete the last user who can manage users", async () => {
+    const admin = await createUser(pool, {
+      username: freshUsername("lone-admin"),
+      password: "hunter2hunter2",
+      userTypeId: adminTypeId,
+    });
+
+    await withOnlyTheseUsersActive(pool, [admin.id], async () => {
+      expect(await countActiveManagers(pool, { excludingUserId: admin.id })).toBe(0);
+      await expect(updateUserType(pool, admin.id, editorTypeId)).rejects.toBeInstanceOf(
+        LastManagerGuardError,
       );
       await expect(setUserActive(pool, admin.id, false)).rejects.toBeInstanceOf(
-        LastAdminGuardError,
+        LastManagerGuardError,
       );
-      await expect(deleteUser(pool, admin.id)).rejects.toBeInstanceOf(LastAdminGuardError);
+      await expect(deleteUser(pool, admin.id)).rejects.toBeInstanceOf(LastManagerGuardError);
     });
   });
 
-  it("allows demoting an admin when another active admin still exists", async () => {
+  it("allows moving an admin when another manager remains", async () => {
     const other = await createUser(pool, {
       username: freshUsername("other-admin"),
       password: "hunter2hunter2",
-      role: "admin",
+      userTypeId: adminTypeId,
     });
     const target = await createUser(pool, {
       username: freshUsername("demote-me"),
       password: "hunter2hunter2",
-      role: "admin",
+      userTypeId: adminTypeId,
     });
 
-    await withOnlyTheseAdminsActive(pool, [other.id, target.id], async () => {
-      expect(await countOtherActiveAdmins(pool, target.id)).toBe(1);
-
-      const updated = await updateUserRole(pool, target.id, "editor");
-      expect(updated?.role).toBe("editor");
-
-      // Now target is the only non-admin; other is still the sole admin — deleting `other` should
-      // itself be refused, proving the guard checks the *current* state, not a stale snapshot.
-      await expect(deleteUser(pool, other.id)).rejects.toBeInstanceOf(LastAdminGuardError);
+    await withOnlyTheseUsersActive(pool, [other.id, target.id], async () => {
+      const updated = await updateUserType(pool, target.id, editorTypeId);
+      expect(updated?.userTypeName).toBe("Editor");
+      // `other` is now the only manager: the guard reads the current state, not a snapshot.
+      await expect(deleteUser(pool, other.id)).rejects.toBeInstanceOf(LastManagerGuardError);
     });
   });
 });

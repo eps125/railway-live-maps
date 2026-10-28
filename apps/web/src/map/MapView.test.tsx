@@ -359,6 +359,21 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
     ).toBeVisible();
   });
 
+  it("puts Signal numbers right after Delay colours, before the delay key (phone layout)", async () => {
+    stubFetch();
+    window.localStorage.setItem("rlm.delayColours", "true");
+    const { container } = render(<MapView slug="lancaster" />, ADMIN);
+    await screen.findByLabelText("Signal numbers");
+    const toolbar = container.querySelector(".map-page__toolbar")!;
+    const order = [...toolbar.children].map((child) =>
+      child.classList.contains("map-page__delay-key") ? "key" : (child.textContent ?? "").trim(),
+    );
+    const delay = order.indexOf("Delay colours");
+    expect(order[delay + 1]).toBe("Signal numbers");
+    expect(order[delay + 2]).toBe("key");
+    window.localStorage.removeItem("rlm.delayColours");
+  });
+
   it("offers the signal numbers checkbox only with map.signal_numbers, and remembers it (ADR 0017)", async () => {
     stubFetch();
     const { unmount } = render(<MapView slug="lancaster" />);

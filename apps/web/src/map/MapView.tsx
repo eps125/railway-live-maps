@@ -277,13 +277,15 @@ export function MapView({
             Delay colours
           </label>
         ) : null}
-        {delayColours ? <DelayKey /> : null}
+        {/* Beside the other toggles, before the delay key: on a phone the key takes a row of its
+            own, and a toggle after it would need another whole row. */}
         {canSignalNumbers ? (
           <label className="map-page__toggle">
             <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
             Signal numbers
           </label>
         ) : null}
+        {delayColours ? <DelayKey /> : null}
         {canSClassPanel ? (
           <button
             type="button"

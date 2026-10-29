@@ -61,3 +61,11 @@ state. Verified against production data on 2026-09-19 (M8, M9, R1-R4):
   populate reliably. Signal deltas go out from both live publishers, sorted by sequence with berth
   deltas; a `resync.required` (`feed_gap`) tells open maps to re-snapshot after a long silence.
   See `docs/IMPLEMENTATION_PLAN.md` 36b for the full as-built list.
+
+## Amendment — stale refresh chunks (2026-10-28)
+
+A refresh is treated as one snapshot taken just before its first chunk, not as a sequence of
+independent statements. A chunk byte that disagrees with an SF stated at or after the sweep
+start (less 1 s) is older than that SF and is not applied to derived state (current state, bit
+transitions, live deltas). The raw chunk is still retained in `td_s_event`. See
+`docs/IMPLEMENTATION_PLAN.md` "Fix — stale S-Class refresh chunks…".

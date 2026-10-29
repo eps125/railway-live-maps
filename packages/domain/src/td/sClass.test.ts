@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 import {
   decodeSClassPayload,
   foldSClassEvents,
+  isStaleRefreshByte,
   sBit,
   sBits,
   sByteKey,
+  sClassMessageType,
+  trackRefreshSweep,
   type SByteState,
   type SClassFoldEvent,
 } from "./sClass.js";
@@ -19,6 +22,18 @@ const M9_WINDOW = JSON.parse(
     "utf8",
   ),
 ) as Array<Record<string, { area_id: string; address: string; data: string; time: string }>>;
+
+/** 35 real Q1 S-Class messages, in ingestion order, 2026-10-27 13:15:09 - 13:15:28 UTC: one full
+ * refresh (SG 00 at 13:15:18 .. SH 70 at 13:15:23; some unrelated chunks are absent because the
+ * capture kept only refresh rows and SFs for the affected bytes) with four SF updates that landed
+ * just before or during it — bytes 55, 4A, 58 and 69 — each of whose later chunk carried the
+ * pre-update value, then the next SF for byte 58. */
+const Q1_STALE_REFRESH = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL("../../fixtures/td/q1-stale-refresh-2026-10-27.json", import.meta.url)),
+    "utf8",
+  ),
+) as typeof M9_WINDOW;
 
 function foldEventsFrom(
   messages: typeof M9_WINDOW,
@@ -34,6 +49,7 @@ function foldEventsFrom(
     events.push({
       tdArea: payload.area_id,
       sourceKind: decoded.sourceKind,
+      messageType: sClassMessageType(wrapper) ?? undefined,
       bytes: decoded.bytes,
       eventId: String(index + 1),
       eventNormalizedAt: new Date(Number(payload.time)),
@@ -207,5 +223,148 @@ describe("foldSClassEvents", () => {
 
     // And folding the whole window in one go reports no refresh mismatches.
     expect(foldSClassEvents(new Map(), events).refreshMismatches).toBe(0);
+  });
+});
+
+describe("stale refresh chunks (2026-10-28 refresh-glitch investigation)", () => {
+  const t = (s: number) => new Date(Date.UTC(2026, 9, 27, 13, 15, s));
+  const ev = (
+    address: string,
+    value: number,
+    sequence: string,
+    second: number,
+    messageType: "SF" | "SG" | "SH" = "SF",
+  ): SClassFoldEvent => ({
+    tdArea: "Q1",
+    sourceKind: messageType === "SF" ? "update" : "refresh",
+    messageType,
+    bytes: [{ address, value }],
+    eventId: sequence,
+    eventNormalizedAt: t(second),
+    ingestionSequence: sequence,
+  });
+  const updatedAt = (value: number, sequence: string, second: number): SByteState => ({
+    value,
+    sourceIngestionSequence: sequence,
+    sourceKind: "update",
+    statedAt: t(second),
+  });
+
+  it("real Q1: chunks carrying pre-update values are skipped, the updates stand", () => {
+    // Prior state as it stood before the window: each byte's pre-update value, stated long ago.
+    const prior = new Map<string, SByteState>(
+      (
+        [
+          ["4A", 0x02],
+          ["55", 0xf8],
+          ["58", 0x41],
+          ["69", 0xff],
+        ] as const
+      ).map(([address, value]) => [
+        sByteKey("Q1", address),
+        { value, sourceIngestionSequence: "0", sourceKind: "update", statedAt: t(-600) },
+      ]),
+    );
+    const { events } = foldEventsFrom(Q1_STALE_REFRESH);
+    const result = foldSClassEvents(prior, events);
+
+    const final = new Map(result.byteWrites.map((w) => [w.address, w.value] as const));
+    expect(final.get("4A")).toBe(0x00);
+    expect(final.get("55")).toBe(0xd8);
+    expect(final.get("69")).toBe(0xff);
+    // Byte 58: the SF at :28 restates 60 over the SF's 40, so only bit 5 changes — never bit 0.
+    expect(final.get("58")).toBe(0x60);
+    const touched = (address: string) =>
+      result.transitions
+        .filter((tr) => tr.address === address && tr.previousValue !== null)
+        .map((tr) => [tr.bitIndex, tr.newValue, tr.sourceKind]);
+    expect(touched("58")).toEqual([
+      [0, false, "update"],
+      [5, true, "update"],
+    ]);
+    expect(touched("4A")).toEqual([[1, false, "update"]]);
+    expect(touched("55")).toEqual([[5, false, "update"]]);
+    expect(touched("69")).toEqual([
+      [6, false, "update"],
+      [6, true, "update"],
+    ]);
+    expect(result.staleRefreshBytes).toBe(4);
+    expect(result.refreshMismatches).toBe(0);
+    expect(result.openSweeps.size).toBe(0); // the SH closed it
+  });
+
+  it("a refresh disagreeing with an update from before the sweep is applied (missed SF)", () => {
+    const prior = new Map([[sByteKey("Q1", "03"), updatedAt(0x01, "1", 10)]]);
+    const result = foldSClassEvents(prior, [
+      ev("00", 0, "2", 15, "SG"),
+      ev("03", 0x03, "3", 16, "SG"),
+    ]);
+    expect(result.staleRefreshBytes).toBe(0);
+    expect(result.refreshMismatches).toBe(1);
+    expect(result.byteWrites.find((w) => w.address === "03")?.value).toBe(0x03);
+  });
+
+  it("an update in the second before the sweep's first chunk still wins", () => {
+    const prior = new Map([[sByteKey("Q1", "03"), updatedAt(0x01, "1", 14)]]);
+    const result = foldSClassEvents(prior, [
+      ev("00", 0, "2", 15, "SG"),
+      ev("03", 0x03, "3", 16, "SG"),
+    ]);
+    expect(result.staleRefreshBytes).toBe(1);
+    expect(result.byteWrites.find((w) => w.address === "03")).toBeUndefined();
+  });
+
+  it("a chunk agreeing with a recent update is applied as a re-confirmation", () => {
+    const prior = new Map([[sByteKey("Q1", "03"), updatedAt(0x01, "1", 16)]]);
+    const result = foldSClassEvents(prior, [
+      ev("00", 0, "2", 15, "SG"),
+      ev("03", 0x01, "3", 17, "SG"),
+    ]);
+    expect(result.staleRefreshBytes).toBe(0);
+    expect(result.byteWrites.find((w) => w.address === "03")).toMatchObject({
+      sourceKind: "refresh",
+      lastRefreshAt: t(17),
+    });
+  });
+
+  it("a sweep split across folds keeps its start via openSweeps", () => {
+    const first = foldSClassEvents(new Map(), [ev("00", 0, "1", 10, "SG")]);
+    expect(first.openSweeps.get("Q1")).toEqual(t(10));
+    // The update at :12 is newer than the snapshot begun at :10, so the :20 chunk is stale.
+    const prior = new Map([[sByteKey("Q1", "40"), updatedAt(0x01, "2", 12)]]);
+    const second = foldSClassEvents(prior, [ev("40", 0x00, "3", 20, "SG")], first.openSweeps);
+    expect(second.staleRefreshBytes).toBe(1);
+    // Without the carried sweep the chunk would open its own at :20 and wrongly be applied.
+    expect(foldSClassEvents(prior, [ev("40", 0x00, "3", 20, "SG")]).staleRefreshBytes).toBe(0);
+  });
+
+  it("prior state with no source kind (older callers) never suppresses a refresh", () => {
+    const prior = new Map([[sByteKey("Q1", "03"), { value: 0x01, sourceIngestionSequence: "1" }]]);
+    const result = foldSClassEvents(prior, [
+      ev("00", 0, "2", 15, "SG"),
+      ev("03", 0x03, "3", 15, "SG"),
+    ]);
+    expect(result.staleRefreshBytes).toBe(0);
+  });
+
+  it("trackRefreshSweep: 00 opens, SH closes, updates have no sweep", () => {
+    const open = new Map<string, Date>();
+    expect(trackRefreshSweep(open, ev("01", 0, "1", 1))).toBeNull();
+    expect(trackRefreshSweep(open, ev("00", 0, "2", 2, "SG"))).toEqual(t(2));
+    expect(trackRefreshSweep(open, ev("04", 0, "3", 4, "SG"))).toEqual(t(2));
+    expect(trackRefreshSweep(open, ev("08", 0, "4", 5, "SH"))).toEqual(t(2));
+    expect(open.size).toBe(0);
+    // A chunk with no sweep open (one that didn't start at 00) opens its own.
+    expect(trackRefreshSweep(open, ev("10", 0, "5", 9, "SG"))).toEqual(t(9));
+  });
+
+  it("isStaleRefreshByte only fires for a disagreeing update at or after the sweep lead", () => {
+    expect(isStaleRefreshByte(undefined, 1, t(10))).toBe(false);
+    expect(isStaleRefreshByte(updatedAt(1, "1", 9), 1, t(10))).toBe(false);
+    expect(isStaleRefreshByte(updatedAt(1, "1", 9), 2, t(10))).toBe(true);
+    expect(isStaleRefreshByte(updatedAt(1, "1", 8), 2, t(10))).toBe(false);
+    expect(isStaleRefreshByte({ ...updatedAt(1, "1", 12), sourceKind: "refresh" }, 2, t(10))).toBe(
+      false,
+    );
   });
 });

@@ -4,6 +4,7 @@ import {
   decodeSClassPayload,
   foldSClassEvents,
   sByteKey,
+  sClassMessageType,
   type SByteState,
   type SClassFoldEvent,
 } from "@railway/domain";
@@ -172,6 +173,7 @@ export function toFoldEvent(
     event: {
       tdArea: row.td_area,
       sourceKind: decoded.sourceKind,
+      messageType: sClassMessageType(row.message_type) ?? undefined,
       bytes: decoded.bytes,
       eventId: row.raw_event_id,
       eventNormalizedAt: row.raw_event_normalized_at_utc,
@@ -291,6 +293,7 @@ async function backfillSlice(
   start: Date,
   end: Date,
   state: Map<string, SByteState>,
+  openSweeps: Map<string, Date>,
   args: BackfillArgs,
   totals: AreaTotals,
 ): Promise<void> {
@@ -339,7 +342,7 @@ async function backfillSlice(
   }
   if (events.length === 0 && decodeWrites.length === 0) return;
 
-  const fold = foldSClassEvents(state, events);
+  const fold = foldSClassEvents(state, events, openSweeps);
   const wantsWrite = fold.transitions.length > 0 || (args.decode && decodeWrites.length > 0);
   if (args.execute && wantsWrite) {
     // One transaction per slice: the transitions and the decode columns they were derived from
@@ -365,8 +368,13 @@ async function backfillSlice(
     state.set(sByteKey(write.tdArea, write.address), {
       value: write.value,
       sourceIngestionSequence: write.ingestionSequence,
+      sourceKind: write.sourceKind,
+      statedAt: write.eventNormalizedAt,
     });
   }
+  // A refresh sweep can straddle a slice boundary; carry its start into the next slice.
+  openSweeps.clear();
+  for (const [area, startedAt] of fold.openSweeps) openSweeps.set(area, startedAt);
 }
 
 export async function runBackfillSClassBits(config: Config, argv: string[]): Promise<void> {
@@ -413,14 +421,17 @@ export async function runBackfillSClassBits(config: Config, argv: string[]): Pro
     // everything before the next area re-read the very same pages.
     const stateByArea = new Map<string, Map<string, SByteState>>();
     for (const area of areas) stateByArea.set(area, new Map());
+    const sweepsByArea = new Map<string, Map<string, Date>>();
+    for (const area of areas) sweepsByArea.set(area, new Map());
 
     const slices = planSlices(args.from, args.to, args.sliceHours);
     for (const [index, [start, end]] of slices.entries()) {
       const before = { ...grand };
       for (const area of areas) {
         const state = stateByArea.get(area);
-        if (!state) continue;
-        await backfillSlice(pool, area, start, end, state, args, grand);
+        const sweeps = sweepsByArea.get(area);
+        if (!state || !sweeps) continue;
+        await backfillSlice(pool, area, start, end, state, sweeps, args, grand);
       }
       console.log(
         `[${String(index + 1).padStart(3)}/${slices.length}] ${start.toISOString()}: ` +

@@ -1,0 +1,317 @@
+[
+  {
+    "SF_MSG": {
+      "time": "1793106909000",
+      "area_id": "Q1",
+      "msg_type": "SF",
+      "address": "69",
+      "data": "BF"
+    }
+  },
+  {
+    "SF_MSG": {
+      "time": "1793106918000",
+      "area_id": "Q1",
+      "msg_type": "SF",
+      "address": "55",
+      "data": "D8"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106918000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "00",
+      "data": "00404005"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106918000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "04",
+      "data": "08000093"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106918000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "08",
+      "data": "01200101"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106919000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "0C",
+      "data": "00001600"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106919000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "10",
+      "data": "02010000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106919000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "14",
+      "data": "04109301"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106919000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "18",
+      "data": "00000200"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106919000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "1C",
+      "data": "00000000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "20",
+      "data": "825081C0"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "24",
+      "data": "F8004045"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "28",
+      "data": "006840A2"
+    }
+  },
+  {
+    "SF_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SF",
+      "address": "4A",
+      "data": "00"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "2C",
+      "data": "0220541A"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "30",
+      "data": "00410000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106920000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "34",
+      "data": "00000000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106921000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "38",
+      "data": "60002080"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106921000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "3C",
+      "data": "03000000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106921000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "40",
+      "data": "00000000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106921000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "44",
+      "data": "00000084"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106921000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "48",
+      "data": "02220200"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106921000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "4C",
+      "data": "00080000"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "50",
+      "data": "0000FCF1"
+    }
+  },
+  {
+    "SF_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SF",
+      "address": "58",
+      "data": "40"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "54",
+      "data": "01F8FFFF"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "58",
+      "data": "41DE0708"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "5C",
+      "data": "FFFD3E00"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "60",
+      "data": "00000080"
+    }
+  },
+  {
+    "SF_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SF",
+      "address": "69",
+      "data": "FF"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106922000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "64",
+      "data": "FEFEFFF1"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106923000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "68",
+      "data": "FFBFDFFD"
+    }
+  },
+  {
+    "SG_MSG": {
+      "time": "1793106923000",
+      "area_id": "Q1",
+      "msg_type": "SG",
+      "address": "6C",
+      "data": "FFFFFFFD"
+    }
+  },
+  {
+    "SH_MSG": {
+      "time": "1793106923000",
+      "area_id": "Q1",
+      "msg_type": "SH",
+      "address": "70",
+      "data": "FF7FE800"
+    }
+  },
+  {
+    "SF_MSG": {
+      "time": "1793106928000",
+      "area_id": "Q1",
+      "msg_type": "SF",
+      "address": "58",
+      "data": "60"
+    }
+  }
+]

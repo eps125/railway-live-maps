@@ -30,15 +30,18 @@ export {
   type TdBerthEventInput,
 } from "./td/berthChanges.js";
 export {
+  S_REFRESH_SNAPSHOT_LEAD_MS,
   TD_S_DECODE_VERSION,
   TD_S_STATE_PROJECTION_VERSION,
   decodeSClassPayload,
   foldSClassEvents,
   formatSAddress,
+  isStaleRefreshByte,
   sBit,
   sBits,
   sByteKey,
   sClassMessageType,
+  trackRefreshSweep,
   type DecodedSByte,
   type SBitTransition,
   type SByteState,

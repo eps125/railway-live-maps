@@ -15,6 +15,7 @@ import {
   foldSClassEvents,
   sBits,
   sByteKey,
+  sClassMessageType,
   TD_NORMALIZATION_VERSION,
   TD_PROJECTION_NAME,
   TD_PROJECTION_VERSION,
@@ -59,6 +60,8 @@ export interface ProjectTdSummary {
   sBitTransitions: number;
   /** SG/SH refreshes that disagreed with the known byte value — evidence of a missed SF. */
   sRefreshMismatches: number;
+  /** Refresh bytes declined because an SF during the sweep was newer (stale snapshot chunks). */
+  sStaleRefreshBytes: number;
   /** TD receive silences longer than the signal-trust tolerance, recorded as `feed_gap` rows. */
   feedSilences: number;
   anomalies: number;
@@ -77,6 +80,7 @@ const EMPTY_SUMMARY: ProjectTdSummary = {
   sDecodeFailures: 0,
   sBitTransitions: 0,
   sRefreshMismatches: 0,
+  sStaleRefreshBytes: 0,
   feedSilences: 0,
   anomalies: 0,
   skippedLockContention: false,
@@ -316,8 +320,11 @@ async function loadSByteState(
     address: string;
     byte_value: number;
     source_ingestion_sequence: string;
+    source_kind: "update" | "refresh";
+    event_at: Date;
   }>(
-    `select s.td_area, s.address, s.byte_value, s.source_ingestion_sequence
+    `select s.td_area, s.address, s.byte_value, s.source_ingestion_sequence, s.source_kind,
+            s.event_at
      from td_s_current_state s
      join unnest($2::text[], $3::text[]) as k(td_area, address)
        on s.td_area = k.td_area and s.address = k.address
@@ -328,9 +335,60 @@ async function loadSByteState(
     state.set(sByteKey(row.td_area, row.address), {
       value: row.byte_value,
       sourceIngestionSequence: row.source_ingestion_sequence,
+      sourceKind: row.source_kind,
+      statedAt: row.event_at,
     });
   }
   return state;
+}
+
+/** How far back a sweep that began before this batch is looked for. The longest sweep seen in
+ * production took ~35 s (G1, 2026-10-27); two minutes is ample without scanning far. */
+const OPEN_SWEEP_LOOKBACK = "2 minutes";
+
+/**
+ * For each area whose first refresh chunk in this batch does not itself start a sweep (byte
+ * `00`), the start of the sweep it continues: the latest sweep boundary before that chunk — an SG
+ * at `00` (still open) or an SH (closed, so none). One bounded `(td_area, event_at)` index seek
+ * per area, ~150 rows read (EXPLAIN ANALYZE on production, 2026-10-28; an anti-join form of the
+ * "no SH since" test scanned the area's whole history instead). The batch's own `td_s_event` rows
+ * are already inserted, so the search stops at the chunk's ingestion sequence.
+ */
+async function loadOpenSweeps(
+  client: PoolClient,
+  events: SClassFoldEvent[],
+): Promise<Map<string, Date>> {
+  const firstChunk = new Map<string, SClassFoldEvent>();
+  for (const event of events) {
+    if (event.sourceKind === "refresh" && !firstChunk.has(event.tdArea)) {
+      firstChunk.set(event.tdArea, event);
+    }
+  }
+  const wanted = [...firstChunk.values()].filter((e) => e.bytes[0]?.address !== "00");
+  const sweeps = new Map<string, Date>();
+  if (wanted.length === 0) return sweeps;
+  const result = await client.query<{ td_area: string; message_type: string; event_at: Date }>(
+    `select k.td_area, boundary.message_type, boundary.event_at
+       from unnest($1::text[], $2::timestamptz[], $3::bigint[]) as k(td_area, at, seq)
+       join lateral (
+         select e.message_type, e.event_at from td_s_event e
+          where e.td_area = k.td_area
+            and e.event_at > k.at - interval '${OPEN_SWEEP_LOOKBACK}' and e.event_at <= k.at
+            and e.ingestion_sequence < k.seq
+            and ((e.message_type = 'SG_MSG' and e.address = '00') or e.message_type = 'SH_MSG')
+          order by e.event_at desc, e.ingestion_sequence desc
+          limit 1
+       ) boundary on true`,
+    [
+      wanted.map((e) => e.tdArea),
+      wanted.map((e) => e.eventNormalizedAt),
+      wanted.map((e) => e.ingestionSequence),
+    ],
+  );
+  for (const row of result.rows) {
+    if (row.message_type === "SG_MSG") sweeps.set(row.td_area, row.event_at);
+  }
+  return sweeps;
 }
 
 /** Bulk insert of one batch's bit transitions; `on conflict do nothing` against
@@ -1131,15 +1189,21 @@ export async function runProjectTd(
           sFoldEvents.push({
             tdArea: r.row.td_area,
             sourceKind: r.decoded.sourceKind,
+            messageType: sClassMessageType(r.row.event_type) ?? undefined,
             bytes: r.decoded.bytes,
             eventId: r.row.id,
             eventNormalizedAt: r.row.normalized_event_at_utc,
             ingestionSequence: r.row.ingestion_sequence,
           });
         }
-        const sFold = foldSClassEvents(await loadSByteState(client, sFoldEvents), sFoldEvents);
+        const sFold = foldSClassEvents(
+          await loadSByteState(client, sFoldEvents),
+          sFoldEvents,
+          await loadOpenSweeps(client, sFoldEvents),
+        );
         summary.sBitTransitions += await insertSBitTransitionsBulk(client, sFold);
         summary.sRefreshMismatches += sFold.refreshMismatches;
+        summary.sStaleRefreshBytes += sFold.staleRefreshBytes;
         await upsertSByteStateBulk(client, sFold);
 
         summary.feedSilences += await recordReceiveSilences(

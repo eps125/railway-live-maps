@@ -10,6 +10,10 @@ import {
   TD_PROJECTION_VERSION,
   TD_S_STATE_PROJECTION_VERSION,
   decodeSClassPayload,
+  isStaleRefreshByte,
+  sByteKey,
+  sClassMessageType,
+  trackRefreshSweep,
   inferredBarrierState,
   detectReceiveSilences,
   barrierActiveMeansAsSignal,
@@ -23,6 +27,7 @@ import {
   type RouteDisplayState,
   type TrtsDisplayState,
   type ReceivedRow,
+  type SByteState,
   type SignalDisplayState,
 } from "@railway/domain";
 import type {
@@ -473,6 +478,14 @@ const lastTrtsState = new Map<string, TrtsDisplayState>();
  * per crossing and bit. An input missing here falls back to the byte seeded at cache reload. */
 const lastInferredInputState = new Map<string, SignalDisplayState>();
 
+/** The stale-refresh guard `project-td` folds with (`isStaleRefreshByte`, 2026-10-28), over this
+ * process's own view: each area's open refresh sweep and each byte's last applied statement. A
+ * refresh chunk older than an SF already seen is not published, so a stale snapshot never relights
+ * a released route or signal. Per process; after a restart the first sweep is unguarded for bytes
+ * last updated before the restart, which is harmless (a later SF or refresh restates them). */
+const liveRefreshSweeps = new Map<string, Date>();
+const liveByteState = new Map<string, SByteState>();
+
 function inferredInputKey(input: CachedInferredInput): string {
   return `${input.mapSlug}|${input.elementId}|${input.tdArea}|${input.address}|${input.bit}`;
 }
@@ -495,9 +508,30 @@ export async function buildSignalDeltas(
     const decoded = decodeSClassPayload(row.event_type, payload.address, payload.data);
     if (!decoded.ok) continue;
     const sequence = Number(row.ingestion_sequence);
+    const sweepStartedAt = trackRefreshSweep(liveRefreshSweeps, {
+      tdArea: row.td_area,
+      sourceKind: decoded.sourceKind,
+      messageType: sClassMessageType(row.event_type) ?? undefined,
+      bytes: decoded.bytes,
+      eventNormalizedAt: row.normalized_event_at_utc,
+    });
     // Inferred crossings this row touched, with the input that triggered each (Milestone 59).
     const touched = new Map<string, { input: CachedInferredInput; address: string }>();
     for (const byte of decoded.bytes) {
+      const byteKey = sByteKey(row.td_area, byte.address);
+      if (
+        sweepStartedAt &&
+        isStaleRefreshByte(liveByteState.get(byteKey), byte.value, sweepStartedAt)
+      ) {
+        continue;
+      }
+      liveByteState.set(byteKey, {
+        value: byte.value,
+        sourceIngestionSequence: row.ingestion_sequence,
+        sourceKind: decoded.sourceKind,
+        statedAt: row.normalized_event_at_utc,
+      });
+
       for (const input of await bindings.getInferredInputs(row.td_area, byte.address)) {
         lastInferredInputState.set(
           inferredInputKey(input),

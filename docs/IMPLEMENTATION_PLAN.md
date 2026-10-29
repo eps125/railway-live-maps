@@ -5500,3 +5500,47 @@ Known limitations / follow-ups:
 - The editor UI does not yet switch to read-only for a type with `editor.view` but not
   `maps.edit`; the API refuses its saves (`403`) and autosave reports the failure.
 - Groups still add restricted maps on top of a type, as before; they are not part of the matrix.
+
+## Fix — stale S-Class refresh chunks no longer undo newer updates (2026-10-28)
+
+While decoding Euston route bits, WY showed "refresh glitches": impossible co-set routes and bits
+that seemed stuck. Those were an analysis artefact. Source times are whole seconds and the CSV
+export carried no ingestion sequence, so a sub-second set-then-clear pulse sorted as
+clear-then-set; production's `td_s_bit_transition` was right. The search did turn up a real
+defect elsewhere. An SG/SH refresh is one snapshot streamed in address order over 5–35 s
+(G1 is the longest). An SF that lands during the sweep, or about a second before it, is newer
+than its byte's later chunk, yet the fold applied every chunk. Example, Q1 on 2026-10-27,
+sweep 13:15:18–13:15:23: SFs for bytes 55, 4A, 58 and 69 were each undone by their chunk for
+6–104 s. Five days sampled 29 Sep – 23 Oct had 350–740 such reverts a day across 68–86 areas,
+about 1,500–2,500 bit-minutes of wrong state a day, the longest 111 min. They reached the live
+map, `td_s_current_state` and `td_s_bit_transition`.
+
+- [x] `trackRefreshSweep` / `isStaleRefreshByte` (`packages/domain/src/td/sClass.ts`). A sweep
+      opens at the SG for byte `00` (or at any chunk while none is open) and closes at the SH.
+      A chunk byte is skipped when it disagrees with an SF stated at or after the sweep start,
+      less `S_REFRESH_SNAPSHOT_LEAD_MS` (1 s). A refresh that disagrees with an older SF is still
+      applied and counted as a mismatch (a missed SF).
+- [x] `foldSClassEvents` takes and returns open sweeps and counts `staleRefreshBytes`;
+      `td_s_event` keeps the raw chunk untouched.
+- [x] `project-td`: prior byte state now carries `source_kind` / `event_at`. `loadOpenSweeps`
+      finds a sweep that began in an earlier batch with one bounded `(td_area, event_at)` seek,
+      checked with EXPLAIN ANALYZE on production (~150 rows per area). The summary gains
+      `sStaleRefreshBytes`.
+- [x] `projector-td-live`: `buildSignalDeltas` applies the same rule over in-process state, so
+      a stale chunk is never published.
+- [x] `backfill-s-class-bits` carries byte state and open sweeps across slices.
+- [x] Tests: domain unit tests, including a fixture of the real Q1 frames
+      (`fixtures/td/q1-stale-refresh-2026-10-27.json`); a live-delta unit test; and a projector
+      integration test across two runs. Three existing tests placed a "correcting" refresh
+      within a second of an SF; their refresh now comes 5–10 s later.
+
+Known limitations:
+
+- Playback (`signalEvents.ts`, `fetchSByteFactsAt`) still reads raw `td_s_event` chunks, so a
+  replayed stale chunk still shows. A fix needs the skipped bytes recorded per event (a
+  migration); follow-up.
+- History before deploy is unchanged. A `project-td` S-Class rebuild would regenerate it, but
+  only for the data still retained.
+- After a `projector-td-live` restart, the first sweep is unguarded for bytes last updated
+  before the restart.
+- No migration needed.

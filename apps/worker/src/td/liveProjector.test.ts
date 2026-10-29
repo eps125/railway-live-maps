@@ -138,13 +138,20 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
       seededInputByte: () => undefined,
     } as unknown as BindingsCache;
   }
-  const sRow = (seq: number, type: string, address: string, data: string): RawSClassRow => ({
+  const sRow = (
+    seq: number,
+    type: string,
+    address: string,
+    data: string,
+    at = "2026-09-19T12:00:00Z",
+    area = "Q1",
+  ): RawSClassRow => ({
     id: String(seq),
-    normalized_event_at_utc: new Date("2026-09-19T12:00:00Z"),
+    normalized_event_at_utc: new Date(at),
     ingestion_sequence: String(seq),
     event_type: type,
-    td_area: "Q1",
-    raw_event_json: { [type]: { area_id: "Q1", address, data } },
+    td_area: area,
+    raw_event_json: { [type]: { area_id: area, address, data } },
   });
 
   it("emits the bound bit's state through activeMeans, and only when it changes", async () => {
@@ -154,7 +161,8 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
     const pending = await buildSignalDeltas(cache, [
       sRow(100, "SF_MSG", "03", "04"), // bit 2 set → off
       sRow(101, "SF_MSG", "03", "05"), // bit 2 still set → no change, nothing sent
-      sRow(102, "SG_MSG", "00", "00000000"), // refresh: byte 03 = 0 → on
+      // refresh a minute later (no SF since the sweep began): byte 03 = 0 → on
+      sRow(102, "SG_MSG", "00", "00000000", "2026-09-19T12:01:00Z"),
     ]);
     expect(pending.map((p) => [p.sequence, p.key, JSON.parse(p.message).state])).toEqual([
       [100, "S Q1 03 2", "off"],
@@ -167,6 +175,30 @@ describe("buildSignalDeltas (Milestone 36b)", () => {
       address: "03",
       bit: 2,
     });
+  });
+
+  it("does not publish a refresh chunk older than an SF seen during its sweep (2026-10-28)", async () => {
+    // Real Q1 shape, 2026-10-27: the sweep starts at 13:15:18, SF 58=40 arrives at :22, then the
+    // sweep's chunk for 58 carries the pre-update 41. Bit 0 must stay unset on the live map.
+    const cache = cacheWith(
+      {},
+      {},
+      { "QZ 58": [{ mapSlug: "m", elementId: "route-58", bit: 0, activeMeans: "set" }] },
+    );
+    const pending = await buildSignalDeltas(cache, [
+      sRow(1, "SF_MSG", "58", "41", "2026-10-27T13:10:00Z", "QZ"),
+      sRow(2, "SG_MSG", "00", "00404005", "2026-10-27T13:15:18Z", "QZ"),
+      sRow(3, "SF_MSG", "58", "40", "2026-10-27T13:15:22Z", "QZ"),
+      sRow(4, "SG_MSG", "58", "41DE0708", "2026-10-27T13:15:22Z", "QZ"),
+      sRow(5, "SH_MSG", "5C", "FFFD3E00", "2026-10-27T13:15:23Z", "QZ"),
+      // The next sweep, with no SF since it began, restates 41 and is published.
+      sRow(6, "SG_MSG", "58", "41DE0708", "2026-10-27T13:20:00Z", "QZ"),
+    ]);
+    expect(pending.map((p) => [p.sequence, JSON.parse(p.message).state])).toEqual([
+      [1, "set"],
+      [3, "unset"],
+      [6, "set"],
+    ]);
   });
 
   it("a binding without activeMeans publishes blank, and malformed rows are skipped", async () => {

@@ -108,12 +108,71 @@ export function sBits(value: number): boolean[] {
 export interface SByteState {
   value: number;
   sourceIngestionSequence: string;
+  /** How and when the value was last stated — what the stale-refresh guard reads. Absent means
+   * unknown, which the guard treats as "not a recent update" (the refresh is applied). */
+  sourceKind?: SClassSourceKind;
+  statedAt?: Date;
+}
+
+/**
+ * A refresh is one snapshot of the whole area, streamed as SG chunks in address order and ended
+ * by an SH — over 5 s for most areas and up to ~35 s for the largest (production, 2026-10-27). An
+ * SF that arrives during the sweep, before its byte's chunk, is newer than that chunk, and so is
+ * an SF from just before the first chunk: the snapshot is taken slightly before the TD starts
+ * sending it. Example (Q1, 2026-10-27): `SF 58=40` at 13:15:22, then the sweep (started 13:15:18)
+ * reaches `SG 58=41..` at 13:15:22 — the pre-update value. Applying that chunk relit bit 58.0
+ * until the next SF for byte 58 six seconds later.
+ *
+ * Whole-second source timestamps make "just before" at least one second; observed cases (e.g. Q1
+ * byte 55: SF three messages before the sweep's first chunk, same second) fit inside it.
+ */
+export const S_REFRESH_SNAPSHOT_LEAD_MS = 1_000;
+
+/**
+ * Pure: whether a refresh chunk's value for one byte is older than what an update already told
+ * us. True only when the byte was last stated by an update (SF) at or after the sweep's start
+ * (less the snapshot lead) and the chunk disagrees with it. A refresh that disagrees with an
+ * update from *before* the sweep is a genuine correction (a missed SF) and is applied.
+ */
+export function isStaleRefreshByte(
+  known: SByteState | undefined,
+  value: number,
+  sweepStartedAt: Date,
+): boolean {
+  if (!known || known.value === value) return false;
+  if (known.sourceKind !== "update" || !known.statedAt) return false;
+  return known.statedAt.getTime() >= sweepStartedAt.getTime() - S_REFRESH_SNAPSHOT_LEAD_MS;
+}
+
+/**
+ * Pure bookkeeping of each area's open refresh sweep (area -> time of its first chunk). Returns
+ * the start of the sweep `event` belongs to, or null for an update. A chunk starting at byte `00`
+ * always opens a new sweep, as does any chunk while none is open; an SH closes it (after its own
+ * bytes are judged, so the caller still gets its start).
+ */
+export function trackRefreshSweep(
+  openSweeps: Map<string, Date>,
+  event: Pick<
+    SClassFoldEvent,
+    "tdArea" | "sourceKind" | "messageType" | "bytes" | "eventNormalizedAt"
+  >,
+): Date | null {
+  if (event.sourceKind !== "refresh") return null;
+  let startedAt = openSweeps.get(event.tdArea);
+  if (!startedAt || event.bytes[0]?.address === "00") {
+    startedAt = event.eventNormalizedAt;
+    openSweeps.set(event.tdArea, startedAt);
+  }
+  if (event.messageType === "SH") openSweeps.delete(event.tdArea);
+  return startedAt;
 }
 
 /** One decoded S-Class event, in `ingestion_sequence` order, ready to fold. */
 export interface SClassFoldEvent {
   tdArea: string;
   sourceKind: SClassSourceKind;
+  /** SF/SG/SH. Only the SH matters (it ends a refresh sweep); absent is treated as SF/SG. */
+  messageType?: SClassMessageType | undefined;
   bytes: DecodedSByte[];
   eventId: string;
   eventNormalizedAt: Date;
@@ -152,6 +211,11 @@ export interface SClassFoldResult {
   transitions: SBitTransition[];
   /** Refreshes that disagreed with the byte's known value — evidence of a missed SF. */
   refreshMismatches: number;
+  /** Refresh bytes not applied because an update during the sweep was newer
+   * (`isStaleRefreshByte`). Not counted in `refreshMismatches`. */
+  staleRefreshBytes: number;
+  /** Sweeps still open after the last event (area -> start), to pass to the next fold. */
+  openSweeps: Map<string, Date>;
 }
 
 export function sByteKey(tdArea: string, address: string): string {
@@ -164,23 +228,35 @@ export function sByteKey(tdArea: string, address: string): string {
  * `previousValue: null` — so point-in-time bit state is always "the latest transition at or before
  * T". After that only bits that actually change yield a transition; a refresh that changes
  * anything is also counted as a mismatch. Events with an `ingestionSequence` not newer than the
- * byte's known state are ignored for that byte (replay safety).
+ * byte's known state are ignored for that byte (replay safety). A refresh byte older than an
+ * update already folded (`isStaleRefreshByte`) is skipped and counted in `staleRefreshBytes` —
+ * the raw event stays in `td_s_event` untouched; only the derived state declines it.
+ *
+ * `priorOpenSweeps` carries a sweep that began before `events` (e.g. split across batches).
  */
 export function foldSClassEvents(
   prior: ReadonlyMap<string, SByteState>,
   events: readonly SClassFoldEvent[],
+  priorOpenSweeps: ReadonlyMap<string, Date> = new Map(),
 ): SClassFoldResult {
   const state = new Map<string, SByteState>(prior);
+  const openSweeps = new Map<string, Date>(priorOpenSweeps);
   const writes = new Map<string, SByteWrite>();
   const transitions: SBitTransition[] = [];
   let refreshMismatches = 0;
+  let staleRefreshBytes = 0;
 
   for (const event of events) {
     let mismatched = false;
+    const sweepStartedAt = trackRefreshSweep(openSweeps, event);
     for (const byte of event.bytes) {
       const key = sByteKey(event.tdArea, byte.address);
       const known = state.get(key);
       if (known && BigInt(known.sourceIngestionSequence) >= BigInt(event.ingestionSequence)) {
+        continue;
+      }
+      if (sweepStartedAt && isStaleRefreshByte(known, byte.value, sweepStartedAt)) {
+        staleRefreshBytes += 1;
         continue;
       }
 
@@ -202,7 +278,12 @@ export function foldSClassEvents(
         });
       }
 
-      state.set(key, { value: byte.value, sourceIngestionSequence: event.ingestionSequence });
+      state.set(key, {
+        value: byte.value,
+        sourceIngestionSequence: event.ingestionSequence,
+        sourceKind: event.sourceKind,
+        statedAt: event.eventNormalizedAt,
+      });
       const previousWrite = writes.get(key);
       writes.set(key, {
         tdArea: event.tdArea,
@@ -221,5 +302,11 @@ export function foldSClassEvents(
     if (mismatched && event.sourceKind === "refresh") refreshMismatches += 1;
   }
 
-  return { byteWrites: [...writes.values()], transitions, refreshMismatches };
+  return {
+    byteWrites: [...writes.values()],
+    transitions,
+    refreshMismatches,
+    staleRefreshBytes,
+    openSweeps,
+  };
 }

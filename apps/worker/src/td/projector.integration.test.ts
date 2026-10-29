@@ -428,8 +428,10 @@ describe("runProjectTd (integration)", () => {
     const t = Date.now();
     await record([sf(area, "03", "01", t)], new Date(t));
     await record([sf(area, "03", "05", t + 1000)], new Date(t + 1000));
-    await record([sg(area, "00", "00000004", t + 2000)], new Date(t + 2000));
-    await record([sf(area, "03", "05", t + 3000)], new Date(t + 3000));
+    // The refresh comes 5 s after the last SF, so it is a genuine (missed-SF) disagreement, not
+    // a stale chunk of a sweep the SF overtook (see the stale-refresh test below).
+    await record([sg(area, "00", "00000004", t + 6000)], new Date(t + 6000));
+    await record([sf(area, "03", "05", t + 7000)], new Date(t + 7000));
 
     const summary = await runProjectTd(pool);
     // The SG states byte 03 = 04 while the SF stream had it at 05: one refresh mismatch.
@@ -480,9 +482,55 @@ describe("runProjectTd (integration)", () => {
     const t = Date.now();
     await record([sf(area, "00", "01", t)], new Date(t));
     await runProjectTd(pool);
-    await record([sg(area, "00", "03000000", t + 1000)], new Date(t + 1000));
+    // Five seconds on: the SF is older than the sweep, so the refresh is a genuine correction.
+    // (Within a second of the sweep it would be a stale chunk instead — next test.)
+    await record([sg(area, "00", "03000000", t + 5000)], new Date(t + 5000));
     const summary = await runProjectTd(pool);
     expect(summary.sRefreshMismatches).toBe(1);
+    expect(summary.sStaleRefreshBytes).toBe(0);
+  });
+
+  it("S-Class stale refresh chunk: an SF during the sweep wins, even across runs (2026-10-28)", async () => {
+    const area = uniqueArea();
+    const t = Date.now() - 60_000;
+    // Byte 05 = FF long before; the sweep starts at t; an SF clears 05 at t+1s; the sweep's chunk
+    // for 04-07 then arrives at t+2s carrying the pre-update FF (the real Q1 2026-10-27 shape).
+    await record([sf(area, "05", "FF", t - 60_000)], new Date(t - 60_000));
+    await record([sg(area, "00", "00000000", t)], new Date(t));
+    await record([sf(area, "05", "00", t + 1000)], new Date(t + 1000));
+    await runProjectTd(pool);
+    // A separate run, so the chunk is the first refresh row of its batch and the open sweep must
+    // be found from td_s_event (loadOpenSweeps), not carried in memory.
+    await record([sg(area, "04", "00FF0000", t + 2000)], new Date(t + 2000));
+    await record(
+      [{ SH_MSG: { area_id: area, time: String(t + 3000), address: "08", data: "00000000" } }],
+      new Date(t + 3000),
+    );
+    const summary = await runProjectTd(pool);
+    expect(summary.sStaleRefreshBytes).toBe(1);
+    expect(summary.sRefreshMismatches).toBe(0);
+
+    const byte05 = await pool.query<{ byte_value: number; source_kind: string }>(
+      `select byte_value, source_kind from td_s_current_state
+       where projection_version = $1 and td_area = $2 and address = '05'`,
+      [TD_S_STATE_PROJECTION_VERSION, area],
+    );
+    expect(byte05.rows).toEqual([{ byte_value: 0x00, source_kind: "update" }]);
+    const refreshFlips = await pool.query<{ n: number }>(
+      `select count(*)::int as n from td_s_bit_transition
+       where projection_version = $1 and td_area = $2 and address = '05'
+         and source_kind = 'refresh'`,
+      [TD_S_STATE_PROJECTION_VERSION, area],
+    );
+    expect(refreshFlips.rows[0]?.n).toBe(0);
+    // The raw chunk itself is retained untouched.
+    const event = await pool.query<{ decoded_bitset: unknown }>(
+      `select decoded_bitset from td_s_event where td_area = $1 and address = '04'`,
+      [area],
+    );
+    expect(event.rows[0]?.decoded_bitset).toEqual({
+      bytes: { "04": 0x00, "05": 0xff, "06": 0x00, "07": 0x00 },
+    });
   });
 
   it("S-Class malformed payload is retained as 'unsupported' with a reason, not decoded", async () => {

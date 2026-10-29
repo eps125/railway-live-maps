@@ -536,6 +536,11 @@ legend {
   margin-left: 0;
 }
 
+/* The map's checkboxes (2026-10-29). No box of its own on a wide screen; on a phone, its own row. */
+.map-page__toggles {
+  display: contents;
+}
+
 /* Milestone 82: the "Delay colours" key — a swatch per band, drawn like a berth box. Wraps
    between items (never inside one) so it can't push the page wider than the screen. */
 .map-page__delay-key {
@@ -610,8 +615,28 @@ legend {
     margin-left: 0;
   }
 
+  /* Row 1: name, status, Playback, S-Class — the name gives way (ellipsis) rather than pushing a
+     control down. Row 2: the checkboxes. Row 3: the delay key, when on. */
+  .map-page__title {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .map-page__toggles {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.75rem;
+    flex-basis: 100%;
+    order: 1;
+  }
+
   .map-page__delay-key {
     flex-basis: 100%;
+    order: 2;
   }
 }
 

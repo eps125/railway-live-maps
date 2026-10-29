@@ -267,24 +267,28 @@ export function MapView({
             ) : null}
           </>
         ) : null}
-        <label className="map-page__toggle">
-          <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
-          Show empty berths
-        </label>
-        {canDelayColours ? (
+        {/* The checkboxes are one group: on a phone it is always the second row, whatever the map
+            name's length, with the delay key under it (2026-10-29: on MROC Blackpool Workstation
+            the long name pushed a checkbox onto a row of its own). On a wider screen the group's
+            box disappears (`display: contents`) and they sit in the toolbar as before. */}
+        <div className="map-page__toggles">
           <label className="map-page__toggle">
-            <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
-            Delay colours
+            <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
+            Show empty berths
           </label>
-        ) : null}
-        {/* Beside the other toggles, before the delay key: on a phone the key takes a row of its
-            own, and a toggle after it would need another whole row. */}
-        {canSignalNumbers ? (
-          <label className="map-page__toggle">
-            <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
-            Signal numbers
-          </label>
-        ) : null}
+          {canDelayColours ? (
+            <label className="map-page__toggle">
+              <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
+              Delay colours
+            </label>
+          ) : null}
+          {canSignalNumbers ? (
+            <label className="map-page__toggle">
+              <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
+              Signal numbers
+            </label>
+          ) : null}
+        </div>
         {delayColours ? <DelayKey /> : null}
         {canSClassPanel ? (
           <button

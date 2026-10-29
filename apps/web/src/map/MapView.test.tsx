@@ -359,18 +359,19 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
     ).toBeVisible();
   });
 
-  it("puts Signal numbers right after Delay colours, before the delay key (phone layout)", async () => {
+  it("keeps the checkboxes together, Signal numbers after Delay colours, the key after them (phone layout)", async () => {
     stubFetch();
     window.localStorage.setItem("rlm.delayColours", "true");
     const { container } = render(<MapView slug="lancaster" />, ADMIN);
     await screen.findByLabelText("Signal numbers");
-    const toolbar = container.querySelector(".map-page__toolbar")!;
-    const order = [...toolbar.children].map((child) =>
-      child.classList.contains("map-page__delay-key") ? "key" : (child.textContent ?? "").trim(),
-    );
-    const delay = order.indexOf("Delay colours");
-    expect(order[delay + 1]).toBe("Signal numbers");
-    expect(order[delay + 2]).toBe("key");
+    // One group, so on a phone they share a row whatever the map name's length (2026-10-29).
+    const group = container.querySelector(".map-page__toggles")!;
+    expect([...group.children].map((child) => (child.textContent ?? "").trim())).toEqual([
+      "Show empty berths",
+      "Delay colours",
+      "Signal numbers",
+    ]);
+    expect(group.nextElementSibling?.classList.contains("map-page__delay-key")).toBe(true);
     window.localStorage.removeItem("rlm.delayColours");
   });
 

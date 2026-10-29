@@ -508,7 +508,10 @@ scaffold.
 - immutable draft snapshots or command batches
 - author/time/comment
 
-One row inserted per successful `PUT .../draft` save. `docs/PROJECT_SPEC.md` §9 requires at
+One row inserted per successful `PUT .../draft` save that changes the document (the editor's
+autosave; there is no separate commit action). A save whose document equals the draft's current
+one (jsonb equality) answers `200` at the same revision and writes no row (2026-10-27). `author`
+is the signed-in session user. `docs/PROJECT_SPEC.md` §9 requires at
 least 90 days of draft revision history; automatic pruning after that window is not
 implemented yet (Milestone 13 operational-hardening concern).
 

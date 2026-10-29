@@ -1036,7 +1036,8 @@ publishedAt, draftUpdatedAt, hasUnpublishedChanges }] }`. `publishedVersion` is 
 - `PUT /api/v1/editor/maps/{slug}/draft` with optimistic revision check. The body is JSON
   (`application/json`), or the same JSON gzipped with `Content-Type: application/x-rlm-draft-gzip`
   (2026-09-26; the editor sends this; up to 4 MB compressed, 32 MB expanded; `400` if it doesn't
-  decompress or parse).
+  decompress or parse). The signed-in user is recorded as the author. A document identical to the
+  draft's current one returns `200` at the unchanged revision without writing a revision row.
 - `GET /api/v1/editor/maps/{slug}/revisions`
 - `POST /api/v1/editor/maps/{slug}/validate`
 - `POST /api/v1/editor/maps/{slug}/publish`

@@ -118,6 +118,46 @@ describe("editor draft routes (integration)", () => {
     }
   });
 
+  it("2026-10-27 regression: PUT of an unchanged document writes no revision; the session user is the author", async () => {
+    const slug = uniqueSlug();
+    const app = Fastify();
+    app.addHook("preHandler", async (request) => {
+      (request as unknown as { authSession: unknown }).authSession = { username: "owner" };
+    });
+    await registerEditorDraftRoutes(app, { pool });
+    await app.ready();
+    try {
+      await app.inject({ method: "GET", url: `/api/v1/editor/maps/${slug}/draft` });
+      const put = (expectedRevision: number) =>
+        app.inject({
+          method: "PUT",
+          url: `/api/v1/editor/maps/${slug}/draft`,
+          payload: { canonicalDocument: minimalDoc(slug), expectedRevision },
+        });
+
+      const first = await put(1);
+      expect(first.statusCode).toBe(200);
+      expect(first.json().revision).toBe(2);
+      expect(first.json().updatedBy).toBe("owner");
+
+      // The same document again, at the current revision: answered, but no new revision.
+      const again = await put(2);
+      expect(again.statusCode).toBe(200);
+      expect(again.json().revision).toBe(2);
+
+      // Still a conflict when the revision is stale, even if the document matches.
+      expect((await put(1)).statusCode).toBe(409);
+
+      const revisions = (
+        await app.inject({ method: "GET", url: `/api/v1/editor/maps/${slug}/revisions` })
+      ).json().revisions;
+      expect(revisions).toHaveLength(1);
+      expect(revisions[0].author).toBe("owner");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("PUT with a stale expectedRevision returns 409 with the current revision, and does not apply the change", async () => {
     const slug = uniqueSlug();
     const app = await buildApp();

@@ -27,6 +27,19 @@ interface PutDraftBody {
   commandSummary?: unknown;
 }
 
+interface DraftMetaRow {
+  id: string;
+  slug: string;
+  map_id: string | null;
+  revision: number;
+  base_map_version_id: string | null;
+  updated_by: string | null;
+  updated_at: Date;
+  created_at: Date;
+}
+const DRAFT_META_COLUMNS =
+  "id, slug, map_id, revision, base_map_version_id, updated_by, updated_at, created_at";
+
 function draftResponse(row: {
   slug: string;
   map_id: string | null;
@@ -118,31 +131,33 @@ export async function registerEditorDraftRoutes(
       const exists = await pool.query("select 1 from map_draft where slug = $1", [slug]);
       if (exists.rowCount === 0) await getOrSeedDraft(pool, slug);
       const documentJson = JSON.stringify(parsed.data);
+      // 2026-10-27 (owner: euston gained 18 revisions, all author NULL): the signed-in user is the
+      // author. The editor never sent `updatedBy`, so every autosave was recorded as nobody.
+      const author = request.authSession?.username ?? body.updatedBy ?? null;
 
       const client = await pool.connect();
       try {
         await client.query("begin");
-        const updated = await client.query<{
-          id: string;
-          slug: string;
-          map_id: string | null;
-          revision: number;
-          base_map_version_id: string | null;
-          updated_by: string | null;
-          updated_at: Date;
-          created_at: Date;
-        }>(
+        const updated = await client.query<DraftMetaRow>(
           // Everything but the document: the response echoes the document just validated.
+          // 2026-10-27: a save whose document is the same as the draft's (an edit undone within
+          // the autosave debounce, a property set to its own value) is not a new revision.
           `update map_draft
            set canonical_document = $1, revision = revision + 1, updated_by = $2, updated_at = now()
-           where slug = $3 and revision = $4
-           returning id, slug, map_id, revision, base_map_version_id, updated_by, updated_at,
-                     created_at`,
-          [documentJson, body.updatedBy ?? null, slug, body.expectedRevision],
+           where slug = $3 and revision = $4 and canonical_document is distinct from $1::jsonb
+           returning ${DRAFT_META_COLUMNS}`,
+          [documentJson, author, slug, body.expectedRevision],
         );
 
         if (updated.rows.length === 0) {
+          const unchanged = await client.query<DraftMetaRow>(
+            `select ${DRAFT_META_COLUMNS} from map_draft
+              where slug = $1 and revision = $2 and canonical_document = $3::jsonb`,
+            [slug, body.expectedRevision, documentJson],
+          );
           await client.query("rollback");
+          const same = unchanged.rows[0];
+          if (same) return draftResponse({ ...same, canonical_document: parsed.data });
           const current = await getDraft(pool, slug);
           reply.code(409);
           return apiError(
@@ -161,7 +176,7 @@ export async function registerEditorDraftRoutes(
             row.revision,
             documentJson,
             body.commandSummary ? JSON.stringify(body.commandSummary) : null,
-            body.updatedBy ?? null,
+            author,
             body.comment ?? null,
           ],
         );

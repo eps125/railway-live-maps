@@ -166,7 +166,7 @@ describe("berthRenderRect", () => {
       expect(berthRenderRect(berth({ y: 900 }), { v: vertical }).y).toBe(900);
     });
 
-    it("skips a track that does not span the berth's centre x", () => {
+    it("skips a track that does not reach under the berth", () => {
       const away: MapElement = {
         ...track,
         id: "away",
@@ -189,6 +189,65 @@ describe("berthRenderRect", () => {
         ],
       };
       expect(berthRenderRect(berth({ y: 900 }), { hook }).y).toBe(902);
+    });
+
+    it("snaps to the level part of a track welded to a diagonal (Preston PSB 0098)", () => {
+      // Composing the map welded the module's level line at y 320 to the diagonal beside it, so
+      // the one polyline drops 90 - more than a row. The berth (authored top 302) sat between
+      // rows until hosts were judged per segment.
+      const welded: MapElement = {
+        ...track,
+        id: "welded",
+        points: [
+          { x: 0, y: 320 },
+          { x: 100, y: 320 },
+          { x: 190, y: 410 },
+          { x: 200, y: 410 },
+        ],
+      };
+      const elements = { welded };
+      expect(berthRenderRect(berth({ y: 302 }), elements).y).toBe(310);
+      expect(berthRenderRect(berth({ y: 302 }), elements, horizontalTrackIndex(elements)).y).toBe(
+        310,
+      );
+    });
+
+    it("picks the nearer row of a track that passes the berth twice (preston 0147)", () => {
+      // A loop drawn as one polyline: out along y 350, down, and back along y 380.
+      const loop: MapElement = {
+        ...track,
+        id: "loop",
+        points: [
+          { x: 200, y: 350 },
+          { x: 0, y: 350 },
+          { x: -20, y: 380 },
+          { x: 200, y: 380 },
+        ],
+      };
+      expect(berthRenderRect(berth({ y: 362 }), { loop }).y).toBe(370);
+      expect(berthRenderRect(berth({ y: 332 }), { loop }).y).toBe(340);
+    });
+
+    it("snaps over a junction gap to a track that starts inside the berth (kingmoor 0457)", () => {
+      // Berth x 40..80; the line stops at 30 and resumes at 70.
+      const before: MapElement = {
+        ...track,
+        id: "before",
+        points: [
+          { x: -100, y: 230 },
+          { x: 30, y: 230 },
+        ],
+      };
+      const after: MapElement = {
+        ...track,
+        id: "after",
+        points: [
+          { x: 70, y: 230 },
+          { x: 200, y: 230 },
+        ],
+      };
+      expect(berthRenderRect(berth({ y: 222 }), { before, after }).y).toBe(220);
+      expect(berthRenderRect(berth({ y: 222 }), { before }).y).toBe(222);
     });
 
     it("still clamps an explicitly bound berth to its own track's end", () => {
@@ -259,14 +318,18 @@ describe("horizontalTrackIndex (Milestone 94)", () => {
     const cx = b.x + b.width / 2;
     const cy = b.y + b.height / 2;
     const levelY = (points: Array<{ x: number; y: number }>) => {
+      let found: number | null = null;
       for (let i = 0; i + 1 < points.length; i += 1) {
         const [p, q] = [points[i]!, points[i + 1]!];
         if (p.x === q.x || Math.abs(q.y - p.y) > Math.abs(q.x - p.x) * MAP_STYLE.diagonalSlope)
           continue;
-        if (cx < Math.min(p.x, q.x) || cx > Math.max(p.x, q.x)) continue;
-        return p.y + ((cx - p.x) / (q.x - p.x)) * (q.y - p.y);
+        const [lo, hi] = [Math.min(p.x, q.x), Math.max(p.x, q.x)];
+        if (hi < b.x || lo > b.x + b.width) continue;
+        const x = Math.min(hi, Math.max(lo, cx));
+        const y = p.y + ((x - p.x) / (q.x - p.x)) * (q.y - p.y);
+        if (found === null || Math.abs(y - cy) < Math.abs(found - cy)) found = y;
       }
-      return null;
+      return found;
     };
     let ty: number | null = null;
     if (b.trackElementId && elements[b.trackElementId]?.type === "trackPath") {
@@ -275,8 +338,6 @@ describe("horizontalTrackIndex (Milestone 94)", () => {
       let best: { y: number; dist: number } | undefined;
       for (const el of Object.values(elements)) {
         if (el.type !== "trackPath") continue;
-        const ys = el.points.map((p) => p.y);
-        if (Math.max(...ys) - Math.min(...ys) > MAP_STYLE.rowPitch) continue;
         const y = levelY(el.points);
         if (y === null) continue;
         const dist = Math.abs(y - cy);

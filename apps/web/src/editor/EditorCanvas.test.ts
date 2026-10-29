@@ -3,6 +3,7 @@ import type { Layer, MapElement } from "@railway/map-schema";
 import {
   anchoredText,
   defaultLayerIdForTool,
+  drawnTextHit,
   elementBounds,
   boundsIntersect,
   snapStep,
@@ -214,6 +215,46 @@ describe("anchoredText (editor ↔ public renderer text placement parity)", () =
     expect(p.align).toBe("right");
     // rendered right edge = x - offsetX + width
     expect(p.x - (p.offsetX ?? 0) + (p.width ?? 0)).toBe(100);
+  });
+});
+
+describe("drawnTextHit (owner report 2026-10-29)", () => {
+  function hitRects(align: "left" | "center" | "right", lines: number[]) {
+    const rects: number[][] = [];
+    const context = {
+      beginPath() {},
+      closePath() {},
+      fillStrokeShape() {},
+      rect: (...r: number[]) => rects.push(r),
+    };
+    const shape = {
+      fontSize: () => 10,
+      lineHeight: () => 1.2,
+      width: () => 260,
+      padding: () => 0,
+      align: () => align,
+      textArr: lines.map((width) => ({ text: "", width, lastInParagraph: true })),
+    };
+    drawnTextHit(context as never, shape as never);
+    return rects;
+  }
+
+  it("covers only a right-aligned signal number's drawn text, not its 260-wide box", () => {
+    // "PN98" ~24 wide: the hit area is the last 24 units of the box, not all 260.
+    expect(hitRects("right", [24])).toEqual([[236, 0, 24, 12]]);
+  });
+
+  it("centres each line's hit area, line by line", () => {
+    expect(hitRects("center", [100, 40])).toEqual([
+      [80, 0, 100, 12],
+      [110, 12, 40, 12],
+    ]);
+  });
+
+  it("is attached to centred and right-aligned text only", () => {
+    expect(anchoredText(0, 0, 10, "center").hitFunc).toBe(drawnTextHit);
+    expect(anchoredText(0, 0, 10, "right").hitFunc).toBe(drawnTextHit);
+    expect(anchoredText(0, 0, 10, "left").hitFunc).toBeUndefined();
   });
 });
 

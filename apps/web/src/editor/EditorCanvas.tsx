@@ -129,12 +129,35 @@ export function anchoredText(
   width?: number;
   align?: "center" | "right";
   offsetX?: number;
+  hitFunc?: (context: Konva.Context, shape: Konva.Shape) => void;
 } {
   const offsetY = fontSize * 0.8;
   const w = 260;
-  if (align === "center") return { x, y, offsetY, width: w, align: "center", offsetX: w / 2 };
-  if (align === "right") return { x, y, offsetY, width: w, align: "right", offsetX: w };
+  if (align === "center")
+    return { x, y, offsetY, width: w, align: "center", offsetX: w / 2, hitFunc: drawnTextHit };
+  if (align === "right")
+    return { x, y, offsetY, width: w, align: "right", offsetX: w, hitFunc: drawnTextHit };
   return { x, y, offsetY };
+}
+
+/** Owner report 2026-10-29: clicks kept picking up labels and signal numbers nowhere near the
+ * pointer. Konva's own Text hit area is the whole box, and `anchoredText` gives centred and
+ * right-aligned text a 260-wide one, so a short right-aligned signal number swallowed clicks up
+ * to 260 units to its left. This hit area is each line's drawn text only. */
+export function drawnTextHit(context: Konva.Context, shape: Konva.Shape): void {
+  const text = shape as Konva.Text;
+  const lineHeight = text.fontSize() * text.lineHeight();
+  const box = text.width();
+  const padding = text.padding();
+  context.beginPath();
+  text.textArr.forEach((line, i) => {
+    const slack = box - padding * 2 - line.width;
+    const left =
+      padding + (text.align() === "center" ? slack / 2 : text.align() === "right" ? slack : 0);
+    context.rect(left, padding + i * lineHeight, line.width, lineHeight);
+  });
+  context.closePath();
+  context.fillStrokeShape(text);
 }
 
 /** `anchoredText` for a placed label (neutral section, tunnel, viaduct, water, level crossing),
@@ -1855,6 +1878,7 @@ export function EditorCanvas({
                         offsetY={10 * 0.8}
                         width={40}
                         align="center"
+                        hitFunc={drawnTextHit}
                         fontSize={10}
                         fill="#8b96a5"
                       />

@@ -51,11 +51,39 @@ export function pointOnPathAtX(
   return Math.abs(x - first.x) <= Math.abs(x - last.x) ? first.y : last.y;
 }
 
-/** A track segment counts as "horizontal enough" to host a berth if its whole vertical extent
- * fits inside one row pitch — i.e. it is a running line, not a diagonal transition. */
+/** A track counts as "horizontal enough" to host a berth if its whole vertical extent fits inside
+ * one row pitch and it runs some distance across — i.e. it is a running line, not a diagonal
+ * transition or a short vertical (a dive-under's drop, say). */
 function isHorizontalish(points: ReadonlyArray<{ x: number; y: number }>): boolean {
+  const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
-  return Math.max(...ys) - Math.min(...ys) <= MAP_STYLE.rowPitch;
+  return (
+    Math.max(...xs) > Math.min(...xs) && Math.max(...ys) - Math.min(...ys) <= MAP_STYLE.rowPitch
+  );
+}
+
+/**
+ * 2026-10-29: `y` of a track at `x` for an **unbound** berth — only on a segment that actually
+ * spans `x` and is level or near-level (no steeper than a standard diagonal). Null otherwise.
+ *
+ * Unlike `pointOnPathAtX` there is no clamping to the nearer end and no vertical-segment
+ * midpoint: those let a berth hundreds of units away snap to the end of a short vertical
+ * (Wembley 'C' Sidings on the Euston - Apsley DC map sat half a row high that way).
+ */
+function levelPointOnPathAtX(
+  points: ReadonlyArray<{ x: number; y: number }>,
+  x: number,
+): number | null {
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (dx === 0 || Math.abs(dy) > Math.abs(dx) * MAP_STYLE.diagonalSlope) continue;
+    if (x < Math.min(a.x, b.x) || x > Math.max(a.x, b.x)) continue;
+    return a.y + ((x - a.x) / dx) * dy;
+  }
+  return null;
 }
 
 /**
@@ -64,9 +92,9 @@ function isHorizontalish(points: ReadonlyArray<{ x: number; y: number }>): boole
  * A berth's authored `y` is a grid-snapped top-left coordinate with no enforced relationship
  * to any track, which is why berths currently sit off-centre on the rail. When the berth is
  * bound to a track — explicitly via `trackElementId`, or failing that the nearest horizontal
- * `trackPath` whose line passes close to the berth centre — its box is re-centred vertically on
- * that line at the berth's horizontal midpoint. An unbound berth (or one with no track in
- * range) keeps its authored geometry exactly.
+ * `trackPath` with a level or near-level segment spanning the berth's centre x whose line passes
+ * close to the berth centre — its box is re-centred vertically on that line at the berth's
+ * horizontal midpoint. An unbound berth with no such track keeps its authored geometry exactly.
  *
  * Pure and derived at render time: no document mutation, no migration, and an already-published
  * map self-corrects because `trackElementId` is already in the compiled bundle. Shared by the
@@ -80,31 +108,27 @@ export function berthRenderRect(
   const authored: Rect = { x: berth.x, y: berth.y, width: berth.width, height: berth.height };
   const cx = berth.x + berth.width / 2;
 
-  let track: TrackPathElement | undefined;
+  const bound = berth.trackElementId ? lookup(elements, berth.trackElementId) : undefined;
+  let trackY: number | null;
 
-  if (berth.trackElementId) {
-    const el = lookup(elements, berth.trackElementId);
-    if (el?.type === "trackPath") track = el;
-  }
-
-  if (!track) {
+  if (bound?.type === "trackPath") {
+    // An explicit binding is the author's choice, so it keeps the clamping lookup.
+    trackY = pointOnPathAtX(bound.points, cx);
+  } else {
     const cy = berth.y + berth.height / 2;
     const candidates = (trackIndex ?? horizontalTrackIndex(elements)).near(cy);
-    let best: { el: TrackPathElement; dist: number } | undefined;
+    let best: { y: number; dist: number } | undefined;
     for (const el of candidates) {
-      const ty = pointOnPathAtX(el.points, cx);
+      const ty = levelPointOnPathAtX(el.points, cx);
       if (ty === null) continue;
       const dist = Math.abs(ty - cy);
       if (dist <= BERTH_TRACK_SEARCH && (!best || dist < best.dist)) {
-        best = { el, dist };
+        best = { y: ty, dist };
       }
     }
-    track = best?.el;
+    trackY = best?.y ?? null;
   }
 
-  if (!track) return authored;
-
-  const trackY = pointOnPathAtX(track.points, cx);
   if (trackY === null) return authored;
 
   return { x: berth.x, y: trackY - berth.height / 2, width: berth.width, height: berth.height };
@@ -125,7 +149,7 @@ export interface HorizontalTrackIndex {
 }
 
 /** Builds a `HorizontalTrackIndex` once per element set. A track's line at any x lies within
- * its own points' y range (`pointOnPathAtX` interpolates, or clamps to an endpoint), so a track
+ * its own points' y range (`levelPointOnPathAtX` only interpolates), so a track
  * can only be in range of `y` if that range, widened by the search distance, contains `y`. */
 export function horizontalTrackIndex(elements: ElementLookup): HorizontalTrackIndex {
   const buckets = new Map<number, TrackPathElement[]>();

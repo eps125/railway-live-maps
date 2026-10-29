@@ -125,6 +125,85 @@ describe("berthRenderRect", () => {
     expect(berthRenderRect(berth({ y: 90 }), { diag: diagonal }).y).toBe(90);
   });
 
+  describe("Wembley 'C' Sidings (2026-10-29)", () => {
+    // Euston - Apsley DC: a dive-under's 30-unit vertical ended at y 895, thousands of units
+    // from a berth centred at y 900 over a track at 910. The nearest-end clamp put the vertical
+    // 5 away against the siding's 10, so the berth centred on 895 - half a row too high. Berth
+    // x 40..80 (centre x 60), height 20: authored top 890, correctly drawn with its top at 900.
+    const siding: MapElement = {
+      ...track,
+      id: "siding",
+      points: [
+        { x: 0, y: 910 },
+        { x: 400, y: 910 },
+      ],
+    };
+    const diveUnder: MapElement = {
+      ...track,
+      id: "dive",
+      points: [
+        { x: 8790, y: 895 },
+        { x: 8790, y: 865 },
+      ],
+    };
+
+    it("centres on the track under it, not a far-off vertical's end", () => {
+      const elements = { dive: diveUnder, siding };
+      const b = berth({ y: 890, height: 20 });
+      expect(berthRenderRect(b, elements).y).toBe(900);
+      expect(berthRenderRect(b, elements, horizontalTrackIndex(elements)).y).toBe(900);
+    });
+
+    it("never snaps to a vertical, even one at the berth's own x", () => {
+      const vertical: MapElement = {
+        ...track,
+        id: "v",
+        points: [
+          { x: 60, y: 900 },
+          { x: 60, y: 930 },
+        ],
+      };
+      expect(berthRenderRect(berth({ y: 900 }), { v: vertical }).y).toBe(900);
+    });
+
+    it("skips a track that does not span the berth's centre x", () => {
+      const away: MapElement = {
+        ...track,
+        id: "away",
+        points: [
+          { x: 200, y: 905 },
+          { x: 600, y: 905 },
+        ],
+      };
+      expect(berthRenderRect(berth({ y: 900 }), { away }).y).toBe(900);
+    });
+
+    it("uses the level part of a track whose other segment is vertical", () => {
+      const hook: MapElement = {
+        ...track,
+        id: "hook",
+        points: [
+          { x: 0, y: 912 },
+          { x: 100, y: 912 },
+          { x: 100, y: 890 },
+        ],
+      };
+      expect(berthRenderRect(berth({ y: 900 }), { hook }).y).toBe(902);
+    });
+
+    it("still clamps an explicitly bound berth to its own track's end", () => {
+      const away: MapElement = {
+        ...track,
+        id: "away",
+        points: [
+          { x: 200, y: 905 },
+          { x: 600, y: 905 },
+        ],
+      };
+      expect(berthRenderRect(berth({ y: 900, trackElementId: "away" }), { away }).y).toBe(895);
+    });
+  });
+
   it("accepts a Map lookup as well as a plain record", () => {
     const rect = berthRenderRect(berth({ trackElementId: "trk" }), new Map([["trk", track]]));
     expect(rect.y).toBe(90);
@@ -173,27 +252,38 @@ describe("berthRenderRect", () => {
 });
 
 describe("horizontalTrackIndex (Milestone 94)", () => {
-  /** The pre-Milestone-94 search over every track, kept here as the reference the index must
-   * reproduce exactly — including which track wins a tie. */
+  /** The search over every track without an index (pre-Milestone-94, with the 2026-10-29 rule
+   * that an unbound berth needs a level segment spanning its centre), kept here as the reference
+   * the index must reproduce exactly — including which track wins a tie. */
   function referenceRect(b: BerthElement, elements: Record<string, MapElement>) {
     const cx = b.x + b.width / 2;
     const cy = b.y + b.height / 2;
-    let best: { points: Array<{ x: number; y: number }>; dist: number } | undefined;
+    const levelY = (points: Array<{ x: number; y: number }>) => {
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        const [p, q] = [points[i]!, points[i + 1]!];
+        if (p.x === q.x || Math.abs(q.y - p.y) > Math.abs(q.x - p.x) * MAP_STYLE.diagonalSlope)
+          continue;
+        if (cx < Math.min(p.x, q.x) || cx > Math.max(p.x, q.x)) continue;
+        return p.y + ((cx - p.x) / (q.x - p.x)) * (q.y - p.y);
+      }
+      return null;
+    };
+    let ty: number | null = null;
     if (b.trackElementId && elements[b.trackElementId]?.type === "trackPath") {
-      best = { points: (elements[b.trackElementId] as TrackPathElement).points, dist: 0 };
+      ty = pointOnPathAtX((elements[b.trackElementId] as TrackPathElement).points, cx);
     } else {
+      let best: { y: number; dist: number } | undefined;
       for (const el of Object.values(elements)) {
         if (el.type !== "trackPath") continue;
         const ys = el.points.map((p) => p.y);
         if (Math.max(...ys) - Math.min(...ys) > MAP_STYLE.rowPitch) continue;
-        const ty = pointOnPathAtX(el.points, cx);
-        if (ty === null) continue;
-        const dist = Math.abs(ty - cy);
-        if (dist <= MAP_STYLE.weldTolerance * 3 && (!best || dist < best.dist))
-          best = { points: el.points, dist };
+        const y = levelY(el.points);
+        if (y === null) continue;
+        const dist = Math.abs(y - cy);
+        if (dist <= MAP_STYLE.weldTolerance * 3 && (!best || dist < best.dist)) best = { y, dist };
       }
+      ty = best?.y ?? null;
     }
-    const ty = best ? pointOnPathAtX(best.points, cx) : null;
     return ty === null
       ? { x: b.x, y: b.y, width: b.width, height: b.height }
       : { x: b.x, y: ty - b.height / 2, width: b.width, height: b.height };

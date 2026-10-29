@@ -110,7 +110,10 @@ line above only in the middle never joins them.
 The renderer does not trust the authored top-left `y`: when a berth is bound to a track
 (`trackElementId`, or the nearest horizontal `trackPath` in range) its box is drawn vertically
 centred on that line at the berth's horizontal midpoint (`berthRenderRect`, shared by the SVG
-renderer and the editor canvas — ADR 0004 D1). A per-viewer "show empty berths" toggle can
+renderer and the editor canvas — ADR 0004 D1). Without `trackElementId`, only a level or
+near-level segment (no steeper than the standard diagonal) that spans the berth's centre x can
+host it; vertical segments and tracks that end short of the berth never do (2026-10-29, after
+Wembley 'C' Sidings snapped to the end of a far-off dive-under vertical). A per-viewer "show empty berths" toggle can
 hide vacant boxes entirely (ADR 0004 D5).
 
 ### `signal`

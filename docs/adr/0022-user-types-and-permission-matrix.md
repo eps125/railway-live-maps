@@ -50,6 +50,7 @@ to start if the registry and the table disagree.
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Viewing**                |                                                                                                                                                                               |
 | `site.view`                | Using the site at all: map list, place search, berth/schedule/run lookups, the live WebSocket. Without it a visitor gets the login / code page (replaces `site_access_mode`). |
+| `site.light_mode`          | The light/dark switch in the header (added 2026-10-29, migration 0057; presentation only, so nothing for the API to withhold). Granted to every non-built-in type.            |
 | `maps.view_public`         | Maps whose visibility is `public`.                                                                                                                                            |
 | `maps.view_all`            | Every map, restricted ones included (was `role === "admin"` in `mapVisibilitySql`).                                                                                           |
 | **Map**                    |                                                                                                                                                                               |

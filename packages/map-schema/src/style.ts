@@ -308,4 +308,35 @@ export const MAP_CSS_TOKENS = {
   levelCrossingRoad: "--map-level-crossing-road",
   neutralSectionBoard: "--map-neutral-section-board",
   neutralSectionSymbol: "--map-neutral-section-symbol",
+  // 2026-10-29 (light mode): every structural colour is a token, so a second set of values on
+  // `:root[data-theme="light"]` re-themes the map. Signal, crossing and delay colours are not —
+  // they mean the same on either background.
+  background: "--map-background",
+  track: "--map-track",
+  berthEmptyFill: "--map-berth-empty-fill",
+  berthEmptyStroke: "--map-berth-empty-stroke",
+  berthFill: "--map-berth-fill",
+  berthStroke: "--map-berth-stroke",
+  berthText: "--map-berth-text",
+  berthEmptyText: "--map-berth-empty-text",
+  signalPost: "--map-signal-post",
+  signalNumber: "--map-signal-number",
+  /** The gap round a signal's post and head — the background colour. */
+  signalCutout: "--map-signal-cutout",
+  /** A fine dark edge round marks drawn in white (set-route lines, signal heads, a lit TRTS) so
+   * they still show on a light background. `none`/transparent on the dark one. */
+  markOutline: "--map-mark-outline",
+  routeLine: "--map-route-line",
+  routeDash: "--map-route-dash",
+  trtsLit: "--map-trts-lit",
+  labelText: "--map-label-text",
+  boundaryMarker: "--map-boundary-marker",
+  tunnelStroke: "--map-tunnel-stroke",
+  waterStroke: "--map-water-stroke",
+  neutralSectionBoardStroke: "--map-neutral-section-board-stroke",
 } as const;
+
+/** `var(--token, fallback)` — the renderer's way to paint a themeable colour. */
+export function mapColour(token: keyof typeof MAP_CSS_TOKENS, fallback: string): string {
+  return `var(${MAP_CSS_TOKENS[token]}, ${fallback})`;
+}

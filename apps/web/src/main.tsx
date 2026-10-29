@@ -2,6 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import "./styles.css";
+import { applyTheme, readStoredTheme } from "./theme.js";
+
+// Paint a remembered light choice before the first render, so the page doesn't flash dark;
+// `App` puts it back to dark once it knows the visitor lacks `site.light_mode`.
+applyTheme(readStoredTheme());
 
 const container = document.getElementById("root");
 if (!container) {

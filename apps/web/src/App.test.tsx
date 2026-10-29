@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
 
@@ -68,5 +68,51 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("link", { name: "Maps" })).toHaveAttribute("href", "/");
+  });
+
+  describe("light mode (2026-10-29)", () => {
+    function stubAs(permissions: string[]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string) => {
+          if (url.includes("/auth/me")) {
+            return Promise.resolve(
+              jsonResponse({
+                username: "ann",
+                userType: { id: "2", name: "Basic User" },
+                permissions,
+              }),
+            );
+          }
+          return Promise.resolve({ ok: false, status: 404, text: async () => "" } as Response);
+        }),
+      );
+    }
+
+    afterEach(() => {
+      window.localStorage.removeItem("rlm.theme");
+      delete document.documentElement.dataset.theme;
+    });
+
+    it("offers the switch with site.light_mode, applies it and remembers it", async () => {
+      stubAs(["site.view", "site.light_mode"]);
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: "Switch to light mode" }));
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(window.localStorage.getItem("rlm.theme")).toBe("light");
+      fireEvent.click(screen.getByRole("button", { name: "Switch to dark mode" }));
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+      expect(window.localStorage.getItem("rlm.theme")).toBe("dark");
+    });
+
+    it("stays dark, with no switch, without the permission — even if light was remembered", async () => {
+      window.localStorage.setItem("rlm.theme", "light");
+      document.documentElement.dataset.theme = "light";
+      stubAs(["site.view"]);
+      render(<App />);
+      await screen.findByRole("button", { name: /log out/i });
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBeUndefined());
+      expect(screen.queryByRole("button", { name: /switch to/i })).toBeNull();
+    });
   });
 });

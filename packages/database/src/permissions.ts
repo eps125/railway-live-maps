@@ -37,6 +37,13 @@ export const PERMISSIONS = [
       "The map list, place search, berth and schedule lookups. Without it a visitor is asked to log in or enter a code.",
   },
   {
+    key: "site.light_mode",
+    category: "viewing",
+    label: "Light mode",
+    description:
+      "Switch the site and maps between dark and light (remembered in the browser). Presentation only.",
+  },
+  {
     key: "maps.view_public",
     category: "viewing",
     label: "Public maps",

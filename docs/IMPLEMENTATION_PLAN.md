@@ -5544,3 +5544,33 @@ Known limitations:
 - After a `projector-td-live` restart, the first sweep is unguarded for bytes last updated
   before the restart.
 - No migration needed.
+
+## Milestone 100 — Light mode (2026-10-29)
+
+Owner request: let users and access-code holders switch between the current dark look and a light
+one, as a permission on the matrix, without adding to the map toolbar, and remembered. Owner
+decision: the map goes light too, and white set-route lines stay white with a fine dark edge.
+
+- [x] Permission `site.light_mode` (registry + migration 0057), granted to every non-built-in
+      user type (everyone but the public type; Admin holds it anyway). Purely presentational: no
+      API data depends on it.
+- [x] A sun/moon switch in the header (every page), shown only with the permission; the choice is
+      remembered in the browser (`rlm.theme`) and painted before the first render. Without the
+      permission the site is always dark, whatever was remembered.
+- [x] Light palette as a second set of the existing CSS tokens (`:root[data-theme="light"]`). The
+      map's structural colours (background, track, berths, labels, signal posts and numbers,
+      scenery, route line and dash, TRTS) became `MAP_CSS_TOKENS` / `mapColour()`; their dark
+      values are unchanged. Signal, crossing and delay colours stay fixed on both backgrounds
+      (rules 9 and 10 unaffected). Marks drawn in white — set-route lines, signal heads, a lit
+      TRTS — get a fine dark edge (`--map-mark-outline`), transparent in dark mode.
+- [x] Tests: the switch (with and without the permission, remembered), registry vs migrations,
+      renderer colours as tokens.
+
+Also 2026-10-29: on a phone the map checkboxes are one group on their own row, so a long map name
+(MROC Blackpool Workstation) no longer pushes one onto a row of its own; the name shortens with an
+ellipsis if it must.
+
+Known limitations:
+
+- Per browser, not per account.
+- The editor's canvas (Konva) stays dark; the editor's panels follow the theme.

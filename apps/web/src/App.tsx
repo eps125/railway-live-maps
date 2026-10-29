@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MapView } from "./map/MapView.js";
 import { EditorApp } from "./editor/EditorApp.js";
 import { LandingPage } from "./LandingPage.js";
@@ -21,6 +21,7 @@ import { AdminAuditLogPage } from "./auth/AdminAuditLogPage.js";
 import { AdminAccessPage } from "./auth/AdminAccessPage.js";
 import { AccessCodePage } from "./auth/AccessCodePage.js";
 import { useAccess } from "./auth/useAccess.js";
+import { applyTheme, readStoredTheme, writeStoredTheme, type Theme } from "./theme.js";
 
 const accessUntil = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/London",
@@ -53,6 +54,21 @@ export function App(): JSX.Element {
   const canOpen = (routeName: string): boolean =>
     (ROUTE_PERMISSIONS[routeName] ?? []).some((p) => permissions.has(p));
   const canEdit = permissions.has("editor.view");
+
+  // 2026-10-29: light mode, for viewers with `site.light_mode`; remembered in this browser.
+  const canChooseTheme = permissions.has("site.light_mode");
+  const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  const permissionsKnown = !sessionLoading && access.status !== "loading";
+  useEffect(() => {
+    // Until the permissions are known, keep what main.tsx painted from the remembered choice.
+    if (!permissionsKnown) return;
+    applyTheme(canChooseTheme ? theme : "dark");
+  }, [permissionsKnown, canChooseTheme, theme]);
+  function toggleTheme(): void {
+    const next: Theme = theme === "light" ? "dark" : "light";
+    writeStoredTheme(next);
+    setTheme(next);
+  }
   const canOpenRoute = !ADMIN_ROUTES.has(route.name) || canOpen(route.name);
   const needsCode =
     accessStatus !== null && !accessStatus.allowed && !isAuthenticated && !sessionLoading;
@@ -278,6 +294,17 @@ export function App(): JSX.Element {
                   Forget code
                 </button>
               </span>
+            )}
+            {canChooseTheme && (
+              <button
+                type="button"
+                className="app-nav__link app-nav__theme"
+                aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                onClick={toggleTheme}
+              >
+                <span aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
+              </button>
             )}
             {isAuthenticated ? (
               <button

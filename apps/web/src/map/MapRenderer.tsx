@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   MAP_CSS_TOKENS,
+  mapColour,
   MAP_STYLE,
   berthRenderRect,
   horizontalTrackIndex,
@@ -176,9 +177,14 @@ function berthColors(
   description: string | undefined,
   delayBand: DelayBand | undefined,
 ): { fill: string; stroke: string } {
-  if (!description) return { fill: "#161d27", stroke: "#2d3644" };
+  if (!description) {
+    return {
+      fill: mapColour("berthEmptyFill", "#161d27"),
+      stroke: mapColour("berthEmptyStroke", "#2d3644"),
+    };
+  }
   if (delayBand) return DELAY_BAND_COLORS[delayBand];
-  return { fill: "#3d7fc4", stroke: "#6aa4de" };
+  return { fill: mapColour("berthFill", "#3d7fc4"), stroke: mapColour("berthStroke", "#6aa4de") };
 }
 
 /** ADR 0004 D6 / ADR 0005 E2-E3 (rev. 2026-09-08): a platform is a **filled shape**, Traksy
@@ -280,7 +286,7 @@ function placedLabelText(at: PlacedLabel, text: string | undefined, fontSize: nu
       y={at.y}
       textAnchor={at.anchor}
       fontSize={fontSize}
-      fill={MAP_STYLE.placedLabel.fill}
+      fill={mapColour("labelText", MAP_STYLE.placedLabel.fill)}
     >
       {lines.length === 1
         ? text
@@ -302,7 +308,7 @@ function renderTunnel(element: TunnelElement): JSX.Element {
       <polygon
         points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
         fill={`var(${MAP_CSS_TOKENS.tunnelFill}, ${style.fill})`}
-        stroke={style.stroke}
+        stroke={mapColour("tunnelStroke", style.stroke)}
         strokeWidth={style.strokeWidth}
         strokeDasharray={style.dash.join(" ")}
         strokeLinejoin="round"
@@ -386,7 +392,7 @@ function renderWater(element: WaterElement): JSX.Element {
       <polygon
         points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
         fill={`var(${MAP_CSS_TOKENS.waterFill}, ${style.fill})`}
-        stroke={style.stroke}
+        stroke={mapColour("waterStroke", style.stroke)}
         strokeWidth={style.strokeWidth}
         strokeLinejoin="round"
       />
@@ -556,7 +562,7 @@ function renderNeutralSection(element: NeutralSectionElement): JSX.Element {
         height={geometry.board.height}
         rx={geometry.board.rx}
         fill={`var(${MAP_CSS_TOKENS.neutralSectionBoard}, ${style.boardFill})`}
-        stroke={style.boardStroke}
+        stroke={mapColour("neutralSectionBoardStroke", style.boardStroke)}
         strokeWidth={0.5}
       />
       {geometry.bars.map((bar, index) => (
@@ -586,7 +592,7 @@ function renderSwitchedDiamond(
 ): JSX.Element | null {
   const geometry = switchedDiamondGeometry(element, tracks);
   if (!geometry) return null;
-  const color = MAP_STYLE.track.color;
+  const color = mapColour("track", MAP_STYLE.track.color);
   return (
     <g key={element.id} data-testid={`switched-diamond-${element.id}`}>
       {geometry.knuckles.map((knuckle, index) => (
@@ -631,10 +637,20 @@ function renderSetRoute(
     <g key={element.id} data-testid={`route-${element.id}`}>
       {runs.map((points, i) => (
         <g key={i}>
+          {/* Light mode (2026-10-29): a fine dark edge so the white line shows on a light
+              background; transparent on the dark one. */}
           <polyline
             points={points}
             fill="none"
-            stroke={style.color}
+            stroke={mapColour("markOutline", "transparent")}
+            strokeWidth={MAP_STYLE.track.strokeWidth + 1}
+            strokeLinejoin="round"
+            strokeLinecap="butt"
+          />
+          <polyline
+            points={points}
+            fill="none"
+            stroke={mapColour("routeLine", style.color)}
             strokeWidth={MAP_STYLE.track.strokeWidth}
             strokeLinejoin="round"
             strokeLinecap="butt"
@@ -642,7 +658,7 @@ function renderSetRoute(
           <polyline
             points={points}
             fill="none"
-            stroke={style.dashColor}
+            stroke={mapColour("routeDash", style.dashColor)}
             strokeWidth={MAP_STYLE.track.strokeWidth}
             strokeDasharray={style.dash.join(" ")}
             strokeLinejoin="round"
@@ -770,7 +786,7 @@ function renderSignal(
             className="signal-cutout"
             points={postPoints}
             fill="none"
-            stroke={cutout.color}
+            stroke={mapColour("signalCutout", cutout.color)}
             strokeWidth={cutout.postWidth}
             strokeLinecap="butt"
             strokeLinejoin="miter"
@@ -782,16 +798,16 @@ function renderSignal(
             cx={head.cx}
             cy={head.cy}
             r={head.r}
-            fill={cutout.color}
-            stroke={cutout.color}
+            fill={mapColour("signalCutout", cutout.color)}
+            stroke={mapColour("signalCutout", cutout.color)}
             strokeWidth={cutout.headStroke}
           />
         ) : head.kind === "quadrant" ? (
           <path
             className="signal-cutout"
             d={head.path}
-            fill={cutout.color}
-            stroke={cutout.color}
+            fill={mapColour("signalCutout", cutout.color)}
+            stroke={mapColour("signalCutout", cutout.color)}
             strokeWidth={cutout.headStroke}
             strokeLinejoin="miter"
           />
@@ -800,16 +816,28 @@ function renderSignal(
           <polyline
             points={postPoints}
             fill="none"
-            stroke={post.color}
+            stroke={mapColour("signalPost", post.color)}
             strokeWidth={post.width}
             strokeLinecap="butt"
             strokeLinejoin="miter"
           />
         ) : null}
         {head.kind === "circle" ? (
-          <circle cx={head.cx} cy={head.cy} r={head.r} fill={color} />
+          <circle
+            cx={head.cx}
+            cy={head.cy}
+            r={head.r}
+            fill={color}
+            stroke={mapColour("markOutline", "none")}
+            strokeWidth={0.4}
+          />
         ) : head.kind === "quadrant" ? (
-          <path d={head.path} fill={color} />
+          <path
+            d={head.path}
+            fill={color}
+            stroke={mapColour("markOutline", "none")}
+            strokeWidth={0.4}
+          />
         ) : (
           <g transform={`translate(${head.x} ${head.y}) rotate(${head.rotation})`}>
             <SvgPrimitives parts={head.parts} />
@@ -823,7 +851,7 @@ function renderSignal(
             textAnchor={geometry.label.anchor}
             dominantBaseline="middle"
             fontSize={number.fontSize}
-            fill={number.fill}
+            fill={mapColour("signalNumber", number.fill)}
           >
             {element.label}
           </text>
@@ -843,10 +871,17 @@ function renderSignal(
           y1={element.y}
           x2={element.x}
           y2={headY}
-          stroke="#8b949e"
+          stroke={mapColour("signalPost", "#8b949e")}
           strokeWidth={2}
         />
-        <circle cx={element.x} cy={headY} r={r} fill={color} stroke="#0d1117" strokeWidth={1} />
+        <circle
+          cx={element.x}
+          cy={headY}
+          r={r}
+          fill={color}
+          stroke={mapColour("signalCutout", "#0d1117")}
+          strokeWidth={1}
+        />
         {showNumber && element.label ? (
           <text
             className="signal-number"
@@ -855,7 +890,7 @@ function renderSignal(
             textAnchor="middle"
             dominantBaseline="middle"
             fontSize={10}
-            fill="#8b949e"
+            fill={mapColour("signalNumber", "#8b949e")}
           >
             {element.label}
           </text>
@@ -866,14 +901,21 @@ function renderSignal(
 
   return (
     <g key={element.id}>
-      <circle cx={element.x} cy={element.y} r={r} fill={color} />
+      <circle
+        cx={element.x}
+        cy={element.y}
+        r={r}
+        fill={color}
+        stroke={mapColour("markOutline", "none")}
+        strokeWidth={0.4}
+      />
       {showNumber && element.label ? (
         <text
           className="signal-number"
           x={element.x + 10}
           y={element.y + 4}
           fontSize={10}
-          fill="#8b949e"
+          fill={mapColour("signalNumber", "#8b949e")}
         >
           {element.label}
         </text>
@@ -1147,7 +1189,9 @@ const BerthNode = memo(function BerthNode({
         dominantBaseline="middle"
         fontFamily="ui-monospace, 'Roboto Mono', Consolas, monospace"
         fontSize={fontSize}
-        fill={description ? "#04101f" : "#8b96a5"}
+        fill={
+          description ? mapColour("berthText", "#04101f") : mapColour("berthEmptyText", "#8b96a5")
+        }
         fontWeight={description ? 700 : 400}
       >
         {description ?? ""}
@@ -1169,7 +1213,9 @@ function TrtsDot({ signal }: { signal: SignalElement }): JSX.Element | null {
       cx={at.x}
       cy={at.y}
       r={MAP_STYLE.trts.radius}
-      fill={MAP_STYLE.trts.litColor}
+      fill={mapColour("trtsLit", MAP_STYLE.trts.litColor)}
+      stroke={mapColour("markOutline", "none")}
+      strokeWidth={0.5}
       style={{ animationDuration: `${MAP_STYLE.trts.flashPeriodMs}ms` }}
       pointerEvents="none"
     />
@@ -1299,7 +1345,7 @@ function renderStaticElement(
           key={element.id}
           points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
           fill="none"
-          stroke={MAP_STYLE.track.color}
+          stroke={mapColour("track", MAP_STYLE.track.color)}
           strokeWidth={MAP_STYLE.track.strokeWidth}
           strokeLinejoin="round"
           strokeLinecap="butt"
@@ -1932,7 +1978,7 @@ export function MapRenderer({
                 element.align === "center" ? "middle" : element.align === "right" ? "end" : "start"
               }
               fontSize={element.fontSize}
-              fill="#c9d1d9"
+              fill={mapColour("labelText", "#c9d1d9")}
               onClick={handleClick}
               style={{ cursor: handleClick ? "pointer" : undefined }}
             >
@@ -1965,8 +2011,18 @@ export function MapRenderer({
               onClick={handleClick}
               style={{ cursor: handleClick ? "pointer" : "default" }}
             >
-              <circle cx={element.x} cy={element.y} r={4} fill="#8b949e" />
-              <text x={element.x + 8} y={element.y + 4} fontSize={10} fill="#8b949e">
+              <circle
+                cx={element.x}
+                cy={element.y}
+                r={4}
+                fill={mapColour("boundaryMarker", "#8b949e")}
+              />
+              <text
+                x={element.x + 8}
+                y={element.y + 4}
+                fontSize={10}
+                fill={mapColour("boundaryMarker", "#8b949e")}
+              >
                 {element.name}
               </text>
             </g>
@@ -2058,7 +2114,7 @@ export function MapRenderer({
             }
             width={world.width * scale}
             height={world.height * scale}
-            style={{ background: "#0d1117", overflow: "visible" }}
+            style={{ background: mapColour("background", "#0d1117"), overflow: "visible" }}
           >
             <MapContent nodes={content} />
             {highlight}

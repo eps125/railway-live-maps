@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   EDITOR_PERMISSIONS,
@@ -21,14 +21,18 @@ describe("permission registry", () => {
     for (const p of PERMISSIONS) expect(categories.has(p.category)).toBe(true);
   });
 
-  it("matches the keys migration 0056 inserts into the permission table", () => {
-    const sql = readFileSync(
-      new URL("../migrations/0056_user_types_and_permissions.sql", import.meta.url),
-      "utf8",
-    );
-    const block = sql.slice(sql.indexOf("insert into permission"), sql.indexOf("-- `system_key`"));
-    const seeded = [...block.matchAll(/'([a-z_]+\.[a-z_]+)'/g)].map((m) => m[1]);
-    expect([...seeded].sort()).toEqual([...PERMISSION_KEYS].sort());
+  it("matches the keys the migrations insert into the permission table", () => {
+    // Migration 0056 seeded the table; each later permission adds its own `insert into permission`.
+    const dir = new URL("../migrations/", import.meta.url);
+    const seeded = readdirSync(dir)
+      .filter((name) => name >= "0056" && name.endsWith(".sql"))
+      .flatMap((name) => {
+        const sql = readFileSync(new URL(name, dir), "utf8");
+        return [...sql.matchAll(/insert into permission \(key\) values([^;]*);/g)].flatMap((m) =>
+          [...m[1]!.matchAll(/'([a-z_]+\.[a-z_]+)'/g)].map((k) => k[1]),
+        );
+      });
+    expect([...new Set(seeded)].sort()).toEqual([...PERMISSION_KEYS].sort());
   });
 
   it("recognises only registered keys", () => {

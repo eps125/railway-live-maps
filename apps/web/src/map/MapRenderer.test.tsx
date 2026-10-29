@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAP_STYLE, type CompiledMapBundle } from "@railway/map-schema";
+import { MAP_STYLE, type CompiledMapBundle, mapColour } from "@railway/map-schema";
 import {
   MapRenderer,
   boundaryLinkUrl,
@@ -650,7 +650,9 @@ describe("MapRenderer", () => {
     );
     const both = knuckles.getByTestId("switched-diamond-sd-1");
     expect(both.querySelectorAll("polygon")).toHaveLength(2);
-    expect(both.querySelector("polygon")!.getAttribute("fill")).toBe(MAP_STYLE.track.color);
+    expect(both.querySelector("polygon")!.getAttribute("fill")).toBe(
+      mapColour("track", MAP_STYLE.track.color),
+    );
     knuckles.unmount();
 
     const ticks = render(<MapRenderer bundle={diamond(["b"], "ticks")} berths={{}} signals={{}} />);
@@ -696,8 +698,10 @@ describe("MapRenderer", () => {
 
     const set = draw("set");
     const lines = set.getByTestId("route-route-1").querySelectorAll("polyline");
-    expect(lines[0]!.getAttribute("stroke")).toBe(MAP_STYLE.route.color);
-    expect(lines[1]!.getAttribute("stroke-dasharray")).toBe(MAP_STYLE.route.dash.join(" "));
+    // A fine edge (light mode only — transparent on dark), the white line, then its dash.
+    expect(lines[0]!.getAttribute("stroke")).toBe(mapColour("markOutline", "transparent"));
+    expect(lines[1]!.getAttribute("stroke")).toBe(mapColour("routeLine", MAP_STYLE.route.color));
+    expect(lines[2]!.getAttribute("stroke-dasharray")).toBe(MAP_STYLE.route.dash.join(" "));
     expect(lines[0]!.getAttribute("points")).toBe("10,50 190,50");
     set.unmount();
 
@@ -746,15 +750,17 @@ describe("MapRenderer", () => {
       />,
     );
     const routeLines = getByTestId("route-route-1").querySelectorAll("polyline");
-    // Two runs (either side of the flyover), each a green line and its dash.
+    // Two runs (either side of the flyover), each an edge, a line and its dash.
     expect(Array.from(routeLines).map((line) => line.getAttribute("points"))).toEqual([
       "10,50 80,50",
       "10,50 80,50",
+      "10,50 80,50",
+      "120,50 190,50",
       "120,50 190,50",
       "120,50 190,50",
     ]);
     // Nothing else is drawn: the hidden track itself isn't.
-    expect(container.querySelectorAll("polyline")).toHaveLength(4);
+    expect(container.querySelectorAll("polyline")).toHaveLength(6);
   });
 
   it("draws a detached neutral section label at its offset from the board centre", () => {
@@ -1294,7 +1300,7 @@ describe("MapRenderer", () => {
         c.querySelector("polyline.signal-cutout")!,
         c.querySelector("circle.signal-cutout")!,
       ];
-      expect(cutPost.getAttribute("stroke")).toBe("#0d1117");
+      expect(cutPost.getAttribute("stroke")).toBe(mapColour("signalCutout", "#0d1117"));
       expect(cutPost.getAttribute("stroke-width")).toBe("3.5");
       expect(cutPost.getAttribute("points")).toBe("0,-1.5 0,-8.5 3,-8.5");
       expect(cutHead.getAttribute("stroke-width")).toBe("1.5");
@@ -1411,7 +1417,13 @@ describe("MapRenderer", () => {
     );
 
     const fills = [...container.querySelectorAll("rect")].map((r) => r.getAttribute("fill"));
-    expect(fills).toEqual(["#e8c93a", "#dc4a3d", "#3d7fc4", "#161d27", "#3fb950"]);
+    expect(fills).toEqual([
+      "#e8c93a",
+      "#dc4a3d",
+      mapColour("berthFill", "#3d7fc4"),
+      mapColour("berthEmptyFill", "#161d27"),
+      "#3fb950",
+    ]);
   });
 
   it("renders a berth blank when its inhibiting berth shows the identical description (TD-area fringe pair)", () => {
@@ -1451,8 +1463,8 @@ describe("MapRenderer", () => {
     // renders as if vacant — only one "1S56" text node, and berth-px's rect is the vacant fill.
     expect(screen.getAllByText("1S56")).toHaveLength(1);
     const rects = container.querySelectorAll("rect");
-    expect(rects[0]!.getAttribute("fill")).toBe("#161d27"); // vacant
-    expect(rects[1]!.getAttribute("fill")).toBe("#3d7fc4"); // occupied
+    expect(rects[0]!.getAttribute("fill")).toBe(mapColour("berthEmptyFill", "#161d27")); // vacant
+    expect(rects[1]!.getAttribute("fill")).toBe(mapColour("berthFill", "#3d7fc4")); // occupied
 
     // Once the descriptions genuinely differ (the train has moved on from one side), both show
     // their real, distinct state — inhibition only applies to a real match.

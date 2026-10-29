@@ -63,7 +63,7 @@ export {
   Z_INDEX_LAYER_BAND,
   type CompiledMapBundle,
 } from "./compiler.js";
-export { MAP_STYLE, MAP_CSS_TOKENS } from "./style.js";
+export { MAP_STYLE, MAP_CSS_TOKENS, mapColour } from "./style.js";
 export {
   applySignalNamePrefix,
   berthBoxes,

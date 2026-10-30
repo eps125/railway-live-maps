@@ -46,6 +46,7 @@ export const ROUTE_PERMISSIONS: Record<string, readonly string[]> = {
   adminBerthExplorer: ["tools.berth_explorer"],
   adminSClass: ["tools.s_class"],
   adminMaintenance: ["tools.maintenance"],
+  adminOutages: ["map.feed_gap_details"],
 };
 
 /** The Admin hub opens for anyone who can reach any page in it. */

@@ -855,6 +855,23 @@ startedAt, finishedAt }] }`. `status` is `queued` / `running` / `succeeded` / `f
   one is asked to stop after its current area or 6-hour slice. `409 JOB_NOT_ACTIVE` if it has
   already finished.
 
+**Data outages (2026-10-30), `map.feed_gap_details`:** recorded feed gaps (`feed_gap`) and whether
+TD is silent right now, for the "Data outages" page (`/admin/outages`) and the unseen-outage pill
+on the Admin link. A gap is only recorded once its silence ends, so an outage in progress shows as
+`liveTd.ongoing` (no TD frame for longer than the 5-minute gap tolerance).
+
+- `GET /api/v1/admin/outages?days=` — `days` 1–365 (default 30): gaps that ended (or are open)
+  within it, newest first, at most 500: `{ days, outages: [{ id, feed, tdArea, start, end,
+durationSeconds, reason, recoverability, note, recordedAt }], liveTd: { lastFrameAt,
+silentForSeconds, ongoing }, seenThroughGapId }`. `tdArea` `null` = every area; `end` /
+  `durationSeconds` `null` = still open. `seenThroughGapId` is `null` for a viewer with no user
+  (an access code).
+- `GET /api/v1/admin/outages/summary` — `{ unseen, ongoing }`: gaps recorded since this user last
+  marked them seen (0 without a user), and `liveTd.ongoing`.
+- `POST /api/v1/admin/outages/seen` — body `{ throughGapId }`, `204`. Remembers per user
+  (`feed_gap_seen`) the newest gap seen; never moves backwards or past the newest gap. A no-op
+  without a user.
+
 **Berth query (Milestone 51), admin only:** ad hoc lookup of raw `td_berth_event` rows (the
 CA/CB/CC/CT step log, not the `berth_occupancy` projection) by TD area(s) + headcode + time range —
 the web-app replacement for a one-off manual SQL query.

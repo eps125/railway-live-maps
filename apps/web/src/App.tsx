@@ -10,6 +10,8 @@ import { LoginPage } from "./auth/LoginPage.js";
 import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
 import { AdminMaintenancePage } from "./auth/AdminMaintenancePage.js";
+import { AdminOutagesPage } from "./auth/AdminOutagesPage.js";
+import { outagePillCount, useOutageSummary } from "./auth/useOutageSummary.js";
 import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
 import { BerthQueryPage } from "./auth/BerthQueryPage.js";
 import { BerthStepsPage } from "./auth/BerthStepsPage.js";
@@ -54,6 +56,8 @@ export function App(): JSX.Element {
   const canOpen = (routeName: string): boolean =>
     (ROUTE_PERMISSIONS[routeName] ?? []).some((p) => permissions.has(p));
   const canEdit = permissions.has("editor.view");
+  // 2026-10-30: the unseen-outage pill on the Admin link (logged-in users with outage details).
+  const outageCount = outagePillCount(useOutageSummary(isAuthenticated && canOpen("adminOutages")));
 
   // 2026-10-29: light mode, for viewers with `site.light_mode`; remembered in this browser.
   const canChooseTheme = permissions.has("site.light_mode");
@@ -197,6 +201,13 @@ export function App(): JSX.Element {
       ) : (
         <AdminMaintenancePage />
       );
+  } else if (route.name === "adminOutages") {
+    main =
+      sessionLoading || !canOpenRoute ? (
+        <p className="app-loading">Loading…</p>
+      ) : (
+        <AdminOutagesPage />
+      );
   } else if (route.name === "adminSClass") {
     main =
       sessionLoading || !canOpenRoute ? (
@@ -274,6 +285,15 @@ export function App(): JSX.Element {
                 }}
               >
                 Admin
+                {outageCount > 0 && (
+                  <span
+                    className="outage-pill"
+                    title={`${outageCount} data outage${outageCount === 1 ? "" : "s"} not yet seen`}
+                    aria-label={`${outageCount} data outage${outageCount === 1 ? "" : "s"} not yet seen`}
+                  >
+                    {outageCount}
+                  </span>
+                )}
               </a>
             )}
             {!isAuthenticated && accessStatus?.access === "code" && accessStatus.expiresAt && (

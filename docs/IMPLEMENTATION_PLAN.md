@@ -5662,3 +5662,40 @@ between stops, passing points included" for the position line.
       berth codes.
 - Expected times assume the delay holds; no recovery or pathing allowance is modelled.
 - The editor canvas still uses the dark signal green and platform colours.
+
+## Data outages page and Admin pill (2026-10-30)
+
+Owner: investigate recent data outages; and "something in admin tools to see data outages with
+some sort of notification pill with number of outages that disappears when viewed".
+
+Investigation, last 7 days (`feed_gap`, `feed_connection_session`, `feed_frame` receive gaps over
+45 s, cross-checked against openrail-eps's independent `stompy.rates`):
+
+- 29 Oct 11:08:28–11:20:48 UTC (12 min 20 s): Network Rail sent nothing. openrail-eps got no TD
+  or TRUST frames either (11:10–11:20). Recorded as `feed_gap` 12, `unrecoverable`; nothing to
+  recover from anywhere.
+- 30 Oct 07:17:12–07:18:12 UTC (~1 min): Network Rail dropped every client (openrail-eps
+  disconnected at the same second and was out 121 s). The durable subscription did not redeliver:
+  07:17 has 1,615 TD events against ~7,200 a minute. Below the 5-minute gap tolerance, so
+  **no `feed_gap` row and no banner**.
+- 26 Oct 17:16, 21:10 and 29 Oct 14:32, 19:17 (~50 s each): RLM-only reconnects (openrail-eps
+  unaffected). The durable subscription redelivered everything (those minutes have normal counts,
+  with 2–3.5k late arrivals). No loss.
+
+- [x] `/admin/outages` ("Data outages" on the Admin hub, `map.feed_gap_details`): every recorded
+      gap with London times, length, whether its data arrived late or was never sent, and the
+      note; a live line saying whether TD is receiving now or has been silent past the tolerance.
+- [x] A red pill on the header's Admin link (a dot on the phone menu button) and on the hub card:
+      gaps recorded since this user last opened the page, plus one while TD is silent now.
+      Opening the page marks what it shows as seen (`feed_gap_seen`, migration 0061) and clears
+      the pill at once; newly seen rows are marked "New" for that visit. Polled once a minute.
+- [x] Tests: API unit (days, live status) and integration (list, unseen, seen marker never moves
+      back or past the newest gap); page (rows, New, seen POST, live outage line).
+
+Known limitations:
+
+- Losses shorter than the 5-minute tolerance (the 30 Oct 07:17 minute) are not recorded, so the
+  page and the pill do not show them.
+- Only TD is watched. A TRUST/garner outage is not recorded unless TD stops too.
+- Access-code viewers with `map.feed_gap_details` see the page but no pill (nothing to remember
+  "seen" against).

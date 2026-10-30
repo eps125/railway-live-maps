@@ -1,5 +1,6 @@
 import { navigate } from "../useRoute.js";
 import { ROUTE_PERMISSIONS, useCan } from "./permissions.js";
+import { outagePillCount, useOutageSummary } from "./useOutageSummary.js";
 
 interface AdminSection {
   title: string;
@@ -60,6 +61,14 @@ const SECTIONS: AdminSection[] = [
     description: "Where train describer areas meet, so a train keeps its match across them.",
   },
   {
+    title: "Data outages",
+    path: "/admin/outages",
+    route: "adminOutages",
+    description:
+      "When the train describer feed stopped, for how long, and whether the missing data arrived " +
+      "later or was lost; and whether it is down right now.",
+  },
+  {
     title: "Area maintenance",
     path: "/admin/maintenance",
     route: "adminMaintenance",
@@ -78,6 +87,7 @@ export function AdminHubPage(): JSX.Element {
   // Milestone 99: only the areas this user's permissions open.
   const can = useCan();
   const sections = SECTIONS.filter((section) => can(ROUTE_PERMISSIONS[section.route] ?? []));
+  const outageCount = outagePillCount(useOutageSummary(can(ROUTE_PERMISSIONS.adminOutages ?? [])));
   return (
     <div className="admin-users-page">
       <h2>Admin</h2>
@@ -92,7 +102,14 @@ export function AdminHubPage(): JSX.Element {
               navigate(section.path);
             }}
           >
-            <h3>{section.title}</h3>
+            <h3>
+              {section.title}
+              {section.route === "adminOutages" && outageCount > 0 && (
+                <span className="outage-pill" aria-label={`${outageCount} not yet seen`}>
+                  {outageCount}
+                </span>
+              )}
+            </h3>
             <p>{section.description}</p>
           </a>
         ))}

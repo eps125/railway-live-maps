@@ -19,6 +19,7 @@ import { registerManageMapRoutes } from "./routes/editor/manageMap.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAdminUserRoutes } from "./routes/admin/users.js";
 import { registerTdBoundaryRoutes } from "./routes/admin/tdBoundaries.js";
+import { registerOutageRoutes } from "./routes/admin/outages.js";
 import { registerMaintenanceRoutes } from "./routes/admin/maintenance.js";
 import { registerBerthQueryRoutes } from "./routes/admin/berthQuery.js";
 import { registerBerthExplorerRoutes } from "./routes/admin/berthExplorer.js";
@@ -204,6 +205,11 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
   await app.register(async (scope) => {
     scope.addHook("preHandler", requirePermission("tools.td_boundaries", visibilityDeps));
     await registerTdBoundaryRoutes(scope, { pool });
+  });
+  // Data outages (owner request 2026-10-30): the same permission as outage details on the maps.
+  await app.register(async (scope) => {
+    scope.addHook("preHandler", requirePermission("map.feed_gap_details", visibilityDeps));
+    await registerOutageRoutes(scope, { pool });
   });
   await app.register(async (scope) => {
     scope.addHook("preHandler", requirePermission("tools.maintenance", visibilityDeps));

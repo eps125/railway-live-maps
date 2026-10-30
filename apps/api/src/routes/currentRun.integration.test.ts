@@ -539,6 +539,8 @@ const EDITOR_PERMISSIONS: Permission[] = [
   "popup.candidates",
   "popup.trust",
   "popup.latest_report",
+  // 2026-10-30 (migration 0059): what the editor view always showed — berth and TD references.
+  "popup.berth_codes",
   "editor.view",
   "maps.edit",
 ];
@@ -1361,6 +1363,10 @@ describe("GET /api/v1/td/areas/:tdArea/berths/:berth/current-run (integration)",
         // Owner request (2026-09-14): no `note` for anonymous visitors either — its "matched by
         // TRUST activation/STP precedence" language is resolver-internal, backend-only.
         expect(body.note).toBeUndefined();
+        // 2026-10-30: no berth or TD references without `popup.berth_codes`.
+        expect(body.tdArea).toBeUndefined();
+        expect(body.berth).toBeUndefined();
+        expect(body.occupancyEnteredAt).toBeUndefined();
       } finally {
         await app.close();
       }

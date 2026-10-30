@@ -654,12 +654,13 @@ describe("runProjectTd (integration)", () => {
     ).rows;
     expect(rows.map((r) => r.recoverability)).toEqual(["unrecoverable", "recoverable"]);
 
-    // Every gap this test's rows made, including any from the previous test's last row to its first.
+    // Only this test's own two gaps, by exact start (as the classify test above does): wider
+    // deletes remove other tests' gaps (the 2031 partition ones), and a later re-projection from
+    // zero would then record them afresh.
     await pool.query(
       `delete from feed_gap
-        where detection_reason in ('td_short_receive_silence', 'td_receive_silence')
-          and (detected_start >= $1 or detected_end = $1)`,
-      [new Date(t)],
+        where detection_reason = 'td_short_receive_silence' and detected_start = any($1::timestamptz[])`,
+      [starts],
     );
     await pool.query("delete from td_heartbeat where td_area = $1", [area]);
     await pool.query("delete from td_area_summary where td_area = $1", [area]);

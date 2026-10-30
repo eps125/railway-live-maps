@@ -98,6 +98,13 @@ export const PERMISSIONS = [
     description:
       "The 2026-10-30 train popup: headcode header, journey timeline with live TRUST times, folded details, bottom sheet on phones. Without it, the original layout.",
   },
+  {
+    key: "popup.berth_codes",
+    category: "popup",
+    label: "Berth and TD references",
+    description:
+      "Berth names, TD area and berth codes, and when the train entered the berth. Without them the popup names no berth.",
+  },
   { key: "popup.delay", category: "popup", label: "Delay", description: "The delay line." },
   {
     key: "popup.delay_explanation",

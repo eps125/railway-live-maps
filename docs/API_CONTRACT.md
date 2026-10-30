@@ -336,6 +336,7 @@ may not see is left out of the response (removed server-side, not hidden by the 
   `serviceCode`, `category`, `originChange`, `destinationChange`;
 - `popup.trust` → `effective.activation`, `identityChange`;
 - `popup.latest_report` → `effective.latestMovement`;
+- `popup.berth_codes` → `tdArea`, `berth`, `occupancyEnteredAt` (2026-10-30; absent without it);
 - `popup.calling_points` → `effective.locations`; with `popup.new_layout` and `popup.delay` as
   well, each location also carries `running` (2026-10-30, below);
 - `popup.delay` → `delay` (otherwise `null`); `popup.delay_explanation` → its `estimate` and

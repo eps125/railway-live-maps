@@ -54,7 +54,12 @@ import {
 import type { BerthState, SignalState } from "./types.js";
 import { DELAY_BAND_COLORS, type DelayBand } from "./delayBands.js";
 import { RunPopup } from "./RunPopup.js";
-import { followTrain, type FollowResult, type FollowedTrain } from "./followTrain.js";
+import {
+  followTrain,
+  nearbyPlaceTiplocs,
+  type FollowResult,
+  type FollowedTrain,
+} from "./followTrain.js";
 import {
   LiveCells,
   bandCell,
@@ -2132,6 +2137,22 @@ export function MapRenderer({
 
   const selectedMembers = selectedElementId ? elementIdToMembers.get(selectedElementId) : undefined;
   const selectedElement = selectedElementId ? bundle.elementsById[selectedElementId] : undefined;
+  // 2026-10-30: the places drawn near the followed train, so its popup can say where it is
+  // without naming a berth.
+  const selectedRect = selectedElementId ? berthRects.get(selectedElementId) : undefined;
+  const nearbyTiplocs = useMemo(
+    () =>
+      selectedRect
+        ? nearbyPlaceTiplocs(
+            {
+              x: selectedRect.x + selectedRect.width / 2,
+              y: selectedRect.y + selectedRect.height / 2,
+            },
+            elements as Iterable<{ type: string; x?: number; y?: number; tiploc?: string }>,
+          )
+        : [],
+    [selectedRect, elements],
+  );
 
   return (
     <div className="map-frame">
@@ -2185,6 +2206,7 @@ export function MapRenderer({
           members={selectedMembers}
           atIso={atIso}
           lost={selection?.lost ?? null}
+          nearbyTiplocs={nearbyTiplocs}
           onClose={() => setSelection(null)}
         />
       ) : null}

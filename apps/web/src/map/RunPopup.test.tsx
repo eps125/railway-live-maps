@@ -1,12 +1,29 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RunPopup } from "./RunPopup.js";
+import { RunPopup, placeCase, trainPosition } from "./RunPopup.js";
 import { PermissionsProvider } from "../auth/permissions.js";
 
-/** 2026-10-30: the redesigned popup is the `popup.new_layout` permission. */
-function NewLayout({ children }: { children: React.ReactNode }) {
+/** 2026-10-30: berth and TD references are `popup.berth_codes`; the tests written before it hold
+ * it, as every viewer effectively did then. */
+function WithBerthCodes({ children }: { children: ReactNode }) {
   return (
-    <PermissionsProvider permissions={new Set(["popup.new_layout"])}>
+    <PermissionsProvider permissions={new Set(["popup.berth_codes"])}>
+      {children}
+    </PermissionsProvider>
+  );
+}
+
+function render(ui: ReactElement) {
+  return rtlRender(ui, { wrapper: WithBerthCodes });
+}
+
+/** 2026-10-30: the redesigned popup is the `popup.new_layout` permission. */
+function NewLayout({ children, berthCodes = true }: { children: ReactNode; berthCodes?: boolean }) {
+  return (
+    <PermissionsProvider
+      permissions={new Set(["popup.new_layout", ...(berthCodes ? ["popup.berth_codes"] : [])])}
+    >
       {children}
     </PermissionsProvider>
   );
@@ -1099,7 +1116,7 @@ describe("RunPopup following its train (sticky)", () => {
       await vi.advanceTimersByTimeAsync(15000);
     });
 
-    expect(screen.getByText(/More than one berth on the map shows this headcode/)).toBeVisible();
+    expect(screen.getByText(/More than one train on the map shows this headcode/)).toBeVisible();
     expect(screen.getByText("2A16")).toBeInTheDocument();
     expect(fetchMock.mock.calls.length).toBe(calls);
     vi.useRealTimers();
@@ -1207,7 +1224,8 @@ describe("RunPopup journey timeline", () => {
       </NewLayout>,
     );
 
-    expect(await screen.findByText("Wigan North Western → Lancaster")).toBeInTheDocument();
+    expect(await screen.findByText("Lancaster")).toHaveClass("run-popup__route");
+    expect(screen.getByText("from Wigan North Western")).toBeInTheDocument();
     expect(screen.getByText("1S07")).toHaveClass("run-popup__headcode");
     expect(screen.getByText("Avanti West Coast")).toBeInTheDocument();
     expect(screen.getByLabelText("Units")).toHaveTextContent("390119390");
@@ -1265,7 +1283,7 @@ describe("RunPopup journey timeline", () => {
     expect(screen.queryByText("Wigan North Western")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "1 earlier stop" }));
     expect(screen.getByText("Wigan North Western")).toBeInTheDocument();
-    expect(screen.getByText("Now: Garstang (PX 0512)")).toBeInTheDocument();
+    expect(screen.getByText("Between Preston and Lancaster")).toBeInTheDocument();
     expect(screen.getByText("13:01")).toHaveClass("run-popup__expected");
     expect(screen.getByText("Expected times assume the delay holds")).toBeInTheDocument();
   });
@@ -1370,5 +1388,74 @@ describe("RunPopup layout permission (2026-10-30)", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("14:32")).toHaveClass("run-popup__expected");
     expect(screen.getByText("Expected times assume the estimated delay holds")).toBeInTheDocument();
+  });
+});
+
+describe("RunPopup place names and position (2026-10-30)", () => {
+  it("writes CORPUS names in normal capitalisation, keeping abbreviations", () => {
+    expect(placeCase("SHIELDS TMD(E)")).toBe("Shields TMD(E)");
+    expect(placeCase("GLASGOW CENTRAL LOW LEVEL")).toBe("Glasgow Central Low Level");
+    expect(placeCase("SHIELDS JN NO.1 LINE")).toBe("Shields Jn No.1 Line");
+    expect(placeCase("WC POLMADIE FLT MAIN SHED CI")).toBe("WC Polmadie FLT Main Shed Ci");
+    expect(placeCase("STOKE ON TRENT")).toBe("Stoke on Trent");
+    expect(placeCase("Glasgow Central")).toBe("Glasgow Central");
+  });
+
+  const rows = [
+    { index: 0, loc: { tiploc: "NEWTON", locationName: "NEWTON" } },
+    { index: 1, loc: { tiploc: "NEWTWJN", locationName: "NEWTON WEST JN" } },
+    { index: 2, loc: { tiploc: "CMBSLNG", locationName: "CAMBUSLANG" } },
+  ];
+
+  it("names a nearby place on the schedule, passing points included", () => {
+    expect(trainPosition(rows, 0, ["NOTONIT", "NEWTWJN"])).toEqual({
+      text: "Near Newton West Jn",
+      after: 0,
+    });
+  });
+
+  it("otherwise says between the last report and the next point of the schedule", () => {
+    expect(trainPosition(rows, 0, [])).toEqual({
+      text: "Between Newton and Newton West Jn",
+      after: 0,
+    });
+    expect(trainPosition(rows, 2, [])).toEqual({ text: "At Cambuslang", after: 2 });
+  });
+
+  it("puts a nearby place before it when nothing has been reported yet", () => {
+    expect(trainPosition(rows, -1, ["CMBSLNG"])).toEqual({ text: "Near Cambuslang", after: 1 });
+    expect(trainPosition(rows, -1, [])).toBeNull();
+  });
+});
+
+describe("RunPopup without popup.berth_codes (2026-10-30)", () => {
+  it("names no berth or TD area anywhere, in either layout", async () => {
+    vi.stubGlobal(
+      "fetch",
+      // What the API sends without the permission: no tdArea, berth or occupancyEnteredAt.
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            headcode: "2A16",
+            description: "2A16",
+            matchStatus: "matched",
+            effective: null,
+            unitAllocation: [],
+          }),
+        ),
+      ),
+    );
+    const popup = (
+      <RunPopup elementId="b" displayName="GP15" tdArea="G1" berth="GP15" onClose={() => {}} />
+    );
+
+    const classic = rtlRender(popup);
+    await screen.findAllByText("2A16");
+    expect(classic.container.textContent).not.toMatch(/GP15|G1|Entered/);
+    classic.unmount();
+
+    const fresh = rtlRender(<NewLayout berthCodes={false}>{popup}</NewLayout>);
+    await screen.findByText("2A16");
+    expect(fresh.container.textContent).not.toMatch(/GP15|G1|Entered/);
   });
 });

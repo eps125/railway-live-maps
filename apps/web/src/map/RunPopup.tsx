@@ -149,11 +149,12 @@ interface UnitAllocationEntry {
  * `headcode_only` tier regardless of which internal rule actually picked among the unscoped set.
  */
 interface CurrentRunResponse {
-  tdArea: string;
-  berth: string;
+  /** `popup.berth_codes` (2026-10-30), with `occupancyEnteredAt`. */
+  tdArea?: string;
+  berth?: string;
   description?: string | null;
   headcode: string;
-  occupancyEnteredAt: string | null;
+  occupancyEnteredAt?: string | null;
   matchStatus: "matched" | "ambiguous" | "unmatched";
   /** `popup.match_details`. */
   matchBasis?:
@@ -218,6 +219,9 @@ export interface RunPopupProps {
   /** 2026-10-30 (sticky popup): set while the map can't tell which berth the train is in
    * (`followTrain`). The popup keeps showing what it last knew, says so, and stops polling. */
   lost?: FollowResult["lost"];
+  /** 2026-10-30: TIPLOCs of the stations and labelled places drawn near the train's berth on the
+   * map, nearest first — what the journey's position line names, instead of a berth. */
+  nearbyTiplocs?: readonly string[];
   onClose: () => void;
 }
 
@@ -295,42 +299,45 @@ export function lastReportText(report: NonNullable<PopupDelay["lastReport"]>): s
   return `${REPORT_KIND[report.eventKind]}${where}${when ? ` ${when}` : ""}${how ? `, ${how.toLowerCase()}` : ""}`;
 }
 
-/** 2026-10-30 (popup redesign): the delay explanation — why an estimate says what it says, and
- * TRUST's last report. `null` when there's nothing to add to the headline. */
-function delayDetail(delay: PopupDelay): string | null {
-  let detail: string | null = null;
+/** 2026-10-30 (popup redesign): the last TRUST report as a short sentence for under the status
+ * pill — "Departed Bridge Street Junction 17:00". The lateness is the pill's, so it isn't repeated. */
+function reportSentence(report: NonNullable<PopupDelay["lastReport"]>): string {
+  const kind = REPORT_KIND[report.eventKind];
+  const where = report.locationName ? ` ${placeCase(report.locationName)}` : "";
+  const when = hhmm(report.at);
+  return `${kind.charAt(0).toUpperCase()}${kind.slice(1)}${where}${when ? ` ${when}` : ""}`;
+}
+
+/** What the line under the status pill says: an estimate's working (Milestone 97c), or TRUST's
+ * last report. `null` when there's nothing to add. */
+function statusDetail(delay: PopupDelay): string | null {
   if (delay.estimated && delay.estimate) {
     const since = hhmm(delay.estimate.standingSince);
-    detail = delay.estimate.carried
+    let detail = delay.estimate.carried
       ? "Held earlier and not reported since"
       : delay.estimate.basis === "timing_point"
         ? `Still here after its booked departure${since ? `; standing since ${since}` : ""}`
         : `Standing${since ? ` since ${since}` : ""}, longer than trains normally take here`;
     if (delay.lastReport) detail += `. Last report: ${lastReportText(delay.lastReport)}`;
-  } else if (delay.lastReport) {
-    detail = `Last report: ${lastReportText(delay.lastReport)}`;
+    return detail;
   }
-  return detail;
+  return delay.lastReport ? reportSentence(delay.lastReport) : null;
 }
 
-/** Milestone 97c (docs/adr/0021): the delay line every visitor sees, marked when estimated.
- * 2026-10-30 (popup redesign): drawn as a status pill in its band's colour, under the header. */
-export function DelayLine({ delay }: { delay: PopupDelay | null | undefined }): JSX.Element | null {
-  if (!delay) return null;
+/** Milestone 97c (docs/adr/0021): how late the train is, marked when estimated — redesigned
+ * 2026-10-30 as a pill in its band's colour. */
+function StatusPill({ delay }: { delay: PopupDelay }): JSX.Element {
   const headline = lateness(delay.minutesLate) ?? "No delay information";
   const colours = delay.band === "none" ? null : DELAY_BAND_COLORS[delay.band];
-  const detail = delayDetail(delay);
   return (
-    <div className="run-popup__delay" aria-label="Delay">
-      <span
-        className="run-popup__status-pill"
-        style={colours ? { background: colours.fill, borderColor: colours.stroke } : undefined}
-      >
-        {delay.estimated ? <strong>Estimated </strong> : null}
-        {delay.estimated ? headline.toLowerCase() : headline}
-      </span>
-      {detail ? <span className="run-popup__delay-detail">{detail}</span> : null}
-    </div>
+    <span
+      className="run-popup__status-pill"
+      aria-label="Delay"
+      style={colours ? { background: colours.fill, borderColor: colours.stroke } : undefined}
+    >
+      {delay.estimated ? <strong>Estimated </strong> : null}
+      {delay.estimated ? headline.toLowerCase() : headline}
+    </span>
   );
 }
 
@@ -395,9 +402,42 @@ const OPERATOR_NAMES: Record<string, string> = {
   XR: "Elizabeth line",
 };
 
-/** A location's name for the timeline: the CORPUS name, else its TIPLOC. */
+/** Words CORPUS abbreviates, as they're usually written. */
+const PLACE_WORDS: Record<string, string> = {
+  JN: "Jn",
+  JCN: "Jcn",
+  ST: "St",
+  RD: "Rd",
+  SDG: "Sdg",
+  SDGS: "Sdgs",
+  NO: "No",
+};
+const PLACE_SMALL_WORDS = new Set(["AND", "OF", "THE", "ON", "UPON", "IN", "AT"]);
+
+/**
+ * 2026-10-30 (owner: the header looked shouty): a CORPUS name, which is all capitals, in normal
+ * capitalisation — "SHIELDS TMD(E)" → "Shields TMD(E)", "GLASGOW CENTRAL LOW LEVEL" → "Glasgow
+ * Central Low Level". A word without a vowel stays an abbreviation (TMD, CSD, WC); a name already
+ * in mixed case is left alone.
+ */
+export function placeCase(name: string): string {
+  if (name !== name.toUpperCase()) return name;
+  let first = true;
+  return name.replace(/[A-Z]+/g, (word) => {
+    const wasFirst = first;
+    first = false;
+    const known = PLACE_WORDS[word];
+    if (known) return known;
+    if (word.length === 1 || !/[AEIOUY]/.test(word)) return word;
+    if (!wasFirst && PLACE_SMALL_WORDS.has(word)) return word.toLowerCase();
+    return word.charAt(0) + word.slice(1).toLowerCase();
+  });
+}
+
+/** A location's name for the new layout: the CORPUS name in normal capitalisation, else its
+ * TIPLOC. */
 function placeName(tiploc: string | null | undefined, name: string | null | undefined): string {
-  return name ?? tiploc ?? "—";
+  return name ? placeCase(name) : (tiploc ?? "—");
 }
 
 /** `HHMM` / `HHMMH` → minutes after midnight, or null. */
@@ -455,13 +495,14 @@ function JourneyTimeline({
   locations,
   currentLate,
   estimated,
-  nowLabel,
+  nearbyTiplocs,
 }: {
   locations: EffectiveLocation[];
   currentLate: number | null;
   /** The delay carried forward is Milestone 97's held-train estimate, not TRUST's own figure. */
   estimated: boolean;
-  nowLabel: string;
+  /** Stations and labelled places on the map near the train's berth, nearest first. */
+  nearbyTiplocs: readonly string[];
 }): JSX.Element | null {
   const [showPasses, setShowPasses] = useState(false);
   const [showEarlier, setShowEarlier] = useState(false);
@@ -482,9 +523,10 @@ function JourneyTimeline({
   );
   const expectedLate = currentLate !== null && currentLate > 0 ? currentLate : null;
   let showedExpected = false;
+  const position = trainPosition(rows, lastReported, nearbyTiplocs);
 
   const items: JSX.Element[] = [];
-  visible.forEach((row, n) => {
+  visible.forEach((row) => {
     const passed = row.index <= lastReported;
     const late = row.report?.minutesLate ?? null;
     let actual: JSX.Element | null = null;
@@ -532,16 +574,19 @@ function JourneyTimeline({
         {hasRunning ? <span className="run-popup__stop-time">{actual}</span> : null}
       </li>,
     );
-    const next = visible[n + 1];
-    if (lastReported >= 0 && row.index <= lastReported && (!next || next.index > lastReported)) {
-      items.push(
-        <li key="now" className="run-popup__now">
-          <span className="run-popup__now-mark" aria-hidden="true" />
-          Now: {nowLabel}
-        </li>,
-      );
-    }
   });
+  if (position) {
+    // After the last visible row the position follows; folded rows don't move it.
+    const at = visible.filter((row) => row.index <= position.after).length;
+    items.splice(
+      at,
+      0,
+      <li key="now" className="run-popup__now">
+        <span className="run-popup__now-mark" aria-hidden="true" />
+        {position.text}
+      </li>,
+    );
+  }
 
   return (
     <section className="run-popup__journey" aria-label="Journey">
@@ -590,6 +635,38 @@ function JourneyTimeline({
   );
 }
 
+/**
+ * 2026-10-30 (owner): where the train is, in place names only — never a berth or TD code. "Near
+ * X" when a station or labelled place on the map close to the train's berth is on its schedule
+ * (calling or passing, matched by TIPLOC); otherwise "Between A and B" from its last TRUST report
+ * and the next point of the schedule, passing points included. `after` is the schedule index the
+ * marker follows.
+ */
+export function trainPosition(
+  rows: ReadonlyArray<{ index: number; loc: { tiploc: string; locationName: string | null } }>,
+  lastReported: number,
+  nearbyTiplocs: readonly string[],
+): { text: string; after: number } | null {
+  for (const tiploc of nearbyTiplocs) {
+    const row = rows.find((r) => r.loc.tiploc === tiploc);
+    if (row) {
+      const name = placeName(row.loc.tiploc, row.loc.locationName);
+      // Beside the last report when there is one; otherwise just before the place itself.
+      return { text: `Near ${name}`, after: lastReported >= 0 ? lastReported : row.index - 1 };
+    }
+  }
+  if (lastReported < 0) return null;
+  const from = rows[lastReported]!;
+  const to = rows[lastReported + 1];
+  const fromName = placeName(from.loc.tiploc, from.loc.locationName);
+  return {
+    text: to
+      ? `Between ${fromName} and ${placeName(to.loc.tiploc, to.loc.locationName)}`
+      : `At ${fromName}`,
+    after: lastReported,
+  };
+}
+
 /** One row of the details list. */
 function DetailRow({ term, children }: { term: string; children: ReactNode }): JSX.Element {
   return (
@@ -610,11 +687,14 @@ function TrainDetails({ data }: { data: CurrentRunResponse }): JSX.Element | nul
   const effective = data.effective;
   const hasRoute = effective ? "originTiploc" in effective : false;
   const rows: JSX.Element[] = [];
-  rows.push(
-    <DetailRow key="entered" term="Entered berth">
-      {formatIso(data.occupancyEnteredAt)}
-    </DetailRow>,
-  );
+  // `popup.berth_codes` only (absent without it).
+  if (data.occupancyEnteredAt !== undefined) {
+    rows.push(
+      <DetailRow key="entered" term="Entered berth">
+        {formatIso(data.occupancyEnteredAt)}
+      </DetailRow>,
+    );
+  }
   if (effective?.trainUid !== undefined && effective.stpIndicator !== undefined) {
     rows.push(
       <DetailRow key="schedule" term="Schedule">
@@ -746,30 +826,30 @@ function TrainDetails({ data }: { data: CurrentRunResponse }): JSX.Element | nul
 }
 
 /**
- * 2026-10-30 (popup redesign): the train first — its headcode in the colour it has on the map,
- * where it's going, who runs it and with what — then how late it is, the journey, and the details.
+ * 2026-10-30 (popup redesign; layout "A", owner's choice): a departure-board header — the headcode
+ * in its map colour beside where the train is going, "from" where it started underneath; then one
+ * row of how late it is, who runs it and its units; then the last report. Then the journey and
+ * the details.
  */
 function TrainCard({
   data,
-  nowLabel,
+  nearbyTiplocs,
 }: {
   data: CurrentRunResponse;
-  nowLabel: string;
+  nearbyTiplocs: readonly string[];
 }): JSX.Element {
   const effective = data.effective;
   const band = data.delay?.band;
   const chip = band && band !== "none" ? DELAY_BAND_COLORS[band] : null;
   const hasRoute = effective ? "originTiploc" in effective : false;
-  const title = hasRoute
-    ? `${placeName(effective?.originTiploc, effective?.originName)} → ${placeName(
-        effective?.destinationTiploc,
-        effective?.destinationName,
-      )}`
+  const destination = hasRoute
+    ? placeName(effective?.destinationTiploc, effective?.destinationName)
     : data.matchStatus === "ambiguous"
       ? "More than one possible train"
       : data.matchStatus === "unmatched"
         ? "Train not identified"
         : null;
+  const origin = hasRoute ? placeName(effective?.originTiploc, effective?.originName) : null;
   const operator = effective?.operatorCode
     ? (OPERATOR_NAMES[effective.operatorCode] ?? effective.operatorCode)
     : null;
@@ -777,6 +857,7 @@ function TrainCard({
   const units = data.unitAllocation ?? [];
   const currentLate =
     data.delay?.minutesLate ?? effective?.latestMovement?.variationMinutes ?? null;
+  const detail = data.delay ? statusDetail(data.delay) : null;
 
   return (
     <>
@@ -788,29 +869,35 @@ function TrainCard({
           {data.headcode}
         </span>
         <div className="run-popup__heading">
-          {title ? <div className="run-popup__route">{title}</div> : null}
-          {operator ? <div className="run-popup__sub">{operator}</div> : null}
+          {destination ? <div className="run-popup__route">{destination}</div> : null}
+          {origin ? <div className="run-popup__from">from {origin}</div> : null}
+        </div>
+      </header>
+
+      {data.delay || operator || units.length > 0 ? (
+        <div className="run-popup__meta">
+          {data.delay ? <StatusPill delay={data.delay} /> : null}
+          {operator ? <span className="run-popup__operator">{operator}</span> : null}
           {units.length > 0 ? (
-            <div className="run-popup__units" aria-label="Units">
+            <span className="run-popup__units" aria-label="Units">
               {units.map((unit) => (
                 <span key={`${unit.position}-${unit.unitNo}`} className="run-popup__unit">
                   {unit.unitNo}
                   <span className="run-popup__unit-fleet">{unit.fleetId}</span>
                 </span>
               ))}
-            </div>
+            </span>
           ) : null}
         </div>
-      </header>
-
-      <DelayLine delay={data.delay} />
+      ) : null}
+      {detail ? <p className="run-popup__report">{detail}</p> : null}
 
       {effective?.locations ? (
         <JourneyTimeline
           locations={effective.locations}
           currentLate={currentLate}
           estimated={data.delay?.estimated ?? false}
-          nowLabel={nowLabel}
+          nearbyTiplocs={nearbyTiplocs}
         />
       ) : null}
 
@@ -1047,8 +1134,12 @@ function ClassicTrainCard({ data }: { data: CurrentRunResponse }): JSX.Element {
       <dl>
         <dt>Headcode</dt>
         <dd>{data.headcode}</dd>
-        <dt>Entered</dt>
-        <dd>{formatIso(data.occupancyEnteredAt)}</dd>
+        {data.occupancyEnteredAt !== undefined ? (
+          <>
+            <dt>Entered</dt>
+            <dd>{formatIso(data.occupancyEnteredAt)}</dd>
+          </>
+        ) : null}
       </dl>
 
       <ClassicDelayLine delay={data.delay} />
@@ -1103,9 +1194,9 @@ interface MemberState {
 }
 
 const LOST_TEXT: Record<NonNullable<FollowResult["lost"]>, string> = {
-  gone: "This train has stepped off the map or into an unmapped berth. Showing what was last known; the popup picks it up again if it reappears.",
+  gone: "This train has gone out of view of the map. Showing what was last known; the popup picks it up again if it reappears.",
   ambiguous:
-    "More than one berth on the map shows this headcode, so the popup can't tell which is this train. Showing what was last known.",
+    "More than one train on the map shows this headcode, so the popup can't tell which is this one. Showing what was last known.",
 };
 
 /** One member's fetched-and-settled detail, pure display — no fetching of its own. Split out from
@@ -1116,14 +1207,14 @@ function RunPopupMemberSection({
   tdArea,
   berth,
   showHeading,
-  nowLabel,
+  nearbyTiplocs,
   newLayout,
   state,
 }: {
   tdArea: string;
   berth: string;
   showHeading: boolean;
-  nowLabel: string;
+  nearbyTiplocs: readonly string[];
   newLayout: boolean;
   state: MemberState;
 }): JSX.Element | null {
@@ -1139,7 +1230,7 @@ function RunPopupMemberSection({
       {error ? <p className="app-error">{error}</p> : null}
       {!error && data ? (
         newLayout ? (
-          <TrainCard data={data} nowLabel={nowLabel} />
+          <TrainCard data={data} nearbyTiplocs={nearbyTiplocs} />
         ) : (
           <ClassicTrainCard data={data} />
         )
@@ -1156,6 +1247,7 @@ export function RunPopup({
   members,
   atIso = null,
   lost = null,
+  nearbyTiplocs = [],
   onClose,
 }: RunPopupProps): JSX.Element | null {
   const resolvedMembers = members && members.length > 0 ? members : [{ tdArea, berth }];
@@ -1173,7 +1265,10 @@ export function RunPopup({
   const paused = lost !== null;
   const [expanded, setExpanded] = useState(false);
   // 2026-10-30 (owner): the redesigned popup is its own permission; without it, the original.
-  const newLayout = useCan()("popup.new_layout");
+  const can = useCan();
+  const newLayout = can("popup.new_layout");
+  // 2026-10-30 (owner): berth names and TD/berth codes only with `popup.berth_codes`.
+  const showBerths = can("popup.berth_codes");
 
   useEffect(() => {
     let cancelled = false;
@@ -1304,8 +1399,15 @@ export function RunPopup({
           />
         ) : null}
         <span className="map-inspector__berth">
-          {displayName || elementId}
-          {displayMembers.length === 1 ? (
+          {showBerths
+            ? displayName || elementId
+            : newLayout
+              ? null
+              : displayMembers
+                  .map((m) => statesByKey[memberKey(m)]?.data?.headcode)
+                  .filter(Boolean)
+                  .join(" / ")}
+          {showBerths && displayMembers.length === 1 ? (
             <span className="map-inspector__subtitle">
               {" "}
               · {displayMembers[0]!.tdArea} {displayMembers[0]!.berth}
@@ -1331,17 +1433,13 @@ export function RunPopup({
         {displayMembers.map((member) => {
           const state = statesByKey[memberKey(member)];
           if (!state) return null;
-          const nowLabel =
-            displayName && displayName !== member.berth
-              ? `${displayName} (${member.tdArea} ${member.berth})`
-              : `${member.tdArea} ${member.berth}`;
           return (
             <RunPopupMemberSection
               key={memberKey(member)}
               tdArea={member.tdArea}
               berth={member.berth}
-              showHeading={displayMembers.length > 1}
-              nowLabel={nowLabel}
+              showHeading={showBerths && displayMembers.length > 1}
+              nearbyTiplocs={nearbyTiplocs}
               newLayout={newLayout}
               state={state}
             />

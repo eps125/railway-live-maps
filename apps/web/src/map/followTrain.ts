@@ -41,3 +41,29 @@ export function followTrain(
   if (showing.length === 1) return { elementId: showing[0]!, lost: null };
   return { elementId, lost: showing.length === 0 ? "gone" : "ambiguous" };
 }
+
+/** How far (map units) a station or labelled place may be from the train's berth to count as
+ * "near" it: about four berth cells, so a station's name, drawn over its platforms, reaches the
+ * berths along them. */
+export const NEAR_PLACE_DISTANCE = 400;
+
+/**
+ * 2026-10-30 (owner): the places on the map near the popup's train, for the journey to say where
+ * it is in place names rather than berth codes — the TIPLOCs of station and label elements that
+ * carry one, within `NEAR_PLACE_DISTANCE` of `point` (the berth's centre), nearest first.
+ */
+export function nearbyPlaceTiplocs(
+  point: { x: number; y: number },
+  elements: Iterable<{ type: string; x?: number; y?: number; tiploc?: string }>,
+  maxDistance = NEAR_PLACE_DISTANCE,
+): string[] {
+  const found: Array<{ tiploc: string; distance: number }> = [];
+  for (const element of elements) {
+    if (element.type !== "station" && element.type !== "label") continue;
+    if (!element.tiploc || element.x === undefined || element.y === undefined) continue;
+    const distance = Math.hypot(element.x - point.x, element.y - point.y);
+    if (distance <= maxDistance) found.push({ tiploc: element.tiploc, distance });
+  }
+  found.sort((a, b) => a.distance - b.distance);
+  return [...new Set(found.map((f) => f.tiploc))];
+}

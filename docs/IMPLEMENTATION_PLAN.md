@@ -5637,5 +5637,28 @@ Known limitations:
 
 - `running` has no integration test against a database yet (unit-tested matcher; query checked on
   production).
+
+### Popup header tidy and berth codes (2026-10-30, owner feedback after the first deploy)
+
+Owner: the top of the new popup looked "hodge podge", and basic users are not to see raw berth or
+TD codes anywhere in it. Owner chose layout "A" of three options, and "near a station, else
+between stops, passing points included" for the position line.
+
+- [x] Header as a departure board: headcode beside the destination in large type, "from" the
+      origin under it; one row of status pill, operator and unit chips; then the last report as a
+      short sentence ("Departed Newton 17:01" — the lateness is the pill's).
+- [x] Place names in normal capitalisation throughout the new layout (`placeCase`: CORPUS is all
+      capitals; words without a vowel stay abbreviations, e.g. TMD).
+- [x] The train's position in the journey names places only (`trainPosition`): "Near X" when a
+      station or labelled place drawn within 400 map units of its berth is on its schedule (by
+      TIPLOC — every station and 283 labels on the live maps carry one), else "Between A and B"
+      from the last TRUST report and the next point of the schedule, passing points included.
+- [x] Permission `popup.berth_codes` (registry + migration 0059), granted to no user type (Admin
+      holds it). Without it the API leaves out `tdArea`, `berth` and `occupancyEnteredAt`, and
+      neither layout names a berth: the top bar is just "Following" and close (the original layout
+      titles itself with the headcode), combined-berth headings and "Entered" go, and the "lost"
+      notes no longer mention berths.
+- [x] Tests: `placeCase`, `trainPosition`, `nearbyPlaceTiplocs`, the header, both layouts without
+      berth codes.
 - Expected times assume the delay holds; no recovery or pathing allowance is modelled.
 - The editor canvas still uses the dark signal green and platform colours.

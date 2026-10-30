@@ -18,6 +18,16 @@ import {
   ZOOM_SETTLE_MS,
 } from "./MapRenderer.js";
 import { syntheticBundle } from "../bench/syntheticMap.js";
+import { PermissionsProvider } from "../auth/permissions.js";
+
+/** 2026-10-30: the popup names berths only with `popup.berth_codes`. */
+function WithBerthCodes({ children }: { children: React.ReactNode }) {
+  return (
+    <PermissionsProvider permissions={new Set(["popup.berth_codes"])}>
+      {children}
+    </PermissionsProvider>
+  );
+}
 
 // jsdom has no PointerEvent, so fireEvent.pointer* would build events with no clientX/clientY.
 if (typeof window.PointerEvent === "undefined") {
@@ -267,6 +277,7 @@ describe("MapRenderer", () => {
         berths={{ "berth-combined": { description: "1A11 1B22", enteredAt: null } }}
         signals={{}}
       />,
+      { wrapper: WithBerthCodes },
     );
 
     fireEvent.click(screen.getByText("1A11 1B22"));
@@ -377,6 +388,7 @@ describe("MapRenderer", () => {
         berths={{ "berth-1": { description: "2A16", enteredAt: null } }}
         signals={{}}
       />,
+      { wrapper: WithBerthCodes },
     );
     fireEvent.click(screen.getByText("2A16"));
     expect(await screen.findByText(/PX 0512/)).toBeInTheDocument();

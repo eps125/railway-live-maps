@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { berthInfo } from "./liveCells.js";
-import { followTrain } from "./followTrain.js";
+import { followTrain, nearbyPlaceTiplocs } from "./followTrain.js";
 import type { BerthState } from "./types.js";
 
 function berth(id: string, inhibitedBy?: string) {
@@ -55,5 +55,18 @@ describe("followTrain (sticky run popup, 2026-10-30)", () => {
       info,
     );
     expect(result).toEqual({ elementId: "c", lost: null });
+  });
+});
+
+describe("nearbyPlaceTiplocs (popup position, 2026-10-30)", () => {
+  it("lists stations and labels with a TIPLOC near the point, nearest first", () => {
+    const elements = [
+      { type: "station", x: 300, y: 0, tiploc: "FAR" },
+      { type: "label", x: 50, y: 0, tiploc: "JUNC" },
+      { type: "label", x: 10, y: 0 },
+      { type: "berth", x: 0, y: 0, tiploc: "NOPE" },
+      { type: "station", x: 900, y: 0, tiploc: "TOOFAR" },
+    ];
+    expect(nearbyPlaceTiplocs({ x: 0, y: 0 }, elements)).toEqual(["JUNC", "FAR"]);
   });
 });

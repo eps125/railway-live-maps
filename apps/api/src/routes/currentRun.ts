@@ -909,12 +909,13 @@ export async function registerCurrentRunRoutes(
       }
 
       const matchDetails = can(viewer, "popup.match_details");
+      // 2026-10-30 (owner): berth and train describer references — the area, the berth and when
+      // the train entered it — only with `popup.berth_codes`.
+      const berthCodes = can(viewer, "popup.berth_codes");
       return {
-        tdArea,
-        berth,
+        ...(berthCodes ? { tdArea, berth, occupancyEnteredAt } : {}),
         description: headcode,
         headcode,
-        occupancyEnteredAt,
         // Without `popup.weak_matches` only solid matches reach here.
         matchStatus: matchDetails ? matchStatus : ("matched" as const),
         ...(matchDetails

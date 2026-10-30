@@ -5574,3 +5574,68 @@ Known limitations:
 
 - Per browser, not per account.
 - The editor's canvas (Konva) stays dark; the editor's panels follow the theme.
+
+Also 2026-10-30 (owner): vacant berths in light mode are a light grey (`#e3e8ee`, edge `#c6ced7`)
+rather than white, so they read as boxes on the near-white map.
+
+## Sticky run popup (2026-10-30)
+
+Owner request: the popup opened by clicking a train stays open when the train steps, and updates.
+Feedback had named the popup the weakest part of the GUI; this is the first part of reworking it.
+
+- [x] The popup follows its train (`map/followTrain.ts`): when the clicked berth no longer shows
+      the headcode, it moves to the berth that does — only when exactly one berth on the map shows
+      it, the same rule the delay colours carry a band forward by (rule 5: never a guess between
+      two). With none (off the map, an unmapped gap) or more than one, it keeps the last detail,
+      says why, stops polling, and picks the train up again once exactly one berth shows it.
+- [x] A step changes the popup in place: the previous berth's detail stays up while the new berth
+      is fetched, and a poll that 404s after a step no longer closes it. A popup that 404s when
+      first opened still closes quietly, as before.
+- [x] Playback: the popup asks about each new berth at the playback instant of the step.
+- [x] Phone: the popup's height is capped by the map frame, not the screen (`80vh` overflowed the
+      frame, so the last lines of the schedule were cut off).
+- [x] Tests: `followTrain`, the popup across a step / lost / playback, the renderer moving it.
+
+Known limitations:
+
+- Following is by headcode within one map; a train re-described to a new headcode is "lost".
+- The followed berth is not highlighted, and the map does not pan to keep it in view.
+
+## Popup redesign and light-mode colour audit (2026-10-30)
+
+Owner request (feedback: the popup was the weakest part of the GUI), proposals approved the same
+day. Owner decision: the new popup is its own permission, so it can be rolled out per user type.
+
+- [x] Permission `popup.new_layout` (registry + migration 0058), granted to no user type (Admin
+      holds every permission). Without it the original popup is unchanged (`ClassicTrainCard`),
+      sticky-following and the phone height fix included.
+- [x] New layout: a slim top bar (berth, "Following", close); the train as the heading — headcode
+      chip in its map colour, origin → destination, operator by name (ATOC code in the details),
+      the units as chips (only with `popup.formation`, which the API already enforces); the delay
+      as a pill in its band colour with its explanation, Milestone 97's held-train estimate
+      included and marked "Estimated".
+- [x] Journey timeline replacing the six-column table: stop, platform, booked time and actual
+      time; stops behind the train fold to the last one called at, passing points fold behind a
+      toggle, and the train's position ("Now: berth") sits after the last reported stop. Stops
+      still to come show an expected time, booked plus the current (or estimated) delay, in
+      italics and labelled as an assumption.
+- [x] API: `effective.locations[].running` — each stop's TRUST arrival/departure for the run
+      (`lib/runningTimes.ts`), only for viewers with `popup.new_layout`, `popup.calling_points`
+      and `popup.delay`. Query checked on production with real parameters: index scans, < 1 ms.
+- [x] Train details: schedule, match, TRUST, latest raw report, revisions, units' vehicles,
+      candidates and garner's note in one folded section, each row still per its own permission;
+      open by default for an unidentified train.
+- [x] Phone: a bottom sheet showing the header and status, expanding with its handle.
+- [x] Light mode (owner-approved audit): station names near-black instead of blue; signal green
+      `#1f883d` (was 2.4:1 on the map, now 4.2:1); platform orange `#f0960a` with a fine edge;
+      delay-berth edges darker than their fill rather than lighter. New tokens in
+      `MAP_CSS_TOKENS`; dark mode unchanged. Signal meanings unchanged (rule 9).
+- [x] Tests: `runningTimes`, the layout permission, the timeline (actual / expected / folding /
+      booked-only), the estimate in the new layout.
+
+Known limitations:
+
+- `running` has no integration test against a database yet (unit-tested matcher; query checked on
+  production).
+- Expected times assume the delay holds; no recovery or pathing allowance is modelled.
+- The editor canvas still uses the dark signal green and platform colours.

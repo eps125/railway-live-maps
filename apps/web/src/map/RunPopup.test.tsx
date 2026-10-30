@@ -1,6 +1,16 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunPopup } from "./RunPopup.js";
+import { PermissionsProvider } from "../auth/permissions.js";
+
+/** 2026-10-30: the redesigned popup is the `popup.new_layout` permission. */
+function NewLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <PermissionsProvider permissions={new Set(["popup.new_layout"])}>
+      {children}
+    </PermissionsProvider>
+  );
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status < 400, status, json: async () => body } as unknown as Response;
@@ -1003,5 +1013,362 @@ describe("RunPopup delay line without an explanation (non-admin, 2026-10-26)", (
     expect(await screen.findByText("72 min late")).toBeInTheDocument();
     expect(screen.getByText("Estimated")).toBeInTheDocument();
     expect(document.querySelector(".run-popup__delay-detail")).not.toBeInTheDocument();
+  });
+});
+
+/** 2026-10-30 (owner request): the popup is sticky — it follows its train from berth to berth
+ * (the map tells it where, `followTrain`) instead of closing when the train steps. */
+describe("RunPopup following its train (sticky)", () => {
+  it("keeps showing the train when its berth 404s on a poll after a step", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(baseBody()))
+      .mockResolvedValue(
+        jsonResponse({ error: { code: "BERTH_NOT_OCCUPIED", message: "not occupied" } }, 404),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const onClose = vi.fn();
+
+    render(
+      <RunPopup elementId="b" displayName="0512" tdArea="PX" berth="0512" onClose={onClose} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("2A16")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("moves to the berth the train stepped into, without blanking in between", async () => {
+    let resolveSecond: (r: Response) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(baseBody()))
+      .mockReturnValueOnce(new Promise<Response>((resolve) => (resolveSecond = resolve)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <RunPopup elementId="b1" displayName="0512" tdArea="PX" berth="0512" onClose={() => {}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    rerender(
+      <RunPopup elementId="b2" displayName="0514" tdArea="PX" berth="0514" onClose={() => {}} />,
+    );
+    // Still the previous berth's detail while the new one is fetched.
+    expect(screen.getByText(/PX 0512/)).toBeInTheDocument();
+    expect(String(fetchMock.mock.calls[1]![0])).toContain("/berths/0514/current-run");
+
+    await act(async () => {
+      resolveSecond(jsonResponse(baseBody({ berth: "0514" })));
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/PX 0514/)).toBeInTheDocument();
+  });
+
+  it("says when it has lost the train, and stops asking the API", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(jsonResponse(baseBody())));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <RunPopup elementId="b" displayName="0512" tdArea="PX" berth="0512" onClose={() => {}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    rerender(
+      <RunPopup
+        elementId="b"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        lost="ambiguous"
+        onClose={() => {}}
+      />,
+    );
+    const calls = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+
+    expect(screen.getByText(/More than one berth on the map shows this headcode/)).toBeVisible();
+    expect(screen.getByText("2A16")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    vi.useRealTimers();
+  });
+
+  it("takes a fresh playback instant for the berth it steps into", async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(jsonResponse(baseBody())));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <RunPopup
+        elementId="b1"
+        displayName="0512"
+        tdArea="PX"
+        berth="0512"
+        atIso="2026-08-10T10:00:00.000Z"
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    rerender(
+      <RunPopup
+        elementId="b2"
+        displayName="0514"
+        tdArea="PX"
+        berth="0514"
+        atIso="2026-08-10T10:02:00.000Z"
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(String(fetchMock.mock.calls.at(-1)![0])).toContain(
+      `0514/current-run?at=${encodeURIComponent("2026-08-10T10:02:00.000Z")}`,
+    );
+  });
+});
+
+/** 2026-10-30 (owner request): the schedule as a journey timeline, with TRUST's actual times and
+ * an expected time, carried forward from the delay, for the stops still to come. */
+describe("RunPopup journey timeline", () => {
+  const stop = (
+    seqNo: number,
+    tiploc: string,
+    locationName: string,
+    locationType: "origin" | "intermediate" | "pass" | "destination",
+    times: { arr?: string; dep?: string; pass?: string },
+    running?: unknown,
+  ) => ({
+    seqNo,
+    locationType,
+    tiploc,
+    locationName,
+    arrivalPublic: times.arr ?? null,
+    arrivalWorking: times.arr ?? null,
+    departurePublic: times.dep ?? null,
+    departureWorking: times.dep ?? null,
+    passWorking: times.pass ?? null,
+    platform: "1",
+    path: null,
+    line: null,
+    dayOffset: 0,
+    ...(running === undefined ? {} : { running }),
+  });
+
+  function body(locations: unknown[]) {
+    return baseBody({
+      headcode: "1S07",
+      description: "1S07",
+      matchStatus: "matched",
+      positionScoped: true,
+      effective: {
+        operatorCode: "VT",
+        originTiploc: "WIGANNW",
+        originName: "Wigan North Western",
+        destinationTiploc: "LANCSTR",
+        destinationName: "Lancaster",
+        locations,
+      },
+      delay: {
+        minutesLate: 9,
+        band: "on_time",
+        estimated: false,
+        estimate: null,
+        lastReport: null,
+      },
+      unitAllocation: [
+        { unitNo: "390119", position: 1, fleetId: "390", vehicles: [], reportedAt: null },
+      ],
+    });
+  }
+
+  it("leads with the headcode, route, operator and units", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(body([])))),
+    );
+    render(
+      <NewLayout>
+        <RunPopup elementId="b" displayName="0512" tdArea="PX" berth="0512" onClose={() => {}} />
+      </NewLayout>,
+    );
+
+    expect(await screen.findByText("Wigan North Western → Lancaster")).toBeInTheDocument();
+    expect(screen.getByText("1S07")).toHaveClass("run-popup__headcode");
+    expect(screen.getByText("Avanti West Coast")).toBeInTheDocument();
+    expect(screen.getByLabelText("Units")).toHaveTextContent("390119390");
+  });
+
+  it("shows actual times where TRUST reported, the train's position, then expected times", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(
+            body([
+              stop(
+                1,
+                "WIGANNW",
+                "Wigan North Western",
+                "origin",
+                { dep: "1214" },
+                {
+                  arrival: null,
+                  departure: { actual: "2026-11-02T12:22:00.000Z", minutesLate: 8, platform: "4" },
+                },
+              ),
+              stop(
+                2,
+                "PRST",
+                "Preston",
+                "intermediate",
+                { arr: "1236", dep: "1238" },
+                {
+                  arrival: null,
+                  departure: { actual: "2026-11-02T12:47:00.000Z", minutesLate: 9, platform: null },
+                },
+              ),
+              stop(3, "LANCSTR", "Lancaster", "destination", { arr: "1252" }, null),
+            ]),
+          ),
+        ),
+      ),
+    );
+    render(
+      <NewLayout>
+        <RunPopup
+          elementId="b"
+          displayName="Garstang"
+          tdArea="PX"
+          berth="0512"
+          onClose={() => {}}
+        />
+      </NewLayout>,
+    );
+
+    expect(await screen.findByText("12:47")).toHaveClass("run-popup__late");
+    // Wigan, behind the last stop called at, folds away.
+    expect(screen.queryByText("Wigan North Western")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "1 earlier stop" }));
+    expect(screen.getByText("Wigan North Western")).toBeInTheDocument();
+    expect(screen.getByText("Now: Garstang (PX 0512)")).toBeInTheDocument();
+    expect(screen.getByText("13:01")).toHaveClass("run-popup__expected");
+    expect(screen.getByText("Expected times assume the delay holds")).toBeInTheDocument();
+  });
+
+  it("shows booked times only when the API sends no TRUST times", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(body([stop(1, "PRST", "Preston", "origin", { dep: "1238" })])),
+        ),
+      ),
+    );
+    render(
+      <NewLayout>
+        <RunPopup elementId="b" displayName="0512" tdArea="PX" berth="0512" onClose={() => {}} />
+      </NewLayout>,
+    );
+
+    expect(await screen.findByText("12:38")).toBeInTheDocument();
+    expect(screen.queryByText("Actual")).not.toBeInTheDocument();
+  });
+});
+
+describe("RunPopup layout permission (2026-10-30)", () => {
+  it("shows the original layout without popup.new_layout, and the new one with it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(baseBody()))),
+    );
+    const popup = (
+      <RunPopup elementId="b" displayName="0512" tdArea="PX" berth="0512" onClose={() => {}} />
+    );
+    const { container, unmount } = render(popup);
+    await screen.findByText("2A16");
+    expect(container.querySelector(".map-inspector--classic")).toBeInTheDocument();
+    expect(screen.getByText("Headcode")).toBeInTheDocument();
+    unmount();
+
+    const again = render(<NewLayout>{popup}</NewLayout>);
+    await screen.findByText("2A16");
+    expect(again.container.querySelector(".map-inspector--new")).toBeInTheDocument();
+    expect(screen.getByText("2A16")).toHaveClass("run-popup__headcode");
+    expect(screen.getByText("Train details")).toBeInTheDocument();
+  });
+
+  it("shows the held-train estimate in the new layout too, and says expected times carry it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(
+            baseBody({
+              matchStatus: "matched",
+              positionScoped: true,
+              effective: {
+                locations: [
+                  {
+                    seqNo: 1,
+                    locationType: "origin",
+                    tiploc: "PRST",
+                    locationName: "Preston",
+                    arrivalPublic: null,
+                    arrivalWorking: null,
+                    departurePublic: "1400",
+                    departureWorking: "1400",
+                    passWorking: null,
+                    platform: "4",
+                    path: null,
+                    line: null,
+                    dayOffset: 0,
+                    running: null,
+                  },
+                ],
+              },
+              delay: {
+                minutesLate: 32,
+                band: "moderate",
+                estimated: true,
+                estimate: {
+                  basis: "held_in_berth",
+                  carried: false,
+                  standingSince: "2026-11-02T14:00:00.000Z",
+                },
+                lastReport: null,
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+    render(
+      <NewLayout>
+        <RunPopup elementId="b" displayName="0512" tdArea="PX" berth="0512" onClose={() => {}} />
+      </NewLayout>,
+    );
+
+    expect(await screen.findByText("Estimated")).toBeInTheDocument();
+    expect(screen.getByText("32 min late")).toBeInTheDocument();
+    expect(
+      screen.getByText("Standing since 14:00, longer than trains normally take here"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("14:32")).toHaveClass("run-popup__expected");
+    expect(screen.getByText("Expected times assume the estimated delay holds")).toBeInTheDocument();
   });
 });

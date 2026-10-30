@@ -333,6 +333,69 @@ describe("MapRenderer", () => {
     expect(container.querySelector(".map-inspector--run")).not.toBeInTheDocument();
   });
 
+  it("keeps the popup open and moves it with the train when it steps (sticky, 2026-10-30)", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const berth = /berths\/(\w+)\//.exec(url)![1];
+      return Promise.resolve(
+        jsonResponse({
+          tdArea: "PX",
+          berth,
+          description: "2A16",
+          headcode: "2A16",
+          occupancyEnteredAt: null,
+          matchStatus: "unmatched",
+          effective: null,
+          unitAllocation: [],
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const berthEl = (id: string, x: number, displayName: string) => ({
+      id,
+      layerId: "layer-visible",
+      zIndex: 0,
+      type: "berth" as const,
+      x,
+      y: 10,
+      width: 40,
+      height: 20,
+      textAlign: "center" as const,
+      fontSize: 12,
+      displayName,
+    });
+    const doc = bundle({
+      elementsById: {
+        "berth-1": berthEl("berth-1", 10, "Berth 1"),
+        "berth-2": berthEl("berth-2", 60, "Berth 2"),
+      },
+      berthBindingIndex: { "PX|0512": "berth-1", "PX|0514": "berth-2" },
+    });
+
+    const { container, rerender } = render(
+      <MapRenderer
+        bundle={doc}
+        berths={{ "berth-1": { description: "2A16", enteredAt: null } }}
+        signals={{}}
+      />,
+    );
+    fireEvent.click(screen.getByText("2A16"));
+    expect(await screen.findByText(/PX 0512/)).toBeInTheDocument();
+
+    rerender(
+      <MapRenderer
+        bundle={doc}
+        berths={{
+          "berth-1": { description: null, enteredAt: null },
+          "berth-2": { description: "2A16", enteredAt: null },
+        }}
+        signals={{}}
+      />,
+    );
+
+    expect(await screen.findByText(/PX 0514/)).toBeInTheDocument();
+    expect(container.querySelector(".map-inspector--run")).toBeInTheDocument();
+  });
+
   it("centerElementId centres the initial view on that element's (x, y), overriding the default view (Milestone 31)", () => {
     const doc = bundle({
       boundingBox: { minX: 0, minY: 0, maxX: 1000, maxY: 1000 },

@@ -91,6 +91,13 @@ export const PERMISSIONS = [
     label: "Headcode",
     description: "The headcode and when the train entered the berth. Without it there is no popup.",
   },
+  {
+    key: "popup.new_layout",
+    category: "popup",
+    label: "New popup layout",
+    description:
+      "The 2026-10-30 train popup: headcode header, journey timeline with live TRUST times, folded details, bottom sheet on phones. Without it, the original layout.",
+  },
   { key: "popup.delay", category: "popup", label: "Delay", description: "The delay line." },
   {
     key: "popup.delay_explanation",

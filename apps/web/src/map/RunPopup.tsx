@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { DELAY_BAND_COLORS } from "./delayBands.js";
+import type { FollowResult } from "./followTrain.js";
+import { useCan } from "../auth/permissions.js";
 
 /**
  * The live map's click-a-berth popup (docs/PROJECT_SPEC.md §5).
@@ -44,6 +46,18 @@ interface EffectiveLocation {
   path: string | null;
   line: string | null;
   dayOffset: number;
+  /** 2026-10-30: TRUST's reports here (`popup.delay`); absent when the API doesn't send them,
+   * `null` when nothing has been reported here yet. */
+  running?: {
+    arrival: LocationRunningReport | null;
+    departure: LocationRunningReport | null;
+  } | null;
+}
+
+interface LocationRunningReport {
+  actual: string;
+  minutesLate: number | null;
+  platform: string | null;
 }
 
 interface EffectiveActivation {
@@ -198,8 +212,12 @@ export interface RunPopupProps {
    * clock ticks several times a second, and re-fetching on every tick would hammer the API and
    * make the popup's content flicker between trains as the berth changes hands underneath it. A
    * click means "tell me about this train, at this moment"; the shown time stays put until the
-   * visitor closes it and clicks again. */
+   * visitor closes it and clicks again — or until the train steps (2026-10-30): the popup then
+   * moves to the berth it stepped into, asking about that berth at the instant shown then. */
   atIso?: string | null;
+  /** 2026-10-30 (sticky popup): set while the map can't tell which berth the train is in
+   * (`followTrain`). The popup keeps showing what it last knew, says so, and stops polling. */
+  lost?: FollowResult["lost"];
   onClose: () => void;
 }
 
@@ -277,8 +295,535 @@ export function lastReportText(report: NonNullable<PopupDelay["lastReport"]>): s
   return `${REPORT_KIND[report.eventKind]}${where}${when ? ` ${when}` : ""}${how ? `, ${how.toLowerCase()}` : ""}`;
 }
 
-/** Milestone 97c (docs/adr/0021): the delay line every visitor sees, marked when estimated. */
+/** 2026-10-30 (popup redesign): the delay explanation — why an estimate says what it says, and
+ * TRUST's last report. `null` when there's nothing to add to the headline. */
+function delayDetail(delay: PopupDelay): string | null {
+  let detail: string | null = null;
+  if (delay.estimated && delay.estimate) {
+    const since = hhmm(delay.estimate.standingSince);
+    detail = delay.estimate.carried
+      ? "Held earlier and not reported since"
+      : delay.estimate.basis === "timing_point"
+        ? `Still here after its booked departure${since ? `; standing since ${since}` : ""}`
+        : `Standing${since ? ` since ${since}` : ""}, longer than trains normally take here`;
+    if (delay.lastReport) detail += `. Last report: ${lastReportText(delay.lastReport)}`;
+  } else if (delay.lastReport) {
+    detail = `Last report: ${lastReportText(delay.lastReport)}`;
+  }
+  return detail;
+}
+
+/** Milestone 97c (docs/adr/0021): the delay line every visitor sees, marked when estimated.
+ * 2026-10-30 (popup redesign): drawn as a status pill in its band's colour, under the header. */
 export function DelayLine({ delay }: { delay: PopupDelay | null | undefined }): JSX.Element | null {
+  if (!delay) return null;
+  const headline = lateness(delay.minutesLate) ?? "No delay information";
+  const colours = delay.band === "none" ? null : DELAY_BAND_COLORS[delay.band];
+  const detail = delayDetail(delay);
+  return (
+    <div className="run-popup__delay" aria-label="Delay">
+      <span
+        className="run-popup__status-pill"
+        style={colours ? { background: colours.fill, borderColor: colours.stroke } : undefined}
+      >
+        {delay.estimated ? <strong>Estimated </strong> : null}
+        {delay.estimated ? headline.toLowerCase() : headline}
+      </span>
+      {detail ? <span className="run-popup__delay-detail">{detail}</span> : null}
+    </div>
+  );
+}
+
+function formatIso(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toISOString().replace("T", " ").slice(0, 16);
+}
+
+function formatLocation(tiploc: string | null, name: string | null): string {
+  if (!tiploc) return "—";
+  return name ? `${name} (${tiploc})` : tiploc;
+}
+
+/** docs/adr/0009: the "was X, changed at HH:MM" suffix for a revised origin/destination — never
+ * struck through here (owner request 2026-09-17, unlike openrail's own detail page); this is the
+ * live map's `originTiploc`/`destinationTiploc` already being the *current* value, with this just
+ * naming what it used to be. */
+function changeSuffix(change: EffectiveChangeDetail): string {
+  const was = change.previousTiploc
+    ? formatLocation(change.previousTiploc, change.previousName)
+    : "no scheduled value";
+  return ` (was ${was}, changed ${formatIso(change.changedAt)})`;
+}
+
+function variationText(m: EffectiveMovement): string {
+  const status = VARIATION_LABELS[m.variationStatus];
+  if (m.variationMinutes === null || m.variationMinutes === 0) return status;
+  return `${status} (${Math.abs(m.variationMinutes)} min)`;
+}
+
+/** 2026-10-30 (popup redesign): operators by their ATOC code, for the header. A code not listed
+ * shows as itself; the code is always in the details. */
+const OPERATOR_NAMES: Record<string, string> = {
+  AW: "Transport for Wales",
+  CC: "c2c",
+  CH: "Chiltern Railways",
+  CS: "Caledonian Sleeper",
+  EM: "East Midlands Railway",
+  GC: "Grand Central",
+  GN: "Great Northern",
+  GR: "LNER",
+  GW: "Great Western Railway",
+  GX: "Gatwick Express",
+  HT: "Hull Trains",
+  HX: "Heathrow Express",
+  IL: "Island Line",
+  LD: "Lumo",
+  LE: "Greater Anglia",
+  LM: "West Midlands Railway",
+  LO: "London Overground",
+  ME: "Merseyrail",
+  NT: "Northern",
+  SE: "Southeastern",
+  SN: "Southern",
+  SR: "ScotRail",
+  SW: "South Western Railway",
+  TL: "Thameslink",
+  TP: "TransPennine Express",
+  VT: "Avanti West Coast",
+  XC: "CrossCountry",
+  XR: "Elizabeth line",
+};
+
+/** A location's name for the timeline: the CORPUS name, else its TIPLOC. */
+function placeName(tiploc: string | null | undefined, name: string | null | undefined): string {
+  return name ?? tiploc ?? "—";
+}
+
+/** `HHMM` / `HHMMH` → minutes after midnight, or null. */
+function bookedMinutes(raw: string | null): number | null {
+  if (!raw) return null;
+  const digits = raw.replace(/H$/, "");
+  if (!/^\d{4}$/.test(digits)) return null;
+  return Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4));
+}
+
+function minutesToClock(total: number): string {
+  const m = ((total % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+interface JourneyRow {
+  loc: EffectiveLocation;
+  index: number;
+  isCall: boolean;
+  /** The booked time shown: departure, or arrival at the destination, or the pass. */
+  booked: string | null;
+  report: LocationRunningReport | null;
+}
+
+function journeyRows(locations: EffectiveLocation[]): JourneyRow[] {
+  return locations.map((loc, index) => {
+    const arrival = loc.arrivalPublic ?? loc.arrivalWorking;
+    const departure = loc.departurePublic ?? loc.departureWorking;
+    const isCall = arrival !== null || departure !== null;
+    const isDestination = loc.locationType === "destination";
+    const booked = !isCall
+      ? loc.passWorking
+      : isDestination
+        ? (arrival ?? departure)
+        : (departure ?? arrival);
+    const running = loc.running ?? null;
+    const report = !running
+      ? null
+      : isDestination
+        ? (running.arrival ?? running.departure)
+        : (running.departure ?? running.arrival);
+    return { loc, index, isCall, booked, report };
+  });
+}
+
+/**
+ * 2026-10-30 (owner request, popup redesign): the schedule as a journey — one row per stop with
+ * its platform, booked time and, when the API sends TRUST's reports (`running`), the actual time;
+ * stops still to come show an expected time carried forward from the current delay, marked as an
+ * estimate. Passing points and stops already well behind the train fold away. The train's
+ * position (the berth this popup is following) sits after the last reported stop. Replaces the
+ * old six-column table, which didn't fit a phone.
+ */
+function JourneyTimeline({
+  locations,
+  currentLate,
+  estimated,
+  nowLabel,
+}: {
+  locations: EffectiveLocation[];
+  currentLate: number | null;
+  /** The delay carried forward is Milestone 97's held-train estimate, not TRUST's own figure. */
+  estimated: boolean;
+  nowLabel: string;
+}): JSX.Element | null {
+  const [showPasses, setShowPasses] = useState(false);
+  const [showEarlier, setShowEarlier] = useState(false);
+  if (locations.length === 0) return null;
+
+  const rows = journeyRows(locations);
+  const hasRunning = locations.some((loc) => loc.running !== undefined);
+  let lastReported = -1;
+  for (const row of rows) if (row.report) lastReported = row.index;
+  const passCount = rows.filter((row) => !row.isCall).length;
+
+  // Stops behind the train fold to the last one it called at or passed.
+  const passedCalls = rows.filter((row) => row.isCall && row.index <= lastReported);
+  const keepFrom = passedCalls.length > 0 ? passedCalls[passedCalls.length - 1]!.index : -1;
+  const earlierCount = passedCalls.length - 1;
+  const visible = rows.filter(
+    (row) => (row.isCall || showPasses) && (showEarlier || row.index >= keepFrom),
+  );
+  const expectedLate = currentLate !== null && currentLate > 0 ? currentLate : null;
+  let showedExpected = false;
+
+  const items: JSX.Element[] = [];
+  visible.forEach((row, n) => {
+    const passed = row.index <= lastReported;
+    const late = row.report?.minutesLate ?? null;
+    let actual: JSX.Element | null = null;
+    if (row.report) {
+      actual = (
+        <span className={late !== null && late > 0 ? "run-popup__late" : "run-popup__ontime"}>
+          {hhmm(row.report.actual)}
+        </span>
+      );
+    } else if (!passed && hasRunning && expectedLate !== null) {
+      const booked = bookedMinutes(row.booked);
+      if (booked !== null) {
+        showedExpected = true;
+        actual = (
+          <span className="run-popup__expected" title="Expected, if the current delay holds">
+            {minutesToClock(booked + expectedLate)}
+          </span>
+        );
+      }
+    }
+    const platform = row.report?.platform ?? row.loc.platform;
+    items.push(
+      <li
+        key={row.loc.seqNo}
+        className={[
+          "run-popup__stop",
+          passed ? "run-popup__stop--passed" : "",
+          row.isCall ? "" : "run-popup__stop--pass",
+          row.loc.locationType === "origin" || row.loc.locationType === "destination"
+            ? "run-popup__stop--end"
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <span className="run-popup__stop-dot" aria-hidden="true" />
+        <span className="run-popup__stop-name">
+          {placeName(row.loc.tiploc, row.loc.locationName)}
+          {row.isCall ? null : <span className="run-popup__stop-tag"> passes</span>}
+        </span>
+        <span className="run-popup__stop-platform">
+          {platform ? <span className="run-popup__platform">{platform}</span> : null}
+        </span>
+        <span className="run-popup__stop-time">{formatTime(row.booked)}</span>
+        {hasRunning ? <span className="run-popup__stop-time">{actual}</span> : null}
+      </li>,
+    );
+    const next = visible[n + 1];
+    if (lastReported >= 0 && row.index <= lastReported && (!next || next.index > lastReported)) {
+      items.push(
+        <li key="now" className="run-popup__now">
+          <span className="run-popup__now-mark" aria-hidden="true" />
+          Now: {nowLabel}
+        </li>,
+      );
+    }
+  });
+
+  return (
+    <section className="run-popup__journey" aria-label="Journey">
+      <div
+        className={`run-popup__journey-head${hasRunning ? "" : " run-popup__journey-head--booked"}`}
+      >
+        <span />
+        <span>Calling at</span>
+        <span>Plat</span>
+        <span>Booked</span>
+        {hasRunning ? <span>Actual</span> : null}
+      </div>
+      {earlierCount > 0 ? (
+        <button type="button" className="run-popup__fold" onClick={() => setShowEarlier((v) => !v)}>
+          {showEarlier
+            ? "Hide earlier stops"
+            : `${earlierCount} earlier stop${earlierCount === 1 ? "" : "s"}`}
+        </button>
+      ) : null}
+      <ol className={`run-popup__stops${hasRunning ? "" : " run-popup__stops--booked"}`}>
+        {items}
+      </ol>
+      <div className="run-popup__journey-foot">
+        {passCount > 0 ? (
+          <button
+            type="button"
+            className="run-popup__fold"
+            onClick={() => setShowPasses((v) => !v)}
+          >
+            {showPasses
+              ? "Hide passing points"
+              : `Show ${passCount} passing point${passCount === 1 ? "" : "s"}`}
+          </button>
+        ) : (
+          <span />
+        )}
+        {showedExpected ? (
+          <span>
+            {estimated
+              ? "Expected times assume the estimated delay holds"
+              : "Expected times assume the delay holds"}
+          </span>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** One row of the details list. */
+function DetailRow({ term, children }: { term: string; children: ReactNode }): JSX.Element {
+  return (
+    <>
+      <dt>{term}</dt>
+      <dd>{children}</dd>
+    </>
+  );
+}
+
+/**
+ * 2026-10-30 (popup redesign): everything technical — schedule, match, TRUST, the latest raw
+ * report, revisions, candidates, garner's note — folded into one "Train details" section, each
+ * row still sent only with its own `popup.*` permission (Milestone 99). Unidentified trains open
+ * it, since the candidates are then the main content.
+ */
+function TrainDetails({ data }: { data: CurrentRunResponse }): JSX.Element | null {
+  const effective = data.effective;
+  const hasRoute = effective ? "originTiploc" in effective : false;
+  const rows: JSX.Element[] = [];
+  rows.push(
+    <DetailRow key="entered" term="Entered berth">
+      {formatIso(data.occupancyEnteredAt)}
+    </DetailRow>,
+  );
+  if (effective?.trainUid !== undefined && effective.stpIndicator !== undefined) {
+    rows.push(
+      <DetailRow key="schedule" term="Schedule">
+        {effective.trainUid} · {STP_LABELS[effective.stpIndicator] ?? effective.stpIndicator}
+      </DetailRow>,
+    );
+  }
+  if (effective && data.matchBasis !== undefined) {
+    rows.push(
+      <DetailRow key="basis" term="Picked by">
+        {data.matchBasis ? MATCH_BASIS_LABELS[data.matchBasis] : "—"}
+      </DetailRow>,
+    );
+  }
+  if (effective && hasRoute) {
+    rows.push(
+      <DetailRow key="operator" term="Operator">
+        {effective.operatorCode ?? "—"}
+      </DetailRow>,
+      <DetailRow key="origin" term="Origin">
+        {formatLocation(effective.originTiploc ?? null, effective.originName ?? null)}
+        {effective.originChange ? changeSuffix(effective.originChange) : ""}
+      </DetailRow>,
+      <DetailRow key="destination" term="Destination">
+        {formatLocation(effective.destinationTiploc ?? null, effective.destinationName ?? null)}
+        {effective.destinationChange ? changeSuffix(effective.destinationChange) : ""}
+      </DetailRow>,
+    );
+  }
+  if (effective?.serviceCode !== undefined) {
+    rows.push(
+      <DetailRow key="service" term="Service code">
+        {effective.serviceCode ?? "—"}
+      </DetailRow>,
+    );
+  }
+  if (effective?.activation) {
+    const a = effective.activation;
+    const change = effective.identityChange;
+    rows.push(
+      <DetailRow key="trust" term="TRUST ID">
+        {a.trustId}
+        {a.deduced ? " (deduced)" : ""}
+        {change
+          ? ` — now ${change.newTrustId} (changed ${formatIso(change.changedAt)})` +
+            (change.previousHeadcode && change.newHeadcode
+              ? ` — headcode ${change.previousHeadcode} → ${change.newHeadcode}`
+              : "")
+          : ""}
+      </DetailRow>,
+      <DetailRow key="activated" term="Activated">
+        {formatIso(a.activatedAt)}
+      </DetailRow>,
+      <DetailRow key="toc" term="TOC">
+        {a.tocId ?? "—"}
+      </DetailRow>,
+      <DetailRow key="wtt" term="WTT ID">
+        {a.scheduleWttId ?? "—"}
+      </DetailRow>,
+    );
+  }
+  const m = effective?.latestMovement;
+  if (m) {
+    rows.push(
+      <DetailRow key="report" term="Latest report">
+        {m.eventKind.replace("_", " ")}
+        {m.locName || m.locStanox ? ` at ${m.locName ?? m.locStanox}` : ""}
+        {m.platform ? ` (platform ${m.platform})` : ""}
+      </DetailRow>,
+      <DetailRow key="when" term="When">
+        {formatIso(m.actualTimestamp)}
+      </DetailRow>,
+      <DetailRow key="variation" term="Variation">
+        {variationText(m)}
+        {m.terminated ? " · terminated" : ""}
+      </DetailRow>,
+    );
+  }
+  if (data.unitAllocation && data.unitAllocation.length > 0) {
+    rows.push(
+      <DetailRow key="formation" term="Units">
+        {data.unitAllocation
+          .map((unit) => `${unit.unitNo} (${unit.fleetId}): ${unit.vehicles.join(" ")}`)
+          .join("; ")}
+      </DetailRow>,
+    );
+  }
+
+  const candidates = data.candidateSchedules;
+  const unidentified = !effective && candidates !== undefined;
+  return (
+    <details className="run-popup__details" open={unidentified}>
+      <summary>Train details</summary>
+      <dl>{rows}</dl>
+      {effective?.activation === null ? (
+        <p className="map-inspector__note">No TRUST activation seen for this schedule today.</p>
+      ) : null}
+      {candidates ? (
+        candidates.length > 0 ? (
+          <>
+            <p className="map-inspector__note">
+              {candidates.length} schedule{candidates.length === 1 ? "" : "s"} match headcode{" "}
+              {data.headcode} today:
+            </p>
+            <ul className="map-inspector__candidates">
+              {candidates.map((candidate) => (
+                <li key={candidate.scheduleId}>
+                  {candidate.trainUid} ·{" "}
+                  {STP_LABELS[candidate.stpIndicator] ?? candidate.stpIndicator}
+                  {candidate.isEffective ? " — effective" : ""}
+                  {candidate.activatedToday
+                    ? ` — activated${candidate.activationDeduced ? " (deduced)" : ""} as ${
+                        candidate.trustId
+                      }`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p className="map-inspector__note">
+            No garner schedule matches headcode {data.headcode} today.
+          </p>
+        )
+      ) : null}
+      {data.note ? <p className="map-inspector__note">{data.note}</p> : null}
+    </details>
+  );
+}
+
+/**
+ * 2026-10-30 (popup redesign): the train first — its headcode in the colour it has on the map,
+ * where it's going, who runs it and with what — then how late it is, the journey, and the details.
+ */
+function TrainCard({
+  data,
+  nowLabel,
+}: {
+  data: CurrentRunResponse;
+  nowLabel: string;
+}): JSX.Element {
+  const effective = data.effective;
+  const band = data.delay?.band;
+  const chip = band && band !== "none" ? DELAY_BAND_COLORS[band] : null;
+  const hasRoute = effective ? "originTiploc" in effective : false;
+  const title = hasRoute
+    ? `${placeName(effective?.originTiploc, effective?.originName)} → ${placeName(
+        effective?.destinationTiploc,
+        effective?.destinationName,
+      )}`
+    : data.matchStatus === "ambiguous"
+      ? "More than one possible train"
+      : data.matchStatus === "unmatched"
+        ? "Train not identified"
+        : null;
+  const operator = effective?.operatorCode
+    ? (OPERATOR_NAMES[effective.operatorCode] ?? effective.operatorCode)
+    : null;
+  // Sent only with `popup.formation` (empty without it), so the chips follow that permission.
+  const units = data.unitAllocation ?? [];
+  const currentLate =
+    data.delay?.minutesLate ?? effective?.latestMovement?.variationMinutes ?? null;
+
+  return (
+    <>
+      <header className="run-popup__header">
+        <span
+          className="run-popup__headcode"
+          style={chip ? { background: chip.fill, borderColor: chip.stroke } : undefined}
+        >
+          {data.headcode}
+        </span>
+        <div className="run-popup__heading">
+          {title ? <div className="run-popup__route">{title}</div> : null}
+          {operator ? <div className="run-popup__sub">{operator}</div> : null}
+          {units.length > 0 ? (
+            <div className="run-popup__units" aria-label="Units">
+              {units.map((unit) => (
+                <span key={`${unit.position}-${unit.unitNo}`} className="run-popup__unit">
+                  {unit.unitNo}
+                  <span className="run-popup__unit-fleet">{unit.fleetId}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </header>
+
+      <DelayLine delay={data.delay} />
+
+      {effective?.locations ? (
+        <JourneyTimeline
+          locations={effective.locations}
+          currentLate={currentLate}
+          estimated={data.delay?.estimated ?? false}
+          nowLabel={nowLabel}
+        />
+      ) : null}
+
+      <TrainDetails data={data} />
+    </>
+  );
+}
+
+// ---- Original layout (viewers without `popup.new_layout`) ----
+
+/** Milestone 97c (docs/adr/0021): the delay line every visitor sees, marked when estimated —
+ * the original popup layout (viewers without `popup.new_layout`). */
+function ClassicDelayLine({ delay }: { delay: PopupDelay | null | undefined }): JSX.Element | null {
   if (!delay) return null;
   const headline = lateness(delay.minutesLate) ?? "No delay information";
   const colours = delay.band === "none" ? null : DELAY_BAND_COLORS[delay.band];
@@ -313,38 +858,14 @@ export function DelayLine({ delay }: { delay: PopupDelay | null | undefined }): 
   );
 }
 
-function formatIso(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toISOString().replace("T", " ").slice(0, 16);
-}
-
-function formatLocation(tiploc: string | null, name: string | null): string {
-  if (!tiploc) return "—";
-  return name ? `${name} (${tiploc})` : tiploc;
-}
-
-/** docs/adr/0009: the "was X, changed at HH:MM" suffix for a revised origin/destination — never
- * struck through here (owner request 2026-09-17, unlike openrail's own detail page); this is the
- * live map's `originTiploc`/`destinationTiploc` already being the *current* value, with this just
- * naming what it used to be. */
-function changeSuffix(change: EffectiveChangeDetail): string {
-  const was = change.previousTiploc
-    ? formatLocation(change.previousTiploc, change.previousName)
-    : "no scheduled value";
-  return ` (was ${was}, changed ${formatIso(change.changedAt)})`;
-}
-
-function variationText(m: EffectiveMovement): string {
-  const status = VARIATION_LABELS[m.variationStatus];
-  if (m.variationMinutes === null || m.variationMinutes === 0) return status;
-  return `${status} (${Math.abs(m.variationMinutes)} min)`;
-}
-
 /** Shared by both the full and reduced (anonymous) views — the API sends identical location
  * objects either way, so there's nothing to withhold here beyond the section already not
  * appearing for a non-matched/anonymous request at all. */
-function LocationsTable({ locations }: { locations: EffectiveLocation[] }): JSX.Element | null {
+function ClassicLocationsTable({
+  locations,
+}: {
+  locations: EffectiveLocation[];
+}): JSX.Element | null {
   if (locations.length === 0) return null;
   return (
     <details className="map-inspector__schedule">
@@ -416,7 +937,7 @@ function UnitAllocationSection({
 }
 
 /** The schedule rows the API sent (Milestone 99: each is a permission of its own). */
-function EffectiveDetail({ data }: { data: CurrentRunResponse }): JSX.Element | null {
+function ClassicEffectiveDetail({ data }: { data: CurrentRunResponse }): JSX.Element | null {
   const effective = data.effective;
   if (!effective) return null;
   const hasRoute = "originTiploc" in effective;
@@ -514,7 +1035,58 @@ function EffectiveDetail({ data }: { data: CurrentRunResponse }): JSX.Element | 
         </dl>
       ) : null}
 
-      {effective.locations ? <LocationsTable locations={effective.locations} /> : null}
+      {effective.locations ? <ClassicLocationsTable locations={effective.locations} /> : null}
+    </>
+  );
+}
+
+/** The original popup body (before 2026-10-30), kept for viewers without `popup.new_layout`. */
+function ClassicTrainCard({ data }: { data: CurrentRunResponse }): JSX.Element {
+  return (
+    <>
+      <dl>
+        <dt>Headcode</dt>
+        <dd>{data.headcode}</dd>
+        <dt>Entered</dt>
+        <dd>{formatIso(data.occupancyEnteredAt)}</dd>
+      </dl>
+
+      <ClassicDelayLine delay={data.delay} />
+
+      {data.note ? <p className="map-inspector__note">{data.note}</p> : null}
+      <ClassicEffectiveDetail data={data} />
+
+      <UnitAllocationSection unitAllocation={data.unitAllocation} />
+
+      {data.candidateSchedules ? (
+        data.candidateSchedules.length > 0 ? (
+          <>
+            <p className="map-inspector__note">
+              {data.candidateSchedules.length} schedule
+              {data.candidateSchedules.length === 1 ? "" : "s"} match headcode {data.headcode}{" "}
+              today:
+            </p>
+            <ul className="map-inspector__candidates">
+              {data.candidateSchedules.map((candidate) => (
+                <li key={candidate.scheduleId}>
+                  {candidate.trainUid} ·{" "}
+                  {STP_LABELS[candidate.stpIndicator] ?? candidate.stpIndicator}
+                  {candidate.isEffective ? " — effective" : ""}
+                  {candidate.activatedToday
+                    ? ` — activated${candidate.activationDeduced ? " (deduced)" : ""} as ${
+                        candidate.trustId
+                      }`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p className="map-inspector__note">
+            No garner schedule matches headcode {data.headcode} today.
+          </p>
+        )
+      ) : null}
     </>
   );
 }
@@ -530,6 +1102,12 @@ interface MemberState {
   occupied: boolean | null;
 }
 
+const LOST_TEXT: Record<NonNullable<FollowResult["lost"]>, string> = {
+  gone: "This train has stepped off the map or into an unmapped berth. Showing what was last known; the popup picks it up again if it reappears.",
+  ambiguous:
+    "More than one berth on the map shows this headcode, so the popup can't tell which is this train. Showing what was last known.",
+};
+
 /** One member's fetched-and-settled detail, pure display — no fetching of its own. Split out from
  * the fetch loop (now owned by `RunPopup` itself, one effect for every member) so a combined
  * berth's members never double-fetch and the "don't show the shell until everything has settled"
@@ -538,11 +1116,15 @@ function RunPopupMemberSection({
   tdArea,
   berth,
   showHeading,
+  nowLabel,
+  newLayout,
   state,
 }: {
   tdArea: string;
   berth: string;
   showHeading: boolean;
+  nowLabel: string;
+  newLayout: boolean;
   state: MemberState;
 }): JSX.Element | null {
   if (!state.occupied) return null;
@@ -556,51 +1138,11 @@ function RunPopupMemberSection({
       ) : null}
       {error ? <p className="app-error">{error}</p> : null}
       {!error && data ? (
-        <>
-          <dl>
-            <dt>Headcode</dt>
-            <dd>{data.headcode}</dd>
-            <dt>Entered</dt>
-            <dd>{formatIso(data.occupancyEnteredAt)}</dd>
-          </dl>
-
-          <DelayLine delay={data.delay} />
-
-          {data.note ? <p className="map-inspector__note">{data.note}</p> : null}
-          <EffectiveDetail data={data} />
-
-          <UnitAllocationSection unitAllocation={data.unitAllocation} />
-
-          {data.candidateSchedules ? (
-            data.candidateSchedules.length > 0 ? (
-              <>
-                <p className="map-inspector__note">
-                  {data.candidateSchedules.length} schedule
-                  {data.candidateSchedules.length === 1 ? "" : "s"} match headcode {data.headcode}{" "}
-                  today:
-                </p>
-                <ul className="map-inspector__candidates">
-                  {data.candidateSchedules.map((candidate) => (
-                    <li key={candidate.scheduleId}>
-                      {candidate.trainUid} ·{" "}
-                      {STP_LABELS[candidate.stpIndicator] ?? candidate.stpIndicator}
-                      {candidate.isEffective ? " — effective" : ""}
-                      {candidate.activatedToday
-                        ? ` — activated${candidate.activationDeduced ? " (deduced)" : ""} as ${
-                            candidate.trustId
-                          }`
-                        : ""}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : (
-              <p className="map-inspector__note">
-                No garner schedule matches headcode {data.headcode} today.
-              </p>
-            )
-          ) : null}
-        </>
+        newLayout ? (
+          <TrainCard data={data} nowLabel={nowLabel} />
+        ) : (
+          <ClassicTrainCard data={data} />
+        )
       ) : null}
     </div>
   );
@@ -613,18 +1155,28 @@ export function RunPopup({
   berth,
   members,
   atIso = null,
+  lost = null,
   onClose,
 }: RunPopupProps): JSX.Element | null {
   const resolvedMembers = members && members.length > 0 ? members : [{ tdArea, berth }];
   const membersKey = resolvedMembers.map(memberKey).join(",");
   const [statesByKey, setStatesByKey] = useState<Record<string, MemberState>>({});
-  // Frozen at mount — see `atIso`'s own doc comment for why this doesn't follow the clock.
-  const [frozenAtIso] = useState<string | null>(atIso);
+  // Frozen per berth — see `atIso`'s own doc comment for why this doesn't follow the clock. When
+  // the train steps to another berth the instant is taken afresh, during that render.
+  const [frozen, setFrozen] = useState({ key: membersKey, atIso });
+  if (frozen.key !== membersKey) setFrozen({ key: membersKey, atIso });
+  const frozenAtIso = frozen.key === membersKey ? frozen.atIso : atIso;
   const isHistorical = frozenAtIso !== null;
+  // The members last shown in full. Kept on screen while a step's new berth is first fetched, so
+  // a step changes the popup's contents in place instead of blanking it.
+  const [shownMembers, setShownMembers] = useState<RunPopupMember[] | null>(null);
+  const paused = lost !== null;
+  const [expanded, setExpanded] = useState(false);
+  // 2026-10-30 (owner): the redesigned popup is its own permission; without it, the original.
+  const newLayout = useCan()("popup.new_layout");
 
   useEffect(() => {
     let cancelled = false;
-    setStatesByKey({});
 
     function fetchMember(member: RunPopupMember): void {
       const key = memberKey(member);
@@ -638,11 +1190,14 @@ export function RunPopup({
             // member" — either it genuinely isn't occupied any more, or (anonymous,
             // `NO_PUBLIC_DETAIL`) the match isn't solid enough to show publicly. This member's
             // own section just omits itself; the whole popup closes only once every member does.
+            // 2026-10-30: once shown, a member keeps its last answer — the train has usually just
+            // stepped, and the map moves the popup after it (`followTrain`).
             if (!cancelled) {
-              setStatesByKey((prev) => ({
-                ...prev,
-                [key]: { data: null, error: null, occupied: false },
-              }));
+              setStatesByKey((prev) =>
+                prev[key]?.data
+                  ? prev
+                  : { ...prev, [key]: { data: null, error: null, occupied: false } },
+              );
             }
             return null;
           }
@@ -671,6 +1226,13 @@ export function RunPopup({
         });
     }
 
+    // A lost popup keeps what it has: asking about its last berth now would describe whichever
+    // train has since entered it.
+    if (paused) {
+      return () => {
+        cancelled = true;
+      };
+    }
     for (const member of resolvedMembers) fetchMember(member);
     // Milestone 57: a historical answer can't change — the occupancy and its run link are
     // settled facts about a past instant, so polling would re-fetch identical rows forever. The
@@ -690,15 +1252,23 @@ export function RunPopup({
     // resolvedMembers/fetchMember are recreated every render — membersKey is the stable,
     // content-based dependency that actually decides when to restart polling (this project has
     // no react-hooks/exhaustive-deps lint rule configured to flag the omission). frozenAtIso and
-    // isHistorical never change after mount, so they add nothing to restart on.
-  }, [membersKey]);
+    // isHistorical change only with membersKey, so they add nothing to restart on.
+  }, [membersKey, paused]);
 
   const allSettled = resolvedMembers.every((m) => statesByKey[memberKey(m)] !== undefined);
   const anyOccupied = resolvedMembers.some((m) => statesByKey[memberKey(m)]?.occupied);
+  const ready = allSettled && anyOccupied;
 
   useEffect(() => {
-    if (allSettled && !anyOccupied) onClose();
-  }, [allSettled, anyOccupied, onClose]);
+    if (ready) setShownMembers(resolvedMembers);
+    // Only on reaching a fully answered member set, not for each render's fresh array.
+  }, [ready, membersKey]);
+
+  useEffect(() => {
+    // Nothing to show where it was opened. After a step, the new berth not answering (a public
+    // viewer's match there not being solid enough) leaves the previous berth's detail up instead.
+    if (allSettled && !anyOccupied && shownMembers === null) onClose();
+  }, [allSettled, anyOccupied, shownMembers, onClose]);
 
   // While every member's very first fetch is still in flight, render nothing at all rather than
   // a popup shell that might immediately vanish again. A non-solid public match 404s — usually
@@ -706,17 +1276,39 @@ export function RunPopup({
   // as the popup being broken, not as "nothing to show" (reported against PX 0218/0214,
   // 2026-09-14). Once every member has settled, later poll ticks never make this go back to
   // false, so this only ever hides the opening frame, not a refresh.
-  if (!allSettled || !anyOccupied) return null;
+  const displayMembers = ready ? resolvedMembers : shownMembers;
+  if (!displayMembers) return null;
 
   return (
-    <div role="status" className="map-inspector map-inspector--run">
+    <div
+      role="status"
+      className={[
+        "map-inspector",
+        "map-inspector--run",
+        newLayout ? "map-inspector--new" : "map-inspector--classic",
+        expanded ? "map-inspector--expanded" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className="map-inspector__title">
-        <span>
+        {/* 2026-10-30: on a phone the popup is a sheet along the bottom of the map, showing the
+            train's header until this handle opens it to the full height. Hidden on wider screens. */}
+        {newLayout ? (
+          <button
+            type="button"
+            className="map-inspector__handle"
+            aria-label={expanded ? "Show less" : "Show more"}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          />
+        ) : null}
+        <span className="map-inspector__berth">
           {displayName || elementId}
-          {resolvedMembers.length === 1 ? (
+          {displayMembers.length === 1 ? (
             <span className="map-inspector__subtitle">
               {" "}
-              · {resolvedMembers[0]!.tdArea} {resolvedMembers[0]!.berth}
+              · {displayMembers[0]!.tdArea} {displayMembers[0]!.berth}
             </span>
           ) : null}
           {/* Milestone 57: name the instant this describes. Without it a frozen popup is
@@ -725,20 +1317,32 @@ export function RunPopup({
             <span className="map-inspector__subtitle"> · at {formatLondonClock(frozenAtIso)}</span>
           ) : null}
         </span>
+        {newLayout && !lost ? (
+          <span className="map-inspector__following" title="The popup moves with the train">
+            Following
+          </span>
+        ) : null}
         <button type="button" className="map-inspector__close" aria-label="Close" onClick={onClose}>
           ×
         </button>
       </div>
       <div className="map-inspector__body">
-        {resolvedMembers.map((member) => {
+        {lost ? <p className="map-inspector__lost">{LOST_TEXT[lost]}</p> : null}
+        {displayMembers.map((member) => {
           const state = statesByKey[memberKey(member)];
           if (!state) return null;
+          const nowLabel =
+            displayName && displayName !== member.berth
+              ? `${displayName} (${member.tdArea} ${member.berth})`
+              : `${member.tdArea} ${member.berth}`;
           return (
             <RunPopupMemberSection
               key={memberKey(member)}
               tdArea={member.tdArea}
               berth={member.berth}
-              showHeading={resolvedMembers.length > 1}
+              showHeading={displayMembers.length > 1}
+              nowLabel={nowLabel}
+              newLayout={newLayout}
               state={state}
             />
           );

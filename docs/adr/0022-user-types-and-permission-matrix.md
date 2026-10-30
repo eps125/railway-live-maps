@@ -72,6 +72,7 @@ to start if the registry and the table disagree.
 | `popup.candidates`         | The candidate schedules list.                                                                                                                                                 |
 | `popup.trust`              | TRUST ID, activation, TOC, WTT ID, identity changes.                                                                                                                          |
 | `popup.latest_report`      | The latest TRUST movement report.                                                                                                                                             |
+| `popup.new_layout`         | The redesigned train popup (added 2026-10-30, migration 0058): headcode header, journey timeline with per-stop TRUST times, folded details. Granted to no type; Admin has it. |
 | **Editor**                 |                                                                                                                                                                               |
 | `editor.view`              | Opening the editor and reading drafts, revisions, diff, validate, editor state, S-Class definitions for binding.                                                              |
 | `maps.edit`                | Saving drafts, berth actions.                                                                                                                                                 |

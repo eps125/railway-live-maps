@@ -28,6 +28,11 @@ import { apiError } from "../lib/queryRange.js";
 import { popupDelay, type PopupDelay } from "../lib/popupDelay.js";
 import { locationToJson, type CifLocationRowLike } from "./schedule.js";
 import { can, GUEST_VIEWER, type Viewer } from "../lib/viewer.js";
+import {
+  matchRunningToLocations,
+  type LocationRunning,
+  type RunMovementRow,
+} from "../lib/runningTimes.js";
 
 export interface CurrentRunRoutesDeps {
   pool: Pool;
@@ -223,7 +228,13 @@ interface EffectiveScheduleFull {
     correction: boolean;
     nextReportStanox: string | null;
   } | null;
-  locations: (ReturnType<typeof locationToJson> & { locationName: string | null })[];
+  locations: (ReturnType<typeof locationToJson> & {
+    locationName: string | null;
+    /** 2026-10-30: what TRUST reported here — only with `popup.new_layout` (the only layout that
+     * shows it) and `popup.delay` as well as `popup.calling_points`, the same lateness the delay
+     * line already shows; `null` when nothing has been reported here (yet). */
+    running?: LocationRunning | null;
+  })[];
 }
 
 /**
@@ -612,6 +623,29 @@ export async function registerCurrentRunRoutes(
           ).rows[0];
         }
 
+        // 2026-10-30 (popup live running): every report of this run, for the per-stop actual
+        // times. Same bounds as `latestMovement` above (the run's trust ids, within the run, and
+        // known by `at` in playback); only fetched when the viewer may see them.
+        // Shown only in the redesigned popup, so only fetched for its viewers.
+        const showRunning =
+          can(viewer, "popup.new_layout") &&
+          can(viewer, "popup.calling_points") &&
+          can(viewer, "popup.delay");
+        let runMovements: RunMovementRow[] = [];
+        const stanoxByTiploc = new Map<string, string>();
+        if (activation && showRunning) {
+          runMovements = (
+            await pool.query<RunMovementRow>(
+              `select loc_stanox, platform, actual_timestamp, planned_timestamp,
+                      timetable_variation, flags, created
+               from trust_movement
+               where trust_id = any($1::text[]) and ${withinTrustRun("created", "$2::timestamptz")}
+                 and ($3::timestamptz is null or created <= $3::timestamptz)`,
+              [trustChanges?.trustIdChain ?? [activation.trust_id], activation.created, at],
+            )
+          ).rows;
+        }
+
         // TIPLOC / STANOX -> human-readable names (CORPUS mirror, location_reference). Includes
         // any revised origin/destination/calling-point tiplocs docs/adr/0009 resolved above, so
         // they're named in this same query rather than a second round trip.
@@ -631,6 +665,14 @@ export async function registerCurrentRunRoutes(
             [[...tiplocsNeeded]],
           );
           for (const row of nameResult.rows) if (row.name) nameByTiploc.set(row.tiploc, row.name);
+          if (runMovements.length > 0) {
+            const stanoxResult = await pool.query<{ tiploc: string; stanox: string }>(
+              `select tiploc, stanox from location_reference
+               where tiploc = any($1::text[]) and stanox is not null`,
+              [[...tiplocsNeeded]],
+            );
+            for (const row of stanoxResult.rows) stanoxByTiploc.set(row.tiploc, row.stanox);
+          }
         }
         let movementLocationName: string | null = null;
         if (latestMovement?.loc_stanox) {
@@ -818,15 +860,20 @@ export async function registerCurrentRunRoutes(
                   nextReportStanox: latestMovement.next_report_stanox,
                 }
               : null,
-          locations: locations.map((row) => {
-            const change = locationChangeByOriginalTiploc.get(row.tiploc_code);
-            const tiploc = change?.tiploc ?? row.tiploc_code;
-            return {
-              ...locationToJson(row),
-              tiploc,
-              locationName: nameByTiploc.get(tiploc) ?? null,
-            };
-          }),
+          locations: (() => {
+            const shaped = locations.map((row) => {
+              const change = locationChangeByOriginalTiploc.get(row.tiploc_code);
+              const tiploc = change?.tiploc ?? row.tiploc_code;
+              return {
+                ...locationToJson(row),
+                tiploc,
+                locationName: nameByTiploc.get(tiploc) ?? null,
+              };
+            });
+            if (!showRunning) return shaped;
+            const running = matchRunningToLocations(shaped, runMovements, stanoxByTiploc);
+            return shaped.map((loc, i) => ({ ...loc, running: running[i] ?? null }));
+          })(),
         };
       }
 

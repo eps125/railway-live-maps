@@ -334,6 +334,15 @@ export const MAP_CSS_TOKENS = {
   tunnelStroke: "--map-tunnel-stroke",
   waterStroke: "--map-water-stroke",
   neutralSectionBoardStroke: "--map-neutral-section-board-stroke",
+  // 2026-10-30 (light-mode audit, owner-approved): a shade per background for colours that keep
+  // their meaning — a signal's green is still "off", a delay band still its band — but whose dark-
+  // theme value has too little contrast on the near-white map. Unset in dark mode.
+  signalGreen: "--map-signal-green",
+  platformStroke: "--map-platform-stroke",
+  delayOnTimeStroke: "--map-delay-on-time-stroke",
+  delayMinorStroke: "--map-delay-minor-stroke",
+  delayModerateStroke: "--map-delay-moderate-stroke",
+  delaySevereStroke: "--map-delay-severe-stroke",
 } as const;
 
 /** `var(--token, fallback)` — the renderer's way to paint a themeable colour. */

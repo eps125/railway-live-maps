@@ -54,6 +54,7 @@ import {
 import type { BerthState, SignalState } from "./types.js";
 import { DELAY_BAND_COLORS, type DelayBand } from "./delayBands.js";
 import { RunPopup } from "./RunPopup.js";
+import { followTrain, type FollowResult, type FollowedTrain } from "./followTrain.js";
 import {
   LiveCells,
   bandCell,
@@ -170,6 +171,21 @@ export function boundaryLinkUrl(
   return url;
 }
 
+/** 2026-10-30 (light-mode audit): each band's edge is a lighter tint of its fill — right on the
+ * dark map, lost on the light one, which darkens it instead (`--map-delay-*-stroke`). */
+const DELAY_STROKE_TOKENS = {
+  on_time: "delayOnTimeStroke",
+  minor: "delayMinorStroke",
+  moderate: "delayModerateStroke",
+  severe: "delaySevereStroke",
+} as const satisfies Record<DelayBand, keyof typeof MAP_CSS_TOKENS>;
+
+/** 2026-10-30 (light-mode audit): a signal's green ("off") in a deeper shade on the light map,
+ * where the dark theme's green is too pale to read. Still only the bound bit's state (rule 9). */
+function themedSignalColour(colour: string): string {
+  return colour === MAP_STYLE.signal.stateColors.off ? mapColour("signalGreen", colour) : colour;
+}
+
 /** Occupied vs vacant. Every occupied berth is the one light blue — run-match colouring was
  * removed with the berth-run resolver (ADR 0002) and there's no matched/ambiguous distinction
  * worth showing until run↔schedule correlation is rebuilt. */
@@ -183,7 +199,10 @@ function berthColors(
       stroke: mapColour("berthEmptyStroke", "#2d3644"),
     };
   }
-  if (delayBand) return DELAY_BAND_COLORS[delayBand];
+  if (delayBand) {
+    const band = DELAY_BAND_COLORS[delayBand];
+    return { fill: band.fill, stroke: mapColour(DELAY_STROKE_TOKENS[delayBand], band.stroke) };
+  }
   return { fill: mapColour("berthFill", "#3d7fc4"), stroke: mapColour("berthStroke", "#6aa4de") };
 }
 
@@ -202,7 +221,8 @@ function renderPlatform(
         key={element.id}
         points={element.points.map((p) => `${p.x},${p.y}`).join(" ")}
         fill="var(--map-platform-fill, #ffa500)"
-        stroke="none"
+        stroke={mapColour("platformStroke", "none")}
+        strokeWidth={0.75}
       />
     );
   }
@@ -232,7 +252,8 @@ function renderPlatform(
       width={Math.max(maxX - minX, MAP_STYLE.platform.numberBox)}
       height={MAP_STYLE.platform.height}
       fill="var(--map-platform-fill, #ffa500)"
-      stroke="none"
+      stroke={mapColour("platformStroke", "none")}
+      strokeWidth={0.75}
     />
   );
 }
@@ -767,7 +788,7 @@ function renderSignal(
   state: SignalState["state"],
   showNumber: boolean,
 ): JSX.Element {
-  const color = signalColor(element.signalType, state);
+  const color = themedSignalColour(signalColor(element.signalType, state));
   const r = MAP_STYLE.signal.radius;
   const geometry = signalPostGeometry(element);
 
@@ -1476,7 +1497,14 @@ export function MapRenderer({
   }
   const [scale, setScale] = useState(view.current.scale);
   const [windowPx, setWindowPx] = useState({ w: NOMINAL_WIDTH, h: NOMINAL_HEIGHT });
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  // 2026-10-30: the open run popup follows its train from berth to berth (`followTrain`).
+  const [selection, setSelection] = useState<{
+    train: FollowedTrain;
+    lost: FollowResult["lost"];
+    /** Which click opened it: a new click is a new popup, a step keeps the same one. */
+    opened: number;
+  } | null>(null);
+  const selectedElementId = selection?.train.elementId ?? null;
 
   const gesture = useRef<
     | { kind: "drag"; startX: number; startY: number; origin: MapView }
@@ -1875,7 +1903,19 @@ export function MapRenderer({
     return rects;
   }, [elements, bundle]);
 
-  const selectBerth = useCallback((id: string) => setSelectedElementId(id), []);
+  // Read when a berth is clicked, to learn which train the popup is about.
+  const berthsRef = useRef(berths);
+  berthsRef.current = berths;
+  const opens = useRef(0);
+  const selectBerth = useCallback(
+    (id: string) =>
+      setSelection({
+        train: { elementId: id, headcode: berthsRef.current[id]?.description ?? null },
+        lost: null,
+        opened: (opens.current += 1),
+      }),
+    [],
+  );
 
   // Milestone 94 (fix 2): a large map draws only what is within about a window of the view.
   const cullIndex = useMemo(
@@ -1927,6 +1967,16 @@ export function MapRenderer({
   }, [berthsInfo]);
   useLayoutEffect(() => {
     synced.current = syncCells(cells, berthsInfo, synced.current, liveRecords);
+    // The live records are patched in place, so this runs after every update, not on a change.
+    if (selection) {
+      const next = followTrain(selection.train, berths, berthsInfo);
+      if (next.elementId !== selection.train.elementId || next.lost !== selection.lost)
+        setSelection({
+          ...selection,
+          train: { ...selection.train, elementId: next.elementId },
+          lost: next.lost,
+        });
+    }
   });
 
   // The map's content: rebuilt only when the bundle, the drawn region or a display setting
@@ -2125,7 +2175,7 @@ export function MapRenderer({
       {selectedElementId && selectedMembers && selectedMembers.length > 0 ? (
         // docs/PROJECT_SPEC.md §5: "Click a populated berth to open a train/run popup".
         <RunPopup
-          key={selectedElementId}
+          key={selection?.opened}
           elementId={selectedElementId}
           displayName={
             selectedElement?.type === "berth" ? selectedElement.displayName : selectedElementId
@@ -2134,7 +2184,8 @@ export function MapRenderer({
           berth={selectedMembers[0]!.berth}
           members={selectedMembers}
           atIso={atIso}
-          onClose={() => setSelectedElementId(null)}
+          lost={selection?.lost ?? null}
+          onClose={() => setSelection(null)}
         />
       ) : null}
     </div>

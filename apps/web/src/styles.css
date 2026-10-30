@@ -94,12 +94,14 @@
 
   --map-background: #f6f8fa;
   --map-track: #6e7781;
-  --map-berth-empty-fill: #ffffff;
-  --map-berth-empty-stroke: #c3cbd4;
+  /* 2026-10-30 (owner): vacant berths a light grey rather than white, so they read as boxes
+   * on the near-white map instead of holes in it. */
+  --map-berth-empty-fill: #e3e8ee;
+  --map-berth-empty-stroke: #c6ced7;
   --map-berth-fill: #3d7fc4;
   --map-berth-stroke: #2a64a3;
   --map-berth-text: #04101f;
-  --map-berth-empty-text: #8c959f;
+  --map-berth-empty-text: #6e7781;
   --map-signal-post: #57606a;
   --map-signal-number: #57606a;
   --map-signal-cutout: #f6f8fa;
@@ -109,8 +111,20 @@
   --map-trts-lit: #f5f7fa;
   --map-label-text: #24292f;
   --map-boundary-marker: #57606a;
-  --map-station-label: #0969da;
+  /* 2026-10-30 (owner): station names near-black, as on a printed diagram, rather than blue; the
+   * bold weight already sets them apart from other labels. */
+  --map-station-label: #1f2328;
   --map-platform-number-border: #8c959f;
+  /* 2026-10-30 (light-mode audit, owner-approved): a deeper signal green (4.2:1 on the map, was
+   * 2.4:1), a less glaring platform orange with a fine edge, and delay-berth edges darker than
+   * their fill instead of lighter. Meanings unchanged. */
+  --map-signal-green: #1f883d;
+  --map-platform-fill: #f0960a;
+  --map-platform-stroke: #c77a00;
+  --map-delay-on-time-stroke: #1a7f37;
+  --map-delay-minor-stroke: #9a7b00;
+  --map-delay-moderate-stroke: #bc4c00;
+  --map-delay-severe-stroke: #a40e26;
   --map-tunnel-fill: #d8dee4;
   --map-tunnel-stroke: #6e7781;
   --map-viaduct-color: #8a7a66;
@@ -800,20 +814,18 @@ legend {
   font-size: 0.72rem;
 }
 
-/* Milestone 97c: the popup's delay line — band swatch, headline, and a one-line explanation. */
-.run-popup__delay .map-page__delay-swatch {
-  margin-right: 0.4rem;
-  vertical-align: baseline;
-}
-
-.run-popup__delay-detail {
-  display: block;
-  margin-top: 0.2rem;
-  color: var(--color-text-faint);
+/* 2026-10-30 (popup redesign): the run popup's top bar is quiet — which berth, whether it's
+ * following, close — and the train itself is the heading below it. */
+.map-inspector--new .map-inspector__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   font-size: 0.72rem;
+  color: var(--color-text-muted);
 }
 
-.map-inspector__title {
+/* The original popup (viewers without `popup.new_layout`): the berth as a mono accent heading. */
+.map-inspector--classic .map-inspector__title {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -823,6 +835,35 @@ legend {
   color: var(--color-accent-hover);
 }
 
+.map-inspector--classic .map-inspector__berth {
+  white-space: normal;
+}
+
+.map-inspector__berth {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.map-inspector__following {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--color-success);
+}
+
+.map-inspector__following::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .map-inspector__close {
   flex: none;
   border: none;
@@ -830,7 +871,7 @@ legend {
   padding: 0 0.2rem;
   margin: -0.1rem -0.15rem 0 0;
   line-height: 1;
-  font-size: 1.1rem;
+  font-size: 1.2rem;
   font-family: inherit;
   color: var(--color-text-faint);
   cursor: pointer;
@@ -845,38 +886,48 @@ legend {
   color: var(--color-text-faint);
 }
 
+/* Only on a phone (see the media query below). */
+.map-inspector__handle {
+  display: none;
+}
+
 .map-inspector--run {
   min-width: 280px;
-  max-width: 360px;
-  max-height: 80vh;
+  max-width: calc(100% - 24px);
+  /* 2026-10-30: the height of the map frame it sits in, less its 12px inset top and bottom. It
+   * was 80vh — taller than the frame on a phone, whose header and toolbar take the rest of the
+   * screen, so the frame's `overflow: hidden` cut off the last lines. */
+  max-height: calc(100% - 24px);
   overflow-y: auto;
+  overscroll-behavior: contain;
   /* The title bar (with the close button) manages its own padding below, sticky to the top of
    * this scrolling box, so it never scrolls out of view — see `.map-inspector--run
    * .map-inspector__title`. */
   padding: 0;
 }
 
+/* 2026-10-30 (sticky popup): the train can't be followed just now. */
+.map-inspector__lost {
+  margin: 0 0 0.6rem;
+  padding: 0.4rem 0.55rem;
+  border-left: 3px solid var(--color-warning);
+  background: var(--color-bg-inset);
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+}
+
 .map-inspector--run .map-inspector__title {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 0.75rem 0.9rem;
+  padding: 0.5rem 0.9rem;
   background: var(--color-overlay);
   backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .map-inspector--run .map-inspector__body {
-  padding: 0.75rem 0.9rem;
-}
-
-.map-inspector--run dl {
-  padding-bottom: 0.4rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.map-inspector--run dl:last-of-type {
-  border-bottom: none;
+  padding: 0.75rem 0.9rem 0.6rem;
 }
 
 /* Combined berths (Milestone 50): each occupied member's section, successively, with a divider
@@ -884,16 +935,45 @@ legend {
  * a gap left by a vacant member (which renders nothing, not a hidden placeholder), so the
  * divider count always matches what's really on screen. */
 .map-inspector__member + .map-inspector__member {
-  margin-top: 0.6rem;
-  padding-top: 0.6rem;
-  border-top: 1px dashed var(--color-border-subtle);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--color-border);
 }
 
 .map-inspector__member-heading {
-  margin: 0 0 0.3rem;
+  margin: 0 0 0.4rem;
   font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.map-inspector--classic .map-inspector__member-heading {
+  margin: 0 0 0.3rem;
+  font-size: inherit;
   font-weight: 600;
   color: var(--color-accent-hover);
+}
+
+.map-inspector--classic dl {
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.map-inspector--classic dl:last-of-type {
+  border-bottom: none;
+}
+
+/* Original layout: the delay line's band swatch, and the schedule table. */
+.map-inspector--classic .run-popup__delay .map-page__delay-swatch {
+  margin-right: 0.4rem;
+  vertical-align: baseline;
+}
+
+.map-inspector--classic .run-popup__delay-detail {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
 }
 
 .map-inspector__schedule {
@@ -964,11 +1044,381 @@ legend {
   color: var(--color-text-faint);
 }
 
+.map-inspector--new {
+  width: 360px;
+}
+
+.map-inspector--classic {
+  max-width: min(360px, calc(100% - 24px));
+}
+
+/* 2026-10-30 (owner): the units, one chip each, under the headcode and route. */
+.run-popup__units {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.3rem;
+}
+
+.run-popup__unit {
+  padding: 0 0.35rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-inset);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+.run-popup__unit-fleet {
+  margin-left: 0.25rem;
+  color: var(--color-text-faint);
+}
+
+/* The train: headcode chip (in its colour on the map), route, operator and units. */
+.run-popup__header {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.run-popup__headcode {
+  flex: none;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--map-berth-stroke, #6aa4de);
+  border-radius: var(--radius-sm);
+  background: var(--map-berth-fill, #3d7fc4);
+  color: #04101f;
+  font-family: var(--font-mono);
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.run-popup__heading {
+  min-width: 0;
+}
+
+.run-popup__route {
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--color-text);
+}
+
+.run-popup__sub {
+  margin-top: 0.1rem;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+}
+
+/* Milestone 97c, restyled 2026-10-30: the delay as a pill in its band's colour, with the
+ * explanation (an estimate's working, the last TRUST report) beside or under it. */
+.map-inspector--new .run-popup__delay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.5rem;
+  margin-top: 0.65rem;
+}
+
+.run-popup__status-pill {
+  padding: 0.1rem 0.55rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-inset);
+  color: #04101f;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.run-popup__status-pill:not([style]) {
+  color: var(--color-text);
+}
+
+.map-inspector--new .run-popup__delay-detail {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+}
+
+/* 2026-10-30 (owner request): the schedule as a journey timeline. Five columns: a dot on the
+ * line, the stop, platform, booked and actual/expected time (four without TRUST times). */
+.run-popup__journey {
+  margin-top: 0.75rem;
+  font-size: 0.78rem;
+}
+
+.run-popup__journey-head,
+.run-popup__stop {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 2.1rem 2.9rem 2.9rem;
+  align-items: center;
+  gap: 0 0.4rem;
+}
+
+.run-popup__journey-head--booked,
+.run-popup__stops--booked .run-popup__stop {
+  grid-template-columns: 14px minmax(0, 1fr) 2.1rem 2.9rem;
+}
+
+.run-popup__journey-head {
+  padding-bottom: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+}
+
+.run-popup__stops {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-popup__stop {
+  position: relative;
+  min-height: 1.6rem;
+}
+
+/* The line joining the dots. */
+.run-popup__stop::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--color-border);
+}
+
+.run-popup__stop:first-child::before {
+  top: 50%;
+}
+
+.run-popup__stop:last-child::before {
+  bottom: 50%;
+}
+
+.run-popup__stop-dot {
+  position: relative;
+  justify-self: center;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--color-text-faint);
+  border-radius: 50%;
+  background: var(--color-bg-panel);
+}
+
+.run-popup__stop--end .run-popup__stop-dot {
+  border-radius: 2px;
+}
+
+.run-popup__stop--pass .run-popup__stop-dot {
+  width: 6px;
+  height: 6px;
+  border-width: 1px;
+}
+
+.run-popup__stop--passed .run-popup__stop-dot {
+  border-color: var(--color-text-faint);
+  background: var(--color-text-faint);
+}
+
+.run-popup__stop-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+.run-popup__stop--passed .run-popup__stop-name,
+.run-popup__stop--pass .run-popup__stop-name {
+  color: var(--color-text-muted);
+}
+
+.run-popup__stop-tag {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+}
+
+.run-popup__stop-platform {
+  text-align: center;
+}
+
+.run-popup__platform {
+  display: inline-block;
+  min-width: 1.3rem;
+  padding: 0 0.2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.3;
+}
+
+.run-popup__stop-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.run-popup__stop--passed .run-popup__stop-time,
+.run-popup__stop--pass .run-popup__stop-time {
+  color: var(--color-text-muted);
+}
+
+.run-popup__late {
+  color: var(--color-danger);
+}
+
+.run-popup__ontime {
+  color: var(--color-success);
+}
+
+.run-popup__expected {
+  color: var(--color-warning);
+  font-style: italic;
+}
+
+/* Where the train is now: between the last reported stop and the next. */
+.run-popup__now {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 1.5rem;
+  padding-left: 1px;
+  color: var(--color-accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.run-popup__now::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--color-border);
+}
+
+.run-popup__now-mark {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+
+.run-popup__fold {
+  padding: 0.15rem 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.run-popup__fold:hover {
+  text-decoration: underline;
+}
+
+.run-popup__journey-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+}
+
+/* Everything technical, folded. */
+.run-popup__details {
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 0.74rem;
+}
+
+.run-popup__details summary {
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.run-popup__details dl {
+  margin-top: 0.4rem;
+}
+
+.run-popup__details dd {
+  overflow-wrap: anywhere;
+}
+
 .map-inspector__candidates {
   margin: 0.3rem 0 0;
   padding-left: 1rem;
   font-size: 0.72rem;
   color: var(--color-text-faint);
+}
+
+/* 2026-10-30: on a phone the popup is a sheet along the bottom of the map rather than a card
+ * over its top-right — it starts at the train's header and status, so most of the map stays in
+ * view, and the handle opens it to (almost) the frame's full height. */
+@media (max-width: 600px) {
+  .map-inspector--new {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    max-height: 42%;
+    border-width: 1px 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    transition: max-height 0.2s ease;
+  }
+
+  .map-inspector--new.map-inspector--expanded {
+    max-height: calc(100% - 12px);
+  }
+
+  .map-inspector--new .map-inspector__title {
+    padding-top: 0.9rem;
+  }
+
+  .map-inspector__handle {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 2.5rem;
+    height: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+  }
+
+  .map-inspector__handle::after {
+    content: "";
+    position: absolute;
+    top: 0.35rem;
+    left: calc(50% + 1.25rem);
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-border);
+    transform: translateX(-50%);
+  }
+
+  .map-inspector__close {
+    position: relative;
+    z-index: 1;
+  }
 }
 
 /* ---------------------------------------------------------------------------------------------

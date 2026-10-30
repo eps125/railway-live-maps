@@ -336,7 +336,8 @@ may not see is left out of the response (removed server-side, not hidden by the 
   `serviceCode`, `category`, `originChange`, `destinationChange`;
 - `popup.trust` → `effective.activation`, `identityChange`;
 - `popup.latest_report` → `effective.latestMovement`;
-- `popup.calling_points` → `effective.locations`;
+- `popup.calling_points` → `effective.locations`; with `popup.new_layout` and `popup.delay` as
+  well, each location also carries `running` (2026-10-30, below);
 - `popup.delay` → `delay` (otherwise `null`); `popup.delay_explanation` → its `estimate` and
   `lastReport` (below);
 - `popup.candidates` → `candidateSchedules`;
@@ -476,7 +477,15 @@ report. Empty when garner has nothing allocated for the matched train today.
         "locationType": "origin",
         "tiploc": "PRST",
         "locationName": "Preston",
-        "...": "..."
+        "...": "...",
+        "running": {
+          "arrival": null,
+          "departure": {
+            "actual": "2026-08-10T10:01:00.000Z",
+            "minutesLate": 3,
+            "platform": "4"
+          }
+        }
       }
     ]
   },
@@ -491,6 +500,15 @@ report. Empty when garner has nothing allocated for the matched train today.
   ]
 }
 ```
+
+`effective.locations[].running` (2026-10-30, popup live running): what TRUST reported at that
+calling point for this run — `arrival` and `departure` (a pass is reported as a departure), each
+`{ actual, minutesLate, platform }` or `null`; `running` itself is `null` where nothing has been
+reported (yet), and absent without the permissions above. Reports are pinned to a calling point by
+STANOX (via each TIPLOC's CORPUS entry) and, where a STANOX covers several points of the schedule,
+by the booked working time closest to the report's planned time; a later report for the same point
+replaces an earlier one. Reports at a STANOX the schedule doesn't call at are left out. Bounded like
+`latestMovement` (the run's TRUST ids, within the run, known by `at` in playback).
 
 ### `GET /api/v1/td/areas/{area}/s-class/events?from=&to=&after=&limit=`
 

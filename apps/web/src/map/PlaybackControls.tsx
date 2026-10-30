@@ -13,8 +13,22 @@ export interface PlaybackControlsProps {
   onSpeed: (speed: number) => void;
   onJump: (atMs: number) => void;
   onStep: (deltaMs: number) => void;
-  onReturnToLive: () => void;
 }
+
+const CLOCK_TIME = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+const CLOCK_DATE = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
 
 /** `datetime-local` value (no seconds, no tz) from an ISO instant, in the browser's local zone
  * — self-hosted deployments run the browser in Europe/London, matching docs' render zone. */
@@ -63,16 +77,21 @@ function WarningIcon(): JSX.Element {
 
 /**
  * docs/PROJECT_SPEC.md §5 "Playback": choose a date/time and jump to it, pause/resume, step
- * ±10s/±1m/±10m, pick a speed, a persistent "Historical playback" indicator, return to live, and
- * a warning wherever the recorder had a feed gap.
+ * ±10s/±1m/±10m, pick a speed, and a warning wherever the recorder had a feed gap. The persistent
+ * "Historical playback" indicator and the way back to live are the toolbar's Live / Playback
+ * switch (MapView), with the status also announced here.
+ *
+ * 2026-10-30 (owner: the controls took half a phone's screen): one compact bar — play/pause, the
+ * clock in large type, speed and a calendar button, then the step buttons; "Go to" opens from the
+ * calendar button. On a phone the bar sits under the map; on a computer it is one line above it.
  *
  * Owner, 2026-10-10: the list of outages is for admins only (the API sends `gaps` to no one
  * else), behind a toggle they can minimise (remembered in this browser); everyone else sees one
- * small orange warning that data may be incomplete, with no details. On a computer the controls
- * sit on one line (see `.playback` in styles.css); phones keep the rows.
+ * small orange warning that data may be incomplete, with no details.
  */
 export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
   const [pending, setPending] = useState<string | null>(null);
+  const [goToOpen, setGoToOpen] = useState(false);
   const [gapsOpen, setGapsOpen] = useState<boolean>(readGapsOpen);
   const gapCount = props.quality.gaps.length;
 
@@ -83,55 +102,80 @@ export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
     });
   }
   const inputValue = pending ?? toLocalInputValue(props.atIso);
+  const at = new Date(props.atIso);
 
   return (
     <div className="playback" aria-label="Historical playback controls">
-      <div className="playback__row">
-        <span className="playback__badge" role="status">
-          Historical playback
-        </span>
-        {/* Play/Pause sits with "Return to live" rather than the step buttons (owner,
-            2026-09-30): the two controls used most, together at the top. */}
+      <span className="visually-hidden" role="status">
+        Historical playback
+      </span>
+      <div className="playback__main">
         <button
           type="button"
-          className="playback__btn"
+          className="playback__play"
           onClick={props.playing ? props.onPause : props.onPlay}
           disabled={props.loading || (props.atLiveEdge && !props.playing)}
           aria-pressed={props.playing}
+          aria-label={props.playing ? "Pause" : "Play"}
         >
-          {props.playing ? "Pause" : "Play"}
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            {props.playing ? (
+              <path d="M4 3h3v10H4zM9 3h3v10H9z" fill="currentColor" />
+            ) : (
+              <path d="M4.5 2.5v11l9-5.5z" fill="currentColor" />
+            )}
+          </svg>
         </button>
-        <button type="button" className="playback__btn" onClick={props.onReturnToLive}>
-          Return to live
-        </button>
-      </div>
-
-      <div className="playback__row">
-        <label className="playback__field">
-          <span>Go to</span>
-          <input
-            type="datetime-local"
-            value={inputValue}
-            onChange={(e) => setPending(e.target.value)}
-            aria-label="Playback date and time"
-          />
-        </label>
+        <div className="playback__clock" aria-live="polite">
+          <span className="playback__time">
+            {Number.isNaN(at.getTime()) ? props.atIso : CLOCK_TIME.format(at)}
+          </span>
+          <span className="playback__date">
+            {Number.isNaN(at.getTime()) ? "" : CLOCK_DATE.format(at)}
+            {props.atLiveEdge ? " · caught up to live" : ""}
+          </span>
+        </div>
+        <select
+          className="playback__speed"
+          value={props.speed}
+          onChange={(e) => props.onSpeed(Number(e.target.value))}
+          aria-label="Playback speed"
+        >
+          {PLAYBACK_SPEEDS.map((s) => (
+            <option key={s} value={s}>
+              {s}×
+            </option>
+          ))}
+        </select>
         <button
           type="button"
-          className="playback__btn"
-          disabled={!pending}
-          onClick={() => {
-            if (!pending) return;
-            const ms = new Date(pending).getTime();
-            if (!Number.isNaN(ms)) props.onJump(ms);
-            setPending(null);
-          }}
+          className="playback__btn playback__icon-btn"
+          aria-label="Go to a time"
+          aria-expanded={goToOpen}
+          onClick={() => setGoToOpen((open) => !open)}
         >
-          Jump
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect
+              x="2"
+              y="3"
+              width="12"
+              height="11"
+              rx="1.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+            />
+            <path
+              d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
         </button>
       </div>
 
-      <div className="playback__row">
+      <div className="playback__steps">
         {PLAYBACK_STEPS_MS.map((s) => (
           <button
             key={s.label}
@@ -143,23 +187,33 @@ export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
             {s.label}
           </button>
         ))}
-        <label className="playback__field">
-          <span>Speed</span>
-          <select
-            value={props.speed}
-            onChange={(e) => props.onSpeed(Number(e.target.value))}
-            aria-label="Playback speed"
-          >
-            {PLAYBACK_SPEEDS.map((s) => (
-              <option key={s} value={s}>
-                {s}×
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
-      {/* Before the clock, so on one line it sits with the controls and the clock stays last. */}
+      {goToOpen ? (
+        <div className="playback__row playback__goto">
+          <input
+            type="datetime-local"
+            value={inputValue}
+            onChange={(e) => setPending(e.target.value)}
+            aria-label="Playback date and time"
+          />
+          <button
+            type="button"
+            className="playback__btn"
+            disabled={!pending}
+            onClick={() => {
+              if (!pending) return;
+              const ms = new Date(pending).getTime();
+              if (!Number.isNaN(ms)) props.onJump(ms);
+              setPending(null);
+              setGoToOpen(false);
+            }}
+          >
+            Jump
+          </button>
+        </div>
+      ) : null}
+
       {gapCount === 0 && props.quality.incomplete && (
         <p className="playback__warning" role="note">
           <WarningIcon />
@@ -179,11 +233,6 @@ export function PlaybackControls(props: PlaybackControlsProps): JSX.Element {
           <span className="playback__warning-action">{gapsOpen ? "Hide" : "Show"}</span>
         </button>
       )}
-
-      <div className="playback__clock" aria-live="polite">
-        {new Date(props.atIso).toLocaleString("en-GB", { timeZone: "Europe/London" })}
-        {props.atLiveEdge ? " — caught up to live" : ""}
-      </div>
 
       {gapCount > 0 && gapsOpen && (
         <ul id="playback-gaps" className="playback__gaps" aria-label="Feed gap warnings">

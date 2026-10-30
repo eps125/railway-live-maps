@@ -15,23 +15,25 @@ function setup(overrides: Partial<PlaybackControlsProps> = {}): PlaybackControls
     onSpeed: vi.fn(),
     onJump: vi.fn(),
     onStep: vi.fn(),
-    onReturnToLive: vi.fn(),
     ...overrides,
   };
 }
 
 describe("PlaybackControls", () => {
-  it("shows the persistent Historical playback indicator and a Return to live button", () => {
+  it("announces Historical playback and shows the London clock (the way back to live is the toolbar's)", () => {
     const props = setup();
     render(<PlaybackControls {...props} />);
     expect(screen.getByRole("status")).toHaveTextContent("Historical playback");
-    fireEvent.click(screen.getByRole("button", { name: "Return to live" }));
-    expect(props.onReturnToLive).toHaveBeenCalledOnce();
+    expect(screen.getByText("10:30:00")).toBeInTheDocument();
+    expect(screen.getByText(/3 Sept? 2026/)).toBeInTheDocument();
   });
 
   it("Jump is disabled until the time input changes, then calls onJump with the chosen ms", () => {
     const props = setup();
     render(<PlaybackControls {...props} />);
+    // 2026-10-30: "Go to" opens from the calendar button.
+    expect(screen.queryByRole("button", { name: "Jump" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Go to a time" }));
     const jump = screen.getByRole("button", { name: "Jump" });
     expect(jump).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Playback date and time"), {

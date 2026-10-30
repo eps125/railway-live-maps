@@ -224,7 +224,7 @@ describe("MapView", () => {
     const { container } = render(<MapView slug="lancaster" centerBoundaryName="Preston PSB" />);
     await screen.findByText("2A16");
 
-    const svg = container.querySelector("svg")!;
+    const svg = container.querySelector(".map-frame svg")!;
     const [x, y, width, height] = svg
       .closest(".map-frame__scroll")!
       .getAttribute("data-view")!
@@ -245,7 +245,7 @@ describe("MapView", () => {
     const { container } = render(<MapView slug="lancaster" centerBoundaryName="Shap Summit" />);
     await screen.findByText("2A16");
 
-    const svg = container.querySelector("svg")!;
+    const svg = container.querySelector(".map-frame svg")!;
     const [x, y, width, height] = svg
       .closest(".map-frame__scroll")!
       .getAttribute("data-view")!
@@ -270,7 +270,7 @@ describe("MapView", () => {
 
     // No throw, no alert — just the ordinary default view (bounding-box centre).
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    const svg = container.querySelector("svg")!;
+    const svg = container.querySelector(".map-frame svg")!;
     const [x, y, width, height] = svg
       .closest(".map-frame__scroll")!
       .getAttribute("data-view")!
@@ -307,7 +307,7 @@ describe("MapView", () => {
       expect(screen.getByRole("img", { name: /carlisle schematic map/i })).toBeInTheDocument(),
     );
 
-    const svg = container.querySelector("svg")!;
+    const svg = container.querySelector(".map-frame svg")!;
     await waitFor(() => {
       const [x, y, width, height] = svg
         .closest(".map-frame__scroll")!
@@ -320,31 +320,31 @@ describe("MapView", () => {
   });
 });
 
-describe("MapView — admin S-Class panel and boundary playback (Milestone 65)", () => {
-  function stubFetch(): ReturnType<typeof vi.fn> {
-    const fetchMock = vi.fn((url: string) => {
-      if (url.includes("/definition")) return Promise.resolve(jsonResponse(definition));
-      if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
-      if (url.includes("/events")) {
-        return Promise.resolve(jsonResponse({ events: [], nextCursor: null }));
-      }
-      if (url.includes("/snapshot")) {
-        return Promise.resolve(
-          jsonResponse({
-            at: new Date().toISOString(),
-            bytes: [],
-            changes: [],
-            truncated: false,
-            definitions: [],
-          }),
-        );
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    return fetchMock;
-  }
+function stubFetch(): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn((url: string) => {
+    if (url.includes("/definition")) return Promise.resolve(jsonResponse(definition));
+    if (url.includes("/state")) return Promise.resolve(jsonResponse(state));
+    if (url.includes("/events")) {
+      return Promise.resolve(jsonResponse({ events: [], nextCursor: null }));
+    }
+    if (url.includes("/snapshot")) {
+      return Promise.resolve(
+        jsonResponse({
+          at: new Date().toISOString(),
+          bytes: [],
+          changes: [],
+          truncated: false,
+          definitions: [],
+        }),
+      );
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
 
+describe("MapView — admin S-Class panel and boundary playback (Milestone 65)", () => {
   it("offers the S-Class button only with map.s_class_panel", async () => {
     stubFetch();
     const { unmount } = render(<MapView slug="lancaster" />);
@@ -414,7 +414,9 @@ describe("MapView — admin S-Class panel and boundary playback (Milestone 65)",
         ),
       ).toBe(true),
     );
-    expect(screen.queryByText("Live")).toBeNull();
+    // In playback the toolbar's Live is the way back, not a live status.
+    expect(screen.getByRole("button", { name: "Return to live" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /Live/ })).toBeNull();
   });
 
   it("uses the arrival speed only for the first playback, not after returning to live", async () => {
@@ -450,5 +452,46 @@ describe("writePlaybackParams (2026-09-30: playback survives a refresh)", () => 
     writePlaybackParams({ atIso: "2026-09-29T13:32:41Z", speed: 1, playing: false });
     expect(new URL(window.location.href).searchParams.has("play")).toBe(false);
     expect(window.history.length).toBe(before);
+  });
+});
+
+/** 2026-10-30 (owner: on a phone half the screen was buttons and panels). */
+describe("MapView compact chrome", () => {
+  it("shows the short notice on the map only without map.hide_notice", async () => {
+    stubFetch();
+    const basic = render(<MapView slug="lancaster" />);
+    await screen.findByText("2A16");
+    expect(
+      screen.getByText("For information only, not for safety critical use."),
+    ).toBeInTheDocument();
+    basic.unmount();
+
+    render(<MapView slug="lancaster" />, [...GUEST, "map.hide_notice"]);
+    await screen.findByText("2A16");
+    expect(screen.queryByText("For information only, not for safety critical use.")).toBeNull();
+  });
+
+  it("opens the delay key from the map's Key chip while delay colours are on", async () => {
+    stubFetch();
+    window.localStorage.setItem("rlm.delayColours", "true");
+    const { container } = render(<MapView slug="lancaster" />);
+    await screen.findByText("2A16");
+    expect(container.querySelector(".map-page__key-pop")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Key" }));
+    expect(container.querySelector(".map-page__key-pop .map-page__delay-key")).not.toBeNull();
+    window.localStorage.removeItem("rlm.delayColours");
+  });
+
+  it("opens and closes the options sheet from its button", async () => {
+    stubFetch();
+    const { container } = render(<MapView slug="lancaster" />, ADMIN);
+    await screen.findByText("2A16");
+    const button = screen.getByRole("button", { name: "Map options" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(button);
+    expect(container.querySelector(".map-page__options--open")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "S-Class" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close map options" }));
+    expect(container.querySelector(".map-page__options--open")).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CompiledMapBundle } from "@railway/map-schema";
 import { useCan } from "../auth/permissions.js";
 import { useMapData } from "./useMapData.js";
@@ -9,6 +9,48 @@ import { PLAYBACK_SPEEDS, usePlayback } from "./usePlayback.js";
 import { SClassMiniPanel } from "./SClassMiniPanel.js";
 import { DelayKey } from "./DelayKey.js";
 import { matchDelayBands, useDelayBands } from "./delayBands.js";
+import { SHORT_NOTICE } from "../notice.js";
+
+/**
+ * 2026-10-30 (owner request: on a phone half the screen was buttons and panels): the map and what
+ * floats over it — a "Key" chip that opens the delay colour key, and the short unofficial notice
+ * (only without `map.hide_notice`, owner's choice; the full notice is always in the header menu
+ * and the map options).
+ */
+function MapStage({
+  children,
+  delayColours,
+  showNotice,
+}: {
+  children: ReactNode;
+  delayColours: boolean;
+  showNotice: boolean;
+}): JSX.Element {
+  const [keyOpen, setKeyOpen] = useState(false);
+  return (
+    <div className="map-page__stage">
+      {children}
+      {showNotice ? <p className="map-page__notice">{SHORT_NOTICE}</p> : null}
+      {delayColours ? (
+        <div className="map-page__key">
+          {keyOpen ? (
+            <div className="map-page__key-pop">
+              <DelayKey />
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="map-page__key-btn"
+            aria-expanded={keyOpen}
+            onClick={() => setKeyOpen((open) => !open)}
+          >
+            Key
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export interface MapViewProps {
   slug: string;
@@ -220,6 +262,15 @@ export function MapView({
     });
   }
 
+  // 2026-10-30: on a phone the checkboxes, key and S-Class open from one options button.
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const showNotice = !can("map.hide_notice");
+  function returnToLive(): void {
+    clearPlaybackParams();
+    setArrivalPlayback(null);
+    setPlaybackFrom(null);
+  }
+
   if (loading && !definition) {
     return <p className="app-loading">Loading map…</p>;
   }
@@ -248,58 +299,120 @@ export function MapView({
 
   return (
     <section className="map-page" aria-label="Live map">
+      {/* 2026-10-30: one row — the map's name, Live / Playback, and (on a phone) an options
+          button; on a wider screen the options sit in the row itself. */}
       <div className="map-page__toolbar">
         <span className="map-page__title">{definition.definition.mapName}</span>
-        {playbackFrom === null ? (
-          <>
+        <div className="map-page__modes" role="group" aria-label="Live or playback">
+          {playbackFrom === null ? (
             <LiveStatusBanner
               connectionStatus={connectionStatus}
               qualityStatus={state?.quality.status ?? "unknown"}
             />
-            {canPlayback ? (
+          ) : (
+            <button
+              type="button"
+              className="map-page__mode map-page__mode--live"
+              aria-label="Return to live"
+              onClick={returnToLive}
+            >
+              <span className="status-banner__dot" aria-hidden="true" />
+              Live
+            </button>
+          )}
+          {canPlayback ? (
+            playbackFrom === null ? (
               <button
                 type="button"
-                className="map-page__mode-btn"
+                className="map-page__mode"
                 onClick={() => setPlaybackFrom(Date.now() - 15 * 60_000)}
               >
                 Playback
               </button>
-            ) : null}
-          </>
-        ) : null}
-        {/* The checkboxes are one group: on a phone it is always the second row, whatever the map
-            name's length, with the delay key under it (2026-10-29: on MROC Blackpool Workstation
-            the long name pushed a checkbox onto a row of its own). On a wider screen the group's
-            box disappears (`display: contents`) and they sit in the toolbar as before. */}
-        <div className="map-page__toggles">
-          <label className="map-page__toggle">
-            <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
-            Show empty berths
-          </label>
-          {canDelayColours ? (
-            <label className="map-page__toggle">
-              <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
-              Delay colours
-            </label>
-          ) : null}
-          {canSignalNumbers ? (
-            <label className="map-page__toggle">
-              <input type="checkbox" checked={signalNumbersChosen} onChange={toggleSignalNumbers} />
-              Signal numbers
-            </label>
+            ) : (
+              <span className="map-page__mode map-page__mode--playback">Playback</span>
+            )
           ) : null}
         </div>
-        {delayColours ? <DelayKey /> : null}
-        {canSClassPanel ? (
-          <button
-            type="button"
-            className="map-page__mode-btn"
-            aria-pressed={sClassOpen}
-            onClick={toggleSClass}
-          >
-            S-Class
-          </button>
+        <button
+          type="button"
+          className="map-page__options-btn"
+          aria-label="Map options"
+          aria-expanded={optionsOpen}
+          aria-controls="map-options"
+          onClick={() => setOptionsOpen((open) => !open)}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M3 5h8M15 5h2M3 10h2M9 10h8M3 15h10M17 15h0"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+            />
+            <circle cx="13" cy="5" r="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+            <circle cx="7" cy="10" r="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+            <circle cx="15" cy="15" r="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+          </svg>
+        </button>
+        {optionsOpen ? (
+          <div
+            className="map-page__options-backdrop"
+            aria-hidden="true"
+            onClick={() => setOptionsOpen(false)}
+          />
         ) : null}
+        {/* On a wider screen this box disappears (`display: contents`) and its controls sit in
+            the toolbar; on a phone it is a sheet from the bottom, opened by the options button. */}
+        <div
+          id="map-options"
+          className={`map-page__options${optionsOpen ? " map-page__options--open" : ""}`}
+        >
+          {/* 2026-10-30 (owner): closed with an X (or a tap outside), not a Done button. */}
+          <div className="map-page__options-head">
+            <span>Map options</span>
+            <button
+              type="button"
+              className="map-page__options-close"
+              aria-label="Close map options"
+              onClick={() => setOptionsOpen(false)}
+            >
+              ×
+            </button>
+          </div>
+          <div className="map-page__toggles">
+            <label className="map-page__toggle">
+              <input type="checkbox" checked={showEmptyBerths} onChange={toggleEmptyBerths} />
+              Show empty berths
+            </label>
+            {canDelayColours ? (
+              <label className="map-page__toggle">
+                <input type="checkbox" checked={delayColours} onChange={toggleDelayColours} />
+                Delay colours
+              </label>
+            ) : null}
+            {canSignalNumbers ? (
+              <label className="map-page__toggle">
+                <input
+                  type="checkbox"
+                  checked={signalNumbersChosen}
+                  onChange={toggleSignalNumbers}
+                />
+                Signal numbers
+              </label>
+            ) : null}
+          </div>
+          {delayColours ? <DelayKey /> : null}
+          {canSClassPanel ? (
+            <button
+              type="button"
+              className="map-page__mode-btn"
+              aria-pressed={sClassOpen}
+              onClick={toggleSClass}
+            >
+              S-Class
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {playbackFrom === null ? (
@@ -312,21 +425,23 @@ export function MapView({
         // identity, navigating from one map to another left it centred on whatever the previous
         // map's mount had computed (in practice: the new map's plain bounding-box centre, not the
         // requested boundary/search point). The key forces a genuine remount on every map change.
-        <MapRenderer
-          key={definition.definition.mapId}
-          bundle={definition.definition}
-          berths={state?.berths ?? {}}
-          signals={state?.signals ?? {}}
-          crossings={state?.crossings ?? {}}
-          routes={state?.routes ?? {}}
-          trts={state?.trts ?? {}}
-          showEmptyBerths={showEmptyBerths}
-          showSignalNumbers={showSignalNumbers}
-          delayBands={liveDelayBands}
-          centerElementId={resolvedCenterElementId}
-          highlightElementIds={highlight}
-          syncViewWithUrl
-        />
+        <MapStage delayColours={delayColours} showNotice={showNotice}>
+          <MapRenderer
+            key={definition.definition.mapId}
+            bundle={definition.definition}
+            berths={state?.berths ?? {}}
+            signals={state?.signals ?? {}}
+            crossings={state?.crossings ?? {}}
+            routes={state?.routes ?? {}}
+            trts={state?.trts ?? {}}
+            showEmptyBerths={showEmptyBerths}
+            showSignalNumbers={showSignalNumbers}
+            delayBands={liveDelayBands}
+            centerElementId={resolvedCenterElementId}
+            highlightElementIds={highlight}
+            syncViewWithUrl
+          />
+        </MapStage>
       ) : (
         <PlaybackView
           slug={slug}
@@ -337,6 +452,7 @@ export function MapView({
           showEmptyBerths={showEmptyBerths}
           showSignalNumbers={showSignalNumbers}
           delayColours={delayColours}
+          showNotice={showNotice}
           centerElementId={resolvedCenterElementId}
           highlight={highlight}
           sClassPanel={
@@ -351,11 +467,6 @@ export function MapView({
                 )
               : null
           }
-          onReturnToLive={() => {
-            clearPlaybackParams();
-            setArrivalPlayback(null);
-            setPlaybackFrom(null);
-          }}
         />
       )}
       {playbackFrom === null && canSClassPanel && sClassOpen ? (
@@ -379,11 +490,11 @@ interface PlaybackViewProps {
   showEmptyBerths: boolean;
   showSignalNumbers: boolean;
   delayColours: boolean;
+  showNotice: boolean;
   centerElementId: string | null;
   highlight: string[];
   /** The admin S-Class mini explorer, given the playback clock — or null when closed. */
   sClassPanel: ((atIso: string) => JSX.Element) | null;
-  onReturnToLive: () => void;
 }
 
 function PlaybackView({
@@ -395,10 +506,10 @@ function PlaybackView({
   showEmptyBerths,
   showSignalNumbers,
   delayColours,
+  showNotice,
   centerElementId,
   highlight,
   sClassPanel,
-  onReturnToLive,
 }: PlaybackViewProps): JSX.Element {
   // A speed carried in a URL is only honoured if it's one the controls offer.
   const speed = (PLAYBACK_SPEEDS as readonly number[]).includes(initialSpeed) ? initialSpeed : 1;
@@ -431,30 +542,31 @@ function PlaybackView({
         onSpeed={pb.setSpeed}
         onJump={pb.jumpTo}
         onStep={pb.step}
-        onReturnToLive={onReturnToLive}
       />
       {pb.error ? (
         <p role="alert" className="app-error">
           {pb.error}
         </p>
       ) : null}
-      <MapRenderer
-        key={bundle.mapId}
-        bundle={bundle}
-        berths={pb.berths}
-        signals={pb.signals}
-        crossings={pb.crossings}
-        routes={pb.routes}
-        trts={pb.trts}
-        showEmptyBerths={showEmptyBerths}
-        showSignalNumbers={showSignalNumbers}
-        delayBands={delayBands}
-        atIso={pb.atIso}
-        centerElementId={centerElementId}
-        highlightElementIds={highlight}
-        playbackLink={{ atIso: pb.atIso, speed: pb.speed, playing: pb.playing }}
-        syncViewWithUrl
-      />
+      <MapStage delayColours={delayColours} showNotice={showNotice}>
+        <MapRenderer
+          key={bundle.mapId}
+          bundle={bundle}
+          berths={pb.berths}
+          signals={pb.signals}
+          crossings={pb.crossings}
+          routes={pb.routes}
+          trts={pb.trts}
+          showEmptyBerths={showEmptyBerths}
+          showSignalNumbers={showSignalNumbers}
+          delayBands={delayBands}
+          atIso={pb.atIso}
+          centerElementId={centerElementId}
+          highlightElementIds={highlight}
+          playbackLink={{ atIso: pb.atIso, speed: pb.speed, playing: pb.playing }}
+          syncViewWithUrl
+        />
+      </MapStage>
       {sClassPanel ? sClassPanel(pb.atIso) : null}
     </>
   );

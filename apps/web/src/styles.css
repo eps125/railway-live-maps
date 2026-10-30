@@ -265,6 +265,31 @@ a {
   border-color: var(--color-border);
 }
 
+/* 2026-10-30: the header is one slim row — the name, the links, the theme switch. On a phone the
+   links fold into a menu (below); these two only show there. */
+.app-header {
+  position: relative;
+}
+
+.app-header__brand h1 {
+  font-weight: 700;
+}
+
+.app-nav {
+  margin-left: auto;
+  align-items: center;
+}
+
+.app-nav__theme {
+  order: 2;
+}
+
+.app-header__menu-btn,
+.app-header__menu-backdrop,
+.app-nav__notice {
+  display: none;
+}
+
 .app-main {
   flex: 1;
   min-height: 0;
@@ -679,58 +704,352 @@ legend {
   border-color: var(--color-accent);
 }
 
-/* Phones (owner report 2026-09-29, 360 px wide): the nav used to refuse to shrink, so an admin's
-   five links pushed the whole page ~770 px wide and squeezed the title onto four lines. On a
-   narrow screen the nav drops below the title and wraps, and the map toolbar stacks: title and
-   status first, then the toggles, then the delay key on its own line. */
+/* 2026-10-30 (owner: on a phone half the screen was buttons and panels). The map page is the
+   toolbar row, the map, and — in playback — one compact bar. The map's options (checkboxes,
+   delay key, S-Class) sit in the toolbar on a wider screen and in a sheet on a phone. */
+.map-page__toolbar {
+  flex-wrap: nowrap;
+  gap: 0.6rem;
+  padding: 0.4rem 1.25rem;
+}
+
+.map-page__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Live / Playback, as one switch. */
+.map-page__modes {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-panel);
+  overflow: hidden;
+}
+
+.map-page__modes .status-banner,
+.map-page__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.7rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+button.map-page__mode {
+  cursor: pointer;
+}
+
+button.map-page__mode:hover {
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+}
+
+.map-page__modes .status-banner--ok {
+  color: var(--color-success);
+  background: var(--color-bg-inset);
+}
+
+.map-page__mode--live .status-banner__dot {
+  color: var(--color-text-faint);
+}
+
+.map-page__mode--playback {
+  background: #7a4d00;
+  color: #ffd9a0;
+}
+
+:root[data-theme="light"] .map-page__mode--playback {
+  background: #fff1d6;
+  color: #7a4d00;
+}
+
+/* Wider screens: the options are part of the toolbar row; the delay key is the map's Key chip. */
+.map-page__options {
+  display: contents;
+}
+
+.map-page__options-btn,
+.map-page__options-backdrop,
+.map-page__options-head,
+.map-page__options > .map-page__delay-key {
+  display: none;
+}
+
+.map-page__options-btn {
+  flex: none;
+  margin-left: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+  color: var(--color-text);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.map-page__options-btn svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+/* The map, with the Key chip and the short notice floating over it. */
+.map-page__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 2026-10-30 (owner): plain grey text in the map's bottom-left corner, no box. */
+.map-page__notice {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 2;
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  pointer-events: none;
+}
+
+.map-page__key {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+.map-page__key-btn {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-overlay);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-panel);
+}
+
+.map-page__key-pop {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-overlay);
+  box-shadow: var(--shadow-panel);
+}
+
+.map-page__key-pop .map-page__delay-key {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
 @media (max-width: 600px) {
+  /* Header: the name, the theme switch and a menu button; the links drop down from it. */
   .app-header {
-    flex-wrap: wrap;
-    gap: 0.35rem 1rem;
-    padding: 0.5rem 0.75rem;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+  }
+
+  .app-header__brand h1 {
+    font-size: 1rem;
+  }
+
+  .app-nav__theme {
+    order: 0;
+    margin-left: auto;
+  }
+
+  .app-header__menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-panel);
+    color: var(--color-text);
+    font-size: 1rem;
+    cursor: pointer;
   }
 
   .app-nav {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0.75rem;
+    z-index: 40;
+    flex-direction: column;
+    align-items: stretch;
     gap: 0.15rem;
+    min-width: 13rem;
+    max-width: calc(100% - 1.5rem);
+    padding: 0.4rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-panel);
+    box-shadow: var(--shadow-panel);
+  }
+
+  .app-nav--open {
+    display: flex;
+  }
+
+  /* Tapping anywhere else closes the menu. */
+  .app-header__menu-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 39;
   }
 
   .app-nav__link {
-    padding: 0.3rem 0.5rem;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.9rem;
+    text-align: left;
   }
 
+  .app-nav__notice {
+    display: block;
+    margin: 0.3rem 0 0;
+    padding: 0.5rem 0.7rem 0.2rem;
+    border-top: 1px solid var(--color-border-subtle);
+    color: var(--color-text-faint);
+    font-size: 0.7rem;
+  }
+
+  /* Toolbar: one row — name, Live / Playback, options. */
   .map-page__toolbar {
-    gap: 0.4rem 0.75rem;
-    padding: 0.5rem 0.75rem;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
   }
 
-  .map-page__toggle {
+  .map-page__title {
+    flex: 1 1 0;
+    font-size: 0.85rem;
+  }
+
+  .map-page__options-btn {
+    display: inline-flex;
     margin-left: 0;
   }
 
-  /* Row 1: name, status, Playback, S-Class — the name gives way (ellipsis) rather than pushing a
-     control down. Row 2: the checkboxes. Row 3: the delay key, when on. */
-  .map-page__title {
-    flex: 1 1 0;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  /* The options sheet. */
+  .map-page__options {
+    display: none;
   }
 
-  .map-page__toggles {
+  /* The sheet (owner's mockup): a title with an X, the checkboxes, the key as one row of
+     swatches, then S-Class. The X or a tap on the dimmed map closes it. */
+  .map-page__options--open {
     display: flex;
-    flex-wrap: wrap;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 41;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.85rem 1rem calc(1rem + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--color-border);
+    border-radius: 14px 14px 0 0;
+    background: var(--color-bg-panel);
+    box-shadow: var(--shadow-panel);
+  }
+
+  .map-page__options--open .map-page__options-head {
+    display: flex;
     align-items: center;
-    gap: 0.4rem 0.75rem;
-    flex-basis: 100%;
+    justify-content: space-between;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--color-text);
+  }
+
+  .map-page__options-close {
+    margin: -0.2rem -0.3rem -0.2rem 0;
+    padding: 0.1rem 0.4rem;
+    border: 0;
+    background: none;
+    color: var(--color-text-faint);
+    font: inherit;
+    font-size: 1.3rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .map-page__options-close:hover {
+    color: var(--color-text);
+  }
+
+  .map-page__options-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(1, 4, 9, 0.35);
+  }
+
+  .map-page__options .map-page__toggles {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .map-page__options .map-page__toggle {
+    margin-left: 0;
+    gap: 0.45rem;
+    font-size: 0.82rem;
+    color: var(--color-text);
+  }
+
+  .map-page__options .map-page__toggle input {
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+  }
+
+  .map-page__options--open > .map-page__delay-key {
+    display: inline-flex;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--color-border-subtle);
+    font-size: 0.72rem;
+  }
+
+  .map-page__options .map-page__mode-btn {
+    align-self: flex-start;
+    padding: 0.3rem 0.75rem;
+    border-radius: var(--radius-md);
+    font-size: 0.78rem;
+  }
+
+  /* Playback: the bar goes under the map. */
+  .map-page__stage {
     order: 1;
   }
 
-  .map-page__delay-key {
-    flex-basis: 100%;
+  .playback {
     order: 2;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 0;
   }
 }
 
@@ -1922,9 +2241,107 @@ legend {
   font-weight: 600;
 }
 
-/* Computers (owner, 2026-10-10): the playback controls on one line. The three rows become
-   groups side by side, the clock sits at the end, and any outage text takes its own line below.
-   Narrower screens keep the stacked rows above. */
+/* 2026-10-30: the compact playback bar — play/pause, the clock, speed and "Go to" on one row, the
+   step buttons on the next (one line on a computer). */
+.playback {
+  gap: 0.4rem;
+  padding: 0.45rem 1.25rem;
+}
+
+.playback__main {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.playback__play {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.playback__play:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.playback__play svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.playback__clock {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 0.5rem;
+  color: var(--color-text);
+}
+
+.playback__time {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.playback__date {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.playback__speed {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+  color: var(--color-text);
+}
+
+.playback__icon-btn {
+  line-height: 0;
+  padding: 0.35rem;
+}
+
+.playback__icon-btn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.playback__steps {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.playback__steps .playback__btn {
+  padding: 0.3rem 0;
+  font-size: 0.78rem;
+}
+
+.playback__goto input {
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-panel);
+  color: var(--color-text);
+}
+
 @media (min-width: 900px) {
   .playback {
     flex-direction: row;
@@ -1933,13 +2350,20 @@ legend {
     gap: 0.4rem 1.25rem;
   }
 
-  .playback__row {
-    flex-wrap: nowrap;
+  .playback__main {
+    flex: none;
   }
 
   .playback__clock {
-    margin-left: auto;
-    white-space: nowrap;
+    flex: none;
+  }
+
+  .playback__steps {
+    display: inline-flex;
+  }
+
+  .playback__steps .playback__btn {
+    padding: 0.3rem 0.6rem;
   }
 
   .playback__warning {
@@ -1952,74 +2376,14 @@ legend {
   }
 }
 
-/* Phones (owner, 2026-09-30): a more compact map toolbar and playback box. After the rules above
-   on purpose, so these win at equal specificity. */
 @media (max-width: 600px) {
-  .map-page__title {
-    font-size: 0.75rem;
-  }
-
-  .status-banner {
-    gap: 0.35rem;
-    padding: 0.15rem 0.45rem;
-    font-size: 0.68rem;
-  }
-
-  .status-banner__dot {
-    width: 6px;
-    height: 6px;
-  }
-
-  .map-page__mode-btn,
-  .playback__btn {
-    padding: 0.2rem 0.45rem;
-    font-size: 0.7rem;
-  }
-
-  .map-page__toggle {
-    gap: 0.25rem;
-    font-size: 0.68rem;
-  }
-
-  .map-page__toggle input {
-    width: 0.8rem;
-    height: 0.8rem;
-    margin: 0;
-  }
-
-  .map-page__delay-key {
-    gap: 0.15rem 0.4rem;
-    font-size: 0.62rem;
-  }
-
-  .map-page__delay-swatch {
-    width: 0.7rem;
-    height: 0.5rem;
-  }
-
   .playback {
-    gap: 0.35rem;
-    padding: 0.5rem 0.75rem;
+    padding: 0.45rem 0.75rem calc(0.45rem + env(safe-area-inset-bottom));
   }
 
-  .playback__row {
-    gap: 0.3rem;
-  }
-
-  .playback__badge {
-    font-size: 0.7rem;
-    padding: 0.15rem 0.45rem;
-  }
-
-  .playback__field,
-  .playback__clock,
-  .playback__gap {
-    font-size: 0.7rem;
-  }
-
+  .playback__gap,
   .playback__warning {
     font-size: 0.68rem;
-    padding: 0.1rem 0.45rem;
   }
 }
 
@@ -3393,6 +3757,11 @@ legend {
   vertical-align: middle;
 }
 
+.outage-pill--amber {
+  background: var(--color-warning);
+  color: #111111;
+}
+
 .outage-pill--dot {
   min-width: 0;
   width: 0.55rem;
@@ -3425,10 +3794,34 @@ legend {
   font-size: 0.85rem;
 }
 
-.admin-outages__live--down {
+.admin-outages__live--amber {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+.admin-outages__live--red {
   border-color: var(--color-danger);
   color: var(--color-danger);
   font-weight: 600;
+}
+
+.admin-outages__severity {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.admin-outages__severity--amber {
+  background: var(--color-warning);
+  color: #111111;
+}
+
+.admin-outages__severity--red {
+  background: var(--color-danger);
+  color: #ffffff;
 }
 
 .admin-outages__period {

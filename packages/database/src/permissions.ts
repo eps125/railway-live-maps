@@ -80,6 +80,13 @@ export const PERMISSIONS = [
     description: "When and where data feeds dropped out, not just that they did.",
   },
   {
+    key: "map.hide_notice",
+    category: "map",
+    label: "Hide the map notice",
+    description:
+      'Hides the small "Unofficial · not for safety-critical use" line on the map. The notice stays in the menu and map options.',
+  },
+  {
     key: "map.s_class_panel",
     category: "map",
     label: "S-Class panel",

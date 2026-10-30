@@ -11,7 +11,7 @@ import { AdminUsersPage } from "./auth/AdminUsersPage.js";
 import { TdBoundariesPage } from "./auth/TdBoundariesPage.js";
 import { AdminMaintenancePage } from "./auth/AdminMaintenancePage.js";
 import { AdminOutagesPage } from "./auth/AdminOutagesPage.js";
-import { outagePillCount, useOutageSummary } from "./auth/useOutageSummary.js";
+import { outagePillClass, outagePillCount, useOutageSummary } from "./auth/useOutageSummary.js";
 import { AdminBerthsPage } from "./auth/AdminBerthsPage.js";
 import { BerthQueryPage } from "./auth/BerthQueryPage.js";
 import { BerthStepsPage } from "./auth/BerthStepsPage.js";
@@ -24,6 +24,7 @@ import { AdminAccessPage } from "./auth/AdminAccessPage.js";
 import { AccessCodePage } from "./auth/AccessCodePage.js";
 import { useAccess } from "./auth/useAccess.js";
 import { applyTheme, readStoredTheme, writeStoredTheme, type Theme } from "./theme.js";
+import { NOTICE } from "./notice.js";
 
 const accessUntil = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/London",
@@ -57,7 +58,8 @@ export function App(): JSX.Element {
     (ROUTE_PERMISSIONS[routeName] ?? []).some((p) => permissions.has(p));
   const canEdit = permissions.has("editor.view");
   // 2026-10-30: the unseen-outage pill on the Admin link (logged-in users with outage details).
-  const outageCount = outagePillCount(useOutageSummary(isAuthenticated && canOpen("adminOutages")));
+  const outageSummary = useOutageSummary(isAuthenticated && canOpen("adminOutages"));
+  const outageCount = outagePillCount(outageSummary);
 
   // 2026-10-29: light mode, for viewers with `site.light_mode`; remembered in this browser.
   const canChooseTheme = permissions.has("site.light_mode");
@@ -73,6 +75,9 @@ export function App(): JSX.Element {
     writeStoredTheme(next);
     setTheme(next);
   }
+  // 2026-10-30: on a phone the links fold into a menu; it closes whenever the page changes.
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => setMenuOpen(false), [route.name, navigationCount]);
   const canOpenRoute = !ADMIN_ROUTES.has(route.name) || canOpen(route.name);
   const needsCode =
     accessStatus !== null && !accessStatus.allowed && !isAuthenticated && !sessionLoading;
@@ -258,9 +263,45 @@ export function App(): JSX.Element {
       <div className="app-shell">
         <header className="app-header">
           <div className="app-header__brand">
-            <h1>Matts TD Mapping Project</h1>
+            <h1>BetterMap</h1>
           </div>
-          <nav className="app-nav" aria-label="Primary">
+          {/* The theme switch stays in the bar; on a phone everything else is in the menu. */}
+          {canChooseTheme && (
+            <button
+              type="button"
+              className="app-nav__link app-nav__theme"
+              aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+              title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+              onClick={toggleTheme}
+            >
+              <span aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="app-header__menu-btn"
+            aria-label="Menu"
+            aria-expanded={menuOpen}
+            aria-controls="app-nav"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <span aria-hidden="true">☰</span>
+            {outageCount > 0 && (
+              <span className={`${outagePillClass(outageSummary)} outage-pill--dot`} aria-hidden="true" />
+            )}
+          </button>
+          {menuOpen ? (
+            <div
+              className="app-header__menu-backdrop"
+              aria-hidden="true"
+              onClick={() => setMenuOpen(false)}
+            />
+          ) : null}
+          <nav
+            id="app-nav"
+            className={`app-nav${menuOpen ? " app-nav--open" : ""}`}
+            aria-label="Primary"
+          >
             {!needsCode && (
               <a
                 className="app-nav__link"
@@ -287,7 +328,7 @@ export function App(): JSX.Element {
                 Admin
                 {outageCount > 0 && (
                   <span
-                    className="outage-pill"
+                    className={outagePillClass(outageSummary)}
                     title={`${outageCount} data outage${outageCount === 1 ? "" : "s"} not yet seen`}
                     aria-label={`${outageCount} data outage${outageCount === 1 ? "" : "s"} not yet seen`}
                   >
@@ -315,17 +356,6 @@ export function App(): JSX.Element {
                 </button>
               </span>
             )}
-            {canChooseTheme && (
-              <button
-                type="button"
-                className="app-nav__link app-nav__theme"
-                aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
-                title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
-                onClick={toggleTheme}
-              >
-                <span aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
-              </button>
-            )}
             {isAuthenticated ? (
               <button
                 type="button"
@@ -340,15 +370,16 @@ export function App(): JSX.Element {
                 Log out ({session.user.username})
               </button>
             ) : null}
+            {/* CLAUDE.md rule 16: the notice is always in the menu, whatever the map shows. */}
+            <p className="app-nav__notice">{NOTICE}</p>
           </nav>
         </header>
 
         <main className="app-main">{main}</main>
 
-        <footer className="app-footer">
-          For information and enthusiast use only. Not official and not suitable for safety-critical
-          or operational decisions.
-        </footer>
+        {/* 2026-10-30: a map page gives the footer's height to the map, which carries its own short
+            notice (MapView); the full sentence is in the menu there. */}
+        {route.name !== "map" ? <footer className="app-footer">{NOTICE}</footer> : null}
       </div>
     </PermissionsProvider>
   );

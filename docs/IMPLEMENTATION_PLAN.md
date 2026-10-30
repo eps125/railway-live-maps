@@ -5663,6 +5663,41 @@ between stops, passing points included" for the position line.
 - Expected times assume the delay holds; no recovery or pathing allowance is modelled.
 - The editor canvas still uses the dark signal green and platform colours.
 
+## BetterMap: compact site and map chrome (2026-10-30)
+
+Owner: on a phone half the screen was buttons and panels. Owner chose phone and desktop, a short
+name on phones, and the notice as a line on the map; then "BetterMap" everywhere, the map line
+behind a permission (shown to the most basic viewers only), plain grey text bottom-left, and an
+options sheet like the mockup, closed with an X (no Done button, no drag handle).
+
+- [x] The site is called BetterMap (header, page title).
+- [x] Header in one slim row: on a phone the links fold into a menu (closes on navigation or a tap
+      outside) that also carries the full notice; the theme switch stays in the bar.
+- [x] Map toolbar in one row: the map's name, a Live / Playback switch (Live is the way back from
+      playback; Playback is the amber "historical" indicator), and on a phone an options button.
+      On a wider screen the checkboxes and S-Class sit in the row; on a phone they, and the
+      delay key, are in a sheet from the bottom (an X or a tap outside closes it).
+- [x] The delay key is a "Key" chip on the map (bottom right) while delay colours are on.
+- [x] Playback is one compact bar — play/pause, the London clock, speed, a calendar button that
+      opens "Go to", and the step buttons — under the map on a phone, above it on a computer.
+- [x] The footer is gone from map pages. The map carries "For information only, not for safety
+      critical use." as grey text bottom-left for viewers without the new `map.hide_notice`
+      permission (migration 0060: granted to every type except the public one and the Basic
+      User types; Admin holds it). The full notice stays in the footer of every other page and
+      in the phone menu (CLAUDE.md rule 16).
+- [x] Tests: the menu, the notice permission, the Key chip, the options sheet, the playback bar.
+
+Also 2026-10-30 (owner: the test suite had got slow): `apps/web/vitest.config.ts` runs as two
+projects — `logic` (the `.ts` tests, plain Node, no jsdom: 16 files, ~14 s) and `dom` (the `.tsx`
+tests plus `useRoute.test.ts`, jsdom). The `dom` project's timeout is 20 s, so the heavy rendering
+tests (the editor's Konva smoke test, large maps) no longer fail on a busy machine. No tests were
+removed.
+
+Known limitations:
+
+- On a computer a viewer with `map.hide_notice` sees no notice on a map page (the phone menu and
+  every other page's footer still carry it).
+
 ## Data outages page and Admin pill (2026-10-30)
 
 Owner: investigate recent data outages; and "something in admin tools to see data outages with

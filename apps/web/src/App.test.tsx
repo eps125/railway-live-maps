@@ -22,14 +22,29 @@ describe("App", () => {
       vi.fn(() => Promise.resolve({ ok: false, status: 401 } as Response)),
     );
 
-    render(<App />);
+    const { container } = render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Matts TD Mapping Project" })).toBeInTheDocument();
-    expect(screen.getByText(/not suitable for safety-critical/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "BetterMap" })).toBeInTheDocument();
+    expect(container.querySelector(".app-footer")).toHaveTextContent(
+      /not suitable for safety-critical/i,
+    );
     // Milestone 30: the "Editor" nav link is gone entirely (editing now requires a map slug —
     // reached via a per-map "Edit" link on the landing page), so it's never present at all.
     expect(screen.queryByRole("link", { name: "Editor" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("folds the links into a menu that the menu button opens (2026-10-30, phones)", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve({ ok: false, status: 401 } as Response)),
+    );
+    const { container } = render(<App />);
+    const menu = screen.getByRole("button", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".app-nav--open")).not.toBeNull();
   });
 
   it("shows the Admin nav link and a log-out control for a logged-in admin", async () => {

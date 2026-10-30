@@ -46,51 +46,52 @@ a typo or a removed permission cannot be stored. Adding a permission = a registr
 migration inserting its row (and granting it to whichever types should have it). The API refuses
 to start if the registry and the table disagree.
 
-| Key                        | Gates (server side)                                                                                                                                                           |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Viewing**                |                                                                                                                                                                               |
-| `site.view`                | Using the site at all: map list, place search, berth/schedule/run lookups, the live WebSocket. Without it a visitor gets the login / code page (replaces `site_access_mode`). |
-| `site.light_mode`          | The light/dark switch in the header (added 2026-10-29, migration 0057; presentation only, so nothing for the API to withhold). Granted to every non-built-in type.            |
-| `maps.view_public`         | Maps whose visibility is `public`.                                                                                                                                            |
-| `maps.view_all`            | Every map, restricted ones included (was `role === "admin"` in `mapVisibilitySql`).                                                                                           |
-| **Map**                    |                                                                                                                                                                               |
-| `map.playback`             | `/maps/:slug/events`, and `?at=` on `/definition`, `/state`, `/delays` and the train popup.                                                                                   |
-| `map.delay_colours`        | `/maps/:slug/delays`; delay bands are left out of the WebSocket snapshot and pushes.                                                                                          |
-| `map.signal_numbers`       | Signal number labels are stripped from map definitions without it.                                                                                                            |
-| `map.feed_gap_details`     | Feed-gap times/areas/reasons (was admins only).                                                                                                                               |
-| `map.s_class_panel`        | The S-Class panel on the map, and the read-only S-Class routes it uses.                                                                                                       |
-| **Train popup** (each row) | The `current-run` response leaves out every field the viewer may not see.                                                                                                     |
-| `popup.headcode`           | Headcode and time entered. Without it the popup is not available at all.                                                                                                      |
-| `popup.delay`              | The delay line.                                                                                                                                                               |
-| `popup.delay_explanation`  | The delay line's working (was admins only).                                                                                                                                   |
-| `popup.origin_destination` | Operator, origin, destination.                                                                                                                                                |
-| `popup.calling_points`     | The full schedule table.                                                                                                                                                      |
-| `popup.formation`          | Unit allocation.                                                                                                                                                              |
-| `popup.schedule`           | Train UID, STP indicator, service code, and origin/destination change details.                                                                                                |
-| `popup.match_details`      | How the schedule was picked (`matchStatus`, `matchBasis`, the note).                                                                                                          |
-| `popup.weak_matches`       | Ambiguous, unmatched and headcode-only matches (without it these answer 404 `NO_PUBLIC_DETAIL`).                                                                              |
-| `popup.candidates`         | The candidate schedules list.                                                                                                                                                 |
-| `popup.trust`              | TRUST ID, activation, TOC, WTT ID, identity changes.                                                                                                                          |
-| `popup.latest_report`      | The latest TRUST movement report.                                                                                                                                             |
-| `popup.berth_codes`        | Berth names, TD area and berth codes, and when the train entered the berth, anywhere in the popup (added 2026-10-30, migration 0059). Granted to no type; Admin has it.       |
-| `popup.new_layout`         | The redesigned train popup (added 2026-10-30, migration 0058): headcode header, journey timeline with per-stop TRUST times, folded details. Granted to no type; Admin has it. |
-| **Editor**                 |                                                                                                                                                                               |
-| `editor.view`              | Opening the editor and reading drafts, revisions, diff, validate, editor state, S-Class definitions for binding.                                                              |
-| `maps.edit`                | Saving drafts, berth actions.                                                                                                                                                 |
-| `maps.publish`             | Publishing a map or module, applying module changes, republish-all.                                                                                                           |
-| `maps.manage`              | Creating, renaming, deleting maps; map settings (visibility, region); regions; making a module.                                                                               |
-| **Tools**                  |                                                                                                                                                                               |
-| `tools.berth_explorer`     | Berth explorer.                                                                                                                                                               |
-| `tools.berth_query`        | Berth query and berth steps.                                                                                                                                                  |
-| `tools.s_class`            | S-Class explorer and definitions (read and write).                                                                                                                            |
-| `tools.td_boundaries`      | TD boundaries.                                                                                                                                                                |
-| `tools.maintenance`        | Area maintenance jobs.                                                                                                                                                        |
-| **Admin**                  |                                                                                                                                                                               |
-| `admin.users`              | Users and groups.                                                                                                                                                             |
-| `admin.user_types`         | User types and the permission matrix.                                                                                                                                         |
-| `admin.access_codes`       | Access codes and grants.                                                                                                                                                      |
-| `admin.site_settings`      | Site settings.                                                                                                                                                                |
-| `admin.audit_log`          | The audit log.                                                                                                                                                                |
+| Key                        | Gates (server side)                                                                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Viewing**                |                                                                                                                                                                                  |
+| `site.view`                | Using the site at all: map list, place search, berth/schedule/run lookups, the live WebSocket. Without it a visitor gets the login / code page (replaces `site_access_mode`).    |
+| `site.light_mode`          | The light/dark switch in the header (added 2026-10-29, migration 0057; presentation only, so nothing for the API to withhold). Granted to every non-built-in type.               |
+| `maps.view_public`         | Maps whose visibility is `public`.                                                                                                                                               |
+| `maps.view_all`            | Every map, restricted ones included (was `role === "admin"` in `mapVisibilitySql`).                                                                                              |
+| **Map**                    |                                                                                                                                                                                  |
+| `map.playback`             | `/maps/:slug/events`, and `?at=` on `/definition`, `/state`, `/delays` and the train popup.                                                                                      |
+| `map.delay_colours`        | `/maps/:slug/delays`; delay bands are left out of the WebSocket snapshot and pushes.                                                                                             |
+| `map.signal_numbers`       | Signal number labels are stripped from map definitions without it.                                                                                                               |
+| `map.feed_gap_details`     | Feed-gap times/areas/reasons (was admins only).                                                                                                                                  |
+| `map.s_class_panel`        | The S-Class panel on the map, and the read-only S-Class routes it uses.                                                                                                          |
+| **Train popup** (each row) | The `current-run` response leaves out every field the viewer may not see.                                                                                                        |
+| `popup.headcode`           | Headcode and time entered. Without it the popup is not available at all.                                                                                                         |
+| `popup.delay`              | The delay line.                                                                                                                                                                  |
+| `popup.delay_explanation`  | The delay line's working (was admins only).                                                                                                                                      |
+| `popup.origin_destination` | Operator, origin, destination.                                                                                                                                                   |
+| `popup.calling_points`     | The full schedule table.                                                                                                                                                         |
+| `popup.formation`          | Unit allocation.                                                                                                                                                                 |
+| `popup.schedule`           | Train UID, STP indicator, service code, and origin/destination change details.                                                                                                   |
+| `popup.match_details`      | How the schedule was picked (`matchStatus`, `matchBasis`, the note).                                                                                                             |
+| `popup.weak_matches`       | Ambiguous, unmatched and headcode-only matches (without it these answer 404 `NO_PUBLIC_DETAIL`).                                                                                 |
+| `popup.candidates`         | The candidate schedules list.                                                                                                                                                    |
+| `popup.trust`              | TRUST ID, activation, TOC, WTT ID, identity changes.                                                                                                                             |
+| `popup.latest_report`      | The latest TRUST movement report.                                                                                                                                                |
+| `map.hide_notice`          | Hides the "For information only, not for safety critical use." line on the map (added 2026-10-30, migration 0060). Granted to every type except the public and Basic User types. |
+| `popup.berth_codes`        | Berth names, TD area and berth codes, and when the train entered the berth, anywhere in the popup (added 2026-10-30, migration 0059). Granted to no type; Admin has it.          |
+| `popup.new_layout`         | The redesigned train popup (added 2026-10-30, migration 0058): headcode header, journey timeline with per-stop TRUST times, folded details. Granted to no type; Admin has it.    |
+| **Editor**                 |                                                                                                                                                                                  |
+| `editor.view`              | Opening the editor and reading drafts, revisions, diff, validate, editor state, S-Class definitions for binding.                                                                 |
+| `maps.edit`                | Saving drafts, berth actions.                                                                                                                                                    |
+| `maps.publish`             | Publishing a map or module, applying module changes, republish-all.                                                                                                              |
+| `maps.manage`              | Creating, renaming, deleting maps; map settings (visibility, region); regions; making a module.                                                                                  |
+| **Tools**                  |                                                                                                                                                                                  |
+| `tools.berth_explorer`     | Berth explorer.                                                                                                                                                                  |
+| `tools.berth_query`        | Berth query and berth steps.                                                                                                                                                     |
+| `tools.s_class`            | S-Class explorer and definitions (read and write).                                                                                                                               |
+| `tools.td_boundaries`      | TD boundaries.                                                                                                                                                                   |
+| `tools.maintenance`        | Area maintenance jobs.                                                                                                                                                           |
+| **Admin**                  |                                                                                                                                                                                  |
+| `admin.users`              | Users and groups.                                                                                                                                                                |
+| `admin.user_types`         | User types and the permission matrix.                                                                                                                                            |
+| `admin.access_codes`       | Access codes and grants.                                                                                                                                                         |
+| `admin.site_settings`      | Site settings.                                                                                                                                                                   |
+| `admin.audit_log`          | The audit log.                                                                                                                                                                   |
 
 The Admin hub and the Berths hub show when the viewer holds any permission behind them.
 

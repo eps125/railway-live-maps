@@ -1,5 +1,5 @@
 /** CLAUDE.md rule 16: the site is clearly labelled non-safety-critical and not official. Shown in
- * the footer, the header menu and the map options. */
+ * the footer of every page but a map (2026-10-30: the map has its own short line, below). */
 export const NOTICE =
   "For information and enthusiast use only. Not official and not suitable for safety-critical or operational decisions.";
 

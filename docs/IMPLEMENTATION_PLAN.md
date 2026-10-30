@@ -5754,3 +5754,16 @@ Known limitations:
 - Only TD is watched. A TRUST/garner outage is not recorded unless TD stops too.
 - Access-code viewers with `map.feed_gap_details` see the page but no pill (nothing to remember
   "seen" against).
+
+Later 2026-10-30 (owner tweaks):
+
+- The map options are a panel opened by the options button on a computer too (dropping from the
+  button; a sheet from the bottom on a phone), not inline in the toolbar.
+- "Phone" layout (header menu, toolbar, options sheet, playback bar, bottom-sheet popup) also
+  applies to a phone in landscape: `(max-width: 600px), (pointer: coarse) and (max-height: 520px)`.
+- The phone menu is a navigation drawer from the right: the site's name and an X, the pages one
+  per row, and at the foot the access code's expiry with "Forget code", and Log out. The notice
+  line is no longer in the menu (owner: it is elsewhere).
+- With a train's popup open on a phone, the map's notice and Key chip move to the top of the map;
+  with the popup opened to full height they are hidden.
+- The popup's handle opens it to the frame's full height, not just as far as its content.

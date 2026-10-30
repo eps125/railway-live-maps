@@ -305,6 +305,19 @@ export function App(): JSX.Element {
             className={`app-nav${menuOpen ? " app-nav--open" : ""}`}
             aria-label="Primary"
           >
+            {/* 2026-10-30 (owner): on a phone the menu is a drawer — this heading and the spacer
+                below only show there. */}
+            <div className="app-nav__head">
+              <span>BetterMap</span>
+              <button
+                type="button"
+                className="app-nav__close"
+                aria-label="Close menu"
+                onClick={() => setMenuOpen(false)}
+              >
+                ×
+              </button>
+            </div>
             {!needsCode && (
               <a
                 className="app-nav__link"
@@ -340,6 +353,7 @@ export function App(): JSX.Element {
                 )}
               </a>
             )}
+            <span className="app-nav__spacer" aria-hidden="true" />
             {!isAuthenticated && accessStatus?.access === "code" && accessStatus.expiresAt && (
               <span
                 className="app-nav__access"
@@ -362,7 +376,7 @@ export function App(): JSX.Element {
             {isAuthenticated ? (
               <button
                 type="button"
-                className="app-nav__link"
+                className="app-nav__link app-nav__logout"
                 onClick={() => {
                   void logout().then(() => {
                     void refreshAccess();
@@ -373,15 +387,13 @@ export function App(): JSX.Element {
                 Log out ({session.user.username})
               </button>
             ) : null}
-            {/* CLAUDE.md rule 16: the notice is always in the menu, whatever the map shows. */}
-            <p className="app-nav__notice">{NOTICE}</p>
           </nav>
         </header>
 
         <main className="app-main">{main}</main>
 
         {/* 2026-10-30: a map page gives the footer's height to the map, which carries its own short
-            notice (MapView); the full sentence is in the menu there. */}
+            notice (MapView) for the viewers who see it (owner: no notice in the menu). */}
         {route.name !== "map" ? <footer className="app-footer">{NOTICE}</footer> : null}
       </div>
     </PermissionsProvider>

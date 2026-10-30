@@ -286,7 +286,8 @@ a {
 
 .app-header__menu-btn,
 .app-header__menu-backdrop,
-.app-nav__notice {
+.app-nav__head,
+.app-nav__spacer {
   display: none;
 }
 
@@ -774,20 +775,17 @@ button.map-page__mode:hover {
   color: #7a4d00;
 }
 
-/* Wider screens: the options are part of the toolbar row; the delay key is the map's Key chip. */
-.map-page__options {
-  display: contents;
-}
-
-.map-page__options-btn,
-.map-page__options-backdrop,
-.map-page__options-head,
-.map-page__options > .map-page__delay-key {
-  display: none;
+/* 2026-10-30 (owner: desktop like the phone): the options — checkboxes, delay key, S-Class — are
+   a panel opened by the options button on every screen: dropping from the button on a computer,
+   a sheet from the bottom on a phone. The X or a click outside closes it. */
+.map-page__toolbar {
+  position: relative;
+  z-index: 20;
 }
 
 .map-page__options-btn {
   flex: none;
+  display: inline-flex;
   margin-left: auto;
   padding: 0.25rem;
   border: 1px solid var(--color-border);
@@ -798,9 +796,97 @@ button.map-page__mode:hover {
   line-height: 0;
 }
 
+.map-page__options-btn[aria-expanded="true"] {
+  border-color: var(--color-accent);
+}
+
 .map-page__options-btn svg {
   width: 1.15rem;
   height: 1.15rem;
+}
+
+.map-page__options {
+  display: none;
+}
+
+.map-page__options--open {
+  display: flex;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 1.25rem;
+  z-index: 41;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 18rem;
+  padding: 0.85rem 1rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-panel);
+  box-shadow: var(--shadow-panel);
+}
+
+.map-page__options-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--color-text);
+}
+
+.map-page__options-close {
+  margin: -0.2rem -0.3rem -0.2rem 0;
+  padding: 0.1rem 0.4rem;
+  border: 0;
+  background: none;
+  color: var(--color-text-faint);
+  font: inherit;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-page__options-close:hover {
+  color: var(--color-text);
+}
+
+/* A click outside closes it; only on a phone does the map dim behind it. */
+.map-page__options-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.map-page__options .map-page__toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.map-page__options .map-page__toggle {
+  margin-left: 0;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--color-text);
+}
+
+.map-page__options .map-page__toggle input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.map-page__options > .map-page__delay-key {
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 0.72rem;
+}
+
+.map-page__options .map-page__mode-btn {
+  align-self: flex-start;
+  padding: 0.3rem 0.75rem;
+  border-radius: var(--radius-md);
+  font-size: 0.78rem;
 }
 
 /* The map, with the Key chip and the short notice floating over it. */
@@ -861,8 +947,9 @@ button.map-page__mode:hover {
   align-items: flex-start;
 }
 
-@media (max-width: 600px) {
-  /* Header: the name, the theme switch and a menu button; the links drop down from it. */
+@media (max-width: 600px), (pointer: coarse) and (max-height: 520px) {
+  /* 2026-10-30: "phone" is a narrow screen, or a phone turned to landscape (touch, short). */
+  /* Header: the name, the theme switch and a menu button that opens the navigation drawer. */
   .app-header {
     gap: 0.5rem;
     padding: 0.45rem 0.75rem;
@@ -891,20 +978,22 @@ button.map-page__mode:hover {
     cursor: pointer;
   }
 
+  /* 2026-10-30 (owner): the menu is a navigation drawer from the right — the site's name and an
+     X, the pages stacked one per row, and at the foot an access code's expiry and log out. */
   .app-nav {
     display: none;
-    position: absolute;
-    top: calc(100% + 4px);
-    right: 0.75rem;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
     z-index: 40;
     flex-direction: column;
     align-items: stretch;
-    gap: 0.15rem;
-    min-width: 13rem;
-    max-width: calc(100% - 1.5rem);
-    padding: 0.4rem;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    gap: 0;
+    width: min(18rem, 82vw);
+    margin: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
+    border-left: 1px solid var(--color-border);
     background: var(--color-bg-panel);
     box-shadow: var(--shadow-panel);
   }
@@ -913,27 +1002,75 @@ button.map-page__mode:hover {
     display: flex;
   }
 
+  .app-nav__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.7rem 0.75rem 0.7rem 1rem;
+    border-bottom: 1px solid var(--color-border);
+    font-weight: 700;
+  }
+
+  .app-nav__close {
+    padding: 0.1rem 0.45rem;
+    border: 0;
+    background: none;
+    color: var(--color-text-faint);
+    font: inherit;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .app-nav__link {
+    padding: 0.85rem 1rem;
+    border: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+    border-radius: 0;
+    font-size: 0.95rem;
+    text-align: left;
+  }
+
+  .app-nav__link[aria-current="page"] {
+    border-color: var(--color-border-subtle);
+    box-shadow: inset 3px 0 0 var(--color-accent);
+  }
+
+  .app-nav__spacer {
+    display: block;
+    flex: 1;
+  }
+
+  .app-nav .app-nav__access {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    text-align: left;
+    gap: 0.35rem;
+    padding: 0.75rem 1rem;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+  }
+
+  .app-nav .app-nav__access .app-nav__link {
+    padding: 0;
+    border: 0;
+    color: var(--color-accent);
+    font-size: 0.85rem;
+  }
+
+  .app-nav__logout {
+    border-top: 1px solid var(--color-border);
+  }
+
   /* Tapping anywhere else closes the menu. */
   .app-header__menu-backdrop {
     display: block;
     position: fixed;
     inset: 0;
     z-index: 39;
-  }
-
-  .app-nav__link {
-    padding: 0.55rem 0.7rem;
-    font-size: 0.9rem;
-    text-align: left;
-  }
-
-  .app-nav__notice {
-    display: block;
-    margin: 0.3rem 0 0;
-    padding: 0.5rem 0.7rem 0.2rem;
-    border-top: 1px solid var(--color-border-subtle);
-    color: var(--color-text-faint);
-    font-size: 0.7rem;
+    background: rgba(1, 4, 9, 0.35);
   }
 
   /* Toolbar: one row — name, Live / Playback, options. */
@@ -948,97 +1085,45 @@ button.map-page__mode:hover {
   }
 
   .map-page__options-btn {
-    display: inline-flex;
     margin-left: 0;
   }
 
-  /* The options sheet. */
-  .map-page__options {
-    display: none;
-  }
-
-  /* The sheet (owner's mockup): a title with an X, the checkboxes, the key as one row of
-     swatches, then S-Class. The X or a tap on the dimmed map closes it. */
+  /* The options are a sheet from the bottom, over a dimmed map. */
   .map-page__options--open {
-    display: flex;
     position: fixed;
+    top: auto;
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 41;
-    flex-direction: column;
-    gap: 0.6rem;
-    padding: 0.85rem 1rem calc(1rem + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--color-border);
+    width: auto;
+    max-height: 85%;
+    overflow-y: auto;
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+    border-width: 1px 0 0;
     border-radius: 14px 14px 0 0;
-    background: var(--color-bg-panel);
-    box-shadow: var(--shadow-panel);
-  }
-
-  .map-page__options--open .map-page__options-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-weight: 600;
-    font-size: 0.85rem;
-    color: var(--color-text);
-  }
-
-  .map-page__options-close {
-    margin: -0.2rem -0.3rem -0.2rem 0;
-    padding: 0.1rem 0.4rem;
-    border: 0;
-    background: none;
-    color: var(--color-text-faint);
-    font: inherit;
-    font-size: 1.3rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .map-page__options-close:hover {
-    color: var(--color-text);
   }
 
   .map-page__options-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 40;
     background: rgba(1, 4, 9, 0.35);
   }
 
-  .map-page__options .map-page__toggles {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+  /* 2026-10-30 (owner): with a train's popup open (a sheet along the bottom), the notice and the
+     Key chip move to the top of the map rather than sit under it. */
+  .map-page__stage:has(.map-inspector--run) .map-page__notice {
+    top: 6px;
+    bottom: auto;
   }
 
-  .map-page__options .map-page__toggle {
-    margin-left: 0;
-    gap: 0.45rem;
-    font-size: 0.82rem;
-    color: var(--color-text);
+  .map-page__stage:has(.map-inspector--run) .map-page__key {
+    top: 8px;
+    bottom: auto;
+    flex-direction: column-reverse;
   }
 
-  .map-page__options .map-page__toggle input {
-    width: 1rem;
-    height: 1rem;
-    margin: 0;
-  }
-
-  .map-page__options--open > .map-page__delay-key {
-    display: inline-flex;
-    padding-top: 0.55rem;
-    border-top: 1px solid var(--color-border-subtle);
-    font-size: 0.72rem;
-  }
-
-  .map-page__options .map-page__mode-btn {
-    align-self: flex-start;
-    padding: 0.3rem 0.75rem;
-    border-radius: var(--radius-md);
-    font-size: 0.78rem;
+  /* …and with the popup opened to full height there is no room for them at all. */
+  .map-page__stage:has(.map-inspector--expanded) .map-page__notice,
+  .map-page__stage:has(.map-inspector--expanded) .map-page__key {
+    display: none;
   }
 
   /* Playback: the bar goes under the map. */
@@ -1693,10 +1778,10 @@ button.map-page__mode:hover {
   color: var(--color-text-faint);
 }
 
-/* 2026-10-30: on a phone the popup is a sheet along the bottom of the map rather than a card
- * over its top-right — it starts at the train's header and status, so most of the map stays in
- * view, and the handle opens it to (almost) the frame's full height. */
-@media (max-width: 600px) {
+/* 2026-10-30: on a phone (landscape included) the popup is a sheet along the bottom of the map
+ * rather than a card over its top-right — it starts at the train's header and status, so most of
+ * the map stays in view, and the handle opens it to the frame's full height. */
+@media (max-width: 600px), (pointer: coarse) and (max-height: 520px) {
   .map-inspector--new {
     top: auto;
     right: 0;
@@ -1711,7 +1796,9 @@ button.map-page__mode:hover {
     transition: max-height 0.2s ease;
   }
 
+  /* Owner (2026-10-30): the handle opens it to the full height, not just as far as its content. */
   .map-inspector--new.map-inspector--expanded {
+    height: calc(100% - 12px);
     max-height: calc(100% - 12px);
   }
 
@@ -2342,7 +2429,7 @@ button.map-page__mode:hover {
   color: var(--color-text);
 }
 
-@media (min-width: 900px) {
+@media (min-width: 900px) and (pointer: fine), (min-width: 900px) and (min-height: 521px) {
   .playback {
     flex-direction: row;
     flex-wrap: wrap;
@@ -2376,7 +2463,7 @@ button.map-page__mode:hover {
   }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 600px), (pointer: coarse) and (max-height: 520px) {
   .playback {
     padding: 0.45rem 0.75rem calc(0.45rem + env(safe-area-inset-bottom));
   }

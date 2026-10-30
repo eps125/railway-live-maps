@@ -175,72 +175,89 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
         socket.destroy();
       };
 
+      // One chunk at a time, in arrival order (2026-10-30). Each `data` event used to start its
+      // own handleChunk, so whenever storing a frame took longer than the gap to the next chunk
+      // (every post-reconnect backlog burst, and a slow database) two chunks' frames were stored
+      // at once and took ids and ingestion sequences out of arrival order. The projectors apply
+      // steps in sequence order, so a train's step into a berth landed after its step out of it
+      // and left the berth showing it (WA B016 1S95 after the 20:36 redeploy, nothing to clear it).
+      let chunkQueue: Promise<void> = Promise.resolve();
+      let handlerFailed = false;
       socket.on("data", (chunk: Buffer) => {
         lastInboundAt = Date.now();
-        this.handleChunk(decoder, chunk, socket, options, clientId, {
-          getSessionId: () => sessionId,
-          setSessionId: (id) => {
-            sessionId = id;
-          },
-          onFatalError: finish,
-          onMessage: () => {
-            lastMessageAt = Date.now();
-            this.silenceStrikes = 0;
-          },
-          onConnected: () => {
-            clearTimeout(connectTimer);
-            lastInboundAt = Date.now();
-            lastMessageAt = Date.now();
-            // Silent-stall watchdog: NR's broker promised bidirectional heartbeats in the
-            // CONNECT frame, so *something* (a MESSAGE, an ACK receipt, or a bare LF) must
-            // arrive well within `heartbeatMs`. If nothing does for `staleTimeoutMs`, the feed
-            // is dead even though the socket is still open — tear it down so `start()`'s loop
-            // reconnects instead of the process sitting on a corpse.
-            watchdogTimer = setInterval(
-              () => {
-                const idleMs = Date.now() - lastInboundAt;
-                if (idleMs > staleTimeoutMs && !socket.destroyed) {
-                  console.error(
-                    `${this.config.feedName} feed stalled: no inbound data for ${idleMs}ms ` +
-                      `(> ${staleTimeoutMs}ms) — forcing reconnect`,
-                  );
-                  this.state = "reconnecting";
-                  socket.destroy();
-                  return;
-                }
-                if (messageSilenceTimeoutMs <= 0 || socket.destroyed) return;
-                const silentMs = Date.now() - lastMessageAt;
-                const limitMs = messageSilenceTimeoutMs * 2 ** Math.min(this.silenceStrikes, 3);
-                if (silentMs > limitMs) {
-                  console.error(
-                    `${this.config.feedName} feed silent: connected, but no message for ` +
-                      `${silentMs}ms (> ${limitMs}ms) — forcing reconnect`,
-                  );
-                  this.silenceStrikes += 1;
-                  closeReason = "message silence";
-                  this.state = "reconnecting";
-                  socket.destroy();
-                }
-              },
-              Math.max(
-                1000,
-                Math.floor(Math.min(staleTimeoutMs, messageSilenceTimeoutMs || staleTimeoutMs) / 3),
-              ),
-            );
-            // STOMP 1.2 heartbeat: a lone LF on the wire. The CONNECT frame above promised
-            // `heartbeatMs` via the heart-beat header, but nothing was actually sending one —
-            // ACK frames happened to cover for it on busy feeds (TD), but a quiet one (VSTP,
-            // TRUST overnight, TD itself outside busy areas) can go longer than the promised
-            // interval between ACKs, and Network Rail's broker then concludes the client has
-            // disappeared and closes the connection ("AMQ229014: Did not receive data ...
-            // within the connection TTL"). Send somewhat faster than promised (80%) for
-            // jitter/processing-delay margin.
-            const sendIntervalMs = Math.max(1000, Math.floor(heartbeatMs * 0.8));
-            heartbeatTimer = setInterval(() => {
-              if (!socket.destroyed) socket.write(Buffer.from("\n"));
-            }, sendIntervalMs);
-          },
-        }).catch(failFromHandler);
+        chunkQueue = chunkQueue.then(() => {
+          // A failed handler has already torn the socket down; the rest is redelivered.
+          if (handlerFailed) return;
+          return this.handleChunk(decoder, chunk, socket, options, clientId, {
+            getSessionId: () => sessionId,
+            setSessionId: (id) => {
+              sessionId = id;
+            },
+            onFatalError: finish,
+            onMessage: () => {
+              lastMessageAt = Date.now();
+              this.silenceStrikes = 0;
+            },
+            onConnected: () => {
+              clearTimeout(connectTimer);
+              lastInboundAt = Date.now();
+              lastMessageAt = Date.now();
+              // Silent-stall watchdog: NR's broker promised bidirectional heartbeats in the
+              // CONNECT frame, so *something* (a MESSAGE, an ACK receipt, or a bare LF) must
+              // arrive well within `heartbeatMs`. If nothing does for `staleTimeoutMs`, the feed
+              // is dead even though the socket is still open — tear it down so `start()`'s loop
+              // reconnects instead of the process sitting on a corpse.
+              watchdogTimer = setInterval(
+                () => {
+                  const idleMs = Date.now() - lastInboundAt;
+                  if (idleMs > staleTimeoutMs && !socket.destroyed) {
+                    console.error(
+                      `${this.config.feedName} feed stalled: no inbound data for ${idleMs}ms ` +
+                        `(> ${staleTimeoutMs}ms) — forcing reconnect`,
+                    );
+                    this.state = "reconnecting";
+                    socket.destroy();
+                    return;
+                  }
+                  if (messageSilenceTimeoutMs <= 0 || socket.destroyed) return;
+                  const silentMs = Date.now() - lastMessageAt;
+                  const limitMs = messageSilenceTimeoutMs * 2 ** Math.min(this.silenceStrikes, 3);
+                  if (silentMs > limitMs) {
+                    console.error(
+                      `${this.config.feedName} feed silent: connected, but no message for ` +
+                        `${silentMs}ms (> ${limitMs}ms) — forcing reconnect`,
+                    );
+                    this.silenceStrikes += 1;
+                    closeReason = "message silence";
+                    this.state = "reconnecting";
+                    socket.destroy();
+                  }
+                },
+                Math.max(
+                  1000,
+                  Math.floor(
+                    Math.min(staleTimeoutMs, messageSilenceTimeoutMs || staleTimeoutMs) / 3,
+                  ),
+                ),
+              );
+              // STOMP 1.2 heartbeat: a lone LF on the wire. The CONNECT frame above promised
+              // `heartbeatMs` via the heart-beat header, but nothing was actually sending one —
+              // ACK frames happened to cover for it on busy feeds (TD), but a quiet one (VSTP,
+              // TRUST overnight, TD itself outside busy areas) can go longer than the promised
+              // interval between ACKs, and Network Rail's broker then concludes the client has
+              // disappeared and closes the connection ("AMQ229014: Did not receive data ...
+              // within the connection TTL"). Send somewhat faster than promised (80%) for
+              // jitter/processing-delay margin.
+              const sendIntervalMs = Math.max(1000, Math.floor(heartbeatMs * 0.8));
+              heartbeatTimer = setInterval(() => {
+                if (!socket.destroyed) socket.write(Buffer.from("\n"));
+              }, sendIntervalMs);
+            },
+          }).catch((error: unknown) => {
+            handlerFailed = true;
+            failFromHandler(error);
+          });
+        });
       });
 
       socket.on("error", (error) => finish(error));

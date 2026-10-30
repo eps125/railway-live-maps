@@ -459,6 +459,37 @@ describe("StompConnection handler failures", () => {
     await stopAndAdvance(connection);
   });
 
+  it("stores frames from later chunks only after earlier ones, in arrival order (2026-10-30)", async () => {
+    // A slow store of the first frame used to let the next chunk's frame be stored at the same
+    // time and take the earlier ingestion sequence (WA B016 kept 1S95 after a redeploy).
+    vi.useFakeTimers();
+    const started: string[] = [];
+    const finishFirst: Array<() => void> = [];
+    const { connection } = connectedFixture({
+      onFrame: vi.fn(async (handle: { frame: { brokerMessageId: string } }) => {
+        started.push(handle.frame.brokerMessageId);
+        if (handle.frame.brokerMessageId === "m-1") {
+          await new Promise<void>((resolve) => finishFirst.push(resolve));
+        }
+      }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emit("data", messageFrame("m-1"));
+    socket.emit("data", messageFrame("m-2"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual(["m-1"]);
+
+    finishFirst[0]!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual(["m-1", "m-2"]);
+
+    await stopAndAdvance(connection);
+  });
+
   it("skips the ACK write when the delivering socket has already closed", async () => {
     vi.useFakeTimers();
     let ackLater: (() => Promise<void>) | undefined;

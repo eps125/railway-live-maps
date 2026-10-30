@@ -5687,8 +5687,9 @@ options sheet like the mockup, closed with an X (no Done button, no drag handle)
       in the phone menu (CLAUDE.md rule 16).
 - [x] Tests: the menu, the notice permission, the Key chip, the options sheet, the playback bar.
 
-Also 2026-10-30 (owner: the test suite had got slow): `apps/web/vitest.config.ts` runs as two
-projects — `logic` (the `.ts` tests, plain Node, no jsdom: 16 files, ~14 s) and `dom` (the `.tsx`
+Also 2026-10-30 (owner: the test suite had got slow): the web tests run as two
+projects (`apps/web/vitest.logic.config.ts`, `apps/web/vitest.dom.config.ts`, listed by the root
+`vitest.config.ts`, which CI uses; nested projects are ignored there) — `logic` (the `.ts` tests, plain Node, no jsdom: 16 files, ~14 s) and `dom` (the `.tsx`
 tests plus `useRoute.test.ts`, jsdom). The `dom` project's timeout is 20 s, so the heavy rendering
 tests (the editor's Konva smoke test, large maps) no longer fail on a busy machine. No tests were
 removed.

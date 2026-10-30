@@ -1,6 +1,6 @@
 import { navigate } from "../useRoute.js";
 import { ROUTE_PERMISSIONS, useCan } from "./permissions.js";
-import { outagePillCount, useOutageSummary } from "./useOutageSummary.js";
+import { outagePillClass, outagePillCount, useOutageSummary } from "./useOutageSummary.js";
 
 interface AdminSection {
   title: string;
@@ -87,7 +87,8 @@ export function AdminHubPage(): JSX.Element {
   // Milestone 99: only the areas this user's permissions open.
   const can = useCan();
   const sections = SECTIONS.filter((section) => can(ROUTE_PERMISSIONS[section.route] ?? []));
-  const outageCount = outagePillCount(useOutageSummary(can(ROUTE_PERMISSIONS.adminOutages ?? [])));
+  const outageSummary = useOutageSummary(can(ROUTE_PERMISSIONS.adminOutages ?? []));
+  const outageCount = outagePillCount(outageSummary);
   return (
     <div className="admin-users-page">
       <h2>Admin</h2>
@@ -105,7 +106,10 @@ export function AdminHubPage(): JSX.Element {
             <h3>
               {section.title}
               {section.route === "adminOutages" && outageCount > 0 && (
-                <span className="outage-pill" aria-label={`${outageCount} not yet seen`}>
+                <span
+                  className={outagePillClass(outageSummary)}
+                  aria-label={`${outageCount} not yet seen`}
+                >
                   {outageCount}
                 </span>
               )}

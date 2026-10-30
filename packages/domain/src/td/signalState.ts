@@ -18,6 +18,36 @@ export const SIGNAL_GAP_TOLERANCE_MS = 5 * 60_000;
 /** `feed_gap.detection_reason` for a silence found in TD receive times. */
 export const TD_RECEIVE_SILENCE_REASON = "td_receive_silence";
 
+/** Owner, 2026-10-30: TD receive silences from this long up to the tolerance are recorded too, as
+ * "short" gaps (an amber alert on the admin Data outages page; red from the tolerance up). Nights
+ * never go more than ~4 s between TD frames (checked on production), so 30 s is never normal. */
+export const TD_SHORT_SILENCE_MIN_MS = 30_000;
+
+/** `feed_gap.detection_reason` for a short silence (`TD_SHORT_SILENCE_MIN_MS` up to the
+ * tolerance). Admin-only: maps, playback, signals, run lineage and held-train delays ignore it. */
+export const TD_SHORT_RECEIVE_SILENCE_REASON = "td_short_receive_silence";
+
+/** A short silence's data counts as delivered late when the late rows cover at least this share
+ * of what the minute before it carried, over the silence less 5 s at each edge. */
+export const SHORT_SILENCE_DELIVERED_SHARE = 0.5;
+
+/** Pure: did the rows received after a short silence (`inside`: those with event times within it,
+ * less 5 s at each edge) cover enough of what the minute before it (`before` rows) would have
+ * carried? The burst that ends a silence always carries a few seconds of event times from inside
+ * it, so a bare "any late row" test cannot tell a short loss from a redelivery. */
+export function shortSilenceDelivered(inside: number, before: number, silenceMs: number): boolean {
+  const innerSeconds = Math.max(0, silenceMs / 1000 - 10);
+  const expected = (before / 60) * innerSeconds;
+  return expected > 0 && inside >= expected * SHORT_SILENCE_DELIVERED_SHARE;
+}
+
+/** Pure: which `feed_gap` reason a receive silence of this length is recorded under. */
+export function receiveSilenceReason(silence: ReceiveSilence): string {
+  return silence.endAt.getTime() - silence.startAt.getTime() > SIGNAL_GAP_TOLERANCE_MS
+    ? TD_RECEIVE_SILENCE_REASON
+    : TD_SHORT_RECEIVE_SILENCE_REASON;
+}
+
 /** Bound bit → public state. `activeMeans` is the binding's statement of what a set bit means;
  * a missing one (e.g. a bundle compiled before it was recorded) is `blank`, never guessed. */
 export function signalStateForBit(

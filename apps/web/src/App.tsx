@@ -287,7 +287,10 @@ export function App(): JSX.Element {
           >
             <span aria-hidden="true">☰</span>
             {outageCount > 0 && (
-              <span className={`${outagePillClass(outageSummary)} outage-pill--dot`} aria-hidden="true" />
+              <span
+                className={`${outagePillClass(outageSummary)} outage-pill--dot`}
+                aria-hidden="true"
+              />
             )}
           </button>
           {menuOpen ? (

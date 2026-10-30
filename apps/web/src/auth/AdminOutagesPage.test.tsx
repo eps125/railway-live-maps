@@ -6,7 +6,7 @@ import {
   newestGapId,
   type OutageView,
 } from "./AdminOutagesPage.js";
-import { OUTAGES_SEEN_EVENT, outagePillCount } from "./useOutageSummary.js";
+import { OUTAGES_SEEN_EVENT, outagePillClass, outagePillCount } from "./useOutageSummary.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -26,6 +26,7 @@ function outage(overrides: Partial<OutageView>): OutageView {
     end: "2026-10-29T11:20:48.398Z",
     durationSeconds: 740,
     reason: "td_receive_silence",
+    severity: "red",
     recoverability: "unrecoverable",
     note: "auth: nothing for this period was ever received",
     recordedAt: "2026-10-29T11:21:00.000Z",
@@ -56,8 +57,17 @@ describe("newestGapId", () => {
 describe("outagePillCount", () => {
   it("adds one for an outage happening now", () => {
     expect(outagePillCount(null)).toBe(0);
-    expect(outagePillCount({ unseen: 2, ongoing: false })).toBe(2);
-    expect(outagePillCount({ unseen: 0, ongoing: true })).toBe(1);
+    expect(outagePillCount({ unseen: 2, ongoing: false, severity: "amber" })).toBe(2);
+    expect(outagePillCount({ unseen: 0, ongoing: true, severity: "red" })).toBe(1);
+  });
+
+  it("is amber only when everything it counts is amber", () => {
+    expect(outagePillClass({ unseen: 1, ongoing: false, severity: "amber" })).toBe(
+      "outage-pill outage-pill--amber",
+    );
+    expect(outagePillClass({ unseen: 1, ongoing: true, severity: "red" })).toBe(
+      "outage-pill outage-pill--red",
+    );
   });
 });
 
@@ -67,8 +77,22 @@ describe("AdminOutagesPage", () => {
       if (url.startsWith("/api/v1/admin/outages?")) {
         return jsonResponse({
           days: 30,
-          outages: [outage({}), outage({ id: "11", recoverability: "recoverable", note: null })],
-          liveTd: { lastFrameAt: "2026-10-30T18:00:00.000Z", silentForSeconds: 2, ongoing: false },
+          outages: [
+            outage({}),
+            outage({
+              id: "11",
+              reason: "td_short_receive_silence",
+              severity: "amber",
+              recoverability: "recoverable",
+              note: null,
+            }),
+          ],
+          liveTd: {
+            lastFrameAt: "2026-10-30T18:00:00.000Z",
+            silentForSeconds: 2,
+            ongoing: false,
+            severity: null,
+          },
           seenThroughGapId: "11",
         });
       }
@@ -87,6 +111,9 @@ describe("AdminOutagesPage", () => {
     expect(screen.getByText("Lost — never sent")).toBeTruthy();
     expect(screen.getByText("Recovered — arrived late")).toBeTruthy();
     expect(screen.getAllByText("New")).toHaveLength(1);
+    expect(screen.getByText("Amber")).toBeTruthy();
+    expect(screen.getByText("Red")).toBeTruthy();
+    expect(screen.getByText("Short TD drop (admin only, not shown on maps)")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toMatch(/receiving normally/);
 
     await waitFor(() => expect(seen).toHaveBeenCalled());
@@ -100,7 +127,12 @@ describe("AdminOutagesPage", () => {
       jsonResponse({
         days: 30,
         outages: [outage({})],
-        liveTd: { lastFrameAt: "2026-10-30T17:50:00.000Z", silentForSeconds: 600, ongoing: true },
+        liveTd: {
+          lastFrameAt: "2026-10-30T17:50:00.000Z",
+          silentForSeconds: 600,
+          ongoing: true,
+          severity: "red",
+        },
         seenThroughGapId: "12",
       }),
     );
@@ -108,9 +140,9 @@ describe("AdminOutagesPage", () => {
 
     render(<AdminOutagesPage />);
 
-    expect((await screen.findByRole("status")).textContent).toMatch(
-      /TD outage now: nothing received for 10 min 00 s/,
-    );
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toMatch(/TD outage now: nothing received for 10 min 00 s/);
+    expect(status.className).toContain("admin-outages__live--red");
     expect(screen.queryByText("New")).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

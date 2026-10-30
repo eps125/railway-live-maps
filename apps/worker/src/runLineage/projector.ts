@@ -12,7 +12,12 @@ import {
   londonToday,
   londonMinutesSinceMidnight,
 } from "@railway/database";
-import { evaluateStepChain, evaluateBoundaryCrossing, isSameRunIdentity } from "@railway/domain";
+import {
+  evaluateStepChain,
+  evaluateBoundaryCrossing,
+  isSameRunIdentity,
+  TD_SHORT_RECEIVE_SILENCE_REASON,
+} from "@railway/domain";
 
 /**
  * Milestone 39 (docs/adr/0007): threads an already-`resolved` run identity forward along
@@ -119,12 +124,13 @@ async function duringFeedGap(client: PoolClient, tdArea: string, at: Date): Prom
   const { rows } = await client.query<{ exists: boolean }>(
     `select exists(
        select 1 from feed_gap
-       where feed_name = 'TD' and (td_area is null or td_area = $1)
+       where feed_name = 'TD' and detection_reason <> $3 and (td_area is null or td_area = $1)
          and coalesce(affected_time_start, detected_start) <= $2
          and (coalesce(affected_time_end, detected_end) is null
               or coalesce(affected_time_end, detected_end) >= $2)
      ) as exists`,
-    [tdArea, at],
+    // Short silences (owner, 2026-10-30) are for the admin Data outages page only.
+    [tdArea, at, TD_SHORT_RECEIVE_SILENCE_REASON],
   );
   return rows[0]?.exists ?? false;
 }

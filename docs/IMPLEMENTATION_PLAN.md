@@ -5727,10 +5727,29 @@ Investigation, last 7 days (`feed_gap`, `feed_connection_session`, `feed_frame` 
 - [x] Tests: API unit (days, live status) and integration (list, unseen, seen marker never moves
       back or past the newest gap); page (rows, New, seen POST, live outage line).
 
+Follow-up, same day (owner: "record them but don't show them on maps"; "30s for amber", 5 min
+red):
+
+- [x] `project-td` records TD receive silences from 30 s up to 5 minutes as
+      `td_short_receive_silence` (migration 0062: its own one-row-per-silence unique index).
+      Nights never go more than ~4 s between TD frames (production, 28 Oct), so 30 s is never
+      normal. `feedSilences` still counts only 5-minute-plus gaps; `shortFeedSilences` the rest.
+- [x] Short gaps never reach the maps: map/playback `quality` (`feedGapWarnings`), run-lineage
+      `duringFeedGap` and held-train `loadOpenTdFeedGaps` skip that reason; signal trust already
+      read only `td_receive_silence`.
+- [x] Classified by volume, not "any late row": the burst ending 30 Oct 07:17 carried ~12 s of
+      in-gap event times though the rest never came. Delivered late only if the late rows cover
+      half the previous minute's rate over the gap (`shortSilenceDelivered`).
+- [x] Amber/red: rows carry `severity`; the live line is amber past 30 s, red past 5 minutes; the
+      pill is red if anything it counts is red, else amber.
+- [x] Tests: domain (reason split, volume rule from the 30 Oct numbers), API (severity, pill
+      colour), web (badges, short-drop label, live colour), worker integration (a lost and a
+      redelivered 60 s drop).
+
 Known limitations:
 
-- Losses shorter than the 5-minute tolerance (the 30 Oct 07:17 minute) are not recorded, so the
-  page and the pill do not show them.
+- Short drops before this change are not backfilled (the projector only sees new rows). RLM's own
+  ~50 s reconnects now show as amber even when the data was fully redelivered ("Recovered").
 - Only TD is watched. A TRUST/garner outage is not recorded unless TD stops too.
 - Access-code viewers with `map.feed_gap_details` see the page but no pill (nothing to remember
   "seen" against).

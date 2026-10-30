@@ -128,7 +128,9 @@ describe("runProjectTd (integration)", () => {
     // in CI, but only when file ordering happened to put this file first, which is why it
     // surfaced as "the Milestone 57 commit broke an unrelated worker test" and survived two
     // wrong fixes before being traced here.
-    await pool.query("delete from feed_gap where detection_reason = 'td_receive_silence'");
+    await pool.query(
+      "delete from feed_gap where detection_reason in ('td_receive_silence', 'td_short_receive_silence')",
+    );
     await pool.end();
   });
 
@@ -599,6 +601,66 @@ describe("runProjectTd (integration)", () => {
       [starts],
     );
     // As below: later tests replay every row, so this test's rows go too.
+    await pool.query("delete from td_heartbeat where td_area = $1", [area]);
+    await pool.query("delete from td_area_summary where td_area = $1", [area]);
+    await pool.query("delete from raw_feed_event where feed_name = 'TD' and td_area = $1", [area]);
+  });
+
+  it("records a 30 s–5 min silence as a short gap and classifies it by volume (2026-10-30)", async () => {
+    // Two 60 s silences, each after a busy minute (40 rows). After the first only the ending
+    // burst's few rows from inside it arrive (a real loss, like 30 Oct 07:17); after the second,
+    // the whole minute is redelivered late.
+    const area = uniqueArea();
+    const t = Date.now();
+    const S = 1000;
+    const busyMinute = async (from: number) => {
+      for (let i = 0; i < 40; i++) {
+        await record([ct(area, from + i * 1.5 * S)], new Date(from + i * 1.5 * S));
+      }
+    };
+    await busyMinute(t);
+    const firstStart = t + 39 * 1.5 * S;
+    // Silence 1 ends at +60 s; the burst carries 3 rows dated 12 s inside it.
+    for (const back of [12, 8, 4]) {
+      await record([ct(area, firstStart + 60 * S - back * S)], new Date(firstStart + 60 * S + 100));
+    }
+    const second = firstStart + 2 * 60 * S;
+    await busyMinute(second - 60 * S + 1);
+    const secondStart = second - 60 * S + 1 + 39 * 1.5 * S;
+    // Silence 2 ends 60 s later and the whole minute is redelivered (40 rows from inside it).
+    for (let i = 0; i < 40; i++) {
+      await record(
+        [ct(area, secondStart + S + i * 1.4 * S)],
+        new Date(secondStart + 60 * S + 100 + i),
+      );
+    }
+    const summary = await runProjectTd(pool);
+    expect(summary.shortFeedSilences).toBeGreaterThanOrEqual(2);
+
+    const starts = [new Date(firstStart), new Date(secondStart)];
+    await pool.query(
+      `update feed_gap set created_at = now() - interval '10 minutes'
+        where detection_reason = 'td_short_receive_silence' and detected_start = any($1::timestamptz[])`,
+      [starts],
+    );
+    await classifyReceiveSilences(pool);
+    const rows = (
+      await pool.query<{ recoverability: string }>(
+        `select recoverability from feed_gap
+          where detection_reason = 'td_short_receive_silence' and detected_start = any($1::timestamptz[])
+          order by detected_start`,
+        [starts],
+      )
+    ).rows;
+    expect(rows.map((r) => r.recoverability)).toEqual(["unrecoverable", "recoverable"]);
+
+    // Every gap this test's rows made, including any from the previous test's last row to its first.
+    await pool.query(
+      `delete from feed_gap
+        where detection_reason in ('td_short_receive_silence', 'td_receive_silence')
+          and (detected_start >= $1 or detected_end = $1)`,
+      [new Date(t)],
+    );
     await pool.query("delete from td_heartbeat where td_area = $1", [area]);
     await pool.query("delete from td_area_summary where td_area = $1", [area]);
     await pool.query("delete from raw_feed_event where feed_name = 'TD' and td_area = $1", [area]);

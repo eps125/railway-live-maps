@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import { SIGNAL_GAP_TOLERANCE_MS } from "@railway/domain";
+import {
+  SIGNAL_GAP_TOLERANCE_MS,
+  TD_SHORT_RECEIVE_SILENCE_REASON,
+  TD_SHORT_SILENCE_MIN_MS,
+} from "@railway/domain";
 import { apiError } from "../../lib/queryRange.js";
 
 export interface OutageRoutesDeps {
@@ -11,6 +15,24 @@ export interface OutageRoutesDeps {
 
 export const DEFAULT_OUTAGE_DAYS = 30;
 export const MAX_OUTAGE_DAYS = 365;
+
+/** Owner, 2026-10-30: a TD drop from 30 s is an amber alert, from 5 minutes red. */
+export type OutageSeverity = "amber" | "red";
+
+/** A recorded gap's severity: short silences are amber, everything else (the 5-minute-plus
+ * silences and any gap recorded by hand) red. */
+export function gapSeverity(reason: string): OutageSeverity {
+  return reason === TD_SHORT_RECEIVE_SILENCE_REASON ? "amber" : "red";
+}
+
+/** The worse of two severities (`null` = nothing to show). */
+export function worseSeverity(
+  a: OutageSeverity | null,
+  b: OutageSeverity | null,
+): OutageSeverity | null {
+  if (a === "red" || b === "red") return "red";
+  return a ?? b;
+}
 
 interface FeedGapRow {
   id: string;
@@ -35,6 +57,7 @@ function outageResponse(row: FeedGapRow) {
       ? Math.round((row.window_end.getTime() - row.window_start.getTime()) / 1000)
       : null,
     reason: row.detection_reason,
+    severity: gapSeverity(row.detection_reason),
     recoverability: row.recoverability,
     note: row.operator_note,
     recordedAt: row.created_at.toISOString(),
@@ -52,14 +75,22 @@ export function parseOutageDays(raw: string | undefined): number | null {
 /**
  * Whether TD is silent right now. A `feed_gap` row is only written once a silence has ended (the
  * projector finds it between two received rows), so an outage still in progress has no row yet:
- * this is how the page and the pill show one anyway. Same tolerance as the recorded gaps.
+ * this is how the page and the pill show one anyway. Same thresholds as the recorded gaps: amber
+ * past 30 s, red past 5 minutes (or nothing ever received).
  */
 export function liveTdStatus(lastFrameAt: Date | null, now: Date) {
   const silentForMs = lastFrameAt ? Math.max(0, now.getTime() - lastFrameAt.getTime()) : null;
+  const severity: OutageSeverity | null =
+    silentForMs === null || silentForMs > SIGNAL_GAP_TOLERANCE_MS
+      ? "red"
+      : silentForMs > TD_SHORT_SILENCE_MIN_MS
+        ? "amber"
+        : null;
   return {
     lastFrameAt: lastFrameAt ? lastFrameAt.toISOString() : null,
     silentForSeconds: silentForMs === null ? null : Math.round(silentForMs / 1000),
-    ongoing: silentForMs === null || silentForMs > SIGNAL_GAP_TOLERANCE_MS,
+    ongoing: severity !== null,
+    severity,
   };
 }
 
@@ -82,7 +113,7 @@ async function seenThrough(pool: Pool, userId: string | undefined): Promise<stri
 
 /**
  * 2026-10-30 (owner request): the admin "Data outages" page — every recorded `feed_gap` (TD
- * receive silences longer than the signal-trust tolerance, and any recorded by hand), whether TD
+ * receive silences from 30 s, amber, and from 5 minutes, red, and any recorded by hand), whether TD
  * is silent right now, and a per-user unseen count for the pill on the Admin link. Viewing the
  * page marks what it showed as seen. Behind `map.feed_gap_details`, the permission that already
  * gates outage details on the maps.
@@ -131,17 +162,28 @@ export async function registerOutageRoutes(
     const userId = request.viewer?.user?.id;
     const [unseen, lastFrame] = await Promise.all([
       userId
-        ? pool.query<{ unseen: number }>(
-            `select count(*)::int as unseen from feed_gap
+        ? pool.query<{ unseen: number; unseen_red: number }>(
+            `select count(*)::int as unseen,
+                    count(*) filter (where detection_reason <> $2)::int as unseen_red
+               from feed_gap
               where id > coalesce((select seen_through_gap_id from feed_gap_seen where user_id = $1), 0)`,
-            [userId],
+            [userId, TD_SHORT_RECEIVE_SILENCE_REASON],
           )
         : null,
       lastTdFrameAt(pool),
     ]);
+    const counts = unseen?.rows[0];
+    const live = liveTdStatus(lastFrame, now());
+    const unseenSeverity: OutageSeverity | null = !counts?.unseen
+      ? null
+      : counts.unseen_red > 0
+        ? "red"
+        : "amber";
     return {
-      unseen: unseen?.rows[0]?.unseen ?? 0,
-      ongoing: liveTdStatus(lastFrame, now()).ongoing,
+      unseen: counts?.unseen ?? 0,
+      ongoing: live.ongoing,
+      // The pill's colour: the worst of the unseen gaps and an outage happening now.
+      severity: worseSeverity(unseenSeverity, live.severity),
     };
   });
 

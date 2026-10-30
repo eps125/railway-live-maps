@@ -46,7 +46,8 @@ export async function runProjectTdDaemon(config: Config): Promise<void> {
       if (
         summary.sRefreshMismatches > 0 ||
         summary.sDecodeFailures > 0 ||
-        summary.feedSilences > 0
+        summary.feedSilences > 0 ||
+        summary.shortFeedSilences > 0
       ) {
         console.log(
           JSON.stringify({
@@ -55,6 +56,7 @@ export async function runProjectTdDaemon(config: Config): Promise<void> {
             decodeFailures: summary.sDecodeFailures,
             bitTransitions: summary.sBitTransitions,
             feedSilencesRecorded: summary.feedSilences,
+            shortFeedSilencesRecorded: summary.shortFeedSilences,
           }),
         );
       }

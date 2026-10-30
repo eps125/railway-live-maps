@@ -858,16 +858,20 @@ startedAt, finishedAt }] }`. `status` is `queued` / `running` / `succeeded` / `f
 **Data outages (2026-10-30), `map.feed_gap_details`:** recorded feed gaps (`feed_gap`) and whether
 TD is silent right now, for the "Data outages" page (`/admin/outages`) and the unseen-outage pill
 on the Admin link. A gap is only recorded once its silence ends, so an outage in progress shows as
-`liveTd.ongoing` (no TD frame for longer than the 5-minute gap tolerance).
+`liveTd.ongoing`. Owner, 2026-10-30: a TD drop from 30 s is `amber` (recorded as
+`td_short_receive_silence`, admin only: never in map `quality`, playback, signals, run lineage or
+held-train delays), from 5 minutes `red` (`td_receive_silence`, also flagged on maps).
 
 - `GET /api/v1/admin/outages?days=` — `days` 1–365 (default 30): gaps that ended (or are open)
   within it, newest first, at most 500: `{ days, outages: [{ id, feed, tdArea, start, end,
-durationSeconds, reason, recoverability, note, recordedAt }], liveTd: { lastFrameAt,
-silentForSeconds, ongoing }, seenThroughGapId }`. `tdArea` `null` = every area; `end` /
+durationSeconds, reason, severity, recoverability, note, recordedAt }], liveTd: { lastFrameAt,
+silentForSeconds, ongoing, severity }, seenThroughGapId }`. `severity` is `amber` / `red`
+  (`liveTd.severity` `null` while TD is receiving). `tdArea` `null` = every area; `end` /
   `durationSeconds` `null` = still open. `seenThroughGapId` is `null` for a viewer with no user
   (an access code).
-- `GET /api/v1/admin/outages/summary` — `{ unseen, ongoing }`: gaps recorded since this user last
-  marked them seen (0 without a user), and `liveTd.ongoing`.
+- `GET /api/v1/admin/outages/summary` — `{ unseen, ongoing, severity }`: gaps recorded since this
+  user last marked them seen (0 without a user), `liveTd.ongoing`, and the pill's colour (the
+  worst of the unseen gaps and the live status; `null` when there is nothing to show).
 - `POST /api/v1/admin/outages/seen` — body `{ throughGapId }`, `204`. Remembers per user
   (`feed_gap_seen`) the newest gap seen; never moves backwards or past the newest gap. A no-op
   without a user.

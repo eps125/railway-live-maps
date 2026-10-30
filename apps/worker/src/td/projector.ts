@@ -22,7 +22,11 @@ import {
   TD_S_DECODE_VERSION,
   TD_S_STATE_PROJECTION_VERSION,
   TD_RECEIVE_SILENCE_REASON,
+  TD_SHORT_RECEIVE_SILENCE_REASON,
+  TD_SHORT_SILENCE_MIN_MS,
   detectReceiveSilences,
+  receiveSilenceReason,
+  shortSilenceDelivered,
   type OpenOccupancySnapshot,
   type ReceivedRow,
   type BerthEffect,
@@ -64,6 +68,9 @@ export interface ProjectTdSummary {
   sStaleRefreshBytes: number;
   /** TD receive silences longer than the signal-trust tolerance, recorded as `feed_gap` rows. */
   feedSilences: number;
+  /** Shorter TD receive silences (30 s up to the tolerance; owner, 2026-10-30), recorded as
+   * `td_short_receive_silence` rows for the admin Data outages page. */
+  shortFeedSilences: number;
   anomalies: number;
   /** True when this invocation did nothing because another runProjectTd was already in
    * progress (see the advisory lock note on runProjectTd below) — not an error, just "try
@@ -82,6 +89,7 @@ const EMPTY_SUMMARY: ProjectTdSummary = {
   sRefreshMismatches: 0,
   sStaleRefreshBytes: 0,
   feedSilences: 0,
+  shortFeedSilences: 0,
   anomalies: 0,
   skippedLockContention: false,
 };
@@ -480,16 +488,19 @@ async function upsertSByteStateBulk(client: PoolClient, fold: SClassFoldResult):
  * Milestone 36b (docs/adr/0013): records every TD receive silence longer than the signal-trust
  * tolerance within this batch as a `feed_gap` row (`td_receive_silence`) — the recorded gaps the
  * signal trust rule, `/state?at=` and playback read, and which the existing feed-gap banner
- * surfaces. Compared against the previous batch's last row too (looked up by checkpoint sequence
- * when this run hasn't seen one yet), so a silence spanning a batch boundary is still caught.
- * Idempotent: `feed_gap_td_receive_silence_uk` makes a re-projected silence a no-op.
+ * surfaces. Since 2026-10-30 (owner) a shorter one, from `TD_SHORT_SILENCE_MIN_MS`, is recorded
+ * too under `td_short_receive_silence`, for the admin Data outages page only. Compared against
+ * the previous batch's last row too (looked up by checkpoint sequence when this run hasn't seen
+ * one yet), so a silence spanning a batch boundary is still caught. Idempotent:
+ * `feed_gap_td_receive_silence_uk` / `feed_gap_td_short_silence_uk` make a re-projected silence a
+ * no-op.
  */
 async function recordReceiveSilences(
   client: PoolClient,
   lastSequence: string,
   rows: RawTdRow[],
   previousInRun: ReceivedRow | null,
-): Promise<number> {
+): Promise<{ long: number; short: number }> {
   let previous = previousInRun;
   if (!previous && lastSequence !== "0") {
     const result = await client.query<{ received_at_utc: Date }>(
@@ -504,25 +515,20 @@ async function recordReceiveSilences(
   const silences = detectReceiveSilences(
     previous,
     rows.map((r) => ({ receivedAt: r.received_at_utc, ingestionSequence: r.ingestion_sequence })),
+    TD_SHORT_SILENCE_MIN_MS,
   );
-  let recorded = 0;
+  const recorded = { long: 0, short: 0 };
   for (const silence of silences) {
+    const reason = receiveSilenceReason(silence);
     const result = await client.query(
       `insert into feed_gap (
          feed_name, td_area, detected_start, detected_end, detection_reason, recoverability,
          affected_sequence_start, affected_sequence_end, affected_time_start, affected_time_end
        ) values ('TD', null, $1, $2, $3, 'unknown', $4, $5, $1, $2)
-       on conflict (feed_name, affected_sequence_start)
-         where detection_reason = 'td_receive_silence' do nothing`,
-      [
-        silence.startAt,
-        silence.endAt,
-        TD_RECEIVE_SILENCE_REASON,
-        silence.startSequence,
-        silence.endSequence,
-      ],
+       on conflict do nothing`,
+      [silence.startAt, silence.endAt, reason, silence.startSequence, silence.endSequence],
     );
-    recorded += result.rowCount ?? 0;
+    recorded[reason === TD_SHORT_RECEIVE_SILENCE_REASON ? "short" : "long"] += result.rowCount ?? 0;
   }
   return recorded;
 }
@@ -540,6 +546,11 @@ const SILENCE_LATE_ROWS = 20_000;
  * redelivered backlog starts. The edges are left out, since the last rows before a silence
  * and the burst that ends it carry event times a little inside it either way.
  *
+ * A short silence (2026-10-30, under the tolerance) is too short to leave out 90 s, and the burst
+ * that ends it carries ~12 s of event times from inside it even when the rest never comes (30 Oct
+ * 07:17, checked on production). So it is judged by volume instead: delivered late only if the
+ * late rows cover half the rate of the minute before it (`shortSilenceDelivered`).
+ *
  * Waits five minutes after a silence is recorded, so the rows after it are all in. The rows are
  * found by ingestion sequence behind a `materialized` fence: left to itself the planner filters
  * on event time through the BRIN index and takes minutes (checked on production).
@@ -547,41 +558,29 @@ const SILENCE_LATE_ROWS = 20_000;
 export async function classifyReceiveSilences(client: Pool | PoolClient): Promise<number> {
   const pending = await client.query<{
     id: string;
+    detection_reason: string;
+    affected_sequence_start: string | null;
     affected_sequence_end: string;
     affected_time_start: Date;
     affected_time_end: Date;
   }>(
-    `select id::text as id, affected_sequence_end::text as affected_sequence_end,
+    `select id::text as id, detection_reason,
+            affected_sequence_start::text as affected_sequence_start,
+            affected_sequence_end::text as affected_sequence_end,
             affected_time_start, affected_time_end
        from feed_gap
-      where feed_name = 'TD' and detection_reason = $1 and recoverability = 'unknown'
+      where feed_name = 'TD' and detection_reason = any($1::text[]) and recoverability = 'unknown'
         and affected_sequence_end is not null and affected_time_start is not null
         and affected_time_end is not null and created_at < now() - interval '5 minutes'
       order by id
       limit 20`,
-    [TD_RECEIVE_SILENCE_REASON],
+    [[TD_RECEIVE_SILENCE_REASON, TD_SHORT_RECEIVE_SILENCE_REASON]],
   );
   for (const gap of pending.rows) {
-    const late = await client.query<{ late: boolean }>(
-      `with after as materialized (
-         select e.normalized_event_at_utc as event_at from raw_feed_event e
-          where e.feed_name = 'TD' and e.ingestion_sequence >= $1::bigint
-            and e.ingestion_sequence <= $1::bigint + $4::bigint
-            and e.recovery_source is null
-       )
-       select exists (
-         select 1 from after
-          where event_at > $2::timestamptz + interval '15 seconds'
-            and event_at < $3::timestamptz - interval '90 seconds'
-       ) as late`,
-      [
-        gap.affected_sequence_end,
-        gap.affected_time_start,
-        gap.affected_time_end,
-        SILENCE_LATE_ROWS,
-      ],
-    );
-    const delivered = late.rows[0]?.late === true;
+    const delivered =
+      gap.detection_reason === TD_SHORT_RECEIVE_SILENCE_REASON
+        ? await shortSilenceDeliveredLate(client, gap)
+        : await silenceDeliveredLate(client, gap);
     await client.query(
       `update feed_gap set recoverability = $2, operator_note = $3
         where id = $1 and recoverability = 'unknown'`,
@@ -595,6 +594,75 @@ export async function classifyReceiveSilences(client: Pool | PoolClient): Promis
     );
   }
   return pending.rows.length;
+}
+
+interface SilenceBounds {
+  affected_sequence_start: string | null;
+  affected_sequence_end: string;
+  affected_time_start: Date;
+  affected_time_end: Date;
+}
+
+async function silenceDeliveredLate(
+  client: Pool | PoolClient,
+  gap: SilenceBounds,
+): Promise<boolean> {
+  const late = await client.query<{ late: boolean }>(
+    `with after as materialized (
+       select e.normalized_event_at_utc as event_at from raw_feed_event e
+        where e.feed_name = 'TD' and e.ingestion_sequence >= $1::bigint
+          and e.ingestion_sequence <= $1::bigint + $4::bigint
+          and e.recovery_source is null
+     )
+     select exists (
+       select 1 from after
+        where event_at > $2::timestamptz + interval '15 seconds'
+          and event_at < $3::timestamptz - interval '90 seconds'
+     ) as late`,
+    [gap.affected_sequence_end, gap.affected_time_start, gap.affected_time_end, SILENCE_LATE_ROWS],
+  );
+  return late.rows[0]?.late === true;
+}
+
+async function shortSilenceDeliveredLate(
+  client: Pool | PoolClient,
+  gap: SilenceBounds,
+): Promise<boolean> {
+  if (gap.affected_sequence_start === null) return false;
+  const result = await client.query<{ inside: number; before: number }>(
+    `with after as materialized (
+       select e.normalized_event_at_utc as event_at from raw_feed_event e
+        where e.feed_name = 'TD' and e.ingestion_sequence >= $1::bigint
+          and e.ingestion_sequence <= $1::bigint + $5::bigint
+          and e.recovery_source is null
+     ),
+     before as materialized (
+       select e.normalized_event_at_utc as event_at from raw_feed_event e
+        where e.feed_name = 'TD' and e.ingestion_sequence <= $2::bigint
+          and e.ingestion_sequence > $2::bigint - $5::bigint
+          and e.recovery_source is null
+     )
+     select (select count(*)::int from after
+              where event_at > $3::timestamptz + interval '5 seconds'
+                and event_at < $4::timestamptz - interval '5 seconds') as inside,
+            (select count(*)::int from before
+              where event_at >= $3::timestamptz - interval '60 seconds'
+                and event_at < $3::timestamptz) as before`,
+    [
+      gap.affected_sequence_end,
+      gap.affected_sequence_start,
+      gap.affected_time_start,
+      gap.affected_time_end,
+      SILENCE_LATE_ROWS,
+    ],
+  );
+  const row = result.rows[0];
+  if (!row) return false;
+  return shortSilenceDelivered(
+    row.inside,
+    row.before,
+    gap.affected_time_end.getTime() - gap.affected_time_start.getTime(),
+  );
 }
 
 /** Bulk-reads the currently-open `berth_occupancy` row (if any) for every distinct (td_area,
@@ -1206,12 +1274,14 @@ export async function runProjectTd(
         summary.sStaleRefreshBytes += sFold.staleRefreshBytes;
         await upsertSByteStateBulk(client, sFold);
 
-        summary.feedSilences += await recordReceiveSilences(
+        const silences = await recordReceiveSilences(
           client,
           lastSequence,
           batch.rows,
           previousReceived,
         );
+        summary.feedSilences += silences.long;
+        summary.shortFeedSilences += silences.short;
         await classifyReceiveSilences(client);
 
         await upsertAreaSummary(client, areaSummary);

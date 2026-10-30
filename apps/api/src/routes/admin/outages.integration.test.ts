@@ -17,15 +17,15 @@ let userId = "";
  * check (map quality, run lineage) can ever see them. */
 const DAYS_AGO_300 = 300 * 24 * 60;
 
-async function insertGap(minutesAgo: number): Promise<string> {
+async function insertGap(minutesAgo: number, reason = "integration_test"): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
     `insert into feed_gap (feed_name, td_area, detected_start, detected_end, detection_reason,
                            recoverability, affected_time_start, affected_time_end)
      values ('TD', 'Z9', now() - make_interval(mins => $1), now() - make_interval(mins => $1 - 12),
-             'integration_test', 'unrecoverable',
+             $2, 'unrecoverable',
              now() - make_interval(mins => $1), now() - make_interval(mins => $1 - 12))
      returning id::text`,
-    [minutesAgo],
+    [minutesAgo, reason],
   );
   gapIds.push(rows[0]!.id);
   return rows[0]!.id;
@@ -69,6 +69,7 @@ describe("admin outage routes (integration)", () => {
       tdArea: "Z9",
       durationSeconds: 720,
       reason: "integration_test",
+      severity: "red",
       recoverability: "unrecoverable",
     });
 
@@ -88,7 +89,11 @@ describe("admin outage routes (integration)", () => {
     ).toBe(0);
 
     // A gap recorded later shows again; marking an older id never moves the marker back.
-    const second = await insertGap(DAYS_AGO_300 + 30);
+    const second = await insertGap(DAYS_AGO_300 + 30, "td_short_receive_silence");
+    const relisted = (
+      await app.inject({ method: "GET", url: "/api/v1/admin/outages?days=365" })
+    ).json();
+    expect(relisted.outages.find((o: { id: string }) => o.id === second)?.severity).toBe("amber");
     await app.inject({
       method: "POST",
       url: "/api/v1/admin/outages/seen",

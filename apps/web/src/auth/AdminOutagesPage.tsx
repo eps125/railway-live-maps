@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { readApiJson } from "../editor/apiJson.js";
 import { formatLondon } from "./accessCodeFormat.js";
-import { OUTAGES_SEEN_EVENT } from "./useOutageSummary.js";
+import { OUTAGES_SEEN_EVENT, type OutageSeverity } from "./useOutageSummary.js";
 
 type Recoverability = "recoverable" | "unrecoverable" | "unknown";
 
@@ -13,6 +13,7 @@ export interface OutageView {
   end: string | null;
   durationSeconds: number | null;
   reason: string;
+  severity: OutageSeverity;
   recoverability: Recoverability;
   note: string | null;
   recordedAt: string;
@@ -22,6 +23,7 @@ interface LiveTd {
   lastFrameAt: string | null;
   silentForSeconds: number | null;
   ongoing: boolean;
+  severity: OutageSeverity | null;
 }
 
 interface OutagesResponse {
@@ -35,6 +37,12 @@ const PERIODS = [7, 30, 90, 365];
 
 const REASON_LABEL: Record<string, string> = {
   td_receive_silence: "No TD messages received",
+  td_short_receive_silence: "Short TD drop (admin only, not shown on maps)",
+};
+
+const SEVERITY_LABEL: Record<OutageSeverity, string> = {
+  amber: "Amber",
+  red: "Red",
 };
 
 const RECOVERABILITY_LABEL: Record<Recoverability, string> = {
@@ -113,8 +121,9 @@ export function AdminOutagesPage(): JSX.Element {
     <div className="admin-users-page admin-outages">
       <h2>Data outages</h2>
       <p className="admin-outages__intro">
-        Times the train describer feed stopped for longer than five minutes. Outages are recorded
-        when the feed resumes; one happening now shows above the list.
+        Times the train describer feed stopped: amber from 30 seconds, red from five minutes. Only
+        red outages are flagged on the maps. Outages are recorded when the feed resumes; one
+        happening now shows above the list.
       </p>
       {error && (
         <p role="alert" className="app-error">
@@ -123,7 +132,7 @@ export function AdminOutagesPage(): JSX.Element {
       )}
       {live && (
         <p
-          className={`admin-outages__live${live.ongoing ? " admin-outages__live--down" : ""}`}
+          className={`admin-outages__live${live.severity ? ` admin-outages__live--${live.severity}` : ""}`}
           role="status"
         >
           {live.ongoing
@@ -151,6 +160,7 @@ export function AdminOutagesPage(): JSX.Element {
           <table className="users-table admin-outages__table">
             <thead>
               <tr>
+                <th>Alert</th>
                 <th>Started</th>
                 <th>Ended</th>
                 <th>Length</th>
@@ -165,6 +175,13 @@ export function AdminOutagesPage(): JSX.Element {
                 const isNew = seenBefore !== null && BigInt(outage.id) > BigInt(seenBefore);
                 return (
                   <tr key={outage.id} className={isNew ? "admin-outages__row--new" : undefined}>
+                    <td>
+                      <span
+                        className={`admin-outages__severity admin-outages__severity--${outage.severity}`}
+                      >
+                        {SEVERITY_LABEL[outage.severity]}
+                      </span>
+                    </td>
                     <td>
                       {formatLondon(outage.start)}
                       {isNew && <span className="admin-outages__new">New</span>}

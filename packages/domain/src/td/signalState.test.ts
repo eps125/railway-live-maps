@@ -6,6 +6,11 @@ import {
   inferredInputElementId,
   signalStateForBit as signalStateForBitForInference,
   detectReceiveSilences,
+  receiveSilenceReason,
+  shortSilenceDelivered,
+  TD_RECEIVE_SILENCE_REASON,
+  TD_SHORT_RECEIVE_SILENCE_REASON,
+  TD_SHORT_SILENCE_MIN_MS,
   resolveSignalStates,
   sByteTrustedAt,
   signalBindingsFromIndex,
@@ -60,6 +65,50 @@ describe("detectReceiveSilences", () => {
 
   it("uses the previous batch's last row across a batch boundary", () => {
     expect(detectReceiveSilences(row("09:00:00", "9"), [row("09:30:00", "10")])).toHaveLength(1);
+  });
+
+  it("finds short silences too with the short minimum, each recorded under its own reason", () => {
+    const silences = detectReceiveSilences(
+      null,
+      [
+        row("07:17:00", "1"),
+        row("07:17:30", "2"), // exactly 30 s — not a silence
+        row("07:18:30", "3"), // 60 s — short (30 Oct 2026)
+        row("07:24:00", "4"), // 5 m 30 s — a full gap
+      ],
+      TD_SHORT_SILENCE_MIN_MS,
+    );
+    expect(silences.map((s) => [s.startSequence, receiveSilenceReason(s)])).toEqual([
+      ["2", TD_SHORT_RECEIVE_SILENCE_REASON],
+      ["3", TD_RECEIVE_SILENCE_REASON],
+    ]);
+  });
+
+  it("an exactly-5-minute silence is still a short one", () => {
+    const [silence] = detectReceiveSilences(
+      row("10:00:00", "1"),
+      [row("10:05:00", "2")],
+      TD_SHORT_SILENCE_MIN_MS,
+    );
+    expect(receiveSilenceReason(silence!)).toBe(TD_SHORT_RECEIVE_SILENCE_REASON);
+  });
+});
+
+describe("shortSilenceDelivered", () => {
+  // ~7,200 TD events a minute nationwide (production, 30 Oct 2026).
+  it("a 60 s loss whose ending burst carries ~12 s of its event times was not delivered", () => {
+    // 30 Oct 07:17:12–07:18:12: 50 s inner window expects 6,000; ~1,440 arrived (12 s' worth).
+    expect(shortSilenceDelivered(1_440, 7_200, 60_000)).toBe(false);
+  });
+
+  it("a reconnect whose backlog the durable subscription redelivered was", () => {
+    // 29 Oct 14:32:20–14:33:08 (48.7 s): the minutes either side kept normal counts.
+    expect(shortSilenceDelivered(4_500, 7_000, 48_700)).toBe(true);
+  });
+
+  it("with nothing to compare against, it is not delivered", () => {
+    expect(shortSilenceDelivered(100, 0, 60_000)).toBe(false);
+    expect(shortSilenceDelivered(0, 7_200, 8_000)).toBe(false);
   });
 });
 

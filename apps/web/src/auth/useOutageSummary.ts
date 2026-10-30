@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 
+/** Owner, 2026-10-30: a TD drop from 30 s is amber, from 5 minutes red. */
+export type OutageSeverity = "amber" | "red";
+
 export interface OutageSummary {
   /** Outages recorded since this user last opened the Data outages page. */
   unseen: number;
-  /** TD has been silent longer than the gap tolerance right now. */
+  /** TD has been silent for 30 s or more right now. */
   ongoing: boolean;
+  /** The pill's colour: the worst of the unseen outages and one happening now. */
+  severity: OutageSeverity | null;
 }
 
 /** Fired by the Data outages page once it has marked what it shows as seen, so the pill clears
@@ -12,6 +17,11 @@ export interface OutageSummary {
 export const OUTAGES_SEEN_EVENT = "rlm:outages-seen";
 
 const POLL_MS = 60_000;
+
+/** The pill's class: red unless every outage it counts is amber. */
+export function outagePillClass(summary: OutageSummary | null): string {
+  return `outage-pill outage-pill--${summary?.severity === "amber" ? "amber" : "red"}`;
+}
 
 /** The number the pill shows: unseen outages, plus one for an outage happening now. */
 export function outagePillCount(summary: OutageSummary | null): number {
@@ -38,7 +48,9 @@ export function useOutageSummary(enabled: boolean): OutageSummary | null {
         const response = await fetch("/api/v1/admin/outages/summary");
         if (!response.ok) return;
         const body = (await response.json()) as OutageSummary;
-        if (!cancelled) setSummary({ unseen: body.unseen, ongoing: body.ongoing });
+        if (!cancelled) {
+          setSummary({ unseen: body.unseen, ongoing: body.ongoing, severity: body.severity });
+        }
       } catch {
         // A failed poll leaves the last count showing; the next one retries.
       }

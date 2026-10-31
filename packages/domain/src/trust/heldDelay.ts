@@ -9,8 +9,9 @@ import type { TrustMovementEventKind } from "./garnerMovement.js";
  *  - rule 2, booked timing point: the train hasn't left a location it's booked to depart (or pass)
  *    at `bookedAt`, so it is at least `now − bookedAt` late;
  *  - rule 3, held in a plain berth: at least
- *    `last reported lateness + minutes held − berth allowance − allowances still ahead`,
- *    applied only when the run has a TRUST report and the berth isn't a booked stop.
+ *    `last reported lateness + minutes held − berth allowance − allowances still ahead
+ *     − booked waits still ahead`, applied only when the run has a TRUST report and the berth
+ *    isn't a booked stop.
  */
 export interface HeldDelayInput {
   now: Date;
@@ -38,6 +39,13 @@ export interface HeldDelayInput {
   berthAllowanceMinutes: number;
   /** Booked allowances from the last reported location up to the next reporting point. */
   allowancesAheadMinutes: number;
+  /**
+   * Booked waits (arrival to departure) the train can still use before the next point TRUST
+   * reports at — a loop or junction it waits at unreported (owner report 2026-10-31, 5C48 at
+   * Carnforth South Jn). Each is counted only up to its booked departure, measured from when the
+   * hold began, so a wait whose departure time has passed gives nothing.
+   */
+  bookedWaitAheadMinutes: number;
   /** A whole-run cancellation, or a part-cancellation, is in force. */
   cancelled: boolean;
   /** The TD area has a feed gap covering the hold, so "stationary" may be missing steps. */
@@ -100,7 +108,12 @@ export function estimateHeldDelay(input: HeldDelayInput): HeldDelayResult {
     const heldFrom = Math.max(input.occupancyEnteredAt.getTime(), report.actualAt.getTime());
     const held = (nowMs - heldFrom) / MS_PER_MINUTE;
     candidates.push({
-      minutes: reported + held - input.berthAllowanceMinutes - input.allowancesAheadMinutes,
+      minutes:
+        reported +
+        held -
+        input.berthAllowanceMinutes -
+        input.allowancesAheadMinutes -
+        input.bookedWaitAheadMinutes,
       basis: "held_in_berth",
     });
   }

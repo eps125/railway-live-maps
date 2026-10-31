@@ -305,6 +305,24 @@ export async function loadBerthStanoxes(
   return out;
 }
 
+/**
+ * Which of `stanoxes` TRUST reports at automatically: those SMART places a berth step at. TRUST's
+ * automatic reports come from TD berth steps through SMART, so a location outside it is reported
+ * only when an operator keys it in (production, 2026-10-31: 13 of 709 such locations on 355 runs
+ * were auto-reported, against 5,879 of 6,126 SMART ones).
+ */
+export async function loadReportingStanoxes(
+  db: Queryable,
+  stanoxes: readonly string[],
+): Promise<Set<string>> {
+  if (stanoxes.length === 0) return new Set();
+  const { rows } = await db.query<{ stanox: string }>(
+    `select distinct stanox from smart_berth_step where stanox = any($1::text[])`,
+    [[...stanoxes]],
+  );
+  return new Set(rows.map((row) => row.stanox));
+}
+
 /** Each berth's allowance (minutes) from `berth_dwell_profile`, keyed `area|berth`. A berth
  * with no row is absent; the caller uses the default. */
 export async function loadBerthAllowances(
@@ -454,6 +472,8 @@ export interface HeldDelayContext {
   trust: RunTrustState | undefined;
   locations: readonly ScheduleLocationRow[];
   tiplocStanox: ReadonlyMap<string, string>;
+  /** The schedule's STANOXes TRUST reports at automatically (`loadReportingStanoxes`). */
+  reportingStanoxes: ReadonlySet<string>;
   berthStanoxes: readonly string[];
   berthAllowanceMinutes: number | undefined;
   feedGapAreas: ReadonlySet<string | null>;
@@ -468,14 +488,27 @@ export interface HeldDelayContext {
  *    after the last TRUST report's location (strictly after it if that report was a departure or
  *    pass from there: that visit is done).
  *  - Allowances "still ahead" are those recorded at the last reported location and at every
- *    later location before the next one with a STANOX (where TRUST would report next). An
+ *    later location before the next one TRUST reports at automatically (a SMART STANOX). An
  *    allowance belongs to the section after its timing point (measured, ADR 0021 "Evidence").
+ *  - Booked waits "still ahead" are the arrival-to-departure waits over the same stretch (and at
+ *    the last reported location, if the report was its arrival), each capped at its booked
+ *    departure less the start of the hold. Not the next reporting point's own wait: TRUST will
+ *    report the arrival there, which no wait makes less late.
  */
 export function buildHeldDelayInput(
   candidate: HeldTrainCandidate,
   ctx: HeldDelayContext,
 ): HeldDelayInput {
   const stanoxOf = (tiploc: string) => ctx.tiplocStanox.get(tiploc) ?? null;
+  // Owner report 2026-10-31 (PX 5C48): booked to wait at Carnforth South Jn, which has a STANOX
+  // but no SMART steps, so TRUST never reports there. Taking "has a STANOX" as "TRUST reports
+  // here" ended the stretch before that wait. With no SMART data for the schedule at all, fall
+  // back to it.
+  const reportsAt = (tiploc: string) => {
+    const stanox = stanoxOf(tiploc);
+    if (stanox === null) return false;
+    return ctx.reportingStanoxes.size === 0 || ctx.reportingStanoxes.has(stanox);
+  };
   const berthStanoxes = new Set(ctx.berthStanoxes);
   const raw = ctx.trust?.latestReport ?? null;
 
@@ -577,15 +610,43 @@ export function buildHeldDelayInput(
     }
   }
 
+  // A booked wait counts only up to its booked departure: once that has passed, standing still
+  // is lost time again (a train that already did its wait and is stuck further on).
+  const bookedWaitCreditMinutes = (loc: ScheduleLocationRow, heldFromMs: number): number => {
+    if (!loc.arrival || !loc.departure) return 0;
+    const arrivesAt = bookedInstant(loc, "arrival");
+    let leavesAt = bookedInstant(loc, "departure");
+    if (!arrivesAt || !leavesAt) return 0;
+    // garner's `next_day` is per location from its first time only: 23:50 to 00:20 reads as a
+    // departure before the arrival. Same calendar-day arithmetic as everywhere else (ADR 0008).
+    if (leavesAt.getTime() < arrivesAt.getTime()) {
+      const minutes = parseCifTimeToMinutes(loc.departure);
+      if (minutes === null) return 0;
+      leavesAt = londonWallClockToInstant(
+        candidate.trafficDay,
+        minutes,
+        scheduleDayOffset(minutes, originDeparture, loc.nextDay) + 1,
+      );
+    }
+    const wait = (leavesAt.getTime() - arrivesAt.getTime()) / 60_000;
+    const untilDeparture = (leavesAt.getTime() - heldFromMs) / 60_000;
+    return Math.max(0, Math.min(wait, untilDeparture));
+  };
+
   let allowancesAheadMinutes = 0;
-  if (lastReportSeq !== null) {
+  let bookedWaitAheadMinutes = 0;
+  if (lastReportSeq !== null && raw) {
+    const heldFromMs = Math.max(candidate.enteredAt.getTime(), raw.actualAt.getTime());
     for (const loc of ctx.locations) {
       if (loc.seqNo < lastReportSeq) continue;
-      if (loc.seqNo > lastReportSeq && stanoxOf(loc.tiploc) !== null) break;
+      if (loc.seqNo > lastReportSeq && reportsAt(loc.tiploc)) break;
       allowancesAheadMinutes +=
         parseCifAllowanceMinutes(loc.engineeringAllowance) +
         parseCifAllowanceMinutes(loc.pathingAllowance) +
         parseCifAllowanceMinutes(loc.performanceAllowance);
+      // A departure (or pass) reported from the last location means its wait is over.
+      if (loc.seqNo === lastReportSeq && leftReportedLocation) continue;
+      bookedWaitAheadMinutes += bookedWaitCreditMinutes(loc, heldFromMs);
     }
   }
 
@@ -598,6 +659,7 @@ export function buildHeldDelayInput(
     atDestination,
     berthAllowanceMinutes: ctx.berthAllowanceMinutes ?? BERTH_ALLOWANCE_DEFAULT_MINUTES,
     allowancesAheadMinutes,
+    bookedWaitAheadMinutes,
     cancelled: cancellation !== null && cancellation.reinstate === 0,
     feedGap: ctx.feedGapAreas.has(null) || ctx.feedGapAreas.has(candidate.tdArea),
     seenElsewhere: ctx.sameDescriptionBerths.some(
@@ -631,11 +693,13 @@ export async function computeHeldDelayEstimate(
     ]);
   const locations = schedules.get(candidate.cifScheduleId) ?? [];
   const tiplocStanox = await loadTiplocStanoxes(db, [...new Set(locations.map((l) => l.tiploc))]);
+  const reportingStanoxes = await loadReportingStanoxes(db, [...new Set(tiplocStanox.values())]);
   const input = buildHeldDelayInput(candidate, {
     now,
     trust: trust.get(candidate.trustId),
     locations,
     tiplocStanox,
+    reportingStanoxes,
     berthStanoxes: berthStanoxes.get(berthKey) ?? [],
     berthAllowanceMinutes: allowances.get(berthKey),
     feedGapAreas,

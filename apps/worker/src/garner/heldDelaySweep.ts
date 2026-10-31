@@ -9,6 +9,7 @@ import {
   loadBerthStanoxes,
   loadCurrentBerthsForDescriptions,
   loadOpenTdFeedGaps,
+  loadReportingStanoxes,
   loadRunTrustStates,
   loadScheduleLocations,
   loadTiplocStanoxes,
@@ -91,6 +92,8 @@ class TimedCache<V> {
 export class HeldDelaySweep {
   private readonly schedules = new TimedCache<ScheduleLocationRow[]>(SCHEDULE_CACHE_MS);
   private readonly tiplocStanox = new TimedCache<string | null>(REFERENCE_CACHE_MS);
+  /** Whether TRUST reports at each STANOX automatically (it has SMART steps). */
+  private readonly reportingStanox = new TimedCache<boolean>(REFERENCE_CACHE_MS);
   private readonly berthStanoxes = new TimedCache<string[]>(REFERENCE_CACHE_MS);
   private readonly allowances = new TimedCache<number | null>(REFERENCE_CACHE_MS);
   private readonly lastEstimatedAt = new Map<string, Date>();
@@ -176,9 +179,12 @@ export class HeldDelaySweep {
         const key = `${candidate.tdArea}|${candidate.berth}`;
         const locations = this.schedules.get(candidate.cifScheduleId, nowMs) ?? [];
         const tiplocStanox = new Map<string, string>();
+        const reportingStanoxes = new Set<string>();
         for (const loc of locations) {
           const stanox = this.tiplocStanox.get(loc.tiploc, nowMs);
-          if (stanox) tiplocStanox.set(loc.tiploc, stanox);
+          if (!stanox) continue;
+          tiplocStanox.set(loc.tiploc, stanox);
+          if (this.reportingStanox.get(stanox, nowMs)) reportingStanoxes.add(stanox);
         }
         const runTrust = trust.get(candidate.trustId);
         const input = buildHeldDelayInput(candidate, {
@@ -186,6 +192,7 @@ export class HeldDelaySweep {
           trust: runTrust,
           locations,
           tiplocStanox,
+          reportingStanoxes,
           berthStanoxes: this.berthStanoxes.get(key, nowMs) ?? [],
           berthAllowanceMinutes: this.allowances.get(key, nowMs) ?? undefined,
           feedGapAreas,
@@ -267,6 +274,7 @@ export class HeldDelaySweep {
   ): Promise<void> {
     this.schedules.prune(nowMs);
     this.tiplocStanox.prune(nowMs);
+    this.reportingStanox.prune(nowMs);
     this.berthStanoxes.prune(nowMs);
     this.allowances.prune(nowMs);
 
@@ -290,6 +298,18 @@ export class HeldDelaySweep {
       const loaded = await loadTiplocStanoxes(pool, [...tiplocs]);
       for (const tiploc of tiplocs)
         this.tiplocStanox.set(tiploc, loaded.get(tiploc) ?? null, nowMs);
+    }
+
+    const stanoxes = new Set<string>();
+    for (const c of candidates) {
+      for (const loc of this.schedules.get(c.cifScheduleId, nowMs) ?? []) {
+        const stanox = this.tiplocStanox.get(loc.tiploc, nowMs);
+        if (stanox && this.reportingStanox.get(stanox, nowMs) === undefined) stanoxes.add(stanox);
+      }
+    }
+    if (stanoxes.size > 0) {
+      const reporting = await loadReportingStanoxes(pool, [...stanoxes]);
+      for (const stanox of stanoxes) this.reportingStanox.set(stanox, reporting.has(stanox), nowMs);
     }
 
     const missingBerths = [

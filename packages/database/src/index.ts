@@ -232,6 +232,7 @@ export {
   loadRunTrustStates,
   loadScheduleLocations,
   loadTiplocStanoxes,
+  loadReportingStanoxes,
   loadBerthStanoxes,
   loadBerthAllowances,
   loadOpenTdFeedGaps,

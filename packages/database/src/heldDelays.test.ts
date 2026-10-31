@@ -78,6 +78,7 @@ function ctx(overrides: Partial<HeldDelayContext> = {}): HeldDelayContext {
     },
     locations: LOCATIONS,
     tiplocStanox: STANOX,
+    reportingStanoxes: new Set(STANOX.values()),
     berthStanoxes: ["31531"],
     berthAllowanceMinutes: 1,
     feedGapAreas: new Set(),
@@ -106,6 +107,38 @@ describe("buildHeldDelayInput", () => {
     // Reported departing Ribble Jn (1½ pathing), then NOSTANX (1 engineering, no STANOX), then
     // Lancaster has a STANOX: 2½ minutes still ahead.
     expect(buildHeldDelayInput(candidate, ctx()).allowancesAheadMinutes).toBe(2.5);
+  });
+
+  it("ends the stretch at the next SMART location, not at the next STANOX", () => {
+    // Lancaster has a STANOX but (here) no SMART steps: TRUST won't report there, so the
+    // stretch runs on to Carlisle. Lancaster carries no allowance; its wait counts.
+    const noLancaster = new Set(["32530", "32510", "86520"]);
+    const input = buildHeldDelayInput(candidate, ctx({ reportingStanoxes: noLancaster }));
+    expect(input.allowancesAheadMinutes).toBe(2.5);
+    // Held from 13:55; booked 13:58 to 14:00 at Lancaster: all 2 minutes count.
+    expect(input.bookedWaitAheadMinutes).toBe(2);
+  });
+
+  it("never counts the wait at the next reporting point: TRUST reports the arrival there", () => {
+    expect(buildHeldDelayInput(candidate, ctx()).bookedWaitAheadMinutes).toBe(0);
+  });
+
+  it("counts a booked wait only up to its booked departure, from when the hold began", () => {
+    const noLancaster = new Set(["32530", "32510", "86520"]);
+    const at = (entered: string) =>
+      buildHeldDelayInput(
+        { ...candidate, enteredAt: new Date(entered) },
+        ctx({ reportingStanoxes: noLancaster }),
+      ).bookedWaitAheadMinutes;
+    expect(at("2026-11-02T13:59:00Z")).toBe(1);
+    // Stuck after the booked 14:00 departure: that wait is behind it.
+    expect(at("2026-11-02T14:10:00Z")).toBe(0);
+  });
+
+  it("falls back to every STANOX when SMART knows none of the schedule's places", () => {
+    const input = buildHeldDelayInput(candidate, ctx({ reportingStanoxes: new Set() }));
+    expect(input.allowancesAheadMinutes).toBe(2.5);
+    expect(input.bookedWaitAheadMinutes).toBe(0);
   });
 
   it("knows the train is still at its arrival station and that this is its own location", () => {
@@ -239,6 +272,7 @@ describe("buildHeldDelayInput — repeated visits to the same place (owner repor
     },
     locations: LOCS,
     tiplocStanox: STANOXES,
+    reportingStanoxes: new Set(STANOXES.values()),
     berthStanoxes: [berthStanox],
     berthAllowanceMinutes: 1,
     feedGapAreas: new Set(),
@@ -297,5 +331,106 @@ describe("buildHeldDelayInput — repeated visits to the same place (owner repor
       ),
     );
     expect(input.timingPoint?.bookedAt).toEqual(new Date("2026-10-26T20:45:00Z"));
+  });
+});
+
+describe("buildHeldDelayInput — booked wait at a place TRUST never reports (owner report 2026-10-31, PX 5C48)", () => {
+  // 5C48 (schedule 1110958) on 31 October, from Lancaster: booked to wait at Carnforth South Jn
+  // 05:32 to 06:46½. It waits in loop berth PX 0278, which SMART places at the goods loop
+  // (11519), not the junction (11532, no SMART steps). Last report: Morecambe South Jn, 1 late.
+  const LOCS = [
+    loc(23, "LANCSTR", "LI", { pass: "0524", pathingAllowance: "1H" }),
+    loc(24, "MORCMSJ", "LI", { pass: "0526H" }),
+    loc(25, "CRNFSJN", "LI", { arrival: "0532", departure: "0646H", pathingAllowance: "H" }),
+    loc(26, "MORCMSJ", "LI", { pass: "0650H" }),
+    loc(27, "LANCSTR", "LT", { arrival: "0653" }),
+  ];
+  const STANOXES = new Map([
+    ["LANCSTR", "11720"],
+    ["MORCMSJ", "11718"],
+    ["CRNFSJN", "11532"],
+  ]);
+  const DEPARTURE_LATE = 1 | (2 << 3);
+  const train: HeldTrainCandidate = {
+    ...candidate,
+    description: "5C48",
+    trafficDay: "2026-10-31",
+    enteredAt: new Date("2026-10-31T05:31:48Z"),
+  };
+  const report = (actual: string, planned: string) => ({
+    trustId: "325C48M331",
+    latestReport: {
+      locStanox: "11718",
+      flags: DEPARTURE_LATE,
+      timetableVariation: 1,
+      actualAt: new Date(actual),
+      plannedAt: new Date(planned),
+    },
+    latestReceivedAt: new Date(actual),
+    latestCancellation: null,
+  });
+  const context = (now: string): HeldDelayContext => ({
+    now: new Date(now),
+    trust: report("2026-10-31T05:25:00Z", "2026-10-31T05:26:30Z"),
+    locations: LOCS,
+    tiplocStanox: STANOXES,
+    reportingStanoxes: new Set(["11720", "11718"]),
+    berthStanoxes: ["11519"],
+    berthAllowanceMinutes: 3,
+    feedGapAreas: new Set(),
+    sameDescriptionBerths: [],
+  });
+
+  it("credits the Carnforth wait, so no estimate while it is booked to be there", () => {
+    const input = buildHeldDelayInput(train, context("2026-10-31T06:36:17Z"));
+    expect(input.timingPoint).toBeNull();
+    expect(input.allowancesAheadMinutes).toBe(0.5);
+    expect(input.bookedWaitAheadMinutes).toBe(74.5);
+    // Was 60 late (severe) at this moment.
+    expect(estimateHeldDelay(input)).toEqual({ kind: "none" });
+  });
+
+  it("shows only the few minutes past its booked departure when it finally leaves", () => {
+    const input = buildHeldDelayInput(train, context("2026-10-31T06:53:00Z"));
+    // 1 + 81.2 − 3 − 0.5 − 74.5: TRUST then reported 7 late at Lancaster.
+    expect(estimateHeldDelay(input)).toEqual({
+      kind: "estimate",
+      minutesLate: 4,
+      basis: "held_in_berth",
+    });
+  });
+
+  it("gives nothing for the wait once stuck past it on the way back", () => {
+    // Left the loop on time; stuck 20 minutes from 06:50 short of Morecambe South Jn.
+    const input = buildHeldDelayInput(
+      { ...train, enteredAt: new Date("2026-10-31T06:50:00Z") },
+      context("2026-10-31T07:10:00Z"),
+    );
+    expect(input.bookedWaitAheadMinutes).toBe(0);
+    // 1 + 20 − 3 − 0.5.
+    expect(estimateHeldDelay(input)).toEqual({
+      kind: "estimate",
+      minutesLate: 17,
+      basis: "held_in_berth",
+    });
+  });
+
+  it("counts a booked wait that runs past midnight", () => {
+    const overnight = [
+      loc(1, "PRST", "LO", { departure: "1800" }),
+      loc(2, "MORCMSJ", "LI", { pass: "2330" }),
+      loc(3, "CRNFSJN", "LI", { arrival: "2350", departure: "0020" }),
+      loc(4, "LANCSTR", "LT", { arrival: "0030" }),
+    ];
+    const input = buildHeldDelayInput(
+      { ...train, enteredAt: new Date("2026-10-31T23:45:00Z") },
+      {
+        ...context("2026-11-01T00:10:00Z"),
+        trust: report("2026-10-31T23:31:00Z", "2026-10-31T23:30:00Z"),
+        tiplocStanox: new Map([...STANOXES, ["PRST", "30120"]]),
+        locations: overnight,
+      },
+    );
+    expect(input.bookedWaitAheadMinutes).toBe(30);
   });
 });

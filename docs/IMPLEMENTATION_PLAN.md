@@ -5409,6 +5409,29 @@ pass after leaving Preston against 18:40 instead of 20:51½.
 - Live estimates already recorded between 18:27 and the fix stay as they were (a backfill never
   rewrites live rows). The Friday–Monday backfill was re-run with the fix.
 
+## Fix — held-train estimates ignored booked waits at places TRUST doesn't report (2026-10-31, ADR 0021 amendment)
+
+Owner report (PX, 5C48): booked to wait 74½ minutes at Carnforth South Jn, it waited in loop berth
+0278 and showed 60 late (red) when it was 1 late. The junction has a STANOX but no SMART steps,
+so TRUST never reports there, and rule 3 didn't count the booked wait. The same happens nightly to
+704N81CW at R2 1038 (Northampton North Jn) and at Wembley Euro Freight (WC 0159/0161/0163).
+
+- [x] The next reporting point is the next STANOX with SMART berth steps (`loadReportingStanoxes`;
+      cached per STANOX in the sweep), falling back to any STANOX when SMART knows none of the
+      schedule's places.
+- [x] Rule 3 takes off booked waits still ahead (`bookedWaitAheadMinutes`): arrival to departure
+      before the next reporting point (and at the last reported location after an arrival report),
+      each capped at its booked departure less the start of the hold. Waits across midnight use
+      the ADR 0008 calendar arithmetic.
+- [x] Live sweep, popup (`computeHeldDelayEstimate`) and the 97d backfill share the builder, so
+      all three change together.
+- [x] Tests: the domain rule; the builder's stretch end, cap, fallback and midnight; 5C48's real
+      schedule (60 late before, none now; 4 late at 06:53; nothing credited once past the wait).
+- [x] Production replay of 26–31 October (ADR 0021 amendment): 206 of 927 estimates changed, none
+      higher; estimates more than 15 minutes above the next TRUST report 64 → 33.
+- No migration. Live estimates already recorded stay as they were; a 97d backfill can redo past
+  days if wanted.
+
 ## Milestone 98 — Shareable map links: view in the address (2026-10-27)
 
 Owner request ("like traksy"): as the map is moved, the address bar should follow, so copying it

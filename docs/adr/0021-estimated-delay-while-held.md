@@ -68,7 +68,8 @@ Rule 3 could overstate in three ways. Each is handled:
    back by the next timing point. An allowance recorded at a timing point belongs to the section
    _after_ it (measured, see "Evidence"). So rule 3 subtracts the allowances recorded at the
    train's last reported location and at every later location before the next one TRUST
-   reports at (one with a STANOX). The estimate is then a lower bound on its lateness at that
+   reports at (one SMART has berth steps for; was "one with a STANOX" until the 2026-10-31
+   amendment below). The estimate is then a lower bound on its lateness at that
    next report, not just "minutes stood still". All of the allowance is subtracted, although
    trains really recover about 70–80% of it, so this errs low.
 3. **A train that is not really stationary** (a missed TD step). Handled by the feed-gap and
@@ -208,3 +209,57 @@ nationwide would be affordable later if links ever go nationwide.
 - It is an estimate. A missed TD step the guards don't catch can make a train look later than it
   is, until the next TRUST report.
 - The public popup now carries delay minutes (a change from Milestone 82's band-only public view).
+
+## Amendment (2026-10-31): booked waits at places TRUST doesn't report
+
+Owner report: PX 5C48 (schedule 1110958) is booked to wait at Carnforth South Jn (CRNFSJN)
+05:32–06:46½. It waits in loop berth PX 0278, which SMART places at the goods loop (CRNFUGL,
+11519), not the junction (11532). Rule 2 couldn't match the berth to the booked stop, so rule 3
+ran. Rule 3 knew nothing of the 74½-minute booked wait, and the train went to 60 late (red) at
+06:36. TRUST then reported 7 late at Lancaster. The same thing happens nightly to 704N81CW at
+R2 1038 (110 minutes booked at Northampton North Jn) and to trains booked at Wembley Euro Freight
+(WC 0159/0161/0163).
+
+Two changes to rule 3:
+
+1. **"The next point TRUST reports at" means a STANOX that SMART has berth steps for**, not any
+   STANOX. TRUST's automatic reports come from TD berth steps through SMART. Checked on
+   production, 355 runs (6,835 locations) on 30 October: 5,879 of 6,126 SMART locations were
+   auto-reported, against 13 of 709 non-SMART ones. Every report at CRNFSJN, NMPTNNJ and WMBYEFR
+   that day was manual. With no SMART data for any of a schedule's places, the old rule ("any
+   STANOX") applies. This also lengthens the stretch the recovery allowances are counted over.
+2. **Booked waits still ahead are taken off**, like allowances: each arrival-to-departure wait
+   between the last report and the next reporting point. That includes the last reported
+   location's wait if the report was its arrival, but not the next reporting point's own wait,
+   because TRUST will report the arrival there and no wait makes an arrival less late. Each wait
+   counts only up to its booked departure, measured from when the hold began:
+   `min(wait, booked departure − hold start)`. A train that has already done its wait and is
+   stuck further on gets no credit for it.
+
+So the new estimate is the old one less at most the booked waits ahead (and the few minutes of
+extra allowance). Once the booked departure has passed it rises a minute a minute, as before. It
+is never higher than the old estimate.
+
+| #   | Situation                                                                | Before    | After                       |
+| --- | ------------------------------------------------------------------------ | --------- | --------------------------- |
+| 14  | 5C48: 1 late, 64 min in the Carnforth loop, booked to wait until 06:46½  | 60L (red) | none (TRUST's 1L)           |
+| 15  | Same, at 06:53, just past the booked departure                           | 78L       | 4L (TRUST then 7L)          |
+| 16  | Stuck 20 min after leaving the loop on time                              | 17L       | 17L (wait is behind it)     |
+| 17  | Stuck 30 min before a terminus, or before a station TRUST reports at     | 29L       | 29L (nothing to credit)     |
+| 18  | Stuck 30 min before a 5-min booked dwell at a place TRUST doesn't report | 29L       | 24L (errs low, ≤ the dwell) |
+
+**Replay before deploy** (all 991 live rule-3 estimates of 26–31 October, recomputed with the old
+and new rule at the moment each was recorded; 64 couldn't be reproduced because their occupancy or
+run link has changed since): 721 unchanged, 206 changed (127 runs), none higher. Of the changes,
+125 were on-time estimates the map didn't colour. 81 changed the colour: 9 severe, 15 moderate and
+43 minor estimates went, and 14 dropped a band. Against the next TRUST report (845 rows), estimates
+more than 15 minutes too high fell from 64 to 33 and more than 5 too high from 112 to 71. Estimates
+more than 5 too low rose from 210 to 234 (more than 15 too low: 67 to 73). The large "too low"
+cases were trains still inside a booked wait whose delay came after it (706V54CY: a 238-minute
+wait, 92 late four hours later). The replay can't show the new rule's own later band changes, such
+as a train going red once it is well past its booked departure.
+
+Remaining misses: a stop TRUST reports only manually ends the stretch too late (errs low until
+that report arrives). A SMART location TRUST doesn't report for this train ends it too early (as
+before). The popup still names the berth, not "Carnforth": tagging a berth with the schedule's
+TIPLOC would let rule 2 give the exact figure there, and is not done.

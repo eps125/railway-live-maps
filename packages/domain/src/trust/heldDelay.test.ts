@@ -27,6 +27,7 @@ function input(overrides: Partial<HeldDelayInput>): HeldDelayInput {
     atDestination: false,
     berthAllowanceMinutes: 1,
     allowancesAheadMinutes: 2,
+    bookedWaitAheadMinutes: 0,
     cancelled: false,
     feedGap: false,
     seenElsewhere: false,
@@ -200,6 +201,36 @@ describe("estimateHeldDelay — ADR 0021 scenarios", () => {
       estimateHeldDelay(
         input({ timingPoint: { kind: "departure", bookedAt: minutes(40), atOrigin: false } }),
       ),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("takes booked waits still ahead off a plain-berth hold — 5C48 in the Carnforth loop", () => {
+    // 1 late, 81 minutes in a loop berth, booked to wait 74½ of them: about 4 late, not 78.
+    const loop = {
+      now: minutes(81),
+      lastReport: {
+        minutesLate: 1,
+        actualAt: minutes(-7),
+        kind: "departure" as const,
+        terminated: false,
+        atThisBerthLocation: false,
+      },
+      berthAllowanceMinutes: 3,
+      allowancesAheadMinutes: 0.5,
+    };
+    expect(estimateHeldDelay(input({ ...loop, bookedWaitAheadMinutes: 0 }))).toEqual({
+      kind: "estimate",
+      minutesLate: 78,
+      basis: "held_in_berth",
+    });
+    expect(estimateHeldDelay(input({ ...loop, bookedWaitAheadMinutes: 74.5 }))).toEqual({
+      kind: "estimate",
+      minutesLate: 4,
+      basis: "held_in_berth",
+    });
+    // Mid-wait: nothing worse than TRUST's 1 late.
+    expect(
+      estimateHeldDelay(input({ ...loop, now: minutes(64), bookedWaitAheadMinutes: 74.5 })),
     ).toEqual({ kind: "none" });
   });
 

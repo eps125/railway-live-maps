@@ -36,11 +36,59 @@ import type { LiveDeltaMessage } from "@railway/protocol";
  */
 
 export interface SequencedEvent {
-  /** Ingestion sequence of the source row (the playback cursor). */
+  /** Event time (ms) of the source row: playback's primary order (2026-10-31). */
+  eventAtMs: number;
+  /** Ingestion sequence of the source row: the tie-break within one event time. */
   sequence: bigint;
   /** Tie-break within one sequence: 0 = a row's own events, 1 = a silence blank placed after it. */
   order: number;
   messages: LiveDeltaMessage[];
+}
+
+/**
+ * Where a playback `/events` page resumes: after this (event time, ingestion sequence).
+ *
+ * 2026-10-31: playback is ordered by event time, then sequence. It was ordered by sequence alone,
+ * which is arrival order — but a message can be stored long after it happened: one redelivered
+ * after a reconnect, or recovered from openrail-eps (31 Oct 06:43–06:54, sequenced that evening).
+ * The player applies events in the order sent and stops at the first one still in the future, so
+ * such steps were applied late and left trains shown in berths they had left.
+ */
+export interface EventsCursor {
+  at: Date;
+  sequence: string;
+}
+
+/** A page's resume point, as the opaque `nextCursor` string: `<event time ms>:<sequence>`. */
+export function encodeEventsCursor(event: Pick<SequencedEvent, "eventAtMs" | "sequence">): string {
+  return `${event.eventAtMs}:${event.sequence}`;
+}
+
+/**
+ * Parses an `after` cursor. `"0"` (or absent) is the start of the window. A plain number is a
+ * cursor from before 2026-10-31 (a bare sequence), still held by open tabs: `legacy`, resolved by
+ * the caller to that row's event time. Anything else is invalid.
+ */
+export function parseEventsCursor(
+  raw: string | undefined,
+):
+  | { kind: "start" }
+  | { kind: "cursor"; at: Date; sequence: string }
+  | { kind: "legacy"; sequence: string }
+  | null {
+  if (raw === undefined || raw === "" || raw === "0") return { kind: "start" };
+  const composite = /^(\d{1,15}):(\d{1,19})$/.exec(raw);
+  if (composite)
+    return { kind: "cursor", at: new Date(Number(composite[1])), sequence: composite[2]! };
+  if (/^\d{1,19}$/.test(raw)) return { kind: "legacy", sequence: raw };
+  return null;
+}
+
+/** Total order of playback entries: event time, then sequence, then `order`. */
+export function compareSequencedEvents(a: SequencedEvent, b: SequencedEvent): number {
+  if (a.eventAtMs !== b.eventAtMs) return a.eventAtMs < b.eventAtMs ? -1 : 1;
+  if (a.sequence !== b.sequence) return a.sequence < b.sequence ? -1 : 1;
+  return a.order - b.order;
 }
 
 /** One independently-paged source: its events in sequence order, and whether it hit `limit`
@@ -97,7 +145,7 @@ export async function fetchSignalPlaybackEvents(
   pool: Pool,
   bundle: CompiledMapBundle,
   range: { from: Date; to: Date },
-  after: string,
+  after: EventsCursor,
   limit: number,
 ): Promise<EventSource[]> {
   // Milestone 59 / ADR 0015: an inferred crossing's inputs ride along as bindings of their own
@@ -155,10 +203,10 @@ export async function fetchSignalPlaybackEvents(
      select c.ingestion_sequence::text as ingestion_sequence, c.event_at, c.td_area,
             c.decoded_bitset
        from candidates c
-      where c.ingestion_sequence > $5
-      order by c.ingestion_sequence
-      limit $6`,
-    [tdAreas, range.from, range.to, addresses, after, limit],
+      where (c.event_at, c.ingestion_sequence) > ($5::timestamptz, $6::bigint)
+      order by c.event_at, c.ingestion_sequence
+      limit $7`,
+    [tdAreas, range.from, range.to, addresses, after.at, after.sequence, limit],
   );
 
   // Silences whose tolerance ran out inside the window. Fetched before the rows are folded so an
@@ -172,10 +220,19 @@ export async function fetchSignalPlaybackEvents(
         and g.affected_sequence_start is not null
         and g.detected_start + make_interval(secs => $5) >= $2
         and g.detected_start + make_interval(secs => $5) < $3
-        and g.affected_sequence_start > $4
-      order by g.affected_sequence_start
+        and (g.detected_start + make_interval(secs => $5), g.affected_sequence_start)
+            > ($4::timestamptz, $7::bigint)
+      order by blank_at, g.affected_sequence_start
       limit $6`,
-    [TD_RECEIVE_SILENCE_REASON, range.from, range.to, after, toleranceSeconds, limit],
+    [
+      TD_RECEIVE_SILENCE_REASON,
+      range.from,
+      range.to,
+      after.at,
+      toleranceSeconds,
+      limit,
+      after.sequence,
+    ],
   );
 
   // A row carries only the bytes it restated, but an inferred crossing combines bits that can
@@ -203,15 +260,35 @@ export async function fetchSignalPlaybackEvents(
   const resetInputs = (): void => {
     for (const binding of inputBindings) inputState.set(binding.elementId, "blank");
   };
-  const silenceSequences = silences.rows.map((s) => BigInt(s.affected_sequence_start));
+  // Silences in playback order (blank time, then sequence), compared with each row's own key:
+  // one before a row blanks the inputs before it; one at the row's own key, after it.
+  const silenceKeys = silences.rows.map((s) => ({
+    eventAtMs: s.blank_at.getTime(),
+    sequence: BigInt(s.affected_sequence_start),
+    order: 1,
+    messages: [],
+  }));
   let nextSilence = 0;
 
   const events: SequencedEvent[] = [];
   for (const row of rows.rows) {
     const sequence = Number(row.ingestion_sequence);
     const rowSequence = BigInt(row.ingestion_sequence);
-    // A silence that began before this row blanked every input before it arrived.
-    while (nextSilence < silenceSequences.length && silenceSequences[nextSilence]! < rowSequence) {
+    const rowKey = {
+      eventAtMs: row.event_at.getTime(),
+      sequence: rowSequence,
+      order: 0,
+      messages: [],
+    };
+    // A silence that blanked before this row blanked every input before it arrived.
+    while (
+      nextSilence < silenceKeys.length &&
+      compareSequencedEvents(silenceKeys[nextSilence]!, rowKey) < 0 &&
+      !(
+        silenceKeys[nextSilence]!.eventAtMs === rowKey.eventAtMs &&
+        silenceKeys[nextSilence]!.sequence === rowSequence
+      )
+    ) {
       resetInputs();
       nextSilence += 1;
     }
@@ -255,10 +332,14 @@ export async function fetchSignalPlaybackEvents(
       });
     }
     // Kept even when empty: it is a fetched row the paging bound must account for.
-    events.push({ sequence: rowSequence, order: 0, messages });
+    events.push({ eventAtMs: rowKey.eventAtMs, sequence: rowSequence, order: 0, messages });
 
-    // A silence sequenced at this row blanks after the row's own entries (order 1 below).
-    while (nextSilence < silenceSequences.length && silenceSequences[nextSilence] === rowSequence) {
+    // A silence at this row's own key blanks after the row's own entries (order 1 below).
+    while (
+      nextSilence < silenceKeys.length &&
+      silenceKeys[nextSilence]!.eventAtMs === rowKey.eventAtMs &&
+      silenceKeys[nextSilence]!.sequence === rowSequence
+    ) {
       resetInputs();
       nextSilence += 1;
     }
@@ -269,6 +350,7 @@ export async function fetchSignalPlaybackEvents(
     const sequence = Number(silence.affected_sequence_start);
     const eventAt = silence.blank_at.toISOString();
     blanks.push({
+      eventAtMs: silence.blank_at.getTime(),
       sequence: BigInt(silence.affected_sequence_start),
       order: 1,
       messages: [

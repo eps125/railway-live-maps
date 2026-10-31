@@ -167,12 +167,16 @@ wire shape as a live WS `berth.updated` / `berth.cleared` / `signal.updated` del
 playback client applies them with its live-delta code path. Signal entries (Milestone 36b): each
 decoded S-Class row stating a bound byte yields the absolute state of every signal bound to it,
 and each recorded TD receive silence yields `blank` for every bound signal at the moment it
-passed the 5-minute tolerance (sequenced at the silence's start row, after that row's own
-entries). All sources are merged in one `ingestion_sequence` order and paged together; a page
-never splits entries sharing a sequence. One `td_berth_event` (a CA) can yield two entries
-(`from` clears, `to` updates); entries for the map's bound berths only. Ordered by
-`ingestion_sequence`; `after` is that cursor; `from`/`to` bound the range (max 7 days). Uses the
-map version effective at `from`.
+passed the 5-minute tolerance (keyed at that moment and the silence's start row, after that
+row's own entries). All sources are merged in one order — **event time, then
+`ingestion_sequence`** (2026-10-31; was sequence alone, which played messages stored late, such
+as redeliveries after a reconnect and TD recovered from openrail-eps, after the steps that
+followed them) — and paged together; a page never splits entries sharing an event time and
+sequence. One `td_berth_event` (a CA) can yield two entries (`from` clears, `to` updates);
+entries for the map's bound berths only. `after` is the previous page's opaque `nextCursor`
+(`<event time ms>:<sequence>`), or `0`/absent for the start; a bare sequence (the cursor before
+2026-10-31) is still accepted and resolved to that row's event time; anything else is `400`.
+`from`/`to` bound the range (max 7 days). Uses the map version effective at `from`.
 
 ```json
 {
@@ -190,7 +194,7 @@ map version effective at `from`.
       "enteredAt": "2026-08-04T12:15:38Z"
     }
   ],
-  "nextCursor": "123457"
+  "nextCursor": "1785846938000:123457"
 }
 ```
 

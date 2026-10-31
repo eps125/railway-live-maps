@@ -21,8 +21,12 @@ import { computeDelayBands } from "../lib/delayBands.js";
 import { reconstructStateAt } from "../lib/reconstructState.js";
 import { qualityForViewer } from "../lib/feedGaps.js";
 import {
+  compareSequencedEvents,
+  encodeEventsCursor,
   fetchSignalPlaybackEvents,
+  parseEventsCursor,
   type EventSource,
+  type EventsCursor,
   type SequencedEvent,
 } from "../lib/signalEvents.js";
 
@@ -312,7 +316,11 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
       return rangeResult.error;
     }
     const limit = parseLimit(request.query.limit);
-    const after = request.query.after ?? "0";
+    const parsedAfter = parseEventsCursor(request.query.after);
+    if (!parsedAfter) {
+      reply.code(400);
+      return apiError("VALIDATION_ERROR", "after must be a cursor returned as nextCursor, or 0");
+    }
 
     // Definition (bindings) as they were at the start of the requested window.
     const version = await currentVersionForSlug(pool, request.params.slug, rangeResult.range.from);
@@ -328,6 +336,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
     const tdAreas = berthKeys.map((key) => key.split("|")[0] ?? "");
     const berthCodes = berthKeys.map((key) => key.split("|")[1] ?? "");
     const distinctTdAreas = tdAreasFromBundle(bundle);
+    const after = await resolveEventsCursor(pool, parsedAfter, rangeResult.range.from);
 
     // `candidates` is `materialized` so the planner can't fold the (td_area, berth_code) pairing
     // join into it and pick a plan driven by `ingestion_sequence` instead. Without the fence,
@@ -355,16 +364,17 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
          join (select unnest($4::text[]) as td_area, unnest($5::text[]) as berth_code) wanted
            on wanted.td_area = c.td_area
           and (wanted.berth_code = c.from_berth or wanted.berth_code = c.to_berth)
-        where c.ingestion_sequence > $6
-        order by c.ingestion_sequence asc
-        limit $7`,
+        where (c.event_at, c.ingestion_sequence) > ($6::timestamptz, $7::bigint)
+        order by c.event_at asc, c.ingestion_sequence asc
+        limit $8`,
       [
         distinctTdAreas,
         rangeResult.range.from,
         rangeResult.range.to,
         tdAreas,
         berthCodes,
-        after,
+        after.at,
+        after.sequence,
         limit,
       ],
     );
@@ -407,7 +417,12 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         );
       }
       // An empty entry still takes part in paging (it is a fetched row the cursor must pass).
-      berthEvents.push({ sequence: BigInt(row.ingestion_sequence), order: 0, messages });
+      berthEvents.push({
+        eventAtMs: row.event_at.getTime(),
+        sequence: BigInt(row.ingestion_sequence),
+        order: 0,
+        messages,
+      });
     }
 
     // Milestone 36b: signal events (and silence blanks) merged into the same sequence-ordered
@@ -434,34 +449,59 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
 }
 
 /**
- * Merges independently-paged, sequence-cursored sources into one page (Milestone 36b). A source
- * that filled its page may have more rows past its last sequence that weren't fetched, so the
- * merged page stops there (the smallest such last sequence) — otherwise the next page's
- * `after` cursor would skip that source's unfetched rows. It is then capped at `limit` entries,
- * extended over any entries sharing the last included sequence (a cursor `after = seq` would
- * otherwise skip the rest of them). `nextCursor` is null only when every source was exhausted.
+ * Resolves an `after` cursor to the (event time, sequence) a page resumes after. The start of the
+ * window is just before `from`. A cursor from before 2026-10-31 (a bare sequence, held by tabs
+ * opened earlier) is resolved to that row's own event time — or, if it can't be found, to the
+ * start, which re-sends a little of the window rather than skipping any.
+ */
+async function resolveEventsCursor(
+  pool: Pool,
+  parsed: NonNullable<ReturnType<typeof parseEventsCursor>>,
+  from: Date,
+): Promise<EventsCursor> {
+  const start: EventsCursor = { at: new Date(from.getTime() - 1), sequence: "0" };
+  if (parsed.kind === "start") return start;
+  if (parsed.kind === "cursor") return { at: parsed.at, sequence: parsed.sequence };
+  const { rows } = await pool.query<{ at: Date }>(
+    `select normalized_event_at_utc as at from raw_feed_event
+      where feed_name = 'TD' and ingestion_sequence = $1 limit 1`,
+    [parsed.sequence],
+  );
+  return rows[0] ? { at: rows[0].at, sequence: parsed.sequence } : start;
+}
+
+/**
+ * Merges independently-paged sources into one page (Milestone 36b), in playback order: event
+ * time, then sequence, then `order` (2026-10-31; was sequence alone). A source that filled its
+ * page may have more rows past its last one that weren't fetched, so the merged page stops there
+ * (the smallest such last key) — otherwise the next page's cursor would skip that source's
+ * unfetched rows. It is then capped at `limit` entries, extended over any entries sharing the
+ * last included (time, sequence) (a cursor there would otherwise skip the rest of them).
+ * `nextCursor` is null only when every source was exhausted.
  */
 export function mergeEventPages(
   sources: EventSource[],
   limit: number,
 ): { events: SequencedEvent[]; nextCursor: string | null } {
-  let bound: bigint | null = null;
+  let bound: SequencedEvent | null = null;
   for (const source of sources) {
-    const last = source.events.at(-1)?.sequence;
-    if (source.full && last !== undefined && (bound === null || last < bound)) bound = last;
+    const last = source.events.at(-1);
+    if (source.full && last && (bound === null || compareSequencedEvents(last, bound) < 0)) {
+      bound = { ...last, order: Number.POSITIVE_INFINITY };
+    }
   }
   const merged = sources
     .flatMap((source) => source.events)
-    .filter((event) => bound === null || event.sequence <= bound)
-    .sort((a, b) =>
-      a.sequence === b.sequence ? a.order - b.order : a.sequence < b.sequence ? -1 : 1,
-    );
+    .filter((event) => bound === null || compareSequencedEvents(event, bound) <= 0)
+    .sort(compareSequencedEvents);
+  const sameKey = (x: SequencedEvent, y: SequencedEvent): boolean =>
+    x.eventAtMs === y.eventAtMs && x.sequence === y.sequence;
   let end = Math.min(limit, merged.length);
-  while (end > 0 && end < merged.length && merged[end]!.sequence === merged[end - 1]!.sequence) {
+  while (end > 0 && end < merged.length && sameKey(merged[end]!, merged[end - 1]!)) {
     end += 1;
   }
   const events = merged.slice(0, end);
   const more = bound !== null || end < merged.length;
   const last = events.at(-1);
-  return { events, nextCursor: more && last ? last.sequence.toString() : null };
+  return { events, nextCursor: more && last ? encodeEventsCursor(last) : null };
 }

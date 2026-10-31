@@ -34,9 +34,11 @@ export interface ParseReject {
 
 const LINE =
   /^(\d{2})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})Z \] \(Timestamp (\d{2})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})Z\) ([A-Z0-9]{2}) ([A-Z]{2}): (.*)$/;
-const CA_BODY = /^(\S{4}) from (\S{4}) to (\S{4})\s*$/;
-const CB_BODY = /^(\S{4}) from (\S{4})\s*$/;
-const CC_BODY = /^(\S{4})\s+to (\S{4})\s*$/;
+// A description is four characters, or four spaces when NR sends a blank one (31 Oct:
+// `GL CB:      from Q031`, stored by RLM as `descr: "    "`), kept exactly as sent.
+const CA_BODY = /^(\S{4}| {4}) from (\S{4}) to (\S{4})\s*$/;
+const CB_BODY = /^(\S{4}| {4}) from (\S{4})\s*$/;
+const CC_BODY = /^(\S{4}| {4})\s+to (\S{4})\s*$/;
 const CT_BODY = /^Heartbeat, report time (\d{4})\s*$/;
 const SF_BODY = /^([0-9a-fA-F]{2}) = ([0-9a-fA-F]{2})(?:\s.*)?$/;
 
@@ -120,10 +122,20 @@ export function parseOpenrailTddbLine(
         },
       };
     }
+    case "SG":
+    case "SH":
+      // openrail-eps logs a refresh one byte per line, so NR's message (a start address and four
+      // bytes) cannot be rebuilt exactly. A caller may choose to leave refreshes out
+      // (`isRefreshReject`); they never change a byte, they re-state it.
+      return { lineNumber, line, reason: `refresh_${kind}` };
     default:
-      // SG/SH refreshes have never been observed in this log; reject rather than guess a shape.
       return { lineNumber, line, reason: `unsupported_type_${kind}` };
   }
+}
+
+/** An S-Class refresh line (SG/SH), which a recovery may leave out but never rebuilds. */
+export function isRefreshReject(value: RecoveredTdMessage | ParseReject): boolean {
+  return "reason" in value && value.reason.startsWith("refresh_");
 }
 
 export function isRecoveredMessage(

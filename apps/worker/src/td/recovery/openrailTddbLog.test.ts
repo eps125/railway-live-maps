@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isRecoveredMessage, nrIdentity, parseOpenrailTddbLine } from "./openrailTddbLog.js";
+import {
+  isRecoveredMessage,
+  isRefreshReject,
+  nrIdentity,
+  parseOpenrailTddbLine,
+} from "./openrailTddbLog.js";
 
 // Real lines from the 2026-10-15 gap excerpt, paired with the raw_event_json RLM stored for the
 // same NR messages where both systems captured them (23:55:00–23:55:31Z).
@@ -86,6 +91,16 @@ describe("parseOpenrailTddbLine", () => {
     expect(changed.line).toContain("5b = 0c");
   });
 
+  it("keeps a blank description as the four spaces NR sends (31 Oct, GL Q031)", () => {
+    const cb = parseOpenrailTddbLine(
+      "31/10/26 06:25:17Z ] (Timestamp 31/10/26 06:25:16Z) GL CB:      from Q031         ",
+      1377,
+    );
+    expect(isRecoveredMessage(cb) && cb.rawEventJson).toEqual({
+      CB_MSG: { time: "1793427916000", area_id: "GL", msg_type: "CB", from: "Q031", descr: "    " },
+    });
+  });
+
   it("rejects anything it cannot rebuild exactly, rather than guessing", () => {
     expect(parseOpenrailTddbLine("garbage", 3)).toEqual({
       lineNumber: 3,
@@ -97,6 +112,8 @@ describe("parseOpenrailTddbLine", () => {
       4,
     );
     expect(isRecoveredMessage(sg)).toBe(false);
+    expect(sg).toMatchObject({ reason: "refresh_SG" });
+    expect(isRefreshReject(sg)).toBe(true);
     const badCa = parseOpenrailTddbLine(
       "15/10/26 23:55:00Z ] (Timestamp 15/10/26 23:55:00Z) A2 CA: 5J76 to 0880",
       5,

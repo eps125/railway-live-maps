@@ -3,7 +3,11 @@
  * window RLM missed, with explicit lineage, and repairs the derived history of that window.
  *
  *   recover-td-from-openrail-log --file <excerpt> --from <ISO> --to <ISO> [--post-window-hours 3]
- *                                [--execute]
+ *                                [--merge [--skip-refreshes] [--show-berth AREA:BERTH ...]
+ *                                 [--outage-from <ISO> --outage-to <ISO>]] [--execute]
+ *
+ * `--merge` (2026-10-31): for a window where RLM holds part of the stream and the rest is
+ * recovered, interleaved (see recoverTdMerge.ts). Without it, the window must be a clean gap.
  *
  * Two phases, after the 2026-10-16 incident where a long-running dry-run transaction held row locks
  * the live projectors needed and froze the live maps for ~3 hours:
@@ -45,10 +49,18 @@ import {
 import type { Config } from "../config.js";
 import {
   isRecoveredMessage,
+  isRefreshReject,
   nrIdentity,
   parseOpenrailTddbLine,
   type RecoveredTdMessage,
 } from "../td/recovery/openrailTddbLog.js";
+import {
+  applyMergePlan,
+  buildMergePlan,
+  printMergePlan,
+  type MergeArgs,
+  type MergePlan,
+} from "./recoverTdMerge.js";
 import {
   planBerthRepair,
   planSByteRepair,
@@ -73,6 +85,11 @@ interface Args {
   /** S-Class bytes are re-stated by periodic refreshes, so their first post-gap statement is near. */
   sPostWindowHours: number;
   execute: boolean;
+  merge: boolean;
+  /** Leave SG/SH refresh lines out (openrail-eps logs them per byte; they can't be rebuilt). */
+  skipRefreshes: boolean;
+  showBerths: string[];
+  outage: { from: Date; to: Date } | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -95,6 +112,13 @@ function parseArgs(argv: string[]): Args {
     postWindowHours: Number(get("post-window-hours") ?? "3"),
     sPostWindowHours: Number(get("s-post-window-hours") ?? "3"),
     execute: argv.includes("--execute"),
+    merge: argv.includes("--merge"),
+    skipRefreshes: argv.includes("--skip-refreshes"),
+    showBerths: argv.flatMap((a, i) => (a === "--show-berth" && argv[i + 1] ? [argv[i + 1]!] : [])),
+    outage:
+      get("outage-from") && get("outage-to")
+        ? { from: new Date(get("outage-from")!), to: new Date(get("outage-to")!) }
+        : null,
   };
 }
 
@@ -116,10 +140,14 @@ export async function runRecoverTdFromOpenrailLog(config: Config, argv: string[]
   const args = parseArgs(argv);
   const fileBytes = await readFile(args.file);
   const fileSha = createHash("sha256").update(fileBytes).digest("hex");
-  const inWindow = parseWindow(fileBytes.toString("utf8"), args);
+  const { inWindow, refreshesSkipped } = parseWindow(fileBytes.toString("utf8"), args);
 
   const pool = createPool({ connectionString: config.DATABASE_URL });
   try {
+    if (args.merge) {
+      await runMerge(pool, config, args, fileBytes, fileSha, inWindow, refreshesSkipped);
+      return;
+    }
     // ---------- Phase 1: read-only planning ----------
     const reader = await pool.connect();
     let plan: Plan;
@@ -197,14 +225,20 @@ export async function runRecoverTdFromOpenrailLog(config: Config, argv: string[]
   }
 }
 
-function parseWindow(text: string, args: Args): RecoveredTdMessage[] {
+function parseWindow(
+  text: string,
+  args: Args,
+): { inWindow: RecoveredTdMessage[]; refreshesSkipped: number } {
   const inWindow: RecoveredTdMessage[] = [];
   const rejects: string[] = [];
+  let refreshesSkipped = 0;
   text.split("\n").forEach((line, i) => {
     if (line.trim() === "") return;
     const parsed = parseOpenrailTddbLine(line, i + 1);
     if (isRecoveredMessage(parsed)) {
       if (parsed.eventAt >= args.from && parsed.eventAt <= args.to) inWindow.push(parsed);
+    } else if (args.skipRefreshes && isRefreshReject(parsed)) {
+      refreshesSkipped += 1;
     } else if (!/Timestamp/.test(line) || windowMentioned(line, args)) {
       rejects.push(`${parsed.lineNumber}: ${parsed.reason}`);
     }
@@ -214,7 +248,87 @@ function parseWindow(text: string, args: Args): RecoveredTdMessage[] {
       `Refusing: ${rejects.length} unparseable line(s) in the window:\n${rejects.slice(0, 10).join("\n")}`,
     );
   }
-  return inWindow;
+  return { inWindow, refreshesSkipped };
+}
+
+/** `--merge`: plan read-only and print; only with `--execute` archive and apply. */
+async function runMerge(
+  pool: ReturnType<typeof createPool>,
+  config: Config,
+  args: Args,
+  fileBytes: Buffer,
+  fileSha: string,
+  inWindow: RecoveredTdMessage[],
+  refreshesSkipped: number,
+): Promise<void> {
+  const mergeArgs: MergeArgs = { ...args, refreshesSkipped };
+  const reader = await pool.connect();
+  let plan: MergePlan;
+  try {
+    await reader.query("begin transaction read only");
+    await reader.query("set local statement_timeout = '300s'");
+    const already = await reader.query(
+      "select 1 from feed_frame where feed_name = 'TD' and body_hash = $1",
+      [fileSha],
+    );
+    if (already.rowCount) throw new Error("Refusing: this excerpt has already been imported.");
+    const started = Date.now();
+    plan = await buildMergePlan(reader, mergeArgs, inWindow);
+    console.error(`[plan] built in ${Date.now() - started} ms`);
+    await reader.query("commit");
+  } catch (error) {
+    await reader.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    reader.release();
+  }
+  printMergePlan(mergeArgs, fileSha, plan);
+  const checkRows = plan.berths.reduce((n, p) => n + p.check.rows, 0);
+  const checkOk = plan.berths.reduce((n, p) => n + p.check.reproduced, 0);
+  const missing = plan.berths.reduce((n, p) => n + p.missingRows, 0);
+  if (checkOk !== checkRows || missing > 0) {
+    console.log(
+      "REFUSING to apply: RLM's own events don't reproduce the database exactly (see CHECK above).",
+    );
+    return;
+  }
+  if (!args.execute) {
+    console.log("DRY RUN: read-only, nothing was written. Re-run with --execute to apply.");
+    return;
+  }
+
+  const archiveKey = computeArchiveObjectKey({
+    namespace: "td-recovered",
+    contentSha256: fileSha,
+    date: args.from,
+  });
+  await putImmutableObject({
+    client: createArchiveClient({
+      endpoint: config.RAW_ARCHIVE_ENDPOINT,
+      region: config.RAW_ARCHIVE_REGION,
+      accessKeyId: config.RAW_ARCHIVE_ACCESS_KEY,
+      secretAccessKey: config.RAW_ARCHIVE_SECRET_KEY,
+    }),
+    bucket: config.RAW_ARCHIVE_BUCKET,
+    key: archiveKey,
+    body: fileBytes,
+    contentType: "text/plain",
+  });
+  const writer = await pool.connect();
+  try {
+    await writer.query("begin");
+    await writer.query("set local lock_timeout = '3s'");
+    await writer.query("set local statement_timeout = '30s'");
+    const started = Date.now();
+    await applyMergePlan(writer, config, mergeArgs, fileSha, fileBytes.length, archiveKey, plan);
+    await writer.query("commit");
+    console.log(`COMMITTED in ${Date.now() - started} ms.`);
+  } catch (error) {
+    await writer.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    writer.release();
+  }
 }
 
 function windowMentioned(line: string, args: Args): boolean {
@@ -682,16 +796,21 @@ function printPlan(args: Args, fileSha: string, linesInWindow: number, plan: Pla
 
 // ===================== Phase 2 =====================
 
-async function applyPlan(
+/**
+ * Archive index, one `feed_frame`, a `raw_feed_event` per recovered message (with
+ * `recovery_source`) and their derived per-event rows. Shared by the gap and merge modes. Returns
+ * lookups from the plans' `rec:<n>` placeholders to the real ids and sequences.
+ */
+export async function insertRecoveredRows(
   db: PoolClient,
   config: Config,
-  args: Args,
+  args: { file: string; from: Date; to: Date },
   fileSha: string,
   fileSize: number,
   archiveKey: string,
-  plan: Plan,
-): Promise<void> {
-  const { messages } = plan;
+  messages: RecoveredTdMessage[],
+  frameNote: string,
+): Promise<{ id: (ref: string) => string; seq: (ref: string) => string }> {
   const again = await db.query(
     "select 1 from feed_frame where feed_name = 'TD' and body_hash = $1",
     [fileSha],
@@ -711,7 +830,7 @@ async function applyPlan(
     sha256: fileSha,
     adr: ADR,
     window: { from: args.from.toISOString(), to: args.to.toISOString() },
-    note: "Rebuilt from openrail-eps tddb-detail.log after RLM's 2026-10-16 cutover gap; not an NR broker frame.",
+    note: frameNote,
   };
   const { rows: frameRows } = await db.query<{ id: string }>(
     `insert into feed_frame (feed_name, topic, headers_json, received_at, body_hash, archive_object_id,
@@ -835,6 +954,30 @@ async function applyPlan(
     c.map((x) => ({ area: x.m.tdArea, at: x.m.eventAt, from: x.p.from, to: x.p.to })),
   );
   await addAreaSummary(db, messages);
+
+  return { id, seq };
+}
+
+async function applyPlan(
+  db: PoolClient,
+  config: Config,
+  args: Args,
+  fileSha: string,
+  fileSize: number,
+  archiveKey: string,
+  plan: Plan,
+): Promise<void> {
+  const { messages } = plan;
+  const { id, seq } = await insertRecoveredRows(
+    db,
+    config,
+    args,
+    fileSha,
+    fileSize,
+    archiveKey,
+    messages,
+    "Rebuilt from openrail-eps tddb-detail.log after RLM's 2026-10-16 cutover gap; not an NR broker frame.",
+  );
 
   // Berth repairs.
   for (const plan_ of plan.berthPlans) {

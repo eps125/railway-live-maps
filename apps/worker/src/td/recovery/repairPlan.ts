@@ -94,7 +94,8 @@ export interface BerthRepairPlan {
 
 type Snapshot = { ref: "pre" } | { ref: "new"; index: number };
 
-function reduce(event: BerthEventRef, open: { description: string } | null): BerthEffect[] {
+/** One event's effects on one berth, given that berth's open description (exported for mergePlan.ts). */
+export function reduce(event: BerthEventRef, open: { description: string } | null): BerthEffect[] {
   const snap = open ? { occupancyId: "x", description: open.description, enteredAt: "" } : null;
   // The other berth of a CA is irrelevant to this berth's effects (each side reads only its own
   // snapshot), so it is passed as empty and its effects are filtered out below.
@@ -115,7 +116,7 @@ function reduce(event: BerthEventRef, open: { description: string } | null): Ber
   );
 }
 
-function anomalyDetails(
+export function anomalyDetails(
   effect: Extract<BerthEffect, { kind: "recordAnomaly" }>,
   tdArea: string,
   berth: string,

@@ -5793,5 +5793,18 @@ them). Reverted (d32c597) and replaced:
       (`ADMIN_ONLY_FEED_GAP_REASONS`; map quality, run lineage and held-train delays skip them).
 - [x] Tests: gate order, release-without-step, timeout and skip-past-stuck, retry; STOMP: two
       chunks handled concurrently with inserts in arrival order; lag decisions; stats line.
-- [ ] Recover 31 Oct 06:30–07:15 from openrail-eps (`recover-td-from-openrail-log`), backfill
-      run links, record the outage.
+- [x] Merge-mode recovery (`recover-td-from-openrail-log --merge`, commands/recoverTdMerge.ts,
+      td/recovery/mergePlan.ts): for a window where RLM holds part of the stream and the rest is
+      recovered, interleaved. openrail-eps's log gives the arrival order of every message; each
+      line is matched to a held row or marked recovered. Every affected berth and S-Class byte is
+      replayed over the whole window from its state at the start, held and recovered events
+      together, up to its first event after it. Existing occupancy rows are re-closed in place
+      (matched by entry event; a step into a berth always opens a row, so they line up one to
+      one), never deleted; only rows opened by recovered steps are inserted. The byte replay
+      applies the projector's stale-refresh guard and places held refreshes by sequence.
+      Planning refuses unless RLM's own events, replayed alone, reproduce the database exactly.
+- [x] Parser: blank descriptions kept as NR's four spaces; SG/SH refresh lines (logged per byte,
+      not rebuildable) left out with `--skip-refreshes` and counted.
+- [ ] 31 Oct 06:25–07:19:58: plan checks 39,877/39,877 berth rows and 162,759/162,759
+      transitions; 24,338 messages to recover (8,844 berths, 4,705 bytes). Execute, backfill run
+      links 06:25–09:30, verify (PX 0286: 0646 cleared at 06:51:55).

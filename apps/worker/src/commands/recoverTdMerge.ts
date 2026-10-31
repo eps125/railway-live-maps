@@ -54,6 +54,15 @@ export interface MergeArgs {
 type Payload = Record<string, string>;
 const payloadOf = (m: RecoveredTdMessage): Payload => Object.values(m.rawEventJson)[0]!;
 const REC = "rec:";
+/** Rows per statement for the big transition writes: one 171k-row insert passed the 30 s statement
+ * limit on cold reads (31 Oct, rolled back cleanly). */
+const CHUNK = 20_000;
+
+function chunks<T>(items: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += CHUNK) out.push(items.slice(i, i + CHUNK));
+  return out;
+}
 const S_PRE_LOOKBACK_HOURS = 6;
 
 export interface MergePlan {
@@ -772,7 +781,7 @@ export async function applyMergePlan(
   archiveKey: string,
   plan: MergePlan,
 ): Promise<void> {
-  const { id, seq } = await insertRecoveredRows(
+  const { id, seq, addCounts } = await insertRecoveredRows(
     db,
     config,
     args,
@@ -781,6 +790,7 @@ export async function applyMergePlan(
     archiveKey,
     plan.messages,
     "Rebuilt from openrail-eps tddb-detail.log (merge mode) for TD the broker dropped while ingest-td lagged, 2026-10-31; not an NR broker frame.",
+    true,
   );
   const exitId = (ref: string | undefined): string | null => (ref ? id(ref) : null);
 
@@ -910,7 +920,7 @@ export async function applyMergePlan(
       at: e.eventAt,
     })),
   );
-  if (trDel.length > 0) {
+  for (const part of chunks(trDel)) {
     await db.query(
       `delete from td_s_bit_transition t
         using unnest($2::text[], $3::text[], $4::bigint[], $5::timestamptz[]) as w(a, ad, id, at)
@@ -918,15 +928,15 @@ export async function applyMergePlan(
           and t.event_at = w.at and t.source_event_id = w.id`,
       [
         TD_S_STATE_PROJECTION_VERSION,
-        trDel.map((q) => q.area),
-        trDel.map((q) => q.address),
-        trDel.map((q) => q.id),
-        trDel.map((q) => q.at),
+        part.map((q) => q.area),
+        part.map((q) => q.address),
+        part.map((q) => q.id),
+        part.map((q) => q.at),
       ],
     );
   }
   const trIns = plan.bytes.flatMap((b) => b.transitions.map((t) => ({ b, t })));
-  if (trIns.length > 0) {
+  for (const part of chunks(trIns)) {
     await db.query(
       `insert into td_s_bit_transition (projection_version, td_area, address, bit_index, previous_value, new_value, event_at,
                                         source_event_id, source_event_normalized_at_utc, source_kind, source_ingestion_sequence)
@@ -936,16 +946,16 @@ export async function applyMergePlan(
            as t(area, addr, bit, prev, next, at, id, raw_at, kind, seq)`,
       [
         TD_S_STATE_PROJECTION_VERSION,
-        trIns.map((x) => x.b.tdArea),
-        trIns.map((x) => x.b.address),
-        trIns.map((x) => x.t.bitIndex),
-        trIns.map((x) => x.t.previousValue),
-        trIns.map((x) => x.t.newValue),
-        trIns.map((x) => x.t.event.eventAt),
-        trIns.map((x) => id(x.t.event.rawEventId)),
-        trIns.map((x) => x.t.event.rawEventNormalizedAt),
-        trIns.map((x) => x.t.event.sourceKind),
-        trIns.map((x) => seq(x.t.event.ingestionSequence)),
+        part.map((x) => x.b.tdArea),
+        part.map((x) => x.b.address),
+        part.map((x) => x.t.bitIndex),
+        part.map((x) => x.t.previousValue),
+        part.map((x) => x.t.newValue),
+        part.map((x) => x.t.event.eventAt),
+        part.map((x) => id(x.t.event.rawEventId)),
+        part.map((x) => x.t.event.rawEventNormalizedAt),
+        part.map((x) => x.t.event.sourceKind),
+        part.map((x) => seq(x.t.event.ingestionSequence)),
       ],
     );
   }
@@ -974,6 +984,9 @@ export async function applyMergePlan(
       ],
     );
   }
+
+  // Last, so today's activity rows are held only for the end of the transaction.
+  await addCounts();
 
   if (args.outage) {
     await db.query(

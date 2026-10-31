@@ -810,7 +810,15 @@ export async function insertRecoveredRows(
   archiveKey: string,
   messages: RecoveredTdMessage[],
   frameNote: string,
-): Promise<{ id: (ref: string) => string; seq: (ref: string) => string }> {
+  /** Leave the daily-activity and area-summary counts to the caller (`addCounts`), to run last:
+   * their rows are today's, which `project-td` also writes, so holding them for the whole
+   * transaction stalls it (31 Oct merge run). */
+  deferCounts = false,
+): Promise<{
+  id: (ref: string) => string;
+  seq: (ref: string) => string;
+  addCounts: () => Promise<void>;
+}> {
   const again = await db.query(
     "select 1 from feed_frame where feed_name = 'TD' and body_hash = $1",
     [fileSha],
@@ -949,13 +957,16 @@ export async function insertRecoveredRows(
       s.map((x) => x.seq),
     ],
   );
-  await addActivityCounts(
-    db,
-    c.map((x) => ({ area: x.m.tdArea, at: x.m.eventAt, from: x.p.from, to: x.p.to })),
-  );
-  await addAreaSummary(db, messages);
+  const addCounts = async (): Promise<void> => {
+    await addActivityCounts(
+      db,
+      c.map((x) => ({ area: x.m.tdArea, at: x.m.eventAt, from: x.p.from, to: x.p.to })),
+    );
+    await addAreaSummary(db, messages);
+  };
+  if (!deferCounts) await addCounts();
 
-  return { id, seq };
+  return { id, seq, addCounts: deferCounts ? addCounts : async () => {} };
 }
 
 async function applyPlan(

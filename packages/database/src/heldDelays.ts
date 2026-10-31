@@ -329,8 +329,8 @@ export async function loadOpenTdFeedGaps(db: Queryable, now: Date): Promise<Set<
   const { rows } = await db.query<{ td_area: string | null }>(
     `select distinct td_area from feed_gap
       where feed_name = 'TD'
-        -- Short silences are for the admin Data outages page only (owner, 2026-10-30).
-        and detection_reason <> 'td_short_receive_silence'
+        -- Admin-only reasons (@railway/domain ADMIN_ONLY_FEED_GAP_REASONS; 2026-10-30/31).
+        and detection_reason not in ('td_short_receive_silence', 'td_ingest_lag', 'td_ingest_lag_loss')
         and coalesce(affected_time_start, detected_start) <= $1
         and (coalesce(affected_time_end, detected_end) is null
              or coalesce(affected_time_end, detected_end) >= $1 - interval '1 hour')`,

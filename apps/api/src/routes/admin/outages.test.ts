@@ -55,6 +55,8 @@ describe("gapSeverity / worseSeverity", () => {
   it("short silences are amber, everything else red", () => {
     expect(gapSeverity("td_short_receive_silence")).toBe("amber");
     expect(gapSeverity("td_receive_silence")).toBe("red");
+    expect(gapSeverity("td_ingest_lag")).toBe("amber");
+    expect(gapSeverity("td_ingest_lag_loss")).toBe("red");
     expect(gapSeverity("operator_recorded")).toBe("red");
   });
 

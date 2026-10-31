@@ -16,7 +16,7 @@ import {
   evaluateStepChain,
   evaluateBoundaryCrossing,
   isSameRunIdentity,
-  TD_SHORT_RECEIVE_SILENCE_REASON,
+  ADMIN_ONLY_FEED_GAP_REASONS,
 } from "@railway/domain";
 
 /**
@@ -124,13 +124,13 @@ async function duringFeedGap(client: PoolClient, tdArea: string, at: Date): Prom
   const { rows } = await client.query<{ exists: boolean }>(
     `select exists(
        select 1 from feed_gap
-       where feed_name = 'TD' and detection_reason <> $3 and (td_area is null or td_area = $1)
+       where feed_name = 'TD' and detection_reason <> all($3::text[]) and (td_area is null or td_area = $1)
          and coalesce(affected_time_start, detected_start) <= $2
          and (coalesce(affected_time_end, detected_end) is null
               or coalesce(affected_time_end, detected_end) >= $2)
      ) as exists`,
-    // Short silences (owner, 2026-10-30) are for the admin Data outages page only.
-    [tdArea, at, TD_SHORT_RECEIVE_SILENCE_REASON],
+    // Short silences and ingest lag (2026-10-30/31) are for the admin Data outages page only.
+    [tdArea, at, ADMIN_ONLY_FEED_GAP_REASONS],
   );
   return rows[0]?.exists ?? false;
 }

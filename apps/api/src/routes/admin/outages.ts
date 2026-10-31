@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import {
   SIGNAL_GAP_TOLERANCE_MS,
+  TD_INGEST_LAG_REASON,
   TD_SHORT_RECEIVE_SILENCE_REASON,
   TD_SHORT_SILENCE_MIN_MS,
 } from "@railway/domain";
@@ -22,7 +23,9 @@ export type OutageSeverity = "amber" | "red";
 /** A recorded gap's severity: short silences are amber, everything else (the 5-minute-plus
  * silences and any gap recorded by hand) red. */
 export function gapSeverity(reason: string): OutageSeverity {
-  return reason === TD_SHORT_RECEIVE_SILENCE_REASON ? "amber" : "red";
+  return reason === TD_SHORT_RECEIVE_SILENCE_REASON || reason === TD_INGEST_LAG_REASON
+    ? "amber"
+    : "red";
 }
 
 /** The worse of two severities (`null` = nothing to show). */
@@ -164,10 +167,10 @@ export async function registerOutageRoutes(
       userId
         ? pool.query<{ unseen: number; unseen_red: number }>(
             `select count(*)::int as unseen,
-                    count(*) filter (where detection_reason <> $2)::int as unseen_red
+                    count(*) filter (where detection_reason <> all($2::text[]))::int as unseen_red
                from feed_gap
               where id > coalesce((select seen_through_gap_id from feed_gap_seen where user_id = $1), 0)`,
-            [userId, TD_SHORT_RECEIVE_SILENCE_REASON],
+            [userId, [TD_SHORT_RECEIVE_SILENCE_REASON, TD_INGEST_LAG_REASON]],
           )
         : null,
       lastTdFrameAt(pool),

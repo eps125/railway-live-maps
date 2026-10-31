@@ -9,6 +9,11 @@ export interface BrokerFrameHandle<TFrame> {
   frame: TFrame;
   ack(): Promise<void>;
   nack(): Promise<void>;
+  /** Runs `fn` once every frame that arrived before this one on the same connection has run its
+   * own (or been finished with), so whatever `fn` numbers follows arrival order while the rest
+   * of each frame's handling stays concurrent (shared/connection/arrivalOrder.ts). Optional: a
+   * connection that hands frames over one at a time needs none. */
+  inArrivalOrder?<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export interface BrokerConnectionOptions<TFrame> {

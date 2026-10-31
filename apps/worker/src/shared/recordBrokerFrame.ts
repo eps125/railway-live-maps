@@ -52,6 +52,10 @@ export interface RecordBrokerFrameDeps {
    * bodies in their own key prefix. */
   archiveNamespace: string;
   parseFn: (body: Buffer, options: { receivedAt: Date }) => ParsedFrame;
+  /** When given, the transaction that inserts the frame and assigns its events' ingestion
+   * sequences runs through this, so sequences follow arrival order while the archive upload
+   * before it stays concurrent (`BrokerFrameHandle.inArrivalOrder`, 2026-10-31). */
+  inArrivalOrder?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 /** One row this frame added to `raw_feed_event`, with the identity Postgres assigned it. Lets a
@@ -241,6 +245,19 @@ export async function recordBrokerFrame(
     compressedSizeBytes: frame.body.length,
   });
 
+  // Parsed before the ordered section: it's pure, and only the inserts need to wait their turn.
+  const parsed = deps.parseFn(frame.body, { receivedAt: frame.receivedAt });
+  const store = () => insertFrameAndEvents(frame, deps, bodyHash, archiveObjectId, parsed);
+  return deps.inArrivalOrder ? deps.inArrivalOrder(store) : store();
+}
+
+async function insertFrameAndEvents(
+  frame: InboundBrokerFrame,
+  deps: RecordBrokerFrameDeps,
+  bodyHash: string,
+  archiveObjectId: string,
+  parsed: ParsedFrame,
+): Promise<RecordBrokerFrameResult> {
   const client = await deps.pool.connect();
   let releaseError: Error | undefined;
   try {
@@ -291,8 +308,6 @@ export async function recordBrokerFrame(
     if (!frameId) {
       throw new Error("Expected feed_frame insert to return an id");
     }
-
-    const parsed = deps.parseFn(frame.body, { receivedAt: frame.receivedAt });
 
     let parsedCount = 0;
     let unsupportedCount = 0;

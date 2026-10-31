@@ -41,6 +41,26 @@ describe("createIngestStatsLogger", () => {
     stats.stop();
   });
 
+  it("reports how far behind the broker it is, and hands each window's worst to onWindow", () => {
+    const onWindow = vi.fn();
+    const stats = createIngestStatsLogger("TD", 1000, {
+      extra: () => "ordered insert avg 12ms",
+      onWindow,
+    });
+    // Broker stamped it 301.2 s ago: 31 Oct 06:45, when frames were being dropped.
+    stats.record(new Date(), null, Date.now() - 301_200);
+    vi.advanceTimersByTime(1000);
+    expect(logSpy).toHaveBeenCalledWith(
+      "TD ingest stats (last 1s): 1 frames, avg processing 0ms, max end-to-end lag 0s, " +
+        "max broker lag 301s, ordered insert avg 12ms",
+    );
+    expect(onWindow).toHaveBeenLastCalledWith(301_200);
+
+    vi.advanceTimersByTime(1000);
+    expect(onWindow).toHaveBeenLastCalledWith(null);
+    stats.stop();
+  });
+
   it("resets counters between windows instead of accumulating forever", () => {
     const stats = createIngestStatsLogger("TD", 1000);
     stats.record(new Date(), null);

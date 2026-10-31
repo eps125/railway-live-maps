@@ -27,6 +27,23 @@ export const TD_SHORT_SILENCE_MIN_MS = 30_000;
  * tolerance). Admin-only: maps, playback, signals, run lineage and held-train delays ignore it. */
 export const TD_SHORT_RECEIVE_SILENCE_REASON = "td_short_receive_silence";
 
+/** `feed_gap.detection_reason` written by `ingest-td` while it is 60 s or more behind the broker
+ * (2026-10-31): frames keep arriving, so no receive silence shows, but the broker discards
+ * messages older than about five minutes. Amber on the admin Data outages page. */
+export const TD_INGEST_LAG_REASON = "td_ingest_lag";
+
+/** The same, escalated once the lag has come within reach of the broker's five-minute limit
+ * (240 s): data is likely being lost. Red on the admin Data outages page. */
+export const TD_INGEST_LAG_LOSS_REASON = "td_ingest_lag_loss";
+
+/** `feed_gap` reasons only the admin Data outages page shows. Maps, playback, run lineage and
+ * held-train delays skip them; signal trust only ever reads `td_receive_silence`. */
+export const ADMIN_ONLY_FEED_GAP_REASONS: readonly string[] = [
+  TD_SHORT_RECEIVE_SILENCE_REASON,
+  TD_INGEST_LAG_REASON,
+  TD_INGEST_LAG_LOSS_REASON,
+];
+
 /** A short silence's data counts as delivered late when the late rows cover at least this share
  * of what the minute before it carried, over the silence less 5 s at each edge. */
 export const SHORT_SILENCE_DELIVERED_SHARE = 0.5;

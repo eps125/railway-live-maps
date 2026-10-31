@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { TD_SHORT_RECEIVE_SILENCE_REASON } from "@railway/domain";
+import { ADMIN_ONLY_FEED_GAP_REASONS } from "@railway/domain";
 
 /** How far before `at` a since-closed feed gap is still worth surfacing on a point-in-time view.
  * A gap earlier the same session matters; one from last week does not tell you anything about
@@ -78,15 +78,15 @@ export async function feedGapWarnings(
              or coalesce(affected_time_end, detected_end) >= $2 - interval '${INCOMPLETE_AFTER_GAP}') as near_at
        from feed_gap
       where feed_name = 'TD'
-        -- Short silences are for the admin Data outages page only (owner, 2026-10-30).
-        and detection_reason <> $3
+        -- Short silences and ingest lag are for the admin Data outages page only (2026-10-30/31).
+        and detection_reason <> all($3::text[])
         and (td_area is null or td_area = any($1::text[]))
         and coalesce(affected_time_start, detected_start) <= $2
         and (coalesce(affected_time_end, detected_end) is null
              or coalesce(affected_time_end, detected_end) >= $2 - interval '${GAP_LOOKBACK}')
       order by window_start desc
       limit 20`,
-    [tdAreas, at, TD_SHORT_RECEIVE_SILENCE_REASON],
+    [tdAreas, at, ADMIN_ONLY_FEED_GAP_REASONS],
   );
 
   return {

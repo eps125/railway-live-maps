@@ -5767,3 +5767,31 @@ Later 2026-10-30 (owner tweaks):
 - With a train's popup open on a phone, the map's notice and Key chip move to the top of the map;
   with the popup opened to full height they are hidden.
 - The popup's handle opens it to the frame's full height, not just as far as its content.
+
+## TD ingest: ordered sequences, concurrent storage, lag alarm (2026-10-31)
+
+30 Oct: concurrent chunk handling in `ingest-td` let frames take ingestion sequences out of arrival
+order, so a step into a berth could be projected after the same train's step out of it (WA B016
+1S95 stuck after the 20:36 redeploy; ~25–45 reversed pairs an hour, most cleared by the next
+train). The first fix (c1d46b0) stored one chunk at a time. That capped ingest near 300
+frames/min against ~170 arriving; when storage slowed to ~400 ms a frame on 31 Oct 06:37, ingest
+fell behind until Network Rail's broker discarded messages older than ~5 minutes: ~40% of TD
+frames lost 06:43–06:54 (openrail-eps received them; PX `CB 0646 from 0286` at 06:51:55 among
+them). Reverted (d32c597) and replaced:
+
+- [x] `ArrivalOrder` (shared/connection/arrivalOrder.ts): every MESSAGE frame is ticketed as its
+      chunk is decoded; only the transaction that inserts the frame and assigns its sequences
+      (`recordBrokerFrame` via `BrokerFrameHandle.inArrivalOrder`) waits for earlier tickets.
+      Upload, archive index, parse, ack and the live path stay concurrent (the live path's
+      `source_ingestion_sequence` guard makes completion order harmless). A frame waits at most
+      5 s, then the gate skips the stuck predecessor: ordering never risks retention.
+- [x] Ingest stats line: `max broker lag` (broker `timestamp` header → stored) and ordered insert
+      / wait timings.
+- [x] Lag alarm (td/ingestLagAlarm.ts): broker lag ≥ 60 s opens a `td_ingest_lag` outage (amber),
+      ≥ 240 s escalates it to `td_ingest_lag_loss` (red), < 15 s closes it; rows left open by a
+      restart close on the next start. Admin-only like short drops
+      (`ADMIN_ONLY_FEED_GAP_REASONS`; map quality, run lineage and held-train delays skip them).
+- [x] Tests: gate order, release-without-step, timeout and skip-past-stuck, retry; STOMP: two
+      chunks handled concurrently with inserts in arrival order; lag decisions; stats line.
+- [ ] Recover 31 Oct 06:30–07:15 from openrail-eps (`recover-td-from-openrail-log`), backfill
+      run links, record the outage.

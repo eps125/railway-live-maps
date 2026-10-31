@@ -38,6 +38,8 @@ const PERIODS = [7, 30, 90, 365];
 const REASON_LABEL: Record<string, string> = {
   td_receive_silence: "No TD messages received",
   td_short_receive_silence: "Short TD drop (admin only, not shown on maps)",
+  td_ingest_lag: "Recorder 60 s+ behind the feed (admin only)",
+  td_ingest_lag_loss: "Recorder near the feed's 5-minute limit: data likely lost (admin only)",
 };
 
 const SEVERITY_LABEL: Record<OutageSeverity, string> = {

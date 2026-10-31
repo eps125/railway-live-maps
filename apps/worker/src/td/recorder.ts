@@ -21,6 +21,7 @@ export interface RecordFrameDeps {
   pool: Pool;
   archiveClient: S3Client;
   archiveBucket: string;
+  inArrivalOrder?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 export type RecordFrameResult = RecordBrokerFrameResult;

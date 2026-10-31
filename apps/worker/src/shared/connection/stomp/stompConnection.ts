@@ -1,7 +1,8 @@
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import type { FeedName } from "@railway/domain";
-import { encodeFrame, StompFrameDecoder } from "./frame.js";
+import { encodeFrame, StompFrameDecoder, type StompFrame } from "./frame.js";
+import { ArrivalOrder } from "../arrivalOrder.js";
 import { computeBackoffDelayMs } from "../backoff.js";
 import type {
   BrokerConnection,
@@ -100,6 +101,9 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
     return new Promise((resolve, reject) => {
       this.state = "connecting";
       const decoder = new StompFrameDecoder();
+      // Per socket: frames are stored concurrently, but their sequence-assigning step runs in
+      // arrival order (shared/connection/arrivalOrder.ts).
+      const arrivalOrder = new ArrivalOrder();
       const durable = this.config.durable;
       const clientId = durable?.clientId ?? `railway-live-maps-${randomUUID()}`;
       const heartbeatMs = this.config.heartbeatMs ?? 15_000;
@@ -177,7 +181,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
 
       socket.on("data", (chunk: Buffer) => {
         lastInboundAt = Date.now();
-        this.handleChunk(decoder, chunk, socket, options, clientId, {
+        this.handleChunk(decoder, chunk, socket, options, clientId, arrivalOrder, {
           getSessionId: () => sessionId,
           setSessionId: (id) => {
             sessionId = id;
@@ -272,6 +276,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
     socket: Socket,
     options: BrokerConnectionOptions<InboundBrokerFrame>,
     clientId: string,
+    arrivalOrder: ArrivalOrder,
     session: {
       getSessionId: () => string | null;
       setSessionId: (id: string) => void;
@@ -280,8 +285,54 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
       onMessage: () => void;
     },
   ): Promise<void> {
-    for (const frame of decoder.push(chunk)) {
-      if (frame.command === "") continue; // heartbeat
+    // Decoding and ticketing happen before the first await, so they run in the order the
+    // chunks arrived even though chunks are handled concurrently.
+    const receivedAt = new Date();
+    const frames = decoder.push(chunk).map((frame) => ({
+      frame,
+      ticket: frame.command === "MESSAGE" ? arrivalOrder.ticket() : null,
+    }));
+    try {
+      for (const { frame, ticket } of frames) {
+        const stop = await this.handleFrame(
+          frame,
+          ticket,
+          receivedAt,
+          socket,
+          options,
+          clientId,
+          arrivalOrder,
+          session,
+        );
+        if (stop) return;
+      }
+    } finally {
+      // Whatever ended this chunk early (a handler failing, an ERROR frame), its later frames
+      // will never run their ordered step: release them so the frames after don't wait on them.
+      for (const { ticket } of frames) if (ticket !== null) arrivalOrder.release(ticket);
+    }
+  }
+
+  /** One decoded frame. Returns true when the rest of its chunk must not be handled (an ERROR
+   * frame has torn the connection down). */
+  private async handleFrame(
+    frame: StompFrame,
+    ticket: number | null,
+    receivedAt: Date,
+    socket: Socket,
+    options: BrokerConnectionOptions<InboundBrokerFrame>,
+    clientId: string,
+    arrivalOrder: ArrivalOrder,
+    session: {
+      getSessionId: () => string | null;
+      setSessionId: (id: string) => void;
+      onFatalError: (error?: Error) => void;
+      onConnected: () => void;
+      onMessage: () => void;
+    },
+  ): Promise<boolean> {
+    {
+      if (frame.command === "") return false; // heartbeat
 
       if (frame.command === "CONNECTED") {
         this.state = "connected";
@@ -310,7 +361,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             body: Buffer.alloc(0),
           }),
         );
-        continue;
+        return false;
       }
 
       if (frame.command === "ERROR") {
@@ -320,7 +371,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
         this.state = isAuthError ? "auth-failed" : "reconnecting";
         session.onFatalError(new Error(`STOMP ERROR: ${message}`));
         socket.destroy();
-        return;
+        return true;
       }
 
       if (frame.command === "MESSAGE") {
@@ -334,9 +385,11 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
             brokerMessageId: messageId,
             headers: frame.headers,
             body: frame.body,
-            receivedAt: new Date(),
+            // When the chunk came off the socket, not when this frame's turn in it came round.
+            receivedAt,
             connectionSessionId: session.getSessionId(),
           },
+          inArrivalOrder: (fn) => (ticket === null ? fn() : arrivalOrder.run(ticket, fn)),
           // A frame whose storage was retried across a disconnect can finish after its socket is
           // gone. An ack id is only valid on the connection that delivered it, so skip the write.
           ack: async () => {
@@ -354,6 +407,7 @@ export class StompConnection implements BrokerConnection<InboundBrokerFrame> {
         };
         await options.onFrame(handle);
       }
+      return false;
     }
   }
 

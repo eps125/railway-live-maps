@@ -9,6 +9,10 @@ import { createRedisDeltaPublisher } from "../td/deltaPublisher.js";
 import { createIngestStatsLogger } from "../shared/ingestStats.js";
 import { runUntilShutdownSignal } from "../shared/runUntilShutdownSignal.js";
 import { retryUntilDone } from "../shared/retryUntilDone.js";
+import { IngestLagAlarm } from "../td/ingestLagAlarm.js";
+
+/** `BrokerFrameHandle.inArrivalOrder` (shared/connection/arrivalOrder.ts). */
+type InArrivalOrder = <T>(fn: () => Promise<T>) => Promise<T>;
 
 const NR_TD_HOST = "publicdatafeeds.networkrail.co.uk";
 const NR_TD_PORT = 61618;
@@ -85,7 +89,45 @@ export async function runIngestTd(config: Config): Promise<never> {
       : "TD subscription: non-durable (messages sent while disconnected are lost)",
   );
 
-  const stats = createIngestStatsLogger("TD");
+  // 2026-10-31: how long frames wait for their ordered insert, and how long it takes, so the
+  // headroom left by ordering is visible; and an outage record when ingest falls behind.
+  const ordered = { inserts: 0, insertMs: 0, waitMs: 0, maxWaitMs: 0 };
+  const lagAlarm = new IngestLagAlarm(pool);
+  await lagAlarm.closeLeftOpen().catch((error) => {
+    console.error("ingest-td: could not close lag outages left open by a restart:", error);
+  });
+  const stats = createIngestStatsLogger("TD", undefined, {
+    extra: () => {
+      if (ordered.inserts === 0) return null;
+      const text =
+        `ordered insert avg ${Math.round(ordered.insertMs / ordered.inserts)}ms, ` +
+        `wait avg ${Math.round(ordered.waitMs / ordered.inserts)}ms max ${ordered.maxWaitMs}ms`;
+      Object.assign(ordered, { inserts: 0, insertMs: 0, waitMs: 0, maxWaitMs: 0 });
+      return text;
+    },
+    onWindow: (maxBrokerLagMs) => {
+      lagAlarm.observe(maxBrokerLagMs).catch((error) => {
+        console.error("ingest-td: could not record ingest lag:", error);
+      });
+    },
+  });
+  const timedInArrivalOrder =
+    (inner: InArrivalOrder) =>
+    <T>(fn: () => Promise<T>): Promise<T> => {
+      const asked = Date.now();
+      return inner(async () => {
+        const started = Date.now();
+        const waited = started - asked;
+        try {
+          return await fn();
+        } finally {
+          ordered.inserts += 1;
+          ordered.insertMs += Date.now() - started;
+          ordered.waitMs += waited;
+          if (waited > ordered.maxWaitMs) ordered.maxWaitMs = waited;
+        }
+      });
+    };
   let stopping = false;
   const isStopped = (): boolean => stopping;
 
@@ -147,6 +189,10 @@ export async function runIngestTd(config: Config): Promise<never> {
             pool,
             archiveClient,
             archiveBucket: config.RAW_ARCHIVE_BUCKET,
+            // Sequences in arrival order, storage still concurrent (2026-10-31).
+            ...(handle.inArrivalOrder
+              ? { inArrivalOrder: timedInArrivalOrder(handle.inArrivalOrder.bind(handle)) }
+              : {}),
           }),
         { label: "TD frame record", isStopped },
       );
@@ -155,7 +201,11 @@ export async function runIngestTd(config: Config): Promise<never> {
         isStopped,
       });
       await handle.ack();
-      stats.record(handle.frame.receivedAt, result.newestNormalizedEventAtUtc);
+      stats.record(
+        handle.frame.receivedAt,
+        result.newestNormalizedEventAtUtc,
+        Number(handle.frame.headers.timestamp),
+      );
 
       // Tier 3 inline live path — strictly after the ack, so archive-before-ack (non-negotiable
       // rule 2) is untouched and a failure here can neither block ingestion nor lose durability

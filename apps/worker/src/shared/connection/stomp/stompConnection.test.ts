@@ -459,6 +459,46 @@ describe("StompConnection handler failures", () => {
     await stopAndAdvance(connection);
   });
 
+  it("handles chunks concurrently but runs their ordered step in arrival order (2026-10-31)", async () => {
+    // 30 Oct: WA B016 kept 1S95 when a later chunk's frame took the earlier sequence. 31 Oct:
+    // storing one frame at a time instead let ingest fall behind and the broker drop frames.
+    vi.useFakeTimers();
+    const log: string[] = [];
+    let finishUpload!: () => void;
+    const slowUpload = new Promise<void>((resolve) => (finishUpload = resolve));
+    const { connection } = connectedFixture({
+      onFrame: vi.fn(
+        async (handle: {
+          frame: { brokerMessageId: string };
+          inArrivalOrder?: <T>(fn: () => Promise<T>) => Promise<T>;
+        }) => {
+          const id = handle.frame.brokerMessageId;
+          log.push(`received ${id}`);
+          if (id === "m-1") await slowUpload; // the first frame's archive upload is slow
+          await handle.inArrivalOrder!(async () => {
+            log.push(`insert ${id}`);
+          });
+        },
+      ),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = getLastSocket()!;
+    socket.emit("data", encodeFrame({ command: "CONNECTED", headers: {}, body: Buffer.alloc(0) }));
+    await vi.advanceTimersByTimeAsync(0);
+    socket.emit("data", messageFrame("m-1"));
+    socket.emit("data", messageFrame("m-2"));
+    await vi.advanceTimersByTimeAsync(100);
+    // Both are being handled at once, and the second waits for the first's insert.
+    expect(log).toEqual(["received m-1", "received m-2"]);
+
+    finishUpload();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(log).toEqual(["received m-1", "received m-2", "insert m-1", "insert m-2"]);
+
+    await stopAndAdvance(connection);
+  });
+
   it("skips the ACK write when the delivering socket has already closed", async () => {
     vi.useFakeTimers();
     let ackLater: (() => Promise<void>) | undefined;

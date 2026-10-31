@@ -174,8 +174,11 @@ as redeliveries after a reconnect and TD recovered from openrail-eps, after the 
 followed them) — and paged together; a page never splits entries sharing an event time and
 sequence. One `td_berth_event` (a CA) can yield two entries (`from` clears, `to` updates);
 entries for the map's bound berths only. `after` is the previous page's opaque `nextCursor`
-(`<event time ms>:<sequence>`), or `0`/absent for the start; a bare sequence (the cursor before
-2026-10-31) is still accepted and resolved to that row's event time; anything else is `400`.
+(`<event time ms>:<sort sequence>:<sequence>`), or `0`/absent for the start. Within one event
+time the order is `coalesce(playback_sequence, ingestion_sequence)` then sequence:
+`playback_sequence` places a message recovered from openrail-eps just after the held message that
+preceded it (migration 0063). The two-part cursor and a bare sequence (both served earlier on
+2026-10-31 or before) are still accepted; anything else is `400`.
 `from`/`to` bound the range (max 7 days). Uses the map version effective at `from`.
 
 ```json
@@ -194,7 +197,7 @@ entries for the map's bound berths only. `after` is the previous page's opaque `
       "enteredAt": "2026-08-04T12:15:38Z"
     }
   ],
-  "nextCursor": "1785846938000:123457"
+  "nextCursor": "1785846938000:123457:123457"
 }
 ```
 

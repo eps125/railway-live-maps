@@ -64,6 +64,8 @@ const DELAY_CACHE_MAX_ENTRIES = 2_000;
 
 interface TdBerthEventRow {
   ingestion_sequence: string;
+  /** coalesce(playback_sequence, ingestion_sequence): arrival position within one event time. */
+  sort_sequence: string;
   event_at: Date;
   message_type: "CA" | "CB" | "CC";
   td_area: string;
@@ -351,21 +353,23 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
     // down to <1s for a 30-minute window (docs/adr — playback 504 investigation).
     const result = await pool.query<TdBerthEventRow>(
       `with candidates as materialized (
-         select be.ingestion_sequence, be.event_at, be.message_type, be.td_area,
-                be.from_berth, be.to_berth, be.description
+         select be.ingestion_sequence,
+                coalesce(be.playback_sequence, be.ingestion_sequence) as sort_sequence,
+                be.event_at, be.message_type, be.td_area, be.from_berth, be.to_berth, be.description
            from td_berth_event be
           where be.td_area = any($1::text[])
             and be.message_type in ('CA', 'CB', 'CC')
             and be.event_at >= $2 and be.event_at < $3
        )
-       select c.ingestion_sequence::text, c.event_at, c.message_type, c.td_area,
-              c.from_berth, c.to_berth, c.description
+       select c.ingestion_sequence::text, c.sort_sequence::text, c.event_at, c.message_type,
+              c.td_area, c.from_berth, c.to_berth, c.description
          from candidates c
          join (select unnest($4::text[]) as td_area, unnest($5::text[]) as berth_code) wanted
            on wanted.td_area = c.td_area
           and (wanted.berth_code = c.from_berth or wanted.berth_code = c.to_berth)
-        where (c.event_at, c.ingestion_sequence) > ($6::timestamptz, $7::bigint)
-        order by c.event_at asc, c.ingestion_sequence asc
+        where (c.event_at, c.sort_sequence, c.ingestion_sequence)
+              > ($6::timestamptz, $9::bigint, $7::bigint)
+        order by c.event_at asc, c.sort_sequence asc, c.ingestion_sequence asc
         limit $8`,
       [
         distinctTdAreas,
@@ -376,6 +380,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
         after.at,
         after.sequence,
         limit,
+        after.sortSequence,
       ],
     );
 
@@ -419,6 +424,7 @@ export async function registerMapRoutes(app: FastifyInstance, deps: MapRoutesDep
       // An empty entry still takes part in paging (it is a fetched row the cursor must pass).
       berthEvents.push({
         eventAtMs: row.event_at.getTime(),
+        sortSequence: BigInt(row.sort_sequence),
         sequence: BigInt(row.ingestion_sequence),
         order: 0,
         messages,
@@ -459,15 +465,23 @@ async function resolveEventsCursor(
   parsed: NonNullable<ReturnType<typeof parseEventsCursor>>,
   from: Date,
 ): Promise<EventsCursor> {
-  const start: EventsCursor = { at: new Date(from.getTime() - 1), sequence: "0" };
+  const start: EventsCursor = {
+    at: new Date(from.getTime() - 1),
+    sortSequence: "0",
+    sequence: "0",
+  };
   if (parsed.kind === "start") return start;
-  if (parsed.kind === "cursor") return { at: parsed.at, sequence: parsed.sequence };
+  if (parsed.kind === "cursor") {
+    return { at: parsed.at, sortSequence: parsed.sortSequence, sequence: parsed.sequence };
+  }
   const { rows } = await pool.query<{ at: Date }>(
     `select normalized_event_at_utc as at from raw_feed_event
       where feed_name = 'TD' and ingestion_sequence = $1 limit 1`,
     [parsed.sequence],
   );
-  return rows[0] ? { at: rows[0].at, sequence: parsed.sequence } : start;
+  return rows[0]
+    ? { at: rows[0].at, sortSequence: parsed.sequence, sequence: parsed.sequence }
+    : start;
 }
 
 /**
@@ -495,7 +509,7 @@ export function mergeEventPages(
     .filter((event) => bound === null || compareSequencedEvents(event, bound) <= 0)
     .sort(compareSequencedEvents);
   const sameKey = (x: SequencedEvent, y: SequencedEvent): boolean =>
-    x.eventAtMs === y.eventAtMs && x.sequence === y.sequence;
+    x.eventAtMs === y.eventAtMs && x.sortSequence === y.sortSequence && x.sequence === y.sequence;
   let end = Math.min(limit, merged.length);
   while (end > 0 && end < merged.length && sameKey(merged[end]!, merged[end - 1]!)) {
     end += 1;

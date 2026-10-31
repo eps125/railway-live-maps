@@ -38,7 +38,10 @@ import type { LiveDeltaMessage } from "@railway/protocol";
 export interface SequencedEvent {
   /** Event time (ms) of the source row: playback's primary order (2026-10-31). */
   eventAtMs: number;
-  /** Ingestion sequence of the source row: the tie-break within one event time. */
+  /** Arrival position within one event time: `playback_sequence` for a recovered row (the held
+   * message just before it in openrail-eps's order), else its own ingestion sequence. */
+  sortSequence: bigint;
+  /** Ingestion sequence of the source row: the last tie-break. */
   sequence: bigint;
   /** Tie-break within one sequence: 0 = a row's own events, 1 = a silence blank placed after it. */
   order: number;
@@ -56,12 +59,16 @@ export interface SequencedEvent {
  */
 export interface EventsCursor {
   at: Date;
+  sortSequence: string;
   sequence: string;
 }
 
-/** A page's resume point, as the opaque `nextCursor` string: `<event time ms>:<sequence>`. */
-export function encodeEventsCursor(event: Pick<SequencedEvent, "eventAtMs" | "sequence">): string {
-  return `${event.eventAtMs}:${event.sequence}`;
+/** A page's resume point, as the opaque `nextCursor` string:
+ * `<event time ms>:<sort sequence>:<sequence>`. */
+export function encodeEventsCursor(
+  event: Pick<SequencedEvent, "eventAtMs" | "sortSequence" | "sequence">,
+): string {
+  return `${event.eventAtMs}:${event.sortSequence}:${event.sequence}`;
 }
 
 /**
@@ -73,13 +80,21 @@ export function parseEventsCursor(
   raw: string | undefined,
 ):
   | { kind: "start" }
-  | { kind: "cursor"; at: Date; sequence: string }
+  | { kind: "cursor"; at: Date; sortSequence: string; sequence: string }
   | { kind: "legacy"; sequence: string }
   | null {
   if (raw === undefined || raw === "" || raw === "0") return { kind: "start" };
-  const composite = /^(\d{1,15}):(\d{1,19})$/.exec(raw);
-  if (composite)
-    return { kind: "cursor", at: new Date(Number(composite[1])), sequence: composite[2]! };
+  // `<ms>:<sort sequence>:<sequence>`, or the two-part form served before playback_sequence
+  // (2026-10-31 evening), where the sort sequence is the sequence itself.
+  const composite = /^(\d{1,15}):(\d{1,19})(?::(\d{1,19}))?$/.exec(raw);
+  if (composite) {
+    return {
+      kind: "cursor",
+      at: new Date(Number(composite[1])),
+      sortSequence: composite[2]!,
+      sequence: composite[3] ?? composite[2]!,
+    };
+  }
   if (/^\d{1,19}$/.test(raw)) return { kind: "legacy", sequence: raw };
   return null;
 }
@@ -87,6 +102,7 @@ export function parseEventsCursor(
 /** Total order of playback entries: event time, then sequence, then `order`. */
 export function compareSequencedEvents(a: SequencedEvent, b: SequencedEvent): number {
   if (a.eventAtMs !== b.eventAtMs) return a.eventAtMs < b.eventAtMs ? -1 : 1;
+  if (a.sortSequence !== b.sortSequence) return a.sortSequence < b.sortSequence ? -1 : 1;
   if (a.sequence !== b.sequence) return a.sequence < b.sequence ? -1 : 1;
   return a.order - b.order;
 }
@@ -188,25 +204,27 @@ export async function fetchSignalPlaybackEvents(
   // the selective `(td_area, event_at)` index first, then apply the cursor/order/limit.
   const rows = await pool.query<{
     ingestion_sequence: string;
+    sort_sequence: string;
     event_at: Date;
     td_area: string;
     decoded_bitset: { bytes: Record<string, number> };
   }>(
     `with candidates as materialized (
-       select e.ingestion_sequence, e.event_at, e.td_area, e.decoded_bitset
+       select e.ingestion_sequence, coalesce(e.playback_sequence, e.ingestion_sequence) as sort_sequence,
+              e.event_at, e.td_area, e.decoded_bitset
          from td_s_event e
         where e.td_area = any($1::text[])
           and e.event_at >= $2 and e.event_at < $3
           and e.decode_status = 'decoded'
           and e.decoded_bitset->'bytes' ?| $4::text[]
      )
-     select c.ingestion_sequence::text as ingestion_sequence, c.event_at, c.td_area,
-            c.decoded_bitset
+     select c.ingestion_sequence::text as ingestion_sequence, c.sort_sequence::text as sort_sequence,
+            c.event_at, c.td_area, c.decoded_bitset
        from candidates c
-      where (c.event_at, c.ingestion_sequence) > ($5::timestamptz, $6::bigint)
-      order by c.event_at, c.ingestion_sequence
+      where (c.event_at, c.sort_sequence, c.ingestion_sequence) > ($5::timestamptz, $8::bigint, $6::bigint)
+      order by c.event_at, c.sort_sequence, c.ingestion_sequence
       limit $7`,
-    [tdAreas, range.from, range.to, addresses, after.at, after.sequence, limit],
+    [tdAreas, range.from, range.to, addresses, after.at, after.sequence, limit, after.sortSequence],
   );
 
   // Silences whose tolerance ran out inside the window. Fetched before the rows are folded so an
@@ -220,8 +238,8 @@ export async function fetchSignalPlaybackEvents(
         and g.affected_sequence_start is not null
         and g.detected_start + make_interval(secs => $5) >= $2
         and g.detected_start + make_interval(secs => $5) < $3
-        and (g.detected_start + make_interval(secs => $5), g.affected_sequence_start)
-            > ($4::timestamptz, $7::bigint)
+        and (g.detected_start + make_interval(secs => $5), g.affected_sequence_start, g.affected_sequence_start)
+            > ($4::timestamptz, $8::bigint, $7::bigint)
       order by blank_at, g.affected_sequence_start
       limit $6`,
     [
@@ -232,6 +250,7 @@ export async function fetchSignalPlaybackEvents(
       toleranceSeconds,
       limit,
       after.sequence,
+      after.sortSequence,
     ],
   );
 
@@ -264,6 +283,7 @@ export async function fetchSignalPlaybackEvents(
   // one before a row blanks the inputs before it; one at the row's own key, after it.
   const silenceKeys = silences.rows.map((s) => ({
     eventAtMs: s.blank_at.getTime(),
+    sortSequence: BigInt(s.affected_sequence_start),
     sequence: BigInt(s.affected_sequence_start),
     order: 1,
     messages: [],
@@ -276,6 +296,7 @@ export async function fetchSignalPlaybackEvents(
     const rowSequence = BigInt(row.ingestion_sequence);
     const rowKey = {
       eventAtMs: row.event_at.getTime(),
+      sortSequence: BigInt(row.sort_sequence),
       sequence: rowSequence,
       order: 0,
       messages: [],
@@ -332,7 +353,13 @@ export async function fetchSignalPlaybackEvents(
       });
     }
     // Kept even when empty: it is a fetched row the paging bound must account for.
-    events.push({ eventAtMs: rowKey.eventAtMs, sequence: rowSequence, order: 0, messages });
+    events.push({
+      eventAtMs: rowKey.eventAtMs,
+      sortSequence: rowKey.sortSequence,
+      sequence: rowSequence,
+      order: 0,
+      messages,
+    });
 
     // A silence at this row's own key blanks after the row's own entries (order 1 below).
     while (
@@ -351,6 +378,7 @@ export async function fetchSignalPlaybackEvents(
     const eventAt = silence.blank_at.toISOString();
     blanks.push({
       eventAtMs: silence.blank_at.getTime(),
+      sortSequence: BigInt(silence.affected_sequence_start),
       sequence: BigInt(silence.affected_sequence_start),
       order: 1,
       messages: [

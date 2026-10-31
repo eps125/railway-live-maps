@@ -315,6 +315,7 @@ describe("map routes", () => {
           rows: [
             {
               ingestion_sequence: "100",
+              sort_sequence: "100",
               event_at: new Date("2026-05-01T10:00:00Z"),
               message_type: "CC",
               td_area: "PX",
@@ -324,6 +325,7 @@ describe("map routes", () => {
             },
             {
               ingestion_sequence: "101",
+              sort_sequence: "101",
               event_at: new Date("2026-05-01T10:01:00Z"),
               message_type: "CB",
               td_area: "PX",

@@ -3,8 +3,14 @@ import { mergeEventPages } from "./maps.js";
 import { parseEventsCursor, type SequencedEvent } from "../lib/signalEvents.js";
 
 /** By default an event's time follows its sequence (1 s apart), as for anything received live. */
-const ev = (sequence: number, order = 0, eventAtMs = sequence * 1000): SequencedEvent => ({
+const ev = (
+  sequence: number,
+  order = 0,
+  eventAtMs = sequence * 1000,
+  sortSequence = sequence,
+): SequencedEvent => ({
   eventAtMs,
+  sortSequence: BigInt(sortSequence),
   sequence: BigInt(sequence),
   order,
   messages: [],
@@ -36,7 +42,7 @@ describe("mergeEventPages (Milestone 36b playback paging)", () => {
       2,
     );
     expect(seqs(page.events)).toEqual(["2", "3"]);
-    expect(page.nextCursor).toBe("3000:3");
+    expect(page.nextCursor).toBe("3000:3:3");
     const bounded = mergeEventPages(
       [
         { events: [ev(2), ev(4)], full: true },
@@ -45,7 +51,7 @@ describe("mergeEventPages (Milestone 36b playback paging)", () => {
       10,
     );
     expect(seqs(bounded.events)).toEqual(["2", "3", "4"]);
-    expect(bounded.nextCursor).toBe("4000:4");
+    expect(bounded.nextCursor).toBe("4000:4:4");
   });
 
   it("never splits entries sharing a sequence across pages", () => {
@@ -68,6 +74,16 @@ describe("mergeEventPages (Milestone 36b playback paging)", () => {
     expect(seqs(page.events)).toEqual(["1", "2", "900", "3"]);
   });
 
+  it("within one second, a recovered step plays at its arrival position (playback_sequence)", () => {
+    // 31 Oct CL X323: 1S30 stepped 0286->X323 (recovered, sequence 900, arrived after held 2)
+    // then X323->0323 (held, sequence 3), both at t=5 s. Sequence alone plays the step out first.
+    const page = mergeEventPages(
+      [{ events: [ev(2, 0, 5000), ev(3, 0, 5000), ev(900, 0, 5000, 2)], full: false }],
+      10,
+    );
+    expect(seqs(page.events)).toEqual(["2", "900", "3"]);
+  });
+
   it("bounds a full source by its last (time, sequence), not its last sequence", () => {
     const page = mergeEventPages(
       [
@@ -78,7 +94,7 @@ describe("mergeEventPages (Milestone 36b playback paging)", () => {
     );
     // Source A may have unfetched rows after t=2.5 s, so 3 (t=3 s) waits for the next page.
     expect(seqs(page.events)).toEqual(["1", "2", "900"]);
-    expect(page.nextCursor).toBe("2500:900");
+    expect(page.nextCursor).toBe("2500:900:900");
   });
 
   it("returns a null cursor only when every source is exhausted", () => {
@@ -96,13 +112,20 @@ describe("parseEventsCursor", () => {
     expect(parseEventsCursor("1793429515000:572718107")).toEqual({
       kind: "cursor",
       at: new Date(1793429515000),
+      sortSequence: "572718107",
       sequence: "572718107",
+    });
+    expect(parseEventsCursor("1793429515000:572718100:577920017")).toEqual({
+      kind: "cursor",
+      at: new Date(1793429515000),
+      sortSequence: "572718100",
+      sequence: "577920017",
     });
     expect(parseEventsCursor("572718107")).toEqual({ kind: "legacy", sequence: "572718107" });
   });
 
   it("rejects anything else", () => {
-    for (const raw of ["abc", "-1", "1:2:3", "1793429515000:", "1.5"]) {
+    for (const raw of ["abc", "-1", "1:2:3:4", "1793429515000:", "1.5"]) {
       expect(parseEventsCursor(raw)).toBeNull();
     }
   });

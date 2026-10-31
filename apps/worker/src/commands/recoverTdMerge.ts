@@ -79,6 +79,8 @@ export interface MergePlan {
   bytesWithUnknownPreValue: number;
   /** The last instant any replaced row can have (anomaly / transition deletes are bounded by it). */
   replaceUntil: Date;
+  /** Per recovered message (by index): its `playback_sequence`. */
+  playbackSequence: (string | null)[];
 }
 
 interface Original {
@@ -129,13 +131,20 @@ export async function buildMergePlan(
   const messages: RecoveredTdMessage[] = [];
   /** Per excerpt line (inWindow order): the held row it is, or its recovered index. */
   const resolved: ({ held: Original } | { rec: number })[] = [];
+  // Each recovered message's arrival position for playback: the sequence of the held message just
+  // before it in openrail-eps's order (`playback_sequence`, migration 0063). Null before the first.
+  const playbackSequence: (string | null)[] = [];
+  let lastHeldSeq: string | null = null;
   for (const m of inWindow) {
     const list = byIdentity.get(nrIdentity(m.rawEventJson));
     const held = list?.shift();
-    if (held) resolved.push({ held });
-    else {
+    if (held) {
+      resolved.push({ held });
+      lastHeldSeq = held.seq;
+    } else {
       resolved.push({ rec: messages.length });
       messages.push(m);
+      playbackSequence.push(lastHeldSeq);
     }
   }
   if (messages.length === 0) throw new Error("Nothing to recover.");
@@ -699,6 +708,7 @@ export async function buildMergePlan(
     transitionsToRemove: trRows.reduce((n, r) => n + r.n, 0),
     bytesWithUnknownPreValue: unknownPre,
     replaceUntil,
+    playbackSequence,
   };
 }
 
@@ -983,6 +993,40 @@ export async function applyMergePlan(
         plan.maxWindowSeq,
       ],
     );
+  }
+
+  // Arrival position for playback (migration 0063): recovered steps and S-Class rows sort just
+  // after the held message that preceded them, not after every held message of their second.
+  const positioned = plan.messages
+    .map((m, i) => ({ m, i, ps: plan.playbackSequence[i] ?? null }))
+    .filter((x) => x.ps !== null && x.m.type !== "CT");
+  for (const part of chunks(positioned)) {
+    const cRows = part.filter((x) => x.m.type !== "SF");
+    const sRows = part.filter((x) => x.m.type === "SF");
+    if (cRows.length > 0) {
+      await db.query(
+        `update td_berth_event e set playback_sequence = u.ps
+           from unnest($1::bigint[], $2::timestamptz[], $3::bigint[]) as u(id, at, ps)
+          where e.raw_event_id = u.id and e.event_at = u.at`,
+        [
+          cRows.map((x) => id(`${REC}${x.i}`)),
+          cRows.map((x) => x.m.eventAt),
+          cRows.map((x) => x.ps),
+        ],
+      );
+    }
+    if (sRows.length > 0) {
+      await db.query(
+        `update td_s_event e set playback_sequence = u.ps
+           from unnest($1::bigint[], $2::timestamptz[], $3::bigint[]) as u(id, at, ps)
+          where e.raw_event_id = u.id and e.event_at = u.at`,
+        [
+          sRows.map((x) => id(`${REC}${x.i}`)),
+          sRows.map((x) => x.m.eventAt),
+          sRows.map((x) => x.ps),
+        ],
+      );
+    }
   }
 
   // Last, so today's activity rows are held only for the end of the transaction.

@@ -5805,6 +5805,10 @@ them). Reverted (d32c597) and replaced:
       Planning refuses unless RLM's own events, replayed alone, reproduce the database exactly.
 - [x] Parser: blank descriptions kept as NR's four spaces; SG/SH refresh lines (logged per byte,
       not rebuildable) left out with `--skip-refreshes` and counted.
-- [ ] 31 Oct 06:25–07:19:58: plan checks 39,877/39,877 berth rows and 162,759/162,759
-      transitions; 24,338 messages to recover (8,844 berths, 4,705 bytes). Execute, backfill run
-      links 06:25–09:30, verify (PX 0286: 0646 cleared at 06:51:55).
+- [x] 31 Oct 06:25–07:19:58 recovered (24,338 messages; 6,951 occupancies inserted, 4,456
+      re-closed; 171,415 transitions); run links backfilled 06:25–09:30; outage 06:38–07:07
+      recorded. PX 0286: 0646 now cleared at 06:51:55.
+- [x] Playback `/events` ordered by event time, then arrival position, then sequence (was
+      sequence alone, which played late-stored steps after the ones that followed them).
+      `playback_sequence` (migration 0063) gives recovered rows their arrival position; merge
+      mode sets it. Cursor `<ms>:<sort sequence>:<sequence>`; older cursors still accepted.

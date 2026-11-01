@@ -126,15 +126,6 @@ const baseSchema = z.object({
   // resolutions/sec for a single mapped area (PX) vs ~1.5/sec nationwide, ~15-30ms of mostly-
   // indexed DB work each — affordable at either scope, but start scoped and widen deliberately.
   RUN_LINEAGE_FRESH_RESOLUTION_SCOPE: z.enum(["mapped", "nationwide"]).default("mapped"),
-  // ADR 0008 amendment (2026-10-31): `run-lineage` moves an open occupancy's run link to another
-  // traffic day when its activation's TRUST ID names that day and a fresh resolution agrees (a
-  // train set up before midnight for a departure after it). Same scope as fresh resolution. On by
-  // default (owner request); "false" stops further moves — moves already made stay, and are undone
-  // from `run_link_day_correction` (docs/IMPLEMENTATION_PLAN.md, "Fix — run links a day out").
-  RUN_LINK_DAY_CORRECTION_ENABLED: z
-    .string()
-    .default("true")
-    .transform((value) => value === "true"),
 });
 
 export interface Config extends z.infer<typeof baseSchema> {

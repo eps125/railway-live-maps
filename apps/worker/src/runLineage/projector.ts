@@ -481,14 +481,25 @@ async function sweepBoundaryCrossings(
 
 export type FreshResolutionScope = "mapped" | "nationwide";
 
-/** How far back an occupancy could have opened and still be worth a fresh-resolution attempt —
- * bounds the sweep query to currently-relevant occupancies rather than every open one ever
- * (there shouldn't be many older than this still lacking a link, but nothing guarantees it). */
-const FRESH_RESOLUTION_LOOKBACK_MINUTES = 15;
+/** How far back an occupancy could have opened and still be worth a fresh-resolution attempt, on
+ * every tick: trains that have just arrived. */
+export const FRESH_RESOLUTION_LOOKBACK_MINUTES = 15;
+/**
+ * The once-a-minute pass (`run-lineage-daemon`) looks this far back. Owner report 2026-11-01
+ * (Carlisle 2C38/1J70, interposed at 21:55 and 23:03 for Sunday morning): a train set up hours
+ * before it leaves resolves `unmatched` until its own run can be matched — after midnight, or
+ * when its activation arrives — so it keeps being retried while it stands, not just for its first
+ * 15 minutes. Production, 01:30 on a Sunday: 280 such occupancies, 65 ms to find.
+ */
+export const FRESH_RESOLUTION_STANDING_LOOKBACK_MINUTES = 12 * 60;
 /** Minimum gap between two attempts on the *same* occupancy — an unmatched result (e.g. its TRUST
  * activation hasn't landed yet) is worth retrying, but not on every 1s tick. */
 const FRESH_RESOLUTION_COOLDOWN_MS = 30_000;
+/** After its first 15 minutes, a standing train is retried this often. */
+const FRESH_RESOLUTION_STANDING_AFTER_MS = 15 * 60_000;
+const FRESH_RESOLUTION_STANDING_COOLDOWN_MS = 10 * 60_000;
 const FRESH_RESOLUTION_BATCH_LIMIT = 200;
+const FRESH_RESOLUTION_STANDING_BATCH_LIMIT = 1_000;
 
 interface OpenUnlinkedOccupancyRow {
   id: string;
@@ -522,15 +533,21 @@ export async function sweepFreshResolution(
   scope: FreshResolutionScope,
   cooldown: Map<string, number>,
   summary: RunLineageSummary,
+  lookbackMinutes: number = FRESH_RESOLUTION_LOOKBACK_MINUTES,
 ): Promise<void> {
   const eligibleAreas = scope === "mapped" ? await getMappedTdAreas(pool) : null;
   if (eligibleAreas && eligibleAreas.size === 0) return; // No published map bindings yet.
 
-  const params: unknown[] = [FRESH_RESOLUTION_BATCH_LIMIT];
+  const params: unknown[] = [
+    lookbackMinutes > FRESH_RESOLUTION_LOOKBACK_MINUTES
+      ? FRESH_RESOLUTION_STANDING_BATCH_LIMIT
+      : FRESH_RESOLUTION_BATCH_LIMIT,
+    lookbackMinutes,
+  ];
   let areaFilter = "";
   if (eligibleAreas) {
     params.push([...eligibleAreas]);
-    areaFilter = "and bo.td_area = any($2::text[])";
+    areaFilter = "and bo.td_area = any($3::text[])";
   }
 
   const { rows } = await pool.query<OpenUnlinkedOccupancyRow>(
@@ -538,22 +555,23 @@ export async function sweepFreshResolution(
        from berth_occupancy bo
       where bo.left_at is null
         and bo.description is not null
-        and bo.entered_at >= now() - interval '${FRESH_RESOLUTION_LOOKBACK_MINUTES} minutes'
+        and bo.entered_at >= now() - make_interval(mins => $2::int)
         and not exists (
           select 1 from berth_occupancy_run_link l
           where l.berth_occupancy_id = bo.id and l.occupancy_entered_at = bo.entered_at
         )
         ${areaFilter}
+      -- Newest first: a train that has just arrived is never starved by long-standing ones.
+      order by bo.entered_at desc
       limit $1`,
     params,
   );
   if (rows.length === 0) return;
 
   const now = Date.now();
-  const cooldownCutoff = now - FRESH_RESOLUTION_COOLDOWN_MS;
   // Evict cooldown entries older than the lookback window — those occupancies have aged out of
   // the query above regardless, so the entry can never be consulted again.
-  const evictBefore = now - FRESH_RESOLUTION_LOOKBACK_MINUTES * 60_000;
+  const evictBefore = now - FRESH_RESOLUTION_STANDING_LOOKBACK_MINUTES * 60_000;
   for (const [key, attemptedAt] of cooldown) {
     if (attemptedAt < evictBefore) cooldown.delete(key);
   }
@@ -565,7 +583,11 @@ export async function sweepFreshResolution(
   for (const row of rows) {
     const key = `${row.id}:${row.entered_at.toISOString()}`;
     const lastAttempt = cooldown.get(key);
-    if (lastAttempt !== undefined && lastAttempt > cooldownCutoff) continue;
+    const standing = now - row.entered_at.getTime() > FRESH_RESOLUTION_STANDING_AFTER_MS;
+    const cooldownMs = standing
+      ? FRESH_RESOLUTION_STANDING_COOLDOWN_MS
+      : FRESH_RESOLUTION_COOLDOWN_MS;
+    if (lastAttempt !== undefined && now - lastAttempt < cooldownMs) continue;
     cooldown.set(key, now);
     summary.freshResolutionAttempts += 1;
 

@@ -6,18 +6,16 @@ import {
   sweepFreshResolution,
   createFreshResolutionCooldown,
   createBoundaryCooldown,
+  FRESH_RESOLUTION_STANDING_LOOKBACK_MINUTES,
   type RunLineageSummary,
 } from "../runLineage/projector.js";
-import {
-  createDayCorrectionCooldown,
-  sweepDayMismatchedLinks,
-} from "../runLineage/dayCorrection.js";
 import { runDaemonLoop } from "../shared/daemonLoop.js";
 
 /** Background enrichment, not latency-sensitive (docs/adr/0007) — a 1s tick is plenty. */
 const TICK_INTERVAL_MS = 1_000;
-/** ADR 0008 amendment (2026-10-31): how often links a day out are looked for. */
-const DAY_CORRECTION_INTERVAL_MS = 30_000;
+/** How often fresh resolution also retries trains that have stood unlinked for longer than its
+ * every-tick window (owner report 2026-11-01, ADR 0008 amendment). */
+const STANDING_RESOLUTION_INTERVAL_MS = 60_000;
 
 /**
  * `run-lineage-daemon` (Milestone 39, docs/adr/0007): threads an already-`resolved` run identity
@@ -48,7 +46,7 @@ export async function runRunLineageDaemon(config: Config): Promise<void> {
       config.RUN_LINEAGE_FRESH_RESOLUTION_ENABLED
         ? `enabled, scope=${config.RUN_LINEAGE_FRESH_RESOLUTION_SCOPE}`
         : "disabled"
-    }, day correction ${config.RUN_LINK_DAY_CORRECTION_ENABLED ? "enabled" : "disabled"})`,
+    })`,
   );
   // Skip the historical backlog on a genuinely fresh checkpoint — see the function's own doc
   // comment (production incident, 2026-09-14) for why replaying nationwide history here is both
@@ -58,8 +56,7 @@ export async function runRunLineageDaemon(config: Config): Promise<void> {
 
   const freshResolutionCooldown = createFreshResolutionCooldown();
   const boundaryCooldown = createBoundaryCooldown();
-  const dayCorrectionCooldown = createDayCorrectionCooldown();
-  let lastDayCorrectionAt = 0;
+  let lastStandingResolutionAt = 0;
 
   await runDaemonLoop({
     label: "run-lineage-daemon",
@@ -78,20 +75,14 @@ export async function runRunLineageDaemon(config: Config): Promise<void> {
           freshResolutionCooldown,
           summary,
         );
-      }
-      if (
-        config.RUN_LINK_DAY_CORRECTION_ENABLED &&
-        Date.now() - lastDayCorrectionAt >= DAY_CORRECTION_INTERVAL_MS
-      ) {
-        lastDayCorrectionAt = Date.now();
-        const corrected = await sweepDayMismatchedLinks(
-          pool,
-          config.RUN_LINEAGE_FRESH_RESOLUTION_SCOPE,
-          dayCorrectionCooldown,
-        );
-        if (corrected.moved > 0) {
-          console.log(
-            `run-lineage-daemon: day correction moved ${corrected.moved} of ${corrected.mismatched} mismatched links`,
+        if (Date.now() - lastStandingResolutionAt >= STANDING_RESOLUTION_INTERVAL_MS) {
+          lastStandingResolutionAt = Date.now();
+          await sweepFreshResolution(
+            pool,
+            config.RUN_LINEAGE_FRESH_RESOLUTION_SCOPE,
+            freshResolutionCooldown,
+            summary,
+            FRESH_RESOLUTION_STANDING_LOOKBACK_MINUTES,
           );
         }
       }

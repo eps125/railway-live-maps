@@ -298,6 +298,10 @@ different trains sharing a headcode. See IMPLEMENTATION_PLAN Milestone 87.
 
 ## Amendment (2026-10-31): correct a link a day out
 
+**Superseded on 2026-11-01** by the amendment below, which fixes the cause instead: the sweep
+described here was removed before it had moved any link (`run_link_day_correction` was empty).
+Kept for the record.
+
 Owner report: 27 trains in five days showed about a day late (ADR 0021 second amendment). Each
 stood in its berth before midnight for a departure after it (CL 0305 092N08 from 23:24 on the
 28th, booked away 05:52 on the 29th). The probe is today and yesterday only, so the occupancy was
@@ -353,3 +357,56 @@ made for a finished run, but its popup and colour can show that run overnight.
    estimator's TRUST-ID day, ADR 0021 second amendment).
 4. Only after the revert is deployed: `drop table run_link_day_correction;` and
    `delete from schema_migrations where name = '0064_run_link_day_correction.sql';`.
+
+## Amendment (2026-11-01): a finished run is not the current train
+
+Owner report, 00:20 on Sunday 1 November: two units stabled at Carlisle (CL 0302 2C38, CL 0305
+1J70), interposed at 21:55 and 23:03 for Sunday morning, showed Saturday's runs. On Sundays they
+run under Sunday-only schedules; Saturday's Mon–Sat schedule had a TRUST activation (Saturday's,
+its run long finished at Whitehaven and Middlesbrough) and Sunday's had none yet, and "activated"
+wins. The check that rules out a finished run (fourth addendum) only ran when two or more
+schedules were activated, and judged each against its latest activation, not its own day's.
+
+The same flaw caused the day-out links of the 2026-10-31 amendment (092N08 at 23:24 was linked to
+the 28th's finished run), which that amendment only corrected afterwards. The rule now:
+
+- **An activated run counts only if it hasn't finished.** The finished-run check runs whenever
+  the berth is position-scoped and any candidate is activated (was: two or more activated, and
+  more than one candidate). Each candidate is judged by the activation for the day it resolved
+  to; with none for that day it has no movements to be judged by and stays in.
+- **A run that finished counts only if it finished here, and only when nothing else fits.** If no
+  candidate is left, a yesterday-resolved run whose terminating report is at this berth's own
+  location (and nothing reported beyond it) is the answer: the train that arrived last night and
+  is still standing. A run that went on elsewhere is never brought back, and today's run still
+  beats one that finished here (the fourth addendum's 5Z01 rule).
+- **Standing trains keep being resolved.** Fresh resolution used to try an occupancy only in its
+  first 15 minutes. A train set up the evening before is `unmatched` until its own run can be
+  matched (after midnight, or when its activation arrives), so `run-lineage` now also retries
+  open, unlinked occupancies up to 12 hours old once a minute, each at most every 10 minutes
+  (production at 01:30 on a Sunday: 280 of them, 65 ms to find).
+- **The day-correction sweep is removed** (code, flag and compose variable): with these rules the
+  resolver no longer makes the links it corrected.
+
+Replayed on production at 01:22, every train standing in a mapped berth (239), deployed rule
+against new: 220 unchanged, 19 changed. Nine moved from Saturday's finished run to Sunday's (both
+Carlisle units, CL 0046 6X81, G1 2REC 5S93, GP02 1S95, GP07 2Y65, WJ COUT 1B66, XA 0503 1A88,
+XA 0509 2I02); seven became unmatched, each a description left behind by a run that finished
+elsewhere (PX C2LH 1C62 terminated at Barrow at 00:31); two unmatched trains now match the run
+that finished where they stand (AW GR20 2N19, GR26 2N21). One remains questionable: G1 BR01 5S26
+moves from Saturday's one-day overlay (activated, finished) to the permanent schedule it replaced,
+never activated — a pre-existing edge, not addressed.
+
+**Undo**, if the new matching turns out worse:
+
+1. Revert the code: `git revert <this commit>` and push (CI deploys it). That restores the old
+   resolver rule, the 15-minute-only fresh resolution and the day-correction sweep with its flag
+   (`RUN_LINK_DAY_CORRECTION_ENABLED`, default on). Nothing in the database needs restoring
+   first: links this change made are ordinary `resolved` links, and the next resolution under
+   the old code treats them as it always did.
+2. To re-link a window under the old rule, run `repair-run-links --correct --areas <areas>
+--from <start> --to <end>` (or the admin "link backfill" job with "correct" ticked).
+3. The `run_link_day_correction` table (migration 0064) is left in place, unused. It held no rows
+   when the sweep was removed. Drop it only with the owner's approval:
+   `drop table run_link_day_correction;` and
+   `delete from schema_migrations where name = '0064_run_link_day_correction.sql';` — and not if
+   the revert in step 1 is deployed, since the restored sweep writes to it.

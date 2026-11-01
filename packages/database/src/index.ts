@@ -252,8 +252,3 @@ export {
   type ScheduleLocationRow,
   type EstimateChangeRow,
 } from "./heldDelays.js";
-export {
-  findDayMismatchedOpenLinks,
-  repointLinkToRunDay,
-  type DayMismatchedLink,
-} from "./runLinkDayCorrection.js";

@@ -112,9 +112,6 @@ x-worker-env: &worker-env
   # ~1.5/sec nationwide — affordable at either scope, but widen deliberately, not by default).
   RUN_LINEAGE_FRESH_RESOLUTION_ENABLED: ${RUN_LINEAGE_FRESH_RESOLUTION_ENABLED:-false}
   RUN_LINEAGE_FRESH_RESOLUTION_SCOPE: ${RUN_LINEAGE_FRESH_RESOLUTION_SCOPE:-mapped}
-  # ADR 0008 amendment (2026-10-31): move an open link a day out to its activation's day (see
-  # apps/worker/src/config.ts). Set to false in the stack .env to stop it without a redeploy of code.
-  RUN_LINK_DAY_CORRECTION_ENABLED: ${RUN_LINK_DAY_CORRECTION_ENABLED:-true}
 
 # Owner decision 2026-09-11 (docs/IMPLEMENTATION_PLAN.md): every image-bearing service carries
 # this label so the `watchtower` service (below) knows which containers it's allowed to touch —

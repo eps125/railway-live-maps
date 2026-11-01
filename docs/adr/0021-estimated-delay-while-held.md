@@ -281,6 +281,6 @@ Without a usable day in the ID, the run's own traffic day is used, as before.
 Replayed on production: all 29 such estimates of 26–31 October go (28 to no estimate, one to 2
 late, which is what TRUST then reported).
 
-The link itself is corrected separately, once the later day's activation exists (ADR 0008
-amendment, 2026-10-31: `run-lineage` repoints an open link a day out). Both parts revert with
-one commit; see the undo steps there.
+The link itself: ADR 0008's 2026-11-01 amendment stops the resolver linking a train to a
+finished run (it superseded the 2026-10-31 sweep that corrected such links afterwards). The
+estimator's TRUST-ID day stays as a safeguard either way.

@@ -677,23 +677,32 @@ export async function callingTimeMinutesByScheduleId(
  * `resolveRunMatch` treats absence from this set as "not confirmed gone", never as proof either
  * way. Position-scoped only — with no real calling point tied to this berth there's nothing to
  * compare movement progress against.
+ *
+ * `finishedHere` (owner request 2026-11-01) is the subset passed only because it finished, at
+ * this berth's own location: a yesterday-resolved run whose terminating report is at one of this
+ * berth's STANOXes, with nothing reported beyond it — the train that arrived last night and is
+ * still standing here. `resolveFreshRunMatch` brings it back when no other candidate fits.
  */
+type PassedCheckCandidates = ReadonlyArray<{
+  scheduleId: string;
+  trustId: string;
+  /** That activation's own time: only this run's movements count (`withinTrustRun`) — the same
+   * trust id a month earlier is a different train (incident 2026-10-01). */
+  activatedAt: Date;
+  resolvedToYesterday?: boolean;
+}>;
+
 export async function findAlreadyPassedScheduleIds(
   pool: Queryable,
-  candidates: ReadonlyArray<{
-    scheduleId: string;
-    trustId: string;
-    /** That activation's own time: only this run's movements count (`withinTrustRun`) — the same
-     * trust id a month earlier is a different train (incident 2026-10-01). */
-    activatedAt: Date;
-    resolvedToYesterday?: boolean;
-  }>,
+  candidates: PassedCheckCandidates,
   tiplocs: string[],
   /** Ignore movements recorded after this moment (see `resolveFreshRunMatch`). */
   asOf?: Date | undefined,
-): Promise<Set<string>> {
-  if (candidates.length === 0 || tiplocs.length === 0) return new Set();
-  const result = await pool.query<{ schedule_id: string; passed: boolean }>(
+): Promise<{ passed: Set<string>; finishedHere: Set<string> }> {
+  if (candidates.length === 0 || tiplocs.length === 0) {
+    return { passed: new Set(), finishedHere: new Set() };
+  }
+  const result = await pool.query<{ schedule_id: string; passed: boolean; finished_here: boolean }>(
     `with pairs as (
        select unnest($1::bigint[]) as schedule_id, unnest($2::text[]) as trust_id,
               unnest($4::boolean[]) as resolved_to_yesterday,
@@ -705,7 +714,8 @@ export async function findAlreadyPassedScheduleIds(
        where l.cif_schedule_id = any($1::bigint[]) and l.tiploc_code = any($3::text[])
        group by l.cif_schedule_id
      )
-     select p.schedule_id::text as schedule_id,
+     , checked as (
+     select p.schedule_id, p.trust_id, p.activated_at, p.resolved_to_yesterday,
             exists (
               select 1
               from trust_movement m
@@ -725,18 +735,29 @@ export async function findAlreadyPassedScheduleIds(
                   (select bs.last_berth_seq_no from berth_seq bs where bs.cif_schedule_id = p.schedule_id),
                   2147483647
                 )
-            )
-            or (
-              p.resolved_to_yesterday
-              and exists (
-                select 1 from trust_movement m
-                where m.trust_id = p.trust_id
-                  and ${withinTrustRun("m.created", "p.activated_at")}
-                  and ($6::timestamptz is null or m.created <= $6::timestamptz)
-                  and ((m.flags & 3) = 3 or (m.flags & 64) <> 0)
-              )
-            ) as passed
-     from pairs p`,
+            ) as beyond,
+            p.resolved_to_yesterday and exists (
+              select 1 from trust_movement m
+              where m.trust_id = p.trust_id
+                and ${withinTrustRun("m.created", "p.activated_at")}
+                and ($6::timestamptz is null or m.created <= $6::timestamptz)
+                and ((m.flags & 3) = 3 or (m.flags & 64) <> 0)
+            ) as finished,
+            p.resolved_to_yesterday and exists (
+              select 1 from trust_movement m
+              where m.trust_id = p.trust_id
+                and ${withinTrustRun("m.created", "p.activated_at")}
+                and ($6::timestamptz is null or m.created <= $6::timestamptz)
+                and ((m.flags & 3) = 3 or (m.flags & 64) <> 0)
+                and m.loc_stanox in (
+                  select lr.stanox from location_reference lr where lr.tiploc = any($3::text[])
+                )
+            ) as finished_at_berth
+     from pairs p
+     )
+     select schedule_id::text as schedule_id, beyond or finished as passed,
+            finished_at_berth and not beyond as finished_here
+     from checked`,
     [
       candidates.map((c) => c.scheduleId),
       candidates.map((c) => c.trustId),
@@ -746,7 +767,12 @@ export async function findAlreadyPassedScheduleIds(
       asOf ?? null,
     ],
   );
-  return new Set(result.rows.filter((row) => row.passed).map((row) => row.schedule_id));
+  return {
+    passed: new Set(result.rows.filter((row) => row.passed).map((row) => row.schedule_id)),
+    finishedHere: new Set(
+      result.rows.filter((row) => row.passed && row.finished_here).map((row) => row.schedule_id),
+    ),
+  };
 }
 
 /**
@@ -979,10 +1005,13 @@ export async function resolveFreshRunMatch(
     ? await callingTimeMinutesByScheduleId(pool, scheduleIds, tiplocs, nowMinutes)
     : new Map<string, number>();
   // Movement-progress refinement: only worth checking when position-scoped (nothing to compare
-  // progress against otherwise) and more than one schedule has *some* activation in the window —
-  // the only situation this filter could actually change anything. Picks each schedule's most
-  // recent trust_id (`activationRows` is ordered `created desc` overall, so the first row seen
-  // per schedule id is its most recent).
+  // progress against otherwise) and at least one candidate has an activation. Owner report 2026-11-01 (CL 0302 2C38, CL 0305 1J70, stabled at Carlisle
+  // overnight): this used to need two *activated* schedules, but one activated candidate competing
+  // with a not-yet-activated one is exactly where it matters — Saturday's Mon–Sat run (activated,
+  // finished at Whitehaven) beat Sunday's Sunday-only schedule (activated an hour before it
+  // leaves). Each candidate is checked against the activation for the day it resolved to, never
+  // another day's run of the same schedule; a candidate with none for that day has no movements
+  // to be judged by and is left alone.
   // Each candidate's own resolved traffic day (docs/adr/0008) — a yesterday-resolved one may be
   // excluded as finished (findAlreadyPassedScheduleIds) or cancelled (findCancelledScheduleIds).
   const resolvedDateByScheduleId = new Map(
@@ -1015,16 +1044,11 @@ export async function resolveFreshRunMatch(
   );
   let alreadyPassedScheduleIds: Set<string> | undefined =
     cancelledScheduleIds.size > 0 ? cancelledScheduleIds : undefined;
-  if (positionScoped && activatedDatesByScheduleId.size > 1) {
-    const latestActivationByScheduleId = new Map<string, ActivationRow>();
-    for (const row of activationRows) {
-      if (!latestActivationByScheduleId.has(row.cif_schedule_id)) {
-        latestActivationByScheduleId.set(row.cif_schedule_id, row);
-      }
-    }
-    const passed = await findAlreadyPassedScheduleIds(
+  let finishedHereScheduleIds = new Set<string>();
+  if (positionScoped && activatedDatesByScheduleId.size > 0) {
+    const { passed, finishedHere } = await findAlreadyPassedScheduleIds(
       pool,
-      [...latestActivationByScheduleId].map(([scheduleId, activation]) => ({
+      [...resolvedDayActivationByScheduleId].map(([scheduleId, activation]) => ({
         scheduleId,
         trustId: activation.trust_id,
         activatedAt: activation.created,
@@ -1034,18 +1058,40 @@ export async function resolveFreshRunMatch(
       asOf,
     );
     alreadyPassedScheduleIds = new Set([...passed, ...cancelledScheduleIds]);
+    finishedHereScheduleIds = new Set(
+      [...finishedHere].filter((id) => !cancelledScheduleIds.has(id)),
+    );
   }
-  const matchResult = resolveRunMatch(
-    matchCandidates,
-    activatedDatesByScheduleId,
-    serviceDates,
-    positionScoped
-      ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
-      : undefined,
-    alreadyPassedScheduleIds,
-    dateChoice,
-    sameUidSchedules,
-  );
+  const runMatch = (excluded: Set<string> | undefined) =>
+    resolveRunMatch(
+      matchCandidates,
+      activatedDatesByScheduleId,
+      serviceDates,
+      positionScoped
+        ? { callingTimeMinutes: (c) => callingTimes.get(c.scheduleId) ?? null, nowMinutes }
+        : undefined,
+      excluded,
+      dateChoice,
+      sameUidSchedules,
+    );
+  let matchResult = runMatch(alreadyPassedScheduleIds);
+  // Owner request 2026-11-01: when nothing else fits, a run that finished here last night is
+  // still the train standing here (a layover or stabling berth), so it is the answer rather than
+  // `unmatched`. Only a run that ended at this berth's own location; one that went on elsewhere
+  // (Carlisle 2C38: Saturday's run ended at Whitehaven) is never brought back.
+  if (matchResult.status === "unmatched" && finishedHereScheduleIds.size > 0) {
+    const fallback = runMatch(
+      new Set(
+        [...(alreadyPassedScheduleIds ?? [])].filter((id) => !finishedHereScheduleIds.has(id)),
+      ),
+    );
+    if (
+      fallback.status === "matched" &&
+      finishedHereScheduleIds.has(fallback.selected.scheduleId)
+    ) {
+      matchResult = fallback;
+    }
+  }
 
   const matchBasis =
     matchResult.status === "unmatched"

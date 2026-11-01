@@ -5469,8 +5469,8 @@ exists. Owner condition: documented, with exact undo steps.
       schedule, ambiguous, unmatched, no day and same day never move); integration: yesterday's
       link moves to today's run with an audit row, the old run isn't superseded, a correctly
       linked train is untouched, a second sweep does nothing.
-- [ ] Morning check: `select * from run_link_day_correction order by corrected_at desc` shows
-      moves at activations, and no estimates of about a day appear.
+- Superseded 2026-11-01 before it moved any link: see "Fix — a finished run is not the current
+  train" below, which removes this sweep. The undo steps below apply only to the code as it was.
 
 Watch: `docker logs railway-live-map-run-lineage-1 | grep run_link_day_corrected` (one JSON line
 per move: berth, headcode, TRUST ID, from/to run and day).
@@ -5501,6 +5501,46 @@ per move: berth, headcode, TRUST ID, from/to run and day).
    estimator's TRUST-ID day, ADR 0021 second amendment).
 4. Only after the revert is deployed: `drop table run_link_day_correction;` and
    `delete from schema_migrations where name = '0064_run_link_day_correction.sql';`.
+
+## Fix — a finished run is not the current train (2026-11-01, ADR 0008 amendment)
+
+Owner report: Carlisle's stabled 2C38 and 1J70, interposed for Sunday morning, showed Saturday's
+finished runs. "Activated" beat "not yet activated" even when the activated run had finished,
+because the finished-run check needed two activated schedules. Owner direction: fix the cause and
+keep it simple — this replaces the day-correction sweep added hours earlier.
+
+- [x] `resolveFreshRunMatch`: the finished-run check runs whenever any candidate is activated,
+      judging each by its own resolved day's activation.
+- [x] `findAlreadyPassedScheduleIds` also returns `finishedHere`; when no candidate is left, a run
+      that finished at this berth's location is the answer.
+- [x] `sweepFreshResolution` takes a lookback; `run-lineage-daemon` keeps the every-tick 15-minute
+      pass and adds a once-a-minute 12-hour pass (standing trains retried every 10 minutes,
+      newest first).
+- [x] Removed: `dayCorrection.ts`, `runLinkDayCorrection.ts`, their tests, the daemon hook,
+      `RUN_LINK_DAY_CORRECTION_ENABLED` (config and compose). Table 0064 left in place, unused.
+- [x] Tests (integration, `finishedRuns.integration.test.ts`): today's not-yet-activated run beats
+      yesterday's finished one (Carlisle 2C38); a run that finished elsewhere leaves the train
+      unmatched; a run that finished here is kept when nothing else fits; today's run still beats
+      it. Three fail on the old resolver; run against a throwaway database, with
+      `freshResolution.integration.test.ts`.
+- [x] Production replay (239 standing trains): 19 changed, all checked (ADR 0008 amendment).
+- [ ] Morning check: Sunday's early trains at Carlisle match Sunday's runs before and after their
+      activations; no day-out estimates appear.
+
+**Undo**, if the new matching turns out worse:
+
+1. Revert the code: `git revert <this commit>` and push (CI deploys it). That restores the old
+   resolver rule, the 15-minute-only fresh resolution and the day-correction sweep with its flag
+   (`RUN_LINK_DAY_CORRECTION_ENABLED`, default on). Nothing in the database needs restoring
+   first: links this change made are ordinary `resolved` links, and the next resolution under
+   the old code treats them as it always did.
+2. To re-link a window under the old rule, run `repair-run-links --correct --areas <areas>
+--from <start> --to <end>` (or the admin "link backfill" job with "correct" ticked).
+3. The `run_link_day_correction` table (migration 0064) is left in place, unused. It held no rows
+   when the sweep was removed. Drop it only with the owner's approval:
+   `drop table run_link_day_correction;` and
+   `delete from schema_migrations where name = '0064_run_link_day_correction.sql';` — and not if
+   the revert in step 1 is deployed, since the restored sweep writes to it.
 
 ## Milestone 98 — Shareable map links: view in the address (2026-10-27)
 

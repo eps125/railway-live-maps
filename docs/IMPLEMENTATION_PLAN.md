@@ -5979,3 +5979,18 @@ open at the time). The server's 15 s `heartbeat` was ignored.
       it connected; a socket that never sends a snapshot is replaced. The two silence tests fail
       on the old hook.
 - Undo: revert the commit; browser-only, no server or data change.
+
+## Fix — labels and numbers picked up by accident in the editor (2026-11-01)
+
+Owner report: trying to move things kept selecting place labels and signal numbers instead.
+Locking a layer stopped its elements being dragged but they still caught clicks, so a label lying
+over a berth or signal was picked instead of it; and grabbing a signal by its number moved only
+the number.
+
+- [x] A locked layer's elements ignore the mouse (`setLockedClickThrough` in `EditorCanvas.tsx`,
+      applied to each element's outermost node); clicks fall through to what is underneath.
+      Unlocking switches them back on. Locked checkbox tooltip says so.
+- [x] A signal's number and a detached label drag on their own only with Alt held; a plain drag
+      moves the whole signal or sign. Property panel hints say "Alt-drag".
+- [x] Tests: `EditorCanvas.mouse.test.tsx` (locked label ignores the mouse and listens again once
+      unlocked; signal number draggable only while Alt is held). Both fail without the fix.

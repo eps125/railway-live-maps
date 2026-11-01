@@ -5431,6 +5431,76 @@ so TRUST never reports there, and rule 3 didn't count the booked wait. The same 
       higher; estimates more than 15 minutes above the next TRUST report 64 → 33.
 - No migration. Live estimates already recorded stay as they were; a 97d backfill can redo past
   days if wanted.
+- [x] 31 Oct 00:00–23:19:41 (to the deploy) redone with the new rule: 5,105 live rows backed up to
+      `estimated_delay_band_change_bak_20261031` and replaced by maintenance job 6.
+
+## Fix — held-train estimates a day out for trains linked before midnight (2026-10-31, ADR 0021 amendment)
+
+Owner follow-up: 27 trains in five days showed about a day late (1,380–1,440 minutes). Each stood
+in its berth before midnight for a departure after it, so the resolver (today + yesterday only,
+ADR 0008) linked it to the earlier day's run, and the estimate used that run's traffic day.
+
+- [x] `trafficDayFromTrustId` (domain): the TRUST ID's day of the month, placed on the
+      activation's London date, the next day or the day before.
+- [x] `buildHeldDelayInput` uses it for every booked time, falling back to the run's traffic day.
+- [x] Tests: the helper (month end, BST, deduced after midnight, no day); 092N08 and 305N64 from
+      production (1381 and 1434 before, none now; a real late start still shows).
+- [x] Production replay: all 29 such estimates of 26–31 October go.
+- [x] The link itself is corrected too: see "Fix — run links a day out" below.
+
+## Fix — run links a day out (2026-11-01, ADR 0008 amendment)
+
+A train set up in its berth before midnight for a departure after it was linked to the earlier
+day's run, and the link stayed. Now `run-lineage` corrects it once the later day's activation
+exists. Owner condition: documented, with exact undo steps.
+
+- [x] `findDayMismatchedOpenLinks` (database/runLinkDayCorrection.ts): open occupancies in the
+      given areas whose run is paired with an activation naming another day in its TRUST ID.
+      Production dry run: 808 ms over all 22 mapped areas.
+- [x] `sweepDayMismatchedLinks` (worker/runLineage/dayCorrection.ts), every 30 s in
+      `run-lineage-daemon`: re-resolves with the unchanged resolver; `decideDayCorrection` moves
+      only to the same schedule on the activation's day; one-minute retry cooldown per occupancy.
+- [x] `repointLinkToRunDay`: repoints that one link (reusing the live run of that identity, or
+      creating it), never supersedes the old run, records a `run_link_day_correction` row, and
+      does nothing if the link changed meanwhile.
+- [x] Migration 0064 (`run_link_day_correction`, new table only), hand-applied on production
+      before deploy. Flag `RUN_LINK_DAY_CORRECTION_ENABLED` (default true; compose passes it).
+- [x] Tests: the decision (092N08 moves; 305N64 waits until the resolver gives its day; other
+      schedule, ambiguous, unmatched, no day and same day never move); integration: yesterday's
+      link moves to today's run with an audit row, the old run isn't superseded, a correctly
+      linked train is untouched, a second sweep does nothing.
+- [ ] Morning check: `select * from run_link_day_correction order by corrected_at desc` shows
+      moves at activations, and no estimates of about a day appear.
+
+Watch: `docker logs railway-live-map-run-lineage-1 | grep run_link_day_corrected` (one JSON line
+per move: berth, headcode, TRUST ID, from/to run and day).
+
+**Undo**, in this order, if the corrections turn out to be wrong:
+
+1. Stop new moves: set `RUN_LINK_DAY_CORRECTION_ENABLED=false` in the Portainer stack's
+   environment and update the stack (no code change needed; `run-lineage` logs
+   `day correction disabled` on start).
+2. Restore every link it moved, from its audit rows (only links still pointing at the run the
+   correction chose are touched):
+
+   ```sql
+   update berth_occupancy_run_link l
+      set train_run_id = c.old_train_run_id, updated_at = now()
+     from run_link_day_correction c
+    where l.berth_occupancy_id = c.berth_occupancy_id
+      and l.occupancy_entered_at = c.occupancy_entered_at
+      and l.train_run_id = c.new_train_run_id;
+   ```
+
+   Occupancies the train stepped into afterwards inherited the new run by step chain. Re-link
+   them for the window concerned with `repair-run-links --correct --areas <areas> --from <first corrected_at>
+--to <now>` (or the admin "link backfill" job with "correct" ticked). Runs the correction
+   created (`new_run_created`) can be left: with no links they show nowhere.
+
+3. Revert the code: `git revert` the commit that added this amendment (it also reverts the
+   estimator's TRUST-ID day, ADR 0021 second amendment).
+4. Only after the revert is deployed: `drop table run_link_day_correction;` and
+   `delete from schema_migrations where name = '0064_run_link_day_correction.sql';`.
 
 ## Milestone 98 — Shareable map links: view in the address (2026-10-27)
 

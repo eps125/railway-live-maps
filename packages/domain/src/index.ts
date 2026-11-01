@@ -211,6 +211,7 @@ export {
   nextRunEstimate,
   parseCifAllowanceMinutes,
   scheduleDayOffset,
+  trafficDayFromTrustId,
   type HeldDelayBlockReason,
   type HeldDelayInput,
   type HeldDelayResult,

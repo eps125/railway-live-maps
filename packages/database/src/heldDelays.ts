@@ -8,6 +8,7 @@ import {
   parseCifTimeToMinutes,
   scheduleDayOffset,
   signedVariationMinutes,
+  trafficDayFromTrustId,
   type HeldDelayInput,
   type HeldDelayResult,
   type RunEstimateState,
@@ -511,6 +512,10 @@ export function buildHeldDelayInput(
   };
   const berthStanoxes = new Set(ctx.berthStanoxes);
   const raw = ctx.trust?.latestReport ?? null;
+  // The run TRUST activated decides the day, not the occupancy's run link: a link made before
+  // midnight for a departure after it carries the earlier day (see `trafficDayFromTrustId`).
+  const trafficDay =
+    trafficDayFromTrustId(candidate.trustId, candidate.activatedAt) ?? candidate.trafficDay;
 
   // Owner report, 2026-10-26 (PX, 3S58): a schedule can visit the same place several times
   // (3S58 called at Preston twice and passed Farington Curve Jn four times). Taking the first
@@ -526,7 +531,7 @@ export function buildHeldDelayInput(
     const minutes = parseCifTimeToMinutes(raw);
     if (minutes === null) return null;
     return londonWallClockToInstant(
-      candidate.trafficDay,
+      trafficDay,
       minutes,
       scheduleDayOffset(minutes, originDeparture, loc.nextDay),
     );
@@ -602,7 +607,7 @@ export function buildHeldDelayInput(
         kind,
         atOrigin: berthLocation.recordIdentity === "LO",
         bookedAt: londonWallClockToInstant(
-          candidate.trafficDay,
+          trafficDay,
           time,
           scheduleDayOffset(time, originDeparture, berthLocation.nextDay),
         ),
@@ -623,7 +628,7 @@ export function buildHeldDelayInput(
       const minutes = parseCifTimeToMinutes(loc.departure);
       if (minutes === null) return 0;
       leavesAt = londonWallClockToInstant(
-        candidate.trafficDay,
+        trafficDay,
         minutes,
         scheduleDayOffset(minutes, originDeparture, loc.nextDay) + 1,
       );

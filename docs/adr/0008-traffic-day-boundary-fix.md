@@ -295,3 +295,61 @@ on both, and the most recent date was always preferred. The date is now the occu
 origin departure is nearest to now (`ServiceDateChoice`). Separately, STP precedence is decided per
 train UID from every schedule of that UID, cancellations included (`governsDate`), and never across
 different trains sharing a headcode. See IMPLEMENTATION_PLAN Milestone 87.
+
+## Amendment (2026-10-31): correct a link a day out
+
+Owner report: 27 trains in five days showed about a day late (ADR 0021 second amendment). Each
+stood in its berth before midnight for a departure after it (CL 0305 092N08 from 23:24 on the
+28th, booked away 05:52 on the 29th). The probe is today and yesterday only, so the occupancy was
+linked to the earlier day's run, and a link is never resolved again once made.
+
+The probe itself is unchanged: considering "tomorrow" needed guards (at the origin, within 12
+hours, today's run not still active) that each left cases (starting short, early set-up, origins
+without SMART) the owner judged too convoluted. Instead a wrong link is detected exactly, and
+corrected once the evidence exists:
+
+- **Mismatch:** an open occupancy whose linked run is paired with an activation (the newest since
+  the run's traffic day began, as the delay colours and held-train estimates pair it) whose TRUST
+  ID names a different day. A TRUST ID ends in the day of the month the run leaves its origin
+  (`trafficDayFromTrustId`).
+- **Correction:** `run-lineage` looks for mismatches every 30 seconds (mapped areas, as fresh
+  resolution) and resolves the berth again with the unchanged resolver. The link moves only if
+  the result is the **same schedule on the activation's day**; anything else leaves it as it is
+  (retried at most once a minute). 305N64, activated at 23:05 for 00:05 the next day, therefore
+  moves just after midnight, when the resolver can give that day.
+- **Write:** only that one link is repointed, to the live run of that schedule and day (reused, or
+  created), under the same advisory lock as `upsertResolvedLink`. The old run is never superseded:
+  it was a real train on its own day and keeps the rest of its journey. Later steps inherit the
+  new run by step chain. Each move is a `run_link_day_correction` row (migration 0064).
+- Switched by `RUN_LINK_DAY_CORRECTION_ENABLED` (default on).
+
+A correctly linked train has no mismatch and is never looked at. Until its activation arrives, a
+train set up before midnight stays linked to the earlier (finished) run, as before: no estimate is
+made for a finished run, but its popup and colour can show that run overnight.
+
+**Undo**, in this order, if the corrections turn out to be wrong:
+
+1. Stop new moves: set `RUN_LINK_DAY_CORRECTION_ENABLED=false` in the Portainer stack's
+   environment and update the stack (no code change needed; `run-lineage` logs
+   `day correction disabled` on start).
+2. Restore every link it moved, from its audit rows (only links still pointing at the run the
+   correction chose are touched):
+
+   ```sql
+   update berth_occupancy_run_link l
+      set train_run_id = c.old_train_run_id, updated_at = now()
+     from run_link_day_correction c
+    where l.berth_occupancy_id = c.berth_occupancy_id
+      and l.occupancy_entered_at = c.occupancy_entered_at
+      and l.train_run_id = c.new_train_run_id;
+   ```
+
+   Occupancies the train stepped into afterwards inherited the new run by step chain. Re-link
+   them for the window concerned with `repair-run-links --correct --areas <areas> --from <first corrected_at>
+--to <now>` (or the admin "link backfill" job with "correct" ticked). Runs the correction
+   created (`new_run_created`) can be left: with no links they show nowhere.
+
+3. Revert the code: `git revert` the commit that added this amendment (it also reverts the
+   estimator's TRUST-ID day, ADR 0021 second amendment).
+4. Only after the revert is deployed: `drop table run_link_day_correction;` and
+   `delete from schema_migrations where name = '0064_run_link_day_correction.sql';`.

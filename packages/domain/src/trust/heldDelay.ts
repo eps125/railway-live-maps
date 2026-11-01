@@ -182,6 +182,37 @@ export function londonWallClockToInstant(dateStr: string, minutes: number, dayOf
   return new Date(wallAsUtc - offset * MS_PER_MINUTE);
 }
 
+/**
+ * The traffic day of a TRUST run, from its TRUST ID: the last two digits are the day of the month
+ * it leaves its origin. Activation comes before departure (an hour or so, sometimes the evening
+ * before) or, if deduced, just after it, so the day is the activation's London date, the next
+ * day or the day before, whichever has that day of the month. `null` if the ID doesn't end in a
+ * day of the month.
+ *
+ * Owner report 2026-10-31: a train standing in its berth before midnight for a departure after
+ * it gets linked to the earlier day's run (CL 0305 092N08 from 23:24 for 05:52; M9 A894 305N64
+ * at 23:59 for 00:05), so the run's own traffic day is a day early and the estimate read ~1,400
+ * late. The activation is the run actually being compared against, so its day is the one to use.
+ */
+export function trafficDayFromTrustId(trustId: string, activatedAt: Date): string | null {
+  const match = /(\d{2})$/.exec(trustId);
+  if (!match) return null;
+  const dayOfMonth = Number(match[1]);
+  if (dayOfMonth < 1 || dayOfMonth > 31) return null;
+  const activationDay = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(activatedAt);
+  const [year, month, day] = activationDay.split("-").map(Number) as [number, number, number];
+  for (const offset of [0, 1, -1]) {
+    const date = new Date(Date.UTC(year, month - 1, day + offset));
+    if (date.getUTCDate() === dayOfMonth) return date.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
 /** A run's estimate in force, as the sweep last left it. */
 export interface RunEstimateState {
   band: Exclude<DelayBand, "none">;

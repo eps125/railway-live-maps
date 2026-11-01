@@ -248,7 +248,13 @@ describe("buildHeldDelayInput — repeated visits to the same place (owner repor
   ]);
   const DEPARTURE_LATE = 1 | (2 << 3);
   const ARRIVAL_LATE = 2 | (2 << 3);
-  const train: HeldTrainCandidate = { ...candidate, trafficDay: "2026-10-26", description: "3S58" };
+  const train: HeldTrainCandidate = {
+    ...candidate,
+    trafficDay: "2026-10-26",
+    description: "3S58",
+    trustId: "353S58CU26",
+    activatedAt: new Date("2026-10-26T16:00:00Z"),
+  };
   const context = (
     now: string,
     report: { stanox: string; flags: number; late: number; actual: string },
@@ -356,6 +362,8 @@ describe("buildHeldDelayInput — booked wait at a place TRUST never reports (ow
     description: "5C48",
     trafficDay: "2026-10-31",
     enteredAt: new Date("2026-10-31T05:31:48Z"),
+    trustId: "325C48M331",
+    activatedAt: new Date("2026-10-31T02:59:18Z"),
   };
   const report = (actual: string, planned: string) => ({
     trustId: "325C48M331",
@@ -432,5 +440,89 @@ describe("buildHeldDelayInput — booked wait at a place TRUST never reports (ow
       },
     );
     expect(input.bookedWaitAheadMinutes).toBe(30);
+  });
+});
+
+describe("buildHeldDelayInput — run linked to the day before (owner report 2026-10-31)", () => {
+  // CL 0305, 092N08 (schedule 273392, from Carlisle 05:52): the train stood in its berth from
+  // 23:24 on the 28th, so its occupancy was linked to the 28th's run. The 29th's activation came
+  // at 04:52:58 and the estimate read 1381 late against 05:52 on the 28th.
+  const LOCS = [
+    loc(1, "CARLILE", "LO", { departure: "0552" }),
+    loc(2, "PENRITH", "LI", { arrival: "0610", departure: "0611" }),
+  ];
+  const train: HeldTrainCandidate = {
+    ...candidate,
+    tdArea: "CL",
+    berth: "0305",
+    description: "2N08",
+    enteredAt: new Date("2026-10-28T23:24:38Z"),
+    trafficDay: "2026-10-28",
+    trustId: "092N08M529",
+    activatedAt: new Date("2026-10-29T04:52:58Z"),
+  };
+  const context = (now: string, overrides: Partial<HeldDelayContext> = {}): HeldDelayContext => ({
+    now: new Date(now),
+    trust: {
+      trustId: train.trustId,
+      latestReport: null,
+      latestReceivedAt: null,
+      latestCancellation: null,
+    },
+    locations: LOCS,
+    tiplocStanox: new Map([
+      ["CARLILE", "86520"],
+      ["PENRITH", "86080"],
+    ]),
+    reportingStanoxes: new Set(["86520", "86080"]),
+    berthStanoxes: ["86520"],
+    berthAllowanceMinutes: 1,
+    feedGapAreas: new Set(),
+    sameDescriptionBerths: [],
+    ...overrides,
+  });
+
+  it("measures the origin departure on the activated run's day, not the link's", () => {
+    const input = buildHeldDelayInput(train, context("2026-10-29T04:53:02Z"));
+    expect(input.timingPoint).toEqual({
+      kind: "departure",
+      bookedAt: new Date("2026-10-29T05:52:00Z"),
+      atOrigin: true,
+    });
+    // Was 1381 late; an hour before its booked departure it isn't late.
+    expect(estimateHeldDelay(input)).toEqual({ kind: "none" });
+  });
+
+  it("still shows a real late start at the origin", () => {
+    expect(estimateHeldDelay(buildHeldDelayInput(train, context("2026-10-29T06:10:00Z")))).toEqual({
+      kind: "estimate",
+      minutesLate: 18,
+      basis: "timing_point",
+    });
+  });
+
+  it("takes the next day for an activation before midnight — M9 A894, 305N64 at 23:59", () => {
+    const input = buildHeldDelayInput(
+      {
+        ...train,
+        trafficDay: "2026-10-30",
+        trustId: "305N64M031",
+        activatedAt: new Date("2026-10-30T23:05:10Z"),
+        enteredAt: new Date("2026-10-30T23:59:15Z"),
+      },
+      context("2026-10-30T23:59:30Z", {
+        locations: [loc(1, "CARLILE", "LO", { departure: "0005" })],
+      }),
+    );
+    expect(input.timingPoint?.bookedAt).toEqual(new Date("2026-10-31T00:05:00Z"));
+    expect(estimateHeldDelay(input)).toEqual({ kind: "none" });
+  });
+
+  it("falls back to the run's own day when the TRUST ID carries no usable day", () => {
+    const input = buildHeldDelayInput(
+      { ...train, trustId: "092N08M5XX" },
+      context("2026-10-29T04:53:02Z"),
+    );
+    expect(input.timingPoint?.bookedAt).toEqual(new Date("2026-10-28T05:52:00Z"));
   });
 });

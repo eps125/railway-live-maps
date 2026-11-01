@@ -263,3 +263,24 @@ Remaining misses: a stop TRUST reports only manually ends the stretch too late (
 that report arrives). A SMART location TRUST doesn't report for this train ends it too early (as
 before). The popup still names the berth, not "Carnforth": tagging a berth with the schedule's
 TIPLOC would let rule 2 give the exact figure there, and is not done.
+
+## Amendment (2026-10-31, second): the traffic day comes from the TRUST ID
+
+Owner follow-up to the replay above: 27 trains in five days showed about a day late (1,380–1,440
+minutes, severe) until TRUST reported. Each was standing in its berth before midnight for a
+departure after it: CL 0305 092N08 from 23:24 on the 28th for 05:52 on the 29th, M9 A894 305N64
+at 23:59 on the 30th for 00:05 on the 31st. The run resolver probes only today and yesterday
+(ADR 0008), so the occupancy was linked to the earlier day's run. When the next day's activation
+came, the estimate measured the booked departure on the run's (earlier) traffic day.
+
+The estimate now takes the traffic day from the activation it compares against: a TRUST ID ends
+in the day of the month the run leaves its origin, and the day is the activation's London date,
+the next day or the day before, whichever has that day of the month (`trafficDayFromTrustId`).
+Without a usable day in the ID, the run's own traffic day is used, as before.
+
+Replayed on production: all 29 such estimates of 26–31 October go (28 to no estimate, one to 2
+late, which is what TRUST then reported).
+
+The link itself is corrected separately, once the later day's activation exists (ADR 0008
+amendment, 2026-10-31: `run-lineage` repoints an open link a day out). Both parts revert with
+one commit; see the undo steps there.

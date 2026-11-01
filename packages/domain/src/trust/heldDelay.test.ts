@@ -6,6 +6,7 @@ import {
   londonWallClockToInstant,
   parseCifAllowanceMinutes,
   scheduleDayOffset,
+  trafficDayFromTrustId,
   type HeldDelayInput,
 } from "./heldDelay.js";
 
@@ -252,6 +253,42 @@ describe("parseCifAllowanceMinutes", () => {
     expect(parseCifAllowanceMinutes("")).toBe(0);
     expect(parseCifAllowanceMinutes(null)).toBe(0);
     expect(parseCifAllowanceMinutes("x")).toBe(0);
+  });
+});
+
+describe("trafficDayFromTrustId", () => {
+  it("reads the day from the TRUST ID, around the activation — the owner's day-out reports", () => {
+    // Activated the same morning, an hour before a 05:52 departure.
+    expect(trafficDayFromTrustId("092N08M529", new Date("2026-10-29T04:52:58Z"))).toBe(
+      "2026-10-29",
+    );
+    // Activated at 23:05 for a 00:05 departure: the next day.
+    expect(trafficDayFromTrustId("305N64M031", new Date("2026-10-30T23:05:10Z"))).toBe(
+      "2026-10-31",
+    );
+    // A deduced activation just after midnight for a train that left at 23:50.
+    expect(trafficDayFromTrustId("305N64M030", new Date("2026-10-31T00:10:00Z"))).toBe(
+      "2026-10-30",
+    );
+  });
+
+  it("crosses month ends and uses the London date in summer", () => {
+    expect(trafficDayFromTrustId("305N64M001", new Date("2026-10-31T23:00:00Z"))).toBe(
+      "2026-11-01",
+    );
+    expect(trafficDayFromTrustId("305N64M031", new Date("2026-11-01T00:20:00Z"))).toBe(
+      "2026-10-31",
+    );
+    // 23:30 UTC on 30 June is 00:30 BST on 1 July.
+    expect(trafficDayFromTrustId("305N64M001", new Date("2026-06-30T23:30:00Z"))).toBe(
+      "2026-07-01",
+    );
+  });
+
+  it("gives null when the ID's day is nowhere near the activation, or it has none", () => {
+    expect(trafficDayFromTrustId("305N64M015", new Date("2026-10-30T23:05:10Z"))).toBeNull();
+    expect(trafficDayFromTrustId("305N64M0XY", new Date("2026-10-30T23:05:10Z"))).toBeNull();
+    expect(trafficDayFromTrustId("305N64M000", new Date("2026-10-30T23:05:10Z"))).toBeNull();
   });
 });
 

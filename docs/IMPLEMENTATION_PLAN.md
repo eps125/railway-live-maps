@@ -5529,19 +5529,21 @@ keep it simple — this replaces the day-correction sweep added hours earlier.
       repointed (that link only, no run superseded), e.g. CL 0302 2C38 G85529 → G85528 and CL 0305
       1J70 C31808 → C31810. Each is a row in `berth_occupancy_run_link_bak_20261101`. Left alone:
       20 now ambiguous and 13 now unmatched (links made when those trains arrived on Saturday
-      runs), and 3 to another schedule on the same day (including 5S26). To undo just this repair:
-
-      ```sql
-          update berth_occupancy_run_link l
-             set train_run_id = b.old_train_run_id, updated_at = now()
-            from berth_occupancy_run_link_bak_20261101 b
-           where l.berth_occupancy_id = b.berth_occupancy_id
-             and l.occupancy_entered_at = b.occupancy_entered_at
-             and l.train_run_id = b.new_train_run_id;
-          ```
+      runs), and 3 to another schedule on the same day (including 5S26). Undo: see below.
 
 - [ ] Morning check: Sunday's early trains at Carlisle match Sunday's runs before and after their
       activations; no day-out estimates appear.
+
+To undo just the one-off repoint of 18 links (01:50, 1 November):
+
+```sql
+update berth_occupancy_run_link l
+   set train_run_id = b.old_train_run_id, updated_at = now()
+  from berth_occupancy_run_link_bak_20261101 b
+ where l.berth_occupancy_id = b.berth_occupancy_id
+   and l.occupancy_entered_at = b.occupancy_entered_at
+   and l.train_run_id = b.new_train_run_id;
+```
 
 **Undo**, if the new matching turns out worse:
 

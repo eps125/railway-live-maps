@@ -27,6 +27,7 @@ import {
   useSClassAreas,
   useSClassDefinitions,
 } from "./useBindingAutocomplete.js";
+import { realignedLabelX, type LabelAlign } from "./labelAlign.js";
 import { routeDisplayName } from "./routeTrace.js";
 
 const MAX_COMBINED_BERTH_MEMBERS = 4;
@@ -2136,7 +2137,14 @@ export function PropertyPanel(): JSX.Element {
           />
           <label className="field">
             Align
-            <select value={element.align} onChange={(e) => setProp("align", e.target.value)}>
+            <select
+              value={element.align}
+              onChange={(e) => {
+                // Keep the text where it is: `x` is the anchor, so it moves with the alignment.
+                const align = e.target.value as LabelAlign;
+                patchProps({ align, x: realignedLabelX(element, align) });
+              }}
+            >
               <option value="left">Left</option>
               <option value="center">Center</option>
               <option value="right">Right</option>

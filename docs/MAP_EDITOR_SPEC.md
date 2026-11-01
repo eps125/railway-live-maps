@@ -476,7 +476,10 @@ Plain sanitized text with position, alignment and size. `\n` in the text wraps t
 field is a textarea. `align` (left/center/right, defaults to **center** as of 2026-09-11 — a
 multi-line label reads oddly left-anchored by default) is editable via the Properties panel's
 "Align" field; both renderers already center each wrapped line correctly (SVG `textAnchor` per
-`<tspan>`, Konva `align` + a fixed layout width in `anchoredText`). Milestone 31 (owner request):
+`<tspan>`, Konva `align` + a fixed layout width in `anchoredText`). `x` is the text anchor
+(`start`/`middle`/`end`), so changing "Align" in the editor also moves `x` by the widest line's
+drawn width (Konva's measurement at the label's font size), in the same undo step, so the text
+stays where it is (owner report 2026-11-01). Milestone 31 (owner request):
 a label can also carry optional `crs`/`tiploc`/`stanox` — the same place identifiers a `station`
 already had — so a junction (which gets a plain label, not a `station` element) is searchable by
 name or identifier too. Not rendered, same as a station's `tiploc`/`stanox`.

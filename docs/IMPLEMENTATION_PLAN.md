@@ -5979,3 +5979,16 @@ open at the time). The server's 15 s `heartbeat` was ignored.
       it connected; a socket that never sends a snapshot is replaced. The two silence tests fail
       on the old hook.
 - Undo: revert the commit; browser-only, no server or data change.
+
+## Fix — a label jumps when its alignment changes (2026-11-01)
+
+Owner report: changing a free label's alignment in the editor moved it across the canvas. A
+label's `x` is its text anchor, so keeping `x` while switching `align` shifted the drawn text by
+half or all of its width. Stored maps are unaffected.
+
+- [x] `realignedLabelX` (`apps/web/src/editor/labelAlign.ts`): the `x` that keeps the text block
+      in place, from the widest line's width measured with Konva at the label's font size.
+- [x] Properties panel "Align" applies `align` and the new `x` as one `patchElement` (one undo
+      step).
+- [x] Tests: `labelAlign.test.ts` (left → centre, centre → right, right → left on a two-line
+      label); `PropertyPanel.test.tsx` (the panel moves `x` and one undo restores both).

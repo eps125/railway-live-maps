@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MapBinding, MapDocument } from "@railway/map-schema";
 import { EditorStateProvider, useEditorDispatch, useEditorState } from "./EditorState.js";
+import { konvaLineWidth } from "./labelAlign.js";
 import { PropertyPanel } from "./PropertyPanel.js";
 
 function baseDoc(): MapDocument {
@@ -437,6 +438,34 @@ describe("PropertyPanel label fields", () => {
     fireEvent.blur(fontSizeInput);
 
     expect(fontSizeInput).toHaveValue(20);
+  });
+
+  it("keeps the text where it is when the alignment changes, as one undo step (owner report 2026-11-01)", async () => {
+    function Undo(): JSX.Element {
+      const dispatch = useEditorDispatch();
+      return (
+        <button type="button" onClick={() => dispatch({ type: "undo" })}>
+          undo
+        </button>
+      );
+    }
+    render(
+      <EditorStateProvider initialDocument={docWithLabel()}>
+        <Select id="label-a" />
+        <Undo />
+        <PropertyPanel />
+      </EditorStateProvider>,
+    );
+
+    const xInput = await screen.findByLabelText("X");
+    const width = konvaLineWidth("Platform 1", 12);
+    fireEvent.change(screen.getByLabelText("Align"), { target: { value: "right" } });
+    expect(screen.getByLabelText("Align")).toHaveValue("right");
+    expect(xInput).toHaveValue(10 + width);
+
+    fireEvent.click(screen.getByText("undo"));
+    expect(screen.getByLabelText("Align")).toHaveValue("left");
+    expect(xInput).toHaveValue(10);
   });
 
   it("commits CRS/TIPLOC/STANOX place identifiers, upper-casing CRS (Milestone 31)", async () => {

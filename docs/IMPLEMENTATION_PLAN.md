@@ -5905,3 +5905,19 @@ them). Reverted (d32c597) and replaced:
       sequence alone, which played late-stored steps after the ones that followed them).
       `playback_sequence` (migration 0063) gives recovered rows their arrival position; merge
       mode sets it. Cursor `<ms>:<sort sequence>:<sequence>`; older cursors still accepted.
+
+## Fix — live map frozen after an API restart (2026-11-01)
+
+Owner report: after the 23:19 deploy the Warrington map stopped updating while still showing
+"live"; a reload fixed it. The API restart left the browser's socket half-open behind the proxy:
+no `close` event, so `useLiveMapSocket` never reconnected (no server subscription for the map was
+open at the time). The server's 15 s `heartbeat` was ignored.
+
+- [x] `useLiveMapSocket`: any message, heartbeats included, restarts a 45 s silence limit
+      (`LIVE_SOCKET_SILENCE_LIMIT_MS`, three missed heartbeats); when it runs out the socket is
+      abandoned and a fresh one opened (status "reconnecting", then a fresh snapshot). Events from
+      an abandoned socket are ignored.
+- [x] Tests: silent socket abandoned and replaced, late messages from it ignored; heartbeats keep
+      it connected; a socket that never sends a snapshot is replaced. The two silence tests fail
+      on the old hook.
+- Undo: revert the commit; browser-only, no server or data change.

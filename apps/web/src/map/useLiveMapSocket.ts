@@ -68,6 +68,15 @@ function computeBackoffDelayMs(attempt: number): number {
   return Math.max(0, Math.round(exponential + jitter));
 }
 
+/**
+ * Owner report 2026-11-01 (Warrington map frozen after the 23:19 deploy): when the API restarts
+ * behind the proxy, the browser's socket can be left half-open — no `close` event ever arrives, so
+ * the map waits forever while still showing "live". The server sends a `heartbeat` every 15 s
+ * (`LIVE_WS_HEARTBEAT_INTERVAL_MS`), so three missed in a row means the connection is dead: it is
+ * abandoned and a fresh one opened, with a fresh snapshot. Exported for tests.
+ */
+export const LIVE_SOCKET_SILENCE_LIMIT_MS = 45_000;
+
 function liveWsUrl(slug: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/v1/maps/${encodeURIComponent(slug)}/live`;
@@ -119,6 +128,27 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     let frame = 0;
     let fallback: ReturnType<typeof setTimeout> | null = null;
     let pendingSequence: number | null = null;
+    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function clearSilenceTimer(): void {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+
+    /** (Re)starts the silence limit for the current socket: any message, heartbeats included,
+     * proves it's alive. */
+    function armSilenceTimer(): void {
+      clearSilenceTimer();
+      silenceTimer = setTimeout(() => {
+        silenceTimer = null;
+        const dead = socket;
+        // Forget it first, so a `close` it may (or may never) send isn't taken for the current
+        // socket's, then reconnect at once rather than waiting for that event.
+        socket = null;
+        dead?.close();
+        scheduleReconnect();
+      }, LIVE_SOCKET_SILENCE_LIMIT_MS);
+    }
 
     function flush(): void {
       if (frame) cancelAnimationFrame(frame);
@@ -172,6 +202,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
 
     function scheduleReconnect(): void {
       if (cancelled) return;
+      clearSilenceTimer();
       setConnectionStatus("reconnecting");
       const delay = computeBackoffDelayMs(attempt);
       attempt += 1;
@@ -283,18 +314,27 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
       if (cancelled) return;
       setConnectionStatus((prev) => (prev === "live" ? prev : "connecting"));
       lastSequenceRef.current = null;
-      socket = new WebSocket(liveWsUrl(slug));
+      const ws = new WebSocket(liveWsUrl(slug));
+      socket = ws;
+      armSilenceTimer();
 
-      socket.addEventListener("message", handleMessage);
-      socket.addEventListener("open", () => {
+      // Events from a socket that has since been replaced (abandoned as silent) are ignored.
+      ws.addEventListener("message", (event: MessageEvent<string>) => {
+        if (ws !== socket) return;
+        armSilenceTimer();
+        handleMessage(event);
+      });
+      ws.addEventListener("open", () => {
+        if (ws !== socket) return;
         attempt = 0;
       });
-      socket.addEventListener("close", () => {
-        if (cancelled) return;
+      ws.addEventListener("close", () => {
+        if (cancelled || ws !== socket) return;
         scheduleReconnect();
       });
-      socket.addEventListener("error", () => {
-        socket?.close();
+      ws.addEventListener("error", () => {
+        if (ws !== socket) return;
+        ws.close();
       });
     }
 
@@ -303,6 +343,7 @@ export function useLiveMapSocket(slug: string): UseLiveMapSocketResult {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearSilenceTimer();
       if (frame) cancelAnimationFrame(frame);
       if (fallback) clearTimeout(fallback);
       socket?.close();

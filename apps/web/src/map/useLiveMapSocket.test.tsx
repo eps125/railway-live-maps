@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useLiveMapSocket } from "./useLiveMapSocket.js";
+import { LIVE_SOCKET_SILENCE_LIMIT_MS, useLiveMapSocket } from "./useLiveMapSocket.js";
 
 type Listener = (event: { data?: string }) => void;
 
@@ -234,5 +234,68 @@ describe("useLiveMapSocket", () => {
     await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2), {
       timeout: 3000,
     });
+  });
+
+  // Owner report 2026-11-01: after the API restarted at a deploy, the Warrington map's socket
+  // went half-open — no close event, no data — and the map stayed frozen showing "live".
+  it("abandons a silent socket after three missed heartbeats and reconnects for a fresh snapshot", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result } = renderHook(() => useLiveMapSocket("warrington-psb"));
+    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
+    expect(result.current.connectionStatus).toBe("live");
+
+    act(() => vi.advanceTimersByTime(LIVE_SOCKET_SILENCE_LIMIT_MS - 1));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.connectionStatus).toBe("reconnecting");
+    act(() => vi.advanceTimersByTime(1_000)); // the first backoff is about 0.5 s
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // Anything the abandoned socket still delivers is ignored.
+    act(() =>
+      FakeWebSocket.instances[0]!.sendFromServer({
+        ...snapshot,
+        sequence: 99,
+        state: {
+          ...snapshot.state,
+          berths: { "berth-1": { description: "OLD1", enteredAt: null } },
+        },
+      }),
+    );
+    expect(result.current.berths?.["berth-1"]?.description).toBe("1A23");
+
+    act(() => FakeWebSocket.instances[1]!.sendFromServer({ ...snapshot, sequence: 12 }));
+    expect(result.current.connectionStatus).toBe("live");
+    expect(result.current.sequence).toBe(12);
+  });
+
+  it("stays connected while heartbeats keep arriving", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result } = renderHook(() => useLiveMapSocket("warrington-psb"));
+    act(() => FakeWebSocket.instances[0]!.sendFromServer(snapshot));
+
+    for (let i = 0; i < 6; i += 1) {
+      act(() => vi.advanceTimersByTime(15_000));
+      act(() =>
+        FakeWebSocket.instances[0]!.sendFromServer({
+          type: "heartbeat",
+          sequence: 10,
+          serverTime: "2026-11-01T00:00:00.000Z",
+        }),
+      );
+    }
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(result.current.connectionStatus).toBe("live");
+  });
+
+  it("gives up on a socket that never sends anything, not even a snapshot", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    renderHook(() => useLiveMapSocket("warrington-psb"));
+    act(() => vi.advanceTimersByTime(LIVE_SOCKET_SILENCE_LIMIT_MS + 1_000));
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 });

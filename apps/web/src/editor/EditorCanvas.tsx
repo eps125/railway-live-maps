@@ -108,6 +108,26 @@ export function snapStep(type: string | undefined, gridSize: number): number {
   return type !== undefined && HALF_GRID_TYPES.has(type) ? Math.max(1, gridSize / 2) : gridSize;
 }
 
+/** Owner report 2026-11-01: elements on a locked layer still caught clicks, so locking "Labels"
+ * didn't stop a label lying over a berth or signal being picked instead of it. A locked element
+ * now ignores the mouse entirely and clicks fall through to what is underneath. Applied to the
+ * element's outermost node (the one directly in the Konva Layer); only a node this switched off
+ * is switched back on, so a node drawn with `listening={false}` stays that way. */
+export function setLockedClickThrough(node: Konva.Node, locked: boolean): void {
+  let top = node;
+  for (let parent = top.getParent(); parent && !(parent instanceof Konva.Layer);) {
+    top = parent;
+    parent = top.getParent();
+  }
+  if (locked && top.listening()) {
+    top.listening(false);
+    top.setAttr("lockedClickThrough", true);
+  } else if (!locked && top.getAttr("lockedClickThrough")) {
+    top.listening(true);
+    top.setAttr("lockedClickThrough", undefined);
+  }
+}
+
 function flattenPoints(points: Array<{ x: number; y: number }>): number[] {
   return points.flatMap((p) => [p.x, p.y]);
 }
@@ -617,6 +637,22 @@ export function EditorCanvas({
   // Select's empty-canvas drag is already how the canvas is panned, and there is no other pan
   // input (the wheel handler only zooms), so overloading that same drag for marquee-select would
   // remove panning rather than add a new capability.
+  /** Owner report 2026-11-01: grabbing a signal by its number, or a sign by its detached label,
+   * moved only the number or label. They now move on their own only while Alt is held; a plain
+   * drag on them moves the whole element. */
+  const [altHeld, setAltHeld] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => setAltHeld(e.altKey);
+    const onBlur = (): void => setAltHeld(false);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
   const [marquee, setMarquee] = useState<{
     start: { x: number; y: number };
     end: { x: number; y: number };
@@ -1435,6 +1471,8 @@ export function EditorCanvas({
             const selected = selection.includes(element.id);
             // Milestone 64: nothing drags while tracing a route, so a click on the track can't move it.
             const draggable = toolMode === "select" && !layer.locked && !routeTrace;
+            // A signal's number or a detached label moves on its own only with Alt held.
+            const detachedDraggable = draggable && altHeld;
             /** Milestone 55: the caption on a points-based scenery shape, at the same anchor the
              * public renderer uses. Only a *detached* label is independently draggable; an
              * attached one is part of the shape. */
@@ -1449,7 +1487,7 @@ export function EditorCanvas({
                   text={shape.label}
                   fontSize={shape.fontSize}
                   fill={selected ? "#58a6ff" : MAP_STYLE.placedLabel.fill}
-                  draggable={draggable && shape.labelOffset !== undefined}
+                  draggable={detachedDraggable && shape.labelOffset !== undefined}
                   onClick={(e) => handleElementClick(e, shape.id)}
                   onDragEnd={(e) => handleShapeLabelDragEnd(e, shape.id)}
                 />
@@ -1479,8 +1517,10 @@ export function EditorCanvas({
                   ))
                 : null;
             const setRef = (node: Konva.Node | null): void => {
-              if (node) nodeRefs.current.set(element.id, node);
-              else nodeRefs.current.delete(element.id);
+              if (node) {
+                nodeRefs.current.set(element.id, node);
+                setLockedClickThrough(node, layer.locked);
+              } else nodeRefs.current.delete(element.id);
             };
 
             if (element.type === "trackPath") {
@@ -1823,7 +1863,7 @@ export function EditorCanvas({
                       offsetY={fontSize / 2}
                       fontSize={fontSize}
                       fill={MAP_STYLE.signal.number.fill}
-                      draggable={draggable}
+                      draggable={detachedDraggable}
                       onDragEnd={(e) => handleSignalNumberDragEnd(e, element.id)}
                     />
                   ) : null}
@@ -2067,7 +2107,7 @@ export function EditorCanvas({
                       fill={selected ? "#58a6ff" : style.labelFill}
                       // Only a detached label is independently draggable; an attached one is
                       // part of the sign and moves with the board.
-                      draggable={draggable && element.labelOffset !== undefined}
+                      draggable={detachedDraggable && element.labelOffset !== undefined}
                       onClick={(e) => handleElementClick(e, element.id)}
                       onDragEnd={(e) => handleLabelDragEnd(e, element.id)}
                     />
@@ -2338,7 +2378,7 @@ export function EditorCanvas({
                       text={element.label}
                       fontSize={element.fontSize}
                       fill={selected ? "#58a6ff" : MAP_STYLE.placedLabel.fill}
-                      draggable={draggable && element.labelOffset !== undefined}
+                      draggable={detachedDraggable && element.labelOffset !== undefined}
                       onClick={(e) => handleElementClick(e, element.id)}
                       onDragEnd={(e) => handleLabelDragEnd(e, element.id)}
                     />

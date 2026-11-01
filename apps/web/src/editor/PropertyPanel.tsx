@@ -451,8 +451,8 @@ function PlacedLabelFieldset({
       ) : (
         <>
           <p className="field-hint">
-            Label detached — drag it on the canvas, or set its offset from the shape&apos;s centre
-            below. It still moves with the shape.
+            Label detached — Alt-drag it on the canvas, or set its offset from the shape&apos;s
+            centre below. It still moves with the shape.
           </p>
           <NumberField
             label="Label offset X"
@@ -2086,7 +2086,7 @@ export function PropertyPanel(): JSX.Element {
                   Reset number position
                 </button>
               ) : (
-                <p className="field-hint">Drag the number on the canvas to move it.</p>
+                <p className="field-hint">Alt-drag the number on the canvas to move it.</p>
               )}
             </>
           ) : null}

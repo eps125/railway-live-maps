@@ -49,7 +49,7 @@ export function LayersPanel(): JSX.Element {
               />
             </label>
             <span className="layer-list__name">{layer.name}</span>
-            <label>
+            <label title="Locked: its elements can't be selected or moved, and clicks go through to what is underneath">
               <input
                 type="checkbox"
                 checked={layer.locked}

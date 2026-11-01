@@ -1277,7 +1277,7 @@ describe("PropertyPanel signal type, direction and number (ADR 0017)", () => {
     });
     fireEvent.change(screen.getByLabelText("Side of the track"), { target: { value: "above" } });
     expect(signal()).toMatchObject({ appliesTo: "left", side: "above" });
-    expect(screen.getByText("Drag the number on the canvas to move it.")).toBeInTheDocument();
+    expect(screen.getByText("Alt-drag the number on the canvas to move it.")).toBeInTheDocument();
   });
 
   it("marks a typed number as hand-set, so the bulk tool leaves it alone", async () => {

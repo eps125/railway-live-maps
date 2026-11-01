@@ -137,7 +137,7 @@ hide vacant boxes entirely (ADR 0004 D5).
   stands on an L-shaped post beside the track — stem from the track edge, arm pointing the way it
   applies, head touching the arm; main and distant heads are round, a subsidiary's is a
   quarter-circle the same width. `side` defaults to above for `right`, below for `left`.
-- `labelOffset` (ADR 0017): where the signal number sits, dragged in the editor; absent = along
+- `labelOffset` (ADR 0017): where the signal number sits, Alt-dragged in the editor; absent = along
   the berth the signal protects, ending at the post. Numbers show on the public map only for
   admins who tick "Signal numbers", and only when zoomed in enough to read them.
 - `labelSource` / `orientationSource` (ADR 0017): `tool` or `custom` — whether the bulk
@@ -210,9 +210,9 @@ rather than the full grid, joining `platform` and `platformNumber` in `snapStep`
 sign when the sign is moved and survives copy/paste. While set, `labelPosition` is ignored (but
 retained, so re-attaching restores the side last chosen) and the label is centred on the offset
 point. In the editor, "Detach label" seeds the offset with the label's _current_ drawn position
-so it never jumps, the label then becomes independently draggable on the canvas (Konva gives a
-draggable child priority over its draggable parent, so grabbing the board still moves the whole
-sign), and "Reattach label" clears it.
+so it never jumps, the label then becomes independently draggable on the canvas with Alt held
+(a plain drag on it moves the whole sign — owner report 2026-11-01), and "Reattach label" clears
+it.
 
 `neutralSectionGeometry` (in `packages/map-schema`) derives the board rect, the four black symbol
 rects and the label anchor from `MAP_STYLE.neutralSection`, whose fractions are the AJ02 drawing's
@@ -243,9 +243,8 @@ same optional caption, declared once as `placedLabelFields` and resolved by one 
 - `fontSize`.
 
 In the editor, "Detach label" seeds the offset from the label's _current drawn position_ so it
-never jumps, the label then becomes independently draggable on the canvas (Konva gives a draggable
-child priority over its draggable parent, so grabbing the shape still moves the whole shape), and
-"Reattach label" clears it.
+never jumps, the label then becomes independently draggable on the canvas with Alt held (a plain
+drag on it moves the whole shape — owner report 2026-11-01), and "Reattach label" clears it.
 
 ### `tunnel`, `viaduct`, `water`
 
@@ -690,7 +689,12 @@ Modes:
 - Align/distribute.
 - Copy, cut, paste, duplicate and repeat offset.
 - Undo/redo using a command model.
-- Layer visibility/lock/order.
+- Layer visibility/lock/order. A locked layer's elements ignore the mouse entirely — they can't
+  be clicked, selected or dragged, and a click on one goes to whatever is underneath — so locking
+  "Labels" lets you move berths, signals and track without picking up labels lying over them
+  (owner report 2026-11-01; previously a locked element could still be clicked and selected).
+- A signal's number and a detached label move on their own only with **Alt** held; a plain drag
+  on them moves the whole signal or sign, and a plain click selects it (owner report 2026-11-01).
 - Group and ungroup.
 - Reusable templates.
 - Keyboard shortcuts with visible help.

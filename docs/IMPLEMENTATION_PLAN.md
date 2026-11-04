@@ -6007,3 +6007,23 @@ the number.
       moves the whole signal or sign. Property panel hints say "Alt-drag".
 - [x] Tests: `EditorCanvas.mouse.test.tsx` (locked label ignores the mouse and listens again once
       unlocked; signal number draggable only while Alt is held). Both fail without the fix.
+
+## One-off — stuck berths after the 4 Nov network outage (2026-11-04)
+
+The box lost its network 00:04:43–00:11:52 UTC (`ENETUNREACH` to the broker; openrail's stompy
+dropped too, so it was not RLM's reconnect). NR expires messages after 300 s, so TD sent
+00:04:43.9–00:06:53.0 (about 260 frames) and TRUST/VSTP roughly 00:04:43–00:07:04 never arrived.
+No other copy exists: openrail has the same gap and `nr-backstop` on .201 was off (and shares the
+same uplink). Outage rows 21 (`td_receive_silence`) and 22 (`td_ingest_lag_loss`) record it.
+
+- [x] Stuck berths found by evidence, not guesses: live description set before 00:04:44 and
+      untouched since, the same headcode stepped into another berth of the same area after
+      00:06:53, and not seen elsewhere in between (so its step out was lost in the gap). 304
+      found (226 held from 00:03–00:04); graded high 242 / medium 45 / low 3; 14 signaller notes
+      (`FAST`, `MORN`, `3CAR`, `****`) left alone.
+- [x] Owner approved clearing high + medium. 264 cleared at 00:30 UTC exactly as the editor's
+      clear button does (occupancy closed `manual_operator_clear`, live state blanked, one
+      `operator_berth_action` row each, reason `Stuck after TD loss 2026-11-04 …`); 23 skipped
+      because their trains had stepped on by then. Checked afterwards: none reverted.
+- Live-only overrides, as with the button: `project-td --rebuild` will not replay them. To undo,
+  reopen the occupancies named by those `operator_berth_action` rows.
